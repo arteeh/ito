@@ -149,6 +149,10 @@ class FrameMetadata(Message):
     camera: Name
     sequence: Sequence
     capture_time: Time
+    video_pts: Sequence | None = Field(
+        default=None,
+        description="Video presentation timestamp in 90 kHz ticks, zero at the track's first frame",
+    )
     camera_pose: Pose | None = Field(
         default=None, description="Camera-to-world pose; world anchored at robot startup"
     )
