@@ -330,8 +330,10 @@ class XRWindow(DesktopWindow):
                     break
 
     def close(self):
-        if self.xr is not None:
-            GL.glFinish()
-            self.xr.close()
+        try:
+            if self.xr is not None:
+                GL.glFinish()
+                self.xr.close()
+        finally:
             self.xr = None
-        super().close()
+            super().close()
