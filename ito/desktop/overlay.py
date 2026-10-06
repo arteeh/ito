@@ -1,7 +1,11 @@
+"""The same ImGui panel can render into the desktop or a headset framebuffer."""
+
 from dataclasses import dataclass
 
 import moderngl
 import pygame
+from imgui_bundle import imgui
+from imgui_bundle.python_backends.pygame_backend import PygameRenderer
 
 
 @dataclass(frozen=True)
@@ -13,64 +17,95 @@ class PilotStatus:
 
 
 class Overlay:
-    def __init__(self, context: moderngl.Context):
+    def __init__(self, context: moderngl.Context, max_splats: int):
         self.context = context
-        self.font = pygame.font.Font(None, 23)
-        self.program = context.program(vertex_shader='''#version 430
-            out vec2 uv;
-            uniform vec2 size;
-            uniform vec2 viewport;
-            void main() {
-                uv = vec2(gl_VertexID & 1, (gl_VertexID >> 1) & 1);
-                vec2 pixel = vec2(12) + uv * size;
-                gl_Position = vec4(pixel / viewport * vec2(2,-2) + vec2(-1,1), 0, 1);
-            }''', fragment_shader='''#version 430
-            in vec2 uv;
-            uniform sampler2D panel;
-            out vec4 color;
-            void main() { color = texture(panel, uv); }''')
-        self.program["panel"] = 1
-        self.vao = context.vertex_array(self.program, [])
-        self.texture = None
-        self.previous = None
+        self.imgui = imgui.create_context()
+        imgui.get_io().set_ini_filename("")
+        self.backend = PygameRenderer()
+        self.backend.key_map.update(
+            {getattr(pygame, f"K_{key}"): getattr(imgui.Key, key) for key in "acvxyz"}
+        )
+        self.max_splats = max_splats
+        self.error = None
 
-    def draw(self, status: PilotStatus, fps: float, count: int, age: float | None,
-             captured: bool, request: str | None) -> None:
+    def begin(self, events, size, captured):
+        for event in events:
+            if event.type == pygame.VIDEORESIZE:
+                continue  # SDL owns the context; resizing must not recreate it.
+            if event.type == pygame.TEXTINPUT:
+                self.backend.io.add_input_characters_utf8(event.text)
+                continue
+            if event.type == pygame.KEYDOWN:
+                event.unicode = ""  # SDL TEXTINPUT also supports composed keyboard text.
+            if captured and event.type in (
+                pygame.MOUSEMOTION,
+                pygame.MOUSEBUTTONDOWN,
+                pygame.MOUSEBUTTONUP,
+            ):
+                continue
+            self.backend.process_event(event)
+        self.backend.io.display_size = size
+        self.backend.process_inputs()
+        imgui.new_frame()
+        return imgui.get_io()
+
+    def draw(
+        self,
+        status: PilotStatus,
+        fps: float,
+        count: int,
+        age: float | None,
+        captured: bool,
+        request: str | None,
+        *,
+        live=False,
+        target: moderngl.Framebuffer | None = None,
+    ) -> int | None:
+        if target is not None:
+            target.use()
         latency = "--" if status.latency_ms is None else f"{status.latency_ms:.0f} ms"
         scene_age = "file" if age is None else f"{age:.1f} s old"
-        safety = "E-STOP LATCHED" if status.e_stop else "E-STOP: not latched" if status.link != "OFFLINE" else "E-STOP: unavailable offline"
-        lines = (
-            f"ITO   {status.link}   |   latency {latency}",
-            f"Robot: {status.robot}   |   {safety}",
-            f"{count:,} splats   |   {fps:.0f} fps   |   scene {scene_age}",
-            "WASD move  PgUp/PgDn rise/fall  Home recenter",
-            f"{'Tab release mouse' if captured else 'Click / Tab mouse-look'}  |  Gamepad: sticks move/look, shoulders rise/fall",
-            "Space / X stop   E / B e-stop   R / A resume   F12 capture   Esc quit",
-            request or "",
+        safety = (
+            "E-STOP LATCHED"
+            if status.e_stop
+            else "E-STOP: not latched"
+            if status.link != "OFFLINE"
+            else "E-STOP: unavailable offline"
         )
-        if lines != self.previous:
-            color = (255, 120, 115) if status.e_stop else (220, 231, 240)
-            rendered = [self.font.render(line, True, color if i == 1 else (220, 231, 240))
-                        for i, line in enumerate(lines)]
-            size = (max(text.get_width() for text in rendered) + 24, len(lines) * 24 + 16)
-            panel = pygame.Surface(size, pygame.SRCALPHA)
-            panel.fill((13, 20, 31, 226))
-            for i, text in enumerate(rendered):
-                panel.blit(text, (12, 8 + i * 24))
-            if self.texture is not None:
-                self.texture.release()
-            self.texture = self.context.texture(size, 4, pygame.image.tobytes(panel, "RGBA"))
-            self.texture.filter = moderngl.LINEAR, moderngl.LINEAR
-            self.previous = lines
-        self.context.enable_only(moderngl.BLEND)
-        self.context.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
-        self.texture.use(1)
-        self.program["size"] = self.texture.size
-        self.program["viewport"] = self.context.viewport[2:]
-        self.vao.render(mode=moderngl.TRIANGLE_STRIP, vertices=4)
+        imgui.set_next_window_pos((12, 12), imgui.Cond_.always)
+        imgui.set_next_window_bg_alpha(0.9)
+        imgui.begin(
+            "Ito",
+            flags=imgui.WindowFlags_.always_auto_resize
+            | imgui.WindowFlags_.no_move
+            | imgui.WindowFlags_.no_collapse,
+        )
+        imgui.text(f"{status.link} | latency {latency} | {status.robot}")
+        imgui.text_colored((1, 0.45, 0.4, 1) if status.e_stop else (0.85, 0.9, 0.95, 1), safety)
+        imgui.text(f"{count:,} splats | {fps:.0f} fps | scene {scene_age}")
+        imgui.text("WASD move | PgUp/PgDn rise/fall | Home recenter")
+        imgui.text("Tab release mouse" if captured else "Click scene / Tab for mouse-look")
+        imgui.text("Space stop | E e-stop | R resume | F12 capture | Esc quit")
+        selected = None
+        if live:
+            imgui.set_next_item_width(160)
+            _, self.max_splats = imgui.input_int("Max splats", self.max_splats, 1024, 16384)
+            imgui.same_line()
+            if imgui.button("Apply"):
+                if 1 <= self.max_splats <= 4_194_304:
+                    selected = self.max_splats
+                    self.error = None
+                else:
+                    self.error = "Choose between 1 and 4,194,304 splats"
+        if request:
+            imgui.text(request)
+        if self.error:
+            imgui.text_colored((1, 0.45, 0.4, 1), self.error)
+        imgui.end()
+        imgui.render()
+        self.backend.render(imgui.get_draw_data())
+        return selected
 
-    def close(self) -> None:
-        if self.texture is not None:
-            self.texture.release()
-        self.vao.release()
-        self.program.release()
+    def close(self):
+        self.backend.shutdown()
+        imgui.destroy_context(self.imgui)
