@@ -5,7 +5,7 @@ import logging
 import math
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TextIO
 
@@ -149,6 +149,8 @@ class DesktopWindow:
                 mouse_ui=io.want_capture_mouse,
                 keyboard_ui=io.want_capture_keyboard and not self.input.captured,
             )
+            pilot = replace(pilot, commands=pilot.commands + tuple(self.overlay.commands))
+            self.overlay.commands.clear()
             previous = now
             if on_input is not None:
                 on_input(pilot)

@@ -29,6 +29,7 @@ class Overlay:
         )
         self.max_splats = max_splats
         self.error = None
+        self.commands = []
 
     def begin(self, events, size, captured):
         for event in events:
@@ -63,6 +64,7 @@ class Overlay:
         live=False,
         capture_latency_ms: float | None = None,
         target: moderngl.Framebuffer | None = None,
+        xr_mode: bool = False,
     ) -> int | None:
         if target is not None:
             target.use()
@@ -86,9 +88,20 @@ class Overlay:
         imgui.text(f"{status.link} | RTT {latency} | {status.robot}")
         imgui.text_colored((1, 0.45, 0.4, 1) if status.e_stop else (0.85, 0.9, 0.95, 1), safety)
         imgui.text(f"{count:,} splats | {fps:.0f} fps | scene {scene_age}")
-        imgui.text("WASD move | PgUp/PgDn rise/fall | Home recenter")
-        imgui.text("Tab release mouse" if captured else "Click scene / Tab for mouse-look")
-        imgui.text("Space stop | E e-stop | R resume | F12 capture | Esc quit")
+        if xr_mode:
+            imgui.text("Aim + trigger to select | stick to drive")
+            imgui.text("B e-stop | X stop | A resume | Y recenter")
+        else:
+            imgui.text("WASD move | PgUp/PgDn rise/fall | Home recenter")
+            imgui.text("Tab release mouse" if captured else "Click scene / Tab for mouse-look")
+            imgui.text("Space stop | E e-stop | R resume | F12 capture | Esc quit")
+        for label, command in (("Stop", "stop"), ("E-stop", "e_stop"), ("Resume", "resume")):
+            if imgui.button(label):
+                self.commands.append(command)
+            imgui.same_line()
+        if xr_mode and imgui.button("Recenter"):
+            self.commands.append("recenter")
+        imgui.new_line()
         selected = None
         if live:
             imgui.set_next_item_width(160)

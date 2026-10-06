@@ -2,12 +2,13 @@
 
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import pygame
 from pygame._sdl2 import controller
 
+from ito.protocol import Pose
 from ito.render import pose
 from ito.render.scene import FloatArray
 
@@ -23,6 +24,9 @@ class PilotInput:
     active: bool
     quit: bool = False
     screenshot: bool = False
+    hands: dict[str, Pose] = field(default_factory=dict)
+    trackers: dict[str, Pose] = field(default_factory=dict)
+    axes: dict[str, float] = field(default_factory=dict)
 
 
 class DesktopInput:
