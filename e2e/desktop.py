@@ -1,14 +1,12 @@
 """Launch and drive the desktop: xvfb-run -a uv run python e2e/desktop.py.
 
-Requires xdotool. Captures and frame metrics are saved under e2e/out/desktop.
+Uses SDL event injection. Captures and frame metrics are saved under e2e/out/desktop.
 """
 
 import json
 import os
-import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
@@ -20,24 +18,12 @@ from sample_scene import write_scene
 OUTPUT = Path("e2e/out/desktop")
 
 
-def wait_for(check, message, timeout=20):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        result = check()
-        if result:
-            return result
-        time.sleep(0.05)
-    raise AssertionError(message)
-
-
-def xdo(*args):
-    return subprocess.check_output(["xdotool", *map(str, args)], text=True, timeout=10).strip()
-
-
 def main():
-    if not shutil.which("xdotool"):
-        raise SystemExit("Install xdotool, then run under xvfb-run -a")
-    xdo("--version")
+    from pygame._sdl2 import Window
+
+    from ito.desktop import DesktopWindow
+    from ito.desktop.__main__ import FileScene
+
     OUTPUT.mkdir(parents=True, exist_ok=True)
     captures = OUTPUT / "captures"
     captures.mkdir(exist_ok=True)
@@ -47,63 +33,61 @@ def main():
     count = write_scene(scene)
     metrics = OUTPUT / "metrics.jsonl"
     env = dict(os.environ, LIBGL_ALWAYS_SOFTWARE="1", SDL_VIDEODRIVER="x11")
-    with (OUTPUT / "desktop.log").open("w") as log:
-        process = subprocess.Popen([sys.executable, "-m", "ito.desktop", str(scene),
-                                    "--size", "960", "720", "--capture-dir", str(captures),
-                                    "--metrics", str(metrics)], stdout=log, stderr=log, env=env)
-        try:
-            def find_window():
-                if process.poll() is not None:
-                    raise AssertionError((OUTPUT / "desktop.log").read_text())
-                result = subprocess.run(["xdotool", "search", "--pid", str(process.pid),
-                                         "--name", "Ito"], capture_output=True, text=True,
-                                        check=False, timeout=5)
-                return result.stdout.strip().splitlines() if result.returncode == 0 else None
+    ticks = 0
 
-            window = wait_for(find_window, "Desktop window did not open")[0]
-            xdo("windowfocus", "--sync", window)
-            wait_for(lambda: metrics.exists() and metrics.stat().st_size, "No rendered frames")
-            time.sleep(0.5)
+    def key(keycode, down=True):
+        pygame.event.post(pygame.event.Event(pygame.KEYDOWN if down else pygame.KEYUP, key=keycode))
 
-            def capture(number):
-                xdo("key", "F12")
-                path = captures / f"capture-{number:03d}.png"
-                wait_for(lambda: path.exists() and path.stat().st_size > 5000, f"No capture {number}")
-                wait_for(lambda: str(path) in metrics.read_text(), "Capture not flushed to metrics")
-                return np.transpose(pygame.surfarray.array3d(pygame.image.load(path)), (1, 0, 2))
+    def capture():
+        key(pygame.K_F12)
+        key(pygame.K_F12, False)
 
-            before = capture(1)
-            xdo("keydown", "w")
-            time.sleep(0.65)
-            xdo("keyup", "w")
-            moved = capture(2)
-            xdo("mousemove", "--window", window, "480", "400")
-            xdo("click", "1")
-            time.sleep(0.15)
-            xdo("mousemove_relative", "--sync", "95", "-25")
-            time.sleep(0.3)
-            looked = capture(3)
-            xdo("key", "Tab")
-            xdo("key", "e")
-            stopped = capture(4)
-            xdo("key", "r", "space")
-            xdo("windowsize", "--sync", window, "800", "600")
-            time.sleep(0.4)
-            resized = capture(5)
-            xdo("key", "Home")
-            time.sleep(0.2)
-            capture(6)
-            xdo("key", "Escape")
-            assert process.wait(timeout=10) == 0, (OUTPUT / "desktop.log").read_text()
-        finally:
-            if process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait()
+    def drive(pilot):
+        nonlocal ticks
+        ticks += 1
+        if ticks in (15, 60, 85, 95, 115, 130):
+            capture()
+        if ticks == 20:
+            key(pygame.K_w)
+        elif ticks == 58:
+            key(pygame.K_w, False)
+        elif ticks == 65:
+            key(pygame.K_TAB)
+        elif ticks == 66:
+            key(pygame.K_TAB, False)
+        elif ticks == 70:
+            pygame.event.post(
+                pygame.event.Event(
+                    pygame.MOUSEMOTION, pos=(480, 400), rel=(95, -25), buttons=(0, 0, 0)
+                )
+            )
+        elif ticks == 88:
+            key(pygame.K_TAB)
+            key(pygame.K_TAB, False)
+            key(pygame.K_e)
+        elif ticks == 98:
+            key(pygame.K_e, False)
+            key(pygame.K_r)
+            key(pygame.K_SPACE)
+        elif ticks == 105:
+            Window.from_display_module().size = (800, 600)
+        elif ticks == 120:
+            key(pygame.K_HOME)
+        elif ticks == 135:
+            key(pygame.K_ESCAPE)
 
+    with (
+        metrics.open("w") as log,
+        DesktopWindow((960, 720), fps=60, capture_dir=captures) as window,
+    ):
+        window.run(FileScene(scene), on_input=drive, metrics=log, max_frames=150)
+
+    def read(number):
+        path = captures / f"capture-{number:03d}.png"
+        assert path.exists(), f"No capture {number}"
+        return np.transpose(pygame.surfarray.array3d(pygame.image.load(path)), (1, 0, 2))
+
+    before, moved, looked, stopped, resized = map(read, range(1, 6))
     # Exclude the overlay: input must actually change the rendered 3D scene.
     for name, image in (("before", before), ("moved", moved), ("looked", looked)):
         crop = image[220:]
@@ -111,7 +95,9 @@ def main():
         assert saturated.sum() > 12000, f"{name}: missing colored splat sculptures"
     assert np.abs(before[220:].astype(float) - moved[220:]).mean() > 5, "W did not change view"
     assert np.abs(moved[220:].astype(float) - looked[220:]).mean() > 5, "Mouse did not change view"
-    assert np.abs(stopped[:200].astype(float) - looked[:200]).mean() > 0.3, "Command overlay did not change"
+    assert np.abs(stopped[:200].astype(float) - looked[:200]).mean() > 0.3, (
+        "Command overlay did not change"
+    )
     assert resized.shape == (600, 800, 3), resized.shape
     rows = [json.loads(line) for line in metrics.read_text().splitlines()]
     captured = [row for row in rows if row["capture"]]
@@ -128,11 +114,24 @@ def main():
     vertices["vertex"]["scale_0"][0] = np.nan
     invalid = OUTPUT / "invalid.ply"
     vertices.write(invalid)
-    result = subprocess.run([sys.executable, "-m", "ito.desktop", str(invalid), "--frames", "1"],
-                            capture_output=True, text=True, env=env, timeout=10, check=False)
-    assert result.returncode == 1 and "non-finite" in result.stderr and "Traceback" not in result.stderr
-    print(f"PASS: {count} splats visible; WASD, mouse-look, recenter, resize, commands, invalid PLY")
-    print(f"Captures: {captures}; median frame time: {np.median([row['frame_ms'] for row in rows]):.1f} ms")
+    result = subprocess.run(
+        [sys.executable, "-m", "ito.desktop", str(invalid), "--frames", "1"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+        check=False,
+    )
+    assert (
+        result.returncode == 1
+        and "non-finite" in result.stderr
+        and "Traceback" not in result.stderr
+    )
+    print(
+        f"PASS: {count} splats visible; WASD, mouse-look, recenter, resize, commands, invalid PLY"
+    )
+    median_ms = np.median([row["frame_ms"] for row in rows])
+    print(f"Captures: {captures}; median frame time: {median_ms:.1f} ms")
 
 
 if __name__ == "__main__":

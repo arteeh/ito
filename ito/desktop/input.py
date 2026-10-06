@@ -65,10 +65,20 @@ class DesktopInput:
         vector *= min(1, (length - 0.15) / 0.85) / length
         return float(vector[0]), float(vector[1])
 
-    def poll(self, dt: float) -> PilotInput:
+    def poll(self, dt: float, events=None, *, mouse_ui=False, keyboard_ui=False) -> PilotInput:
         commands: list[str] = []
         quit_requested = screenshot = False
-        for event in pygame.event.get():
+        if keyboard_ui:
+            self.keys.clear()
+        for event in pygame.event.get() if events is None else events:
+            if keyboard_ui and event.type == pygame.KEYDOWN:
+                continue
+            if (
+                mouse_ui
+                and not self.captured
+                and event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEMOTION)
+            ):
+                continue
             if event.type == pygame.QUIT:
                 quit_requested = True
                 commands.append("stop")
@@ -92,7 +102,11 @@ class DesktopInput:
                     elif event.key == pygame.K_F12:
                         screenshot = True
                     elif event.key in (pygame.K_SPACE, pygame.K_e, pygame.K_r):
-                        commands.append({pygame.K_SPACE: "stop", pygame.K_e: "e_stop", pygame.K_r: "resume"}[event.key])
+                        commands.append(
+                            {pygame.K_SPACE: "stop", pygame.K_e: "e_stop", pygame.K_r: "resume"}[
+                                event.key
+                            ]
+                        )
                     elif event.key == pygame.K_HOME:
                         self.position[:] = 0
                         self.yaw = self.pitch = 0.0
@@ -113,21 +127,34 @@ class DesktopInput:
         look = (0.0, 0.0)
         buttons: set[str] = set()
         if self.active:
-            movement[:] = (int(pygame.K_d in self.keys) - int(pygame.K_a in self.keys),
-                           int(pygame.K_PAGEUP in self.keys) - int(pygame.K_PAGEDOWN in self.keys),
-                           int(pygame.K_w in self.keys) - int(pygame.K_s in self.keys))
+            movement[:] = (
+                int(pygame.K_d in self.keys) - int(pygame.K_a in self.keys),
+                int(pygame.K_PAGEUP in self.keys) - int(pygame.K_PAGEDOWN in self.keys),
+                int(pygame.K_w in self.keys) - int(pygame.K_s in self.keys),
+            )
             if self.pad is not None and self.pad.attached():
-                left = self._stick(self.pad.get_axis(pygame.CONTROLLER_AXIS_LEFTX),
-                                   self.pad.get_axis(pygame.CONTROLLER_AXIS_LEFTY))
-                look = self._stick(self.pad.get_axis(pygame.CONTROLLER_AXIS_RIGHTX),
-                                   -self.pad.get_axis(pygame.CONTROLLER_AXIS_RIGHTY))
-                movement += (left[0],
-                             int(self.pad.get_button(pygame.CONTROLLER_BUTTON_RIGHTSHOULDER))
-                             - int(self.pad.get_button(pygame.CONTROLLER_BUTTON_LEFTSHOULDER)), -left[1])
-                for name, button in (("a", pygame.CONTROLLER_BUTTON_A), ("b", pygame.CONTROLLER_BUTTON_B),
-                                     ("x", pygame.CONTROLLER_BUTTON_X), ("y", pygame.CONTROLLER_BUTTON_Y),
-                                     ("start", pygame.CONTROLLER_BUTTON_START),
-                                     ("back", pygame.CONTROLLER_BUTTON_BACK)):
+                left = self._stick(
+                    self.pad.get_axis(pygame.CONTROLLER_AXIS_LEFTX),
+                    self.pad.get_axis(pygame.CONTROLLER_AXIS_LEFTY),
+                )
+                look = self._stick(
+                    self.pad.get_axis(pygame.CONTROLLER_AXIS_RIGHTX),
+                    -self.pad.get_axis(pygame.CONTROLLER_AXIS_RIGHTY),
+                )
+                movement += (
+                    left[0],
+                    int(self.pad.get_button(pygame.CONTROLLER_BUTTON_RIGHTSHOULDER))
+                    - int(self.pad.get_button(pygame.CONTROLLER_BUTTON_LEFTSHOULDER)),
+                    -left[1],
+                )
+                for name, button in (
+                    ("a", pygame.CONTROLLER_BUTTON_A),
+                    ("b", pygame.CONTROLLER_BUTTON_B),
+                    ("x", pygame.CONTROLLER_BUTTON_X),
+                    ("y", pygame.CONTROLLER_BUTTON_Y),
+                    ("start", pygame.CONTROLLER_BUTTON_START),
+                    ("back", pygame.CONTROLLER_BUTTON_BACK),
+                ):
                     if self.pad.get_button(button):
                         buttons.add(name)
                 for button, command in (("a", "resume"), ("b", "e_stop"), ("x", "stop")):
@@ -137,15 +164,25 @@ class DesktopInput:
         movement /= max(1, float(np.linalg.norm(movement)))
         dt = min(max(dt, 0), 0.05)  # A window stall must never cause a camera teleport.
         self.yaw -= look[0] * 1.8 * dt
-        self.pitch = float(np.clip(self.pitch + look[1] * 1.8 * dt, -math.pi * 0.49, math.pi * 0.49))
+        self.pitch = float(
+            np.clip(self.pitch + look[1] * 1.8 * dt, -math.pi * 0.49, math.pi * 0.49)
+        )
         self.yaw = math.remainder(self.yaw, 2 * math.pi)
         rotation = pose(yaw=self.yaw)[:3, :3]
         local = np.array((movement[0], movement[1], -movement[2]))
         self.position += rotation @ local * self.speed * dt
         buttons.update(pygame.key.name(key) for key in self.keys)
-        return PilotInput(time.monotonic(), pose(self.position, self.yaw, self.pitch),
-                          tuple(map(float, movement)), look, frozenset(buttons), tuple(commands),
-                          self.active, quit_requested, screenshot)
+        return PilotInput(
+            time.monotonic(),
+            pose(self.position, self.yaw, self.pitch),
+            tuple(map(float, movement)),
+            look,
+            frozenset(buttons),
+            tuple(commands),
+            self.active,
+            quit_requested,
+            screenshot,
+        )
 
     def close(self) -> None:
         self.capture(False)
