@@ -99,13 +99,6 @@ class Overlay:
             imgui.text("WASD move | PgUp/PgDn rise/fall | Home recenter")
             imgui.text("Tab release mouse" if captured else "Click scene / Tab for mouse-look")
             imgui.text("Space stop | E e-stop | R resume | F12 capture | Esc quit")
-        for label, command in (("Stop", "stop"), ("E-stop", "e_stop"), ("Resume", "resume")):
-            if imgui.button(label):
-                self.commands.append(command)
-            imgui.same_line()
-        if xr_mode and imgui.button("Recenter"):
-            self.commands.append("recenter")
-        imgui.new_line()
         selected = None
         if live:
             imgui.set_next_item_width(160)
@@ -117,6 +110,14 @@ class Overlay:
                     self.error = None
                 else:
                     self.error = "Choose between 1 and 4,194,304 splats"
+        controls = [("Stop", "stop"), ("E-stop", "e_stop"), ("Resume", "resume")]
+        if xr_mode:
+            controls.append(("Recenter", "recenter"))
+        for index, (label, command) in enumerate(controls):
+            if index:
+                imgui.same_line()
+            if imgui.button(label):
+                self.commands.append(command)
         if request:
             imgui.text(request)
         if status.detail:
