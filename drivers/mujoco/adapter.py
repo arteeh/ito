@@ -40,6 +40,7 @@ class MujocoAdapter(Adapter):
         turn_speed: float = 1.2,
         input_timeout: float = 0.25,
         gl: str | None = None,
+        rgb_only: bool = False,
     ):
         for name, value, low, high in (
             ("fps", fps, 1, 60),
@@ -91,6 +92,7 @@ class MujocoAdapter(Adapter):
         self.width, self.height, self.fps = width, height, fps
         self.wheel_radius, self.axle_width = wheel_radius, axle_width
         self.speed, self.turn_speed, self.input_timeout = speed, turn_speed, input_timeout
+        self.rgb_only = rgb_only
         self.camera_name = camera
         self.backend = backend
         self._command: tuple[float, PilotState] | None = None
@@ -135,7 +137,8 @@ class MujocoAdapter(Adapter):
                     extrinsics=self.camera_pose(self.data),
                 ),
             ),
-            capabilities=("depth", "camera-pose", "head-pan-tilt", "differential-drive"),
+            capabilities=("head-pan-tilt", "differential-drive")
+            + (() if rgb_only else ("depth", "camera-pose")),
             degrees_of_freedom=tuple(
                 DegreeOfFreedom(
                     name=self.model.joint(joint).name, unit="radians", minimum=low, maximum=high

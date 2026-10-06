@@ -18,6 +18,7 @@ def main():
         "--gl", choices=("osmesa", "egl", "glfw"), default=os.environ.get("MUJOCO_GL")
     )
     parser.add_argument("--camera", default="head")
+    parser.add_argument("--rgb-only", action="store_true", help="send RGB without depth or pose")
     parser.add_argument("--base", default="base", help="body anchoring the Ito world at startup")
     parser.add_argument("--pan", default="head_pan", help="position servo, positive turns left")
     parser.add_argument("--tilt", default="head_tilt", help="position servo, positive looks up")
@@ -44,6 +45,7 @@ def main():
             name: getattr(args, name)
             for name in (
                 "model",
+                "rgb_only",
                 "gl",
                 "camera",
                 "base",

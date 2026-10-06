@@ -35,6 +35,8 @@ class CameraTrack(VideoStreamTrack):
         renderer.update_scene(data, camera=robot.camera_id)
         renderer.disable_depth_rendering()
         rgb = renderer.render()
+        if robot.rgb_only:
+            return VideoFrame.from_ndarray(rgb, format="rgb24"), captured, None, None
         renderer.enable_depth_rendering()
         metres = renderer.render()
         far = robot.model.vis.map.zfar * robot.model.stat.extent
