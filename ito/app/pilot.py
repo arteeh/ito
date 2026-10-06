@@ -16,7 +16,7 @@ from ito.render import pose
 from ito.render.pose import quaternion
 
 from . import settings
-from .frames import FrameJoin
+from .frames import FrameJoin, camera_matrix
 
 log = logging.getLogger(__name__)
 
@@ -35,12 +35,17 @@ class Pilot:
         self.worker = None
         self.worker_lock = threading.Lock()
         self.failure = None
+        self.backend = "rgbd"
+        self.reconstruction_status = ""
+        self.download_progress = -1
+        self.tracked_frames = 0
         self.stop = threading.Event()
         self.thread = None
         self.loop = self.task = None
         self.matched_frames = 0
         self.connections = 0
         self.camera_pose = pose()
+        self.last_tracking = 0.0
         self.settings_revision = 0
         self.last_frame = 0.0
 
@@ -65,11 +70,16 @@ class Pilot:
         if not self.worker_lock.acquire(False):
             return None
         try:
-            if self.worker is not None:
+            if self.worker is not None and not self.failure:
                 try:
                     return self.worker.poll()
                 except RuntimeError as exc:
-                    self.failure = str(exc)
+                    if self.backend == "slam":
+                        self.failure = str(exc)
+                        self.reconstruction_status = str(exc) + "; showing flat camera feed"
+                        self.state = replace(self.state, flat_video=True)
+                    else:
+                        self.failure = str(exc)
             return None
         finally:
             self.worker_lock.release()
@@ -86,6 +96,8 @@ class Pilot:
                 e_stop=status.state == "e-stopped" if status else old.e_stop,
                 detail=detail or (f"{status.state}: {status.reason}" if status else ""),
                 input_latency_ms=self.telemetry.get("pilot_input_latency_ms") if peer else None,
+                reconstruction=self.reconstruction_status,
+                download_progress=self.download_progress,
             ),
         )
 
@@ -102,18 +114,34 @@ class Pilot:
         rgb, depth, camera, captured = FrameJoin.arrays(pair, peer.clock)
         if not -0.1 <= time.monotonic() - captured <= 2:
             return
-        if self.worker.submit(rgb, depth, camera, captured):
+        self.last_frame = time.monotonic()
+        self.state = replace(self.state, video=rgb, video_time=captured)
+        if self.worker is None or self.failure:
+            return
+        try:
+            accepted = self.worker.submit(rgb, depth, camera, captured)
+        except ValueError as exc:
+            self.failure = str(exc)
+            self.reconstruction_status = str(exc) + "; showing flat camera feed"
+            self.state = replace(self.state, flat_video=True)
+            return
+        if accepted:
             self.matched_frames += 1
             self.last_frame = time.monotonic()
-            self.camera_pose = camera
-            anchor = camera.copy()
-            # A pan/tilt camera has already followed the head. Remove its measured
-            # rotation before applying the current local head pose at display rate.
-            if "head-pan-tilt" in peer.description.capabilities:
-                pan, tilt = self.telemetry.get("head_pan"), self.telemetry.get("head_tilt")
-                if isinstance(pan, (int, float)) and isinstance(tilt, (int, float)):
-                    anchor[:3, :3] = camera[:3, :3] @ pose(yaw=pan, pitch=tilt)[:3, :3].T
-            self.state = replace(self.state, robot_camera=anchor)
+            if self.backend != "rgbd":
+                return
+            self._anchor(camera, peer)
+
+    def _anchor(self, camera, peer):
+        self.camera_pose = camera
+        anchor = camera.copy()
+        # A pan/tilt camera has already followed the head. Remove its measured
+        # rotation before applying the current local head pose at display rate.
+        if "head-pan-tilt" in peer.description.capabilities:
+            pan, tilt = self.telemetry.get("head_pan"), self.telemetry.get("head_tilt")
+            if isinstance(pan, (int, float)) and isinstance(tilt, (int, float)):
+                anchor[:3, :3] = camera[:3, :3] @ pose(yaw=pan, pitch=tilt)[:3, :3].T
+        self.state = replace(self.state, robot_camera=anchor)
 
     async def _session(self, peer):
         description = peer.description
@@ -141,12 +169,31 @@ class Pilot:
             if action != "resume":
                 safety.append(action)
         self.commands.extend(safety)
+        choice = self.settings.reconstruction
+        self.backend = (
+            ("rgbd" if {"depth", "camera-pose"} <= set(description.capabilities) else "slam")
+            if choice == "auto"
+            else choice
+        )
+        self.reconstruction_status = (
+            "Flat camera feed" if self.backend == "video" else "Starting " + self.backend
+        )
+        self.download_progress = -1
+        self.tracked_frames = 0
+        self.state = replace(self.state, flat_video=self.backend != "rgbd", video=None)
         with self.worker_lock:
-            self.worker = Reconstruction(camera.intrinsics, max_splats=self.max_splats)
+            if self.backend != "video":
+                self.worker = Reconstruction(
+                    camera.intrinsics,
+                    max_splats=self.max_splats,
+                    backend=self.backend,
+                    origin=camera_matrix(camera.extrinsics),
+                )
         self.connections += 1
         self._status("CONNECTED", "Resume to begin piloting", peer=peer)
         joined = FrameJoin()
         tasks = []
+        cleanup = []
         armed = False
         sequence = command_sequence = 0
         pending = None
@@ -184,8 +231,36 @@ class Pilot:
                 now = time.monotonic()
                 if not peer.connected or now - last_status > 2:
                     raise ConnectionError("Driver status lost; input disarmed")
-                if self.failure:
-                    raise RuntimeError(self.failure)
+                if self.worker and not self.failure:
+                    progress = self.worker.status()
+                    if progress:
+                        self.reconstruction_status, self.download_progress = progress
+                    if self.backend == "slam":
+                        tracked = self.worker.pose()
+                        if tracked:
+                            transform, count, tracking = tracked
+                            if count != self.tracked_frames:
+                                self.last_tracking = now
+                            self.tracked_frames = count
+                            if tracking and now - self.last_tracking >= 2:
+                                tracking = False
+                                self.reconstruction_status = (
+                                    "SLAM tracking paused; showing flat camera feed"
+                                )
+                            if tracking:
+                                self._anchor(transform, peer)
+                            self.state = replace(self.state, flat_video=not tracking)
+                if self.failure and self.backend == "slam":
+                    self.reconstruction_status = self.failure + "; showing flat camera feed"
+                    self.state = replace(self.state, flat_video=True)
+                if self.failure and self.worker:
+                    # Failed SLAM must not tear down the robot link or stop video/input.
+                    if self.backend == "rgbd":
+                        raise RuntimeError(self.failure)
+                    with self.worker_lock:
+                        failed, self.worker = self.worker, None
+                    cleanup.append(asyncio.create_task(asyncio.to_thread(failed.close)))
+                    self.download_progress = -1
                 if now - self.last_frame > 5:
                     raise ConnectionError("No synchronized camera frames for five seconds")
                 for task in tasks:
@@ -195,7 +270,8 @@ class Pilot:
                 if self.budget_change is not None:
                     value, self.budget_change = self.budget_change, None
                     self.settings = self.settings.model_copy(update={"max_splats": value})
-                    self.worker.set_max_splats(value)
+                    if self.worker:
+                        self.worker.set_max_splats(value)
                     self._save(description.name)
                 while pending or self.commands:
                     if pending is None:
@@ -240,11 +316,12 @@ class Pilot:
             for task in tasks:
                 task.cancel()
             try:
-                await asyncio.gather(*tasks, return_exceptions=True)
+                await asyncio.gather(*tasks, *cleanup, return_exceptions=True)
             finally:
                 with self.worker_lock:
                     worker, self.worker = self.worker, None
-                    worker.close()
+                    if worker:
+                        worker.close()
 
     async def _run(self):
         self.loop = asyncio.get_running_loop()

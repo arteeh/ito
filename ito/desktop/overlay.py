@@ -16,6 +16,8 @@ class PilotStatus:
     e_stop: bool = False  # Reported by the driver, never inferred from a button press.
     detail: str = ""
     input_latency_ms: float | None = None
+    reconstruction: str = ""
+    download_progress: float = -1
 
 
 class Overlay:
@@ -122,6 +124,12 @@ class Overlay:
             imgui.text(request)
         if status.detail:
             imgui.text(status.detail)
+        if status.reconstruction:
+            imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + 550)
+            imgui.text_wrapped(status.reconstruction)
+            imgui.pop_text_wrap_pos()
+        if status.download_progress >= 0:
+            imgui.progress_bar(status.download_progress, (360, 0))
         if status.input_latency_ms is not None:
             imgui.text(f"Pilot input -> robot: {status.input_latency_ms:.1f} ms")
         if capture_latency_ms is not None:

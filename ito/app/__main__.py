@@ -18,6 +18,11 @@ def main(argv=None, *, on_frame=None):
     parser.add_argument("address", help="driver host:port or HTTP(S) URL")
     parser.add_argument("--mode", choices=("desktop", "xr"), default="desktop")
     parser.add_argument("--reference-space", choices=("seated", "standing"), default="seated")
+    parser.add_argument(
+        "--reconstruction",
+        choices=("auto", "rgbd", "slam", "video"),
+        help="persist reconstruction backend (default: automatic)",
+    )
     parser.add_argument("--camera", help="camera name (defaults to the first camera)")
     parser.add_argument("--cameras", type=int, default=1, help="number of driver video tracks")
     parser.add_argument("--size", type=int, nargs=2, default=(1280, 720))

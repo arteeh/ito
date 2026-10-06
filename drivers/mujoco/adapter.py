@@ -137,8 +137,8 @@ class MujocoAdapter(Adapter):
                     extrinsics=self.camera_pose(self.data),
                 ),
             ),
-            capabilities=("head-pan-tilt", "differential-drive")
-            + (() if rgb_only else ("depth", "camera-pose")),
+            capabilities=(() if rgb_only else ("depth", "camera-pose"))
+            + ("head-pan-tilt", "differential-drive"),
             degrees_of_freedom=tuple(
                 DegreeOfFreedom(
                     name=self.model.joint(joint).name, unit="radians", minimum=low, maximum=high
