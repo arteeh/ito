@@ -16,15 +16,17 @@ dependencies = [
     "numpy>=2,<3",
     "plyfile>=1.1,<2",
     "pygame-ce>=2.5,<3",
+    "mujoco>=3.3,<4",
 ]
 
 [project.scripts]
 ito-link = "ito.link.cli:main"
 ito-driver = "ito.driver.cli:main"
+ito-driver-mujoco = "drivers.mujoco.cli:main"
 ito-desktop = "ito.desktop.__main__:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["ito"]
+packages = ["ito", "drivers"]
 
 [dependency-groups]
 dev = ["ruff>=0.13"]
