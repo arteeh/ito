@@ -22,6 +22,12 @@ not "operator", not "user" when the pilot is meant.
   pilot. One Ito instance pilots exactly one robot.
 - Keep the code base small. Reach for maintained libraries before writing infrastructure.
 - Small, coherent commits with descriptive messages. Never commit secrets or model weights.
+- Priorities, in order: pilot comfort, low pilot→robot→pilot latency, long-term maintainability.
+  Hot paths (frame decode, Gaussian upload, sort, draw) stay on the GPU and out of Python loops;
+  boundaries (protocol, reconstruction backend, renderer input) are narrow so any one piece can be
+  swapped for a faster implementation without touching the rest.
+- UI is Dear ImGui (imgui-bundle): a window in desktop mode, and the same UI drawn to a texture on
+  a panel in VR. No hand-built widget toolkit.
 
 ## Architecture
 
