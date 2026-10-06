@@ -9,12 +9,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TextIO
 
-import moderngl
 import pygame
 from OpenGL import GL
 
 from ito.reconstruction import SplatUpdate, default_budget
-from ito.render import GaussianRenderer, SceneSource, perspective, pose
+from ito.render import GaussianRenderer, SceneSource, current_context, perspective, pose
 from ito.render.scene import FloatArray
 
 from .input import DesktopInput, PilotInput
@@ -64,8 +63,7 @@ class DesktopWindow:
                 pygame.display.set_mode(
                     size, pygame.OPENGL | pygame.DOUBLEBUF | pygame.RESIZABLE, vsync=0
                 )
-                # glcontext resolves runtime GL libraries without requiring development symlinks.
-                self.context = moderngl.create_context(require=430, libgl=None)
+                self.context = current_context()
             except (pygame.error, OSError, ValueError) as exc:
                 raise RuntimeError(
                     "Ito needs an OpenGL 4.3 display and driver; Mesa llvmpipe "

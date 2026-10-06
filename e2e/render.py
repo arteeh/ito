@@ -4,13 +4,19 @@ import math
 import time
 from pathlib import Path
 
-import moderngl
 import numpy as np
 import pygame
 from sample_scene import write_scene
 
 from ito.reconstruction.ring import SplatUpdate
-from ito.render import GaussianBuffer, GaussianRenderer, load_ply, perspective, pose
+from ito.render import (
+    GaussianBuffer,
+    GaussianRenderer,
+    current_context,
+    load_ply,
+    perspective,
+    pose,
+)
 
 
 def main():
@@ -21,7 +27,7 @@ def main():
     pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MINOR_VERSION, 3)
     pygame.display.gl_set_attribute(pygame.GL_CONTEXT_PROFILE_MASK, pygame.GL_CONTEXT_PROFILE_CORE)
     pygame.display.set_mode((320, 240), pygame.OPENGL | pygame.DOUBLEBUF)
-    context = moderngl.create_context(require=430, libgl=None)
+    context = current_context()
     renderer = GaussianRenderer(context)
     target = context.simple_framebuffer((320, 240))
     projection = perspective(math.radians(70), 4 / 3)
