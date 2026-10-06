@@ -1,14 +1,14 @@
 """Drive the real GL renderer with randomized scenes: xvfb-run -a uv run python e2e/render.py."""
 
-from pathlib import Path
 import math
+from pathlib import Path
 
 import moderngl
 import numpy as np
 import pygame
+from sample_scene import write_scene
 
 from ito.render import GaussianBuffer, GaussianRenderer, load_ply, perspective, pose
-from sample_scene import write_scene
 
 
 def main():
