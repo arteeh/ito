@@ -4,7 +4,16 @@ import base64
 import zlib
 from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 VERSION = 1
 MAX_MESSAGE_BYTES = 1_500_000
@@ -19,6 +28,8 @@ class Model(BaseModel):
 
 
 class Pose(Model):
+    """Right-handed: +X right, +Y up, -Z forward; xyzw rotation."""
+
     position: tuple[Number, Number, Number] = (0.0, 0.0, 0.0)
     orientation: tuple[Number, Number, Number, Number] = (0.0, 0.0, 0.0, 1.0)
 
@@ -48,7 +59,7 @@ class Camera(Model):
     name: Name
     track_id: Name
     intrinsics: Intrinsics
-    extrinsics: Pose = Field(default_factory=Pose)
+    extrinsics: Pose = Field(default_factory=Pose, description="Camera-to-robot transform")
 
 
 class DegreeOfFreedom(Model):
@@ -66,6 +77,19 @@ class DegreeOfFreedom(Model):
 
 class Message(Model):
     version: Literal[1] = VERSION
+
+    @model_validator(mode="after")
+    def wire_version(self, info: ValidationInfo) -> Self:
+        if info.context and info.context.get("wire") and "version" not in self.model_fields_set:
+            raise ValueError("wire message requires an explicit version")
+        return self
+
+    @field_validator("version", mode="before")
+    @classmethod
+    def integer_version(cls, value):
+        if type(value) is not int:
+            raise ValueError("version must be an integer")
+        return value
 
 
 class RobotDescription(Message):
@@ -125,8 +149,9 @@ class FrameMetadata(Message):
     camera: Name
     sequence: Sequence
     capture_time: Time
-    rtp_timestamp: int = Field(ge=0, le=2**32 - 1)
-    camera_pose: Pose | None = None
+    camera_pose: Pose | None = Field(
+        default=None, description="Camera-to-world pose; world anchored at robot startup"
+    )
     depth: Depth | None = None
 
 
@@ -204,7 +229,7 @@ def decode(data: str | bytes) -> WireMessage:
             raise ValueError("message too large")
         if isinstance(data, str) and len(data.encode("utf-8")) > MAX_MESSAGE_BYTES:
             raise ValueError("message too large")
-        return _adapter.validate_json(data)
+        return _adapter.validate_json(data, context={"wire": True})
     except (ValidationError, ValueError, RecursionError) as exc:
         raise ProtocolError("invalid or unsupported Ito message") from exc
 
