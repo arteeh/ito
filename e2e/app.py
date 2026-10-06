@@ -5,7 +5,6 @@ DISPLAY=:97 LIBGL_ALWAYS_SOFTWARE=1 uv run python e2e/app.py
 
 import json
 import os
-import signal
 import socket
 import subprocess
 import sys
@@ -14,6 +13,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+import psutil
 import pygame
 
 from ito.app.__main__ import main as pilot_main
@@ -31,7 +31,9 @@ def main():
     for path in OUT.glob("capture-*.png"):
         path.unlink()
     os.environ["XDG_CONFIG_HOME"] = os.environ["APPDATA"] = str(OUT / "config")
-    gl = {"LD_LIBRARY_PATH": "/opt/data/lib/osmesa", "MUJOCO_GL": "osmesa"} if sys.platform == "linux" else {}
+    gl = {}
+    if sys.platform == "linux":
+        gl = {"LD_LIBRARY_PATH": "/opt/data/lib/osmesa", "MUJOCO_GL": "osmesa"}
     with socket.socket() as port:
         port.bind(("127.0.0.1", 0))
         address = f"127.0.0.1:{port.getsockname()[1]}"
@@ -59,12 +61,13 @@ def main():
     reached_stop = False
     stall = False
     last_revisions = 0
+    worker = None
     first_camera = None
     new_surfaces = 0
 
     def drive(app, window, value):
         nonlocal stage, changed, previous, robot, killed, restarted, first_position
-        nonlocal reached_stop, stall, last_revisions
+        nonlocal reached_stop, stall, last_revisions, worker
         nonlocal first_camera, new_surfaces
         now = time.monotonic()
         assert now - began < 65, (stage, app.state, app.telemetry)
@@ -108,13 +111,14 @@ def main():
             reached_stop = True
             key(pygame.K_F12)
             # Freeze the real reconstruction process while input and display continue.
-            os.kill(app.worker.process.pid, signal.SIGSTOP)
-            threading.Timer(2, os.kill, (app.worker.process.pid, signal.SIGCONT)).start()
+            worker = psutil.Process(app.worker.process.pid)
+            worker.suspend()
+            threading.Timer(2, worker.resume).start()
             last_revisions = app.matched_frames
             stall = True
             stage, changed = 4, now
         elif stage == 4 and now - changed > 1.5:
-            os.kill(app.worker.process.pid, signal.SIGCONT)
+            worker.resume()
             stall = False
             assert app.matched_frames > last_revisions
             pygame.event.post(pygame.event.Event(pygame.KEYUP, key=pygame.K_w))

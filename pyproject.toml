@@ -36,7 +36,7 @@ cuda = [
 packages = ["ito", "drivers"]
 
 [dependency-groups]
-dev = ["ruff>=0.13"]
+dev = ["psutil>=7,<8", "ruff>=0.13"]
 
 [tool.ruff]
 target-version = "py312"
