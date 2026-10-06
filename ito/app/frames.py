@@ -54,8 +54,6 @@ class FrameJoin:
     def described(self, metadata):
         if metadata.video_pts is None:
             raise ValueError("Camera metadata needs video_pts to match RGB and depth")
-        if metadata.depth is None or metadata.camera_pose is None:
-            raise ValueError("Live reconstruction requires posed RGB-D from this driver")
         return self.add(self.metadata, metadata.video_pts, metadata)
 
     @staticmethod
@@ -67,7 +65,9 @@ class FrameJoin:
             np.frombuffer(depth.to_bytes(), dtype="<u2")
             .reshape(depth.height, depth.width)
             .astype(np.float32)
-            * np.float32(0.001),
-            camera_matrix(metadata.camera_pose),
+            * np.float32(0.001)
+            if depth is not None
+            else None,
+            camera_matrix(metadata.camera_pose) if metadata.camera_pose is not None else None,
             clock.remote_to_local(metadata.capture_time),
         )

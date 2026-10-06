@@ -103,10 +103,17 @@ class RGBDBackend:
         points = self.rays[valid] * z[valid, None]
         transform = xp.asarray(camera)
         points = points @ transform[:3, :3].T + transform[:3, 3]
+        self.integrate_points(points, xp.asarray(rgb)[valid], now)
+
+    def integrate_points(self, points, colors, now):
+        """Fuse world-space dense points through the same budget, fade and eviction policy."""
+        xp = self.xp
+        valid = xp.all(xp.isfinite(points), axis=1)
+        points, colors = points[valid], colors[valid]
         cells = xp.floor(points / self.voxel_size).astype(xp.int64)
         bounded = xp.all((cells >= -(1 << 20)) & (cells < (1 << 20)), axis=1)
         cells, points = cells[bounded] + (1 << 20), points[bounded]
-        colors = xp.asarray(rgb)[valid][bounded]
+        colors = colors[bounded]
         keys = (cells[:, 0] << 42) | (cells[:, 1] << 21) | cells[:, 2]
         keys, unique = xp.unique(keys, return_index=True)
         points, colors = points[unique], colors[unique]
