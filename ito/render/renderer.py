@@ -63,6 +63,7 @@ class GaussianRenderer:
         target: moderngl.Framebuffer | None = None,
         *,
         clear: tuple[float, float, float, float] | None = (0.025, 0.035, 0.055, 1.0),
+        viewport: tuple[int, int, int, int] | None = None,
     ) -> None:
         """Draw world-space splats from world_from_camera @ camera_from_head.
 
@@ -78,13 +79,16 @@ class GaussianRenderer:
         if target is None:
             raise ValueError("An offscreen context needs an explicit framebuffer")
         target.use()
-        self.context.viewport = (0, 0, *target.size)
+        viewport = viewport if viewport is not None else (0, 0, *target.size)
+        if min(viewport[2:]) <= 0:
+            raise ValueError("Viewport dimensions must be positive")
+        self.context.viewport = viewport
         self.context.scissor = None
         self.context.enable_only(moderngl.BLEND)
         self.context.blend_func = moderngl.ONE, moderngl.ONE_MINUS_SRC_ALPHA
         self.context.blend_equation = moderngl.FUNC_ADD
         if clear is not None:
-            target.clear(*clear)
+            target.clear(*clear, viewport=viewport)
         if not self.count:
             return
         rotation = world_from_eye[:3, :3]
@@ -115,7 +119,7 @@ class GaussianRenderer:
         self.program["view"].write(view.T.copy())
         self.program["projection"].write(projection.T.copy())
         self.program["eye"] = tuple(world_from_eye[:3, 3])
-        self.program["viewport"] = target.size
+        self.program["viewport"] = viewport[2:]
         self.program["stride"] = self.stride
         self.program["sh_degree"] = self.degree
         self.vao.render(mode=moderngl.TRIANGLE_STRIP, vertices=4, instances=self.count)

@@ -73,6 +73,10 @@ def main():
                 assert np.count_nonzero(rgb.max(axis=2) - rgb.min(axis=2) > 45) > 2500
                 image = pygame.image.frombytes(pixels, target.size, "RGB")
                 pygame.image.save(pygame.transform.flip(image, False, True), output / f"{path.stem}.png")
+        # Pass beside the closest floor splats without letting them flood the view.
+        renderer.draw(pose(), pose((0, 0, -0.975)), projection, target)
+        rgb = np.frombuffer(target.read(components=3), np.uint8).reshape(240, 320, 3)
+        assert np.count_nonzero(rgb.max(axis=2) - rgb.min(axis=2) > 60) > 2500
         print(f"PASS: GPU sorting, compositing, posed views, ASCII/binary PLY SH 0–3; {context.info['GL_RENDERER']}")
     finally:
         target.release()

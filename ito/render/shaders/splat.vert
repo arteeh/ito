@@ -62,8 +62,11 @@ void main() {
     vec3 row_w = vec3(projection[0][3], projection[1][3], projection[2][3]);
     vec3 row_x = vec3(projection[0][0], projection[1][0], projection[2][0]);
     vec3 row_y = vec3(projection[0][1], projection[1][1], projection[2][1]);
-    vec3 jx = (row_x - clip.x / clip.w * row_w) * (viewport.x * 0.5 / clip.w);
-    vec3 jy = (row_y - clip.y / clip.w * row_w) * (viewport.y * 0.5 / clip.w);
+    // Bound the linearization outside the frustum: nearby offscreen splats must
+    // not stretch across the entire view as their centers approach the eye plane.
+    vec2 ndc = clamp(clip.xy / clip.w, vec2(-1.3), vec2(1.3));
+    vec3 jx = (row_x - ndc.x * row_w) * (viewport.x * 0.5 / clip.w);
+    vec3 jy = (row_y - ndc.y * row_w) * (viewport.y * 0.5 / clip.w);
     float a = dot(jx, covariance * jx) + 0.3;
     float b = dot(jx, covariance * jy);
     float c = dot(jy, covariance * jy) + 0.3;
