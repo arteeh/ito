@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ito"
+version = "1.0.0"
+description = "Immersive teleoperation: one pilot, one robot"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["aiortc>=1.14,<2", "aiohttp>=3.12,<4", "pydantic>=2.11,<3"]
+
+[project.scripts]
+ito-link = "ito.link.cli:main"
+ito-driver = "ito.driver.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ito"]
+
+[dependency-groups]
+dev = ["ruff>=0.13"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
