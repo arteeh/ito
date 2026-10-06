@@ -1,5 +1,6 @@
-"""Nonblocking posed RGB-D input and incremental shared-memory scene output."""
+"""Nonblocking RGB-D/monocular input and incremental shared-memory scene output."""
 
+import contextlib
 import multiprocessing as mp
 import time
 
@@ -22,7 +23,18 @@ def default_budget(renderer: str = "", video_memory_mb: int = 0) -> int:
 
 def _run(recon):
     try:
-        backend = RGBDBackend(recon.budget.value, recon.intrinsics, **recon.options)
+        if recon.backend == "slam":
+            from .slam import SLAMBackend
+
+            backend = SLAMBackend(
+                recon.budget.value,
+                recon.intrinsics,
+                report=recon.report,
+                origin=recon.origin,
+                **recon.options,
+            )
+        else:
+            backend = RGBDBackend(recon.budget.value, recon.intrinsics, **recon.options)
         sequence = 0
         cursor = 0
         revision = 0
@@ -47,6 +59,15 @@ def _run(recon):
                     recon.input_lock.release()
             if frame is not None:
                 backend.integrate(*frame, now)
+                if recon.backend == "slam" and recon.output_lock.acquire(False):
+                    try:
+                        np.frombuffer(recon.output_camera, np.float32)[:] = (
+                            backend.camera_pose.ravel()
+                        )
+                        recon.tracked.value = backend.tracked
+                        recon.tracking.value = not backend.lost and backend.tracked > 0
+                    finally:
+                        recon.output_lock.release()
             # Bound work per turn; dirty slots coalesce while the display is behind.
             for _ in range(recon.ring.slots):
                 dirty = np.flatnonzero(backend.dirty)
@@ -85,11 +106,17 @@ class Reconstruction:
         window_seconds=4.0,
         fade_seconds=0.5,
         device="auto",
+        backend="rgbd",
+        origin=None,
     ):
         if not 1 <= max_splats <= 4_194_304:
             raise ValueError("Max splats must be between 1 and 4,194,304")
         if not all(np.isfinite(v) and v > 0 for v in (voxel_size, window_seconds, fade_seconds)):
             raise ValueError("Voxel size, temporal window and fade must be finite and positive")
+        if backend not in ("rgbd", "slam"):
+            raise ValueError("Reconstruction backend must be rgbd or slam")
+        self.backend = backend
+        self.origin = np.eye(4, dtype=np.float32) if origin is None else validate_pose(origin)
         self.intrinsics = intrinsics
         self.shape = (intrinsics.height, intrinsics.width)
         self.options = dict(
@@ -100,6 +127,14 @@ class Reconstruction:
         )
         self.epoch = time.monotonic()
         context = mp.get_context("spawn")
+        self.status_lock = context.Lock()
+        self.status_text = context.RawArray("B", 1024)
+        self.progress = context.RawValue("f", -1)
+        self.output_lock = context.Lock()
+        self.output_camera = context.RawArray("f", 16)
+        self.tracked = context.RawValue("Q", 0)
+        self.tracking = context.RawValue("b", False)
+        self.report("Starting MASt3R-SLAM" if backend == "slam" else "Posed RGB-D", -1)
         self.ring = UpdateRing(context, self.epoch, fade_seconds)
         pixels = intrinsics.width * intrinsics.height
         self.rgb = context.RawArray("B", pixels * 3)
@@ -128,7 +163,39 @@ class Reconstruction:
             raise ValueError("Max splats must be between 1 and 4,194,304")
         self.budget.value = value
 
-    def submit(self, rgb, depth, camera, captured_at=None):
+    def report(self, message, progress=-1):
+        if self.status_lock.acquire(False):
+            try:
+                encoded = message.encode("utf-8")[:1023]
+                self.status_text[: len(encoded)] = encoded
+                self.status_text[len(encoded)] = 0
+                self.progress.value = progress
+            finally:
+                self.status_lock.release()
+
+    def status(self):
+        if not self.status_lock.acquire(False):
+            return None
+        try:
+            return bytes(self.status_text).split(b"\0", 1)[0].decode(
+                "utf-8", errors="replace"
+            ), self.progress.value
+        finally:
+            self.status_lock.release()
+
+    def pose(self):
+        if not self.output_lock.acquire(False):
+            return None
+        try:
+            return (
+                np.frombuffer(self.output_camera, np.float32).reshape(4, 4).copy(),
+                self.tracked.value,
+                bool(self.tracking.value),
+            )
+        finally:
+            self.output_lock.release()
+
+    def submit(self, rgb, depth=None, camera=None, captured_at=None):
         """Depth is axial metres; pose is world-from-camera (+Y up, -Z forward).
 
         RGB and depth must be synchronized and registered to these intrinsics.
@@ -139,9 +206,10 @@ class Reconstruction:
             raise RuntimeError("Reconstruction is closed")
         if rgb.shape != self.shape + (3,) or rgb.dtype != np.uint8:
             raise ValueError("RGB must be uint8 HxWx3 matching the camera intrinsics")
-        if depth.shape != self.shape or depth.dtype != np.float32:
-            raise ValueError("Depth must be float32 HxW metres matching the camera intrinsics")
-        camera = validate_pose(camera)
+        if self.backend == "rgbd":
+            if depth is None or depth.shape != self.shape or depth.dtype != np.float32:
+                raise ValueError("RGB-D needs float32 HxW depth and camera pose from the driver")
+            camera = validate_pose(camera)
         captured_at = time.monotonic() if captured_at is None else captured_at
         if not np.isfinite(captured_at):
             raise ValueError("Capture time must be finite")
@@ -149,8 +217,9 @@ class Reconstruction:
             return False
         try:
             np.frombuffer(self.rgb, np.uint8)[:] = rgb.ravel()
-            np.frombuffer(self.depth, np.float32)[:] = depth.ravel()
-            np.frombuffer(self.camera, np.float32)[:] = camera.ravel()
+            if self.backend == "rgbd":
+                np.frombuffer(self.depth, np.float32)[:] = depth.ravel()
+                np.frombuffer(self.camera, np.float32)[:] = camera.ravel()
             self.captured.value = captured_at
             self.sequence.value += 1
             return True
@@ -174,10 +243,24 @@ class Reconstruction:
         if not self.closed:
             # A killed worker may leave an Event's internal condition locked forever.
             self.stopped.value = True
+            # Native extension builds spawn compilers. Own their lifetime too,
+            # including a pilot closing the app during its first CUDA build.
+            children = []
+            if self.backend == "slam":
+                with contextlib.suppress(ImportError, OSError):
+                    import psutil
+
+                    with contextlib.suppress(psutil.Error):
+                        children = psutil.Process(self.process.pid).children(recursive=True)
             self.process.join(timeout=3)
             if self.process.is_alive():
                 self.process.terminate()
                 self.process.join()
+            for child in children:
+                with contextlib.suppress(psutil.Error):
+                    child.kill()
+            if children:
+                psutil.wait_procs(children, timeout=3)
             self.errors.close()
             self.closed = True
 
