@@ -22,8 +22,11 @@ class RGBDBackend:
                 import cupy
 
                 if cupy.cuda.runtime.getDeviceCount():
+                    # Compile and run one kernel now: a missing toolkit must surface here,
+                    # where "auto" can still fall back, not mid-session.
+                    float((cupy.arange(4, dtype=cupy.float32) * 2).sum())
                     self.xp = cupy
-            except (ImportError, RuntimeError) as exc:
+            except Exception as exc:
                 if device == "cuda":
                     raise RuntimeError(
                         "CUDA reconstruction needs CuPy and an NVIDIA CUDA device"
