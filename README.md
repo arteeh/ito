@@ -18,6 +18,15 @@ uv run ito-desktop scene.ply                              # explore a splat scen
 
 Desktop controls: WASD move, click for mouse-look (Tab releases), Page Up/Down rise/fall,
 Home recenter, Space stop, E e-stop, R resume, F12 screenshot, Escape quit. Gamepads work too.
+The live ImGui panel saves the pilot's maximum splat count; lowering it fades excess splats first.
+Defaults are 16K for software rendering, 256K for hardware, or 1M with at least 8 GB NVIDIA VRAM.
+
+`ito.reconstruction.Reconstruction(intrinsics, max_splats=window.max_splats)` accepts synchronized
+`submit(rgb_uint8, depth_float32_metres, world_from_camera, capture_time)` frames and is a live
+source for `DesktopWindow.run()`. Capture times use the pilot monotonic clock; poses use +Y up,
+-Z forward. Use it as a context manager to own its worker process. Input drops when busy;
+changed slots coalesce in a bounded shared-memory ring. `uv sync --extra cuda` enables CUDA
+projection/voxelization on NVIDIA; the default automatically falls back to NumPy on CPU.
 
 The MuJoCo driver needs `libosmesa6` on Debian/Ubuntu for headless software rendering;
 use `--gl egl` with GPU drivers. It serves a textured room and a wheeled pan/tilt robot.
@@ -40,7 +49,9 @@ End-to-end checks (no GPU or headset needed):
 uv run python e2e/webrtc.py
 uv run python e2e/lifecycle.py
 uv run python e2e/mujoco_driver.py                         # saves RGB-D samples in e2e/out/mujoco
+uv run python e2e/reconstruction_faults.py
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/render.py
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/desktop.py
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/stream.py
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/reconstruction.py  # two-minute live room
 ```

@@ -4,6 +4,7 @@ Each packet replaces only the listed stable slots; zero opacity evicts a slot.
 Locks are always tried, never waited on, including publication and consumption.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -19,7 +20,7 @@ class SplatUpdate:
     captured_at: float
     epoch: float
     fade_seconds: float
-    acknowledge: object = None
+    acknowledge: Callable[[], None] | None = None
 
 
 class UpdateRing:

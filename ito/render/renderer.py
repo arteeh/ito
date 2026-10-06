@@ -30,7 +30,7 @@ class GaussianRenderer:
         self.fade_seconds = 0.0
         self.uploaded_bytes = 0
         self.draw_count = 0
-        self.texture = None
+        self.scene_buffer = None
         self.order = None
         self.count = 0
         self.capacity = 0
@@ -44,18 +44,18 @@ class GaussianRenderer:
         limit = self.context.info["GL_MAX_SHADER_STORAGE_BLOCK_SIZE"]
         if max(count * stride * 16, capacity * 8) > limit:
             raise ValueError(f"Scene with {count:,} Gaussians exceeds OpenGL buffer limits")
-        texture = self.context.buffer(reserve=max(64, count * stride * 16))
+        buffer = self.context.buffer(reserve=max(64, count * stride * 16))
         if count:
-            texture.write(scene.records)
+            buffer.write(scene.records)
         try:
             order = self.context.buffer(reserve=capacity * 8)
         except Exception:
-            texture.release()
+            buffer.release()
             raise
-        if self.texture is not None:
-            self.texture.release()
+        if self.scene_buffer is not None:
+            self.scene_buffer.release()
             self.order.release()
-        self.texture, self.order = texture, order
+        self.scene_buffer, self.order = buffer, order
         self.count, self.capacity, self.stride = count, capacity, stride
         self.degree = scene.sh_degree
         self.draw_count = count
@@ -73,12 +73,12 @@ class GaussianRenderer:
             scene = self.context.buffer(reserve=required * 64)
             scene.clear()
             order = self.context.buffer(reserve=capacity * 8)
-            if self.texture is not None:
+            if self.scene_buffer is not None:
                 if self.fade_seconds:
-                    self.context.copy_buffer(scene, self.texture, size=self.draw_count * 64)
-                self.texture.release()
+                    self.context.copy_buffer(scene, self.scene_buffer, size=self.draw_count * 64)
+                self.scene_buffer.release()
                 self.order.release()
-            self.texture, self.order = scene, order
+            self.scene_buffer, self.order = scene, order
             self.capacity, self.draw_count = capacity, required
         self.count = update.count
         self.stride, self.degree = 4, 0
@@ -86,16 +86,18 @@ class GaussianRenderer:
         n = len(update.indices)
         if not n:
             return
-        if n * 64 > self.changes.size:
-            self.changes.orphan(n * 64)
-            self.slots.orphan(n * 4)
+        # Orphan staging storage so queued GPU reads never fence the next CPU upload.
+        self.changes.orphan(max(self.changes.size, n * 64))
+        self.slots.orphan(max(self.slots.size, n * 4))
         records = update.records.copy()
         retiring = records[:, 3, 3] == 1
-        records[retiring, 1, 3] = time.monotonic() - self.epoch + self.fade_seconds
+        records[retiring, 1, 3] = np.minimum(
+            records[retiring, 1, 3], time.monotonic() - self.epoch + self.fade_seconds
+        )
         self.changes.write(records)
         self.slots.write(update.indices)
         self.uploaded_bytes += update.records.nbytes + update.indices.nbytes
-        self.texture.bind_to_storage_buffer(1)
+        self.scene_buffer.bind_to_storage_buffer(1)
         self.changes.bind_to_storage_buffer(2)
         self.slots.bind_to_storage_buffer(3)
         self.update["count"] = n
@@ -144,7 +146,7 @@ class GaussianRenderer:
         view = np.eye(4, dtype=np.float32)
         view[:3, :3] = rotation.T
         view[:3, 3] = -rotation.T @ world_from_eye[:3, 3]
-        self.texture.bind_to_storage_buffer(1)
+        self.scene_buffer.bind_to_storage_buffer(1)
         self.order.bind_to_storage_buffer(0)
         self.keys["view"].write(view.T.copy())
         self.keys["count"] = self.draw_count
@@ -181,7 +183,7 @@ class GaussianRenderer:
             self.program,
             self.sort,
             self.keys,
-            self.texture,
+            self.scene_buffer,
             self.order,
             self.update,
             self.changes,

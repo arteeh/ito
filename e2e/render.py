@@ -1,6 +1,7 @@
 """Drive the real GL renderer with randomized scenes: xvfb-run -a uv run python e2e/render.py."""
 
 import math
+import time
 from pathlib import Path
 
 import moderngl
@@ -8,6 +9,7 @@ import numpy as np
 import pygame
 from sample_scene import write_scene
 
+from ito.reconstruction.ring import SplatUpdate
 from ito.render import GaussianBuffer, GaussianRenderer, load_ply, perspective, pose
 
 
@@ -60,6 +62,34 @@ def main():
             pixels = np.frombuffer(target.read(components=3), np.uint8).reshape(240, 320, 3)
             assert pixels[120, 160, channel] > pixels[120, 160, 2 - channel] * 3
 
+        # Stream sparse append/evict packets, growing GPU capacity without losing old slots.
+        epoch = time.monotonic()
+        live = records.copy()
+        live[:, 1, 3] = 60
+        before_bytes = renderer.uploaded_bytes
+        renderer.apply(SplatUpdate(np.array([0, 4], np.uint32), live, 8, 2, 0, epoch, epoch, 0.5))
+        renderer.apply(
+            SplatUpdate(np.array([12], np.uint32), live[:1], 16, 3, 1, epoch, epoch, 0.5)
+        )
+        removed = np.zeros((1, 4, 4), np.float32)
+        renderer.apply(SplatUpdate(np.array([4], np.uint32), removed, 16, 2, 2, epoch, epoch, 0.5))
+        renderer.draw(pose(), pose(), projection, target)
+        resident = np.frombuffer(renderer.scene_buffer.read(), np.float32).reshape(16, 4, 4)
+        assert np.array_equal(resident[0], live[0])
+        assert np.array_equal(resident[12], live[0])
+        assert not resident[4].any()
+        assert renderer.uploaded_bytes - before_bytes == 4 * (64 + 4)
+        assert context.error == "GL_NO_ERROR"
+        late_eviction = live[:1].copy()
+        late_eviction[:, 1, 3] = -1
+        late_eviction[:, 3, 3] = 1
+        renderer.apply(
+            SplatUpdate(np.array([0], np.uint32), late_eviction, 16, 2, 3, epoch, epoch, 0.5)
+        )
+        stale = np.frombuffer(renderer.scene_buffer.read(size=64), np.float32).reshape(4, 4)
+        assert stale[1, 3] == -1, "Delayed eviction revived expired geometry"
+        print("Sparse GPU append/evict and capacity growth preserve resident splats")
+
         for degree in (0, 1, 2, 3):
             for ascii_ply in (False, True):
                 path = output / f"scene-{degree}-{'ascii' if ascii_ply else 'binary'}.ply"
@@ -72,12 +102,17 @@ def main():
                 rgb = np.frombuffer(pixels, np.uint8).reshape(240, 320, 3)
                 assert np.count_nonzero(rgb.max(axis=2) - rgb.min(axis=2) > 45) > 2500
                 image = pygame.image.frombytes(pixels, target.size, "RGB")
-                pygame.image.save(pygame.transform.flip(image, False, True), output / f"{path.stem}.png")
+                pygame.image.save(
+                    pygame.transform.flip(image, False, True), output / f"{path.stem}.png"
+                )
         # Pass beside the closest floor splats without letting them flood the view.
         renderer.draw(pose(), pose((0, 0, -0.975)), projection, target)
         rgb = np.frombuffer(target.read(components=3), np.uint8).reshape(240, 320, 3)
         assert np.count_nonzero(rgb.max(axis=2) - rgb.min(axis=2) > 60) > 2500
-        print(f"PASS: GPU sorting, compositing, posed views, ASCII/binary PLY SH 0–3; {context.info['GL_RENDERER']}")
+        print(
+            "PASS: GPU sorting, compositing, posed views, ASCII/binary PLY SH 0–3; "
+            f"{context.info['GL_RENDERER']}"
+        )
     finally:
         target.release()
         renderer.close()
