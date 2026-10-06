@@ -1,5 +1,7 @@
 #version 430
-uniform sampler2D gaussians;
+layout(std430, binding = 1) readonly buffer Scene { vec4 attributes[]; };
+uniform float scene_time;
+uniform float fade_seconds;
 uniform uint stride;
 uniform int sh_degree;
 uniform mat4 view;
@@ -11,9 +13,7 @@ out vec2 gaussian_uv;
 flat out vec4 color_opacity;
 
 vec4 attribute_at(uint id, uint offset) {
-    uint address = id * stride + offset;
-    uint width = uint(textureSize(gaussians, 0).x);
-    return texelFetch(gaussians, ivec2(address % width, address / width), 0);
+    return attributes[id * stride + offset];
 }
 vec3 color(uint id, vec3 direction) {
     float x = direction.x, y = direction.y, z = direction.z;
@@ -42,6 +42,8 @@ vec3 color(uint id, vec3 direction) {
 void main() {
     uint id = order[gl_InstanceID].y;
     vec4 p = attribute_at(id, 0u);
+    if (fade_seconds > 0)
+        p.w *= clamp((attribute_at(id, 1u).w - scene_time) / fade_seconds, 0.0, 1.0);
     vec4 center = view * vec4(p.xyz, 1);
     vec4 clip = projection * center;
     gaussian_uv = vec2(0);
