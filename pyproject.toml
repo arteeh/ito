@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ito"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "moderngl>=5.12,<6",
+    "numpy>=2,<3",
+    "plyfile>=1.1,<2",
+    "pygame-ce>=2.5,<3",
+]
+
+[project.scripts]
+ito-desktop = "ito.desktop.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ito"]
