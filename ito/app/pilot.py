@@ -239,10 +239,12 @@ class Pilot:
             peer.send(Command(sequence=command_sequence, action="stop"))
             for task in tasks:
                 task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-            with self.worker_lock:
-                worker, self.worker = self.worker, None
-                worker.close()
+            try:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            finally:
+                with self.worker_lock:
+                    worker, self.worker = self.worker, None
+                    worker.close()
 
     async def _run(self):
         self.loop = asyncio.get_running_loop()
@@ -286,6 +288,11 @@ class Pilot:
             self.thread.join(timeout=12)
             if self.thread.is_alive():
                 raise RuntimeError("Pilot link did not shut down")
+        # Cancellation during connection setup can precede the session's cleanup block.
+        with self.worker_lock:
+            if self.worker is not None:
+                worker, self.worker = self.worker, None
+                worker.close()
 
     def __enter__(self):
         return self.start()
