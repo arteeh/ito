@@ -72,6 +72,10 @@ def source(cache, name, url, digest, report):
 
 
 def prepare(report):
+    if sys.version_info[:2] != (3, 12):
+        raise RuntimeError(
+            "MASt3R-SLAM CUDA needs Python 3.12; use uv run --python 3.12 --extra slam"
+        )
     try:
         import torch
     except ImportError as exc:
@@ -144,14 +148,22 @@ def prepare(report):
             directory = cache / "native" / tag / name
             directory.mkdir(parents=True, exist_ok=True)
             (directory / "lock").unlink(missing_ok=True)
-            module = load(
-                name,
-                list(map(str, files)),
-                extra_include_paths=list(map(str, includes)),
-                build_directory=str(directory),
-                extra_cflags=cxx,
-                extra_cuda_cflags=["-O3"],
-            )
+            try:
+                module = load(
+                    name,
+                    list(map(str, files)),
+                    extra_include_paths=list(map(str, includes)),
+                    build_directory=str(directory),
+                    extra_cflags=cxx,
+                    extra_cuda_cflags=["-O3"],
+                )
+            except Exception as exc:
+                import traceback
+
+                traceback.print_exc()
+                raise RuntimeError(
+                    f"Could not build {name}; check CUDA 12.4 and the C++ compiler. See pilot log"
+                ) from exc
             sys.modules[name] = module
             return module
 

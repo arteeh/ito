@@ -197,8 +197,8 @@ class XRWindow(DesktopWindow):
                             ).as_numpy()
                             with swapchain.acquire() as target:
                                 GL.glEnable(GL.GL_FRAMEBUFFER_SRGB)
-                                self.renderer.draw(
-                                    current.robot_camera,
+                                self.draw_view(
+                                    current,
                                     eye,
                                     projection,
                                     target,

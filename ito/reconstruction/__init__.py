@@ -91,7 +91,7 @@ def _run(recon):
                 revision += 1
             time.sleep(0.01)
     except Exception as exc:
-        recon.errors.send(f"Reconstruction failed: {exc}")
+        recon.errors.send(f"Reconstruction failed: {exc}"[:2000])
     finally:
         recon.errors.close()
 

@@ -15,6 +15,7 @@ from OpenGL import GL
 from ito.reconstruction import SplatUpdate, default_budget
 from ito.render import GaussianRenderer, SceneSource, current_context, perspective, pose
 from ito.render.scene import FloatArray
+from ito.render.video import VideoPanel
 
 from .input import DesktopInput, PilotInput
 from .overlay import Overlay, PilotStatus
@@ -27,6 +28,9 @@ log = logging.getLogger(__name__)
 class DesktopState:
     robot_camera: FloatArray = field(default_factory=pose)
     status: PilotStatus = field(default_factory=PilotStatus)
+    video: object | None = field(default=None, repr=False, compare=False)
+    video_time: float = 0
+    flat_video: bool = False
 
 
 class DesktopWindow:
@@ -40,7 +44,7 @@ class DesktopWindow:
         capture_dir: Path = Path("captures"),
         max_splats: int | None = None,
     ):
-        self.context = self.renderer = self.overlay = self.input = None
+        self.context = self.renderer = self.overlay = self.input = self.video_panel = None
         if (
             min(size) < 64
             or fps < 1
@@ -73,6 +77,7 @@ class DesktopWindow:
             self.screen = self.context.screen
             self.size = size
             self.renderer = GaussianRenderer(self.context)
+            self.video_panel = VideoPanel(self.context)
             memory_mb = 0
             if "GL_NVX_gpu_memory_info" in self.context.extensions:
                 memory_mb = int(GL.glGetIntegerv(0x9048)) // 1024
@@ -180,14 +185,9 @@ class DesktopWindow:
             if min(size) > 0:
                 self.size = size
             projection = perspective(self.fov, self.size[0] / self.size[1])
-            self.renderer.draw(
-                current.robot_camera,
-                pilot.head,
-                projection,
-                self.screen,
-                viewport=(0, 0, *self.size),
-            )
-            age = None if captured_at is None else max(0, now - captured_at)
+            self.draw_view(current, pilot.head, projection, self.screen, (0, 0, *self.size))
+            visible_time = current.video_time if current.flat_video else captured_at
+            age = None if visible_time is None else max(0, now - visible_time)
             budget = self.overlay.draw(
                 current.status,
                 clock.get_fps(),
@@ -239,6 +239,10 @@ class DesktopWindow:
                             "link": current.status.link,
                             "robot": current.status.robot,
                             "status": current.status.detail,
+                            "reconstruction": current.status.reconstruction,
+                            "download_progress": current.status.download_progress,
+                            "flat_video": current.flat_video,
+                            "video_capture_time": current.video_time,
                             "e_stop": current.status.e_stop,
                             "rtt_ms": current.status.latency_ms,
                             "pilot_input_to_robot_ms": current.status.input_latency_ms,
@@ -252,8 +256,16 @@ class DesktopWindow:
                 next_metric = now + 0.5
             clock.tick(self.fps)
 
+    def draw_view(self, current, head, projection, target, viewport):
+        if current.flat_video:
+            self.video_panel.draw(
+                current.video, current.video_time, head, projection, target, viewport
+            )
+        else:
+            self.renderer.draw(current.robot_camera, head, projection, target, viewport=viewport)
+
     def close(self) -> None:
-        for resource in (self.input, self.overlay, self.renderer):
+        for resource in (self.input, self.overlay, self.video_panel, self.renderer):
             if resource is not None:
                 resource.close()
         if self.context is not None:
