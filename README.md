@@ -12,14 +12,24 @@ Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
 uv sync
 uv run ito-driver your_robot.adapter:create --port 8080   # on the robot
 uv run ito-driver-mujoco --gl osmesa                      # furnished simulation
-uv run ito-link robot-address:8080                        # on the pilot PC
+uv run ito robot-address:8080                             # on the pilot PC
 uv run ito-desktop scene.ply                              # explore a splat scene
 ```
 
-Desktop controls: WASD move, click for mouse-look (Tab releases), Page Up/Down rise/fall,
-Home recenter, Space stop, E e-stop, R resume, F12 screenshot, Escape quit. Gamepads work too.
-The live ImGui panel saves the pilot's maximum splat count; lowering it fades excess splats first.
+Press **R** to pilot. WASD drives/turns the robot; click or Tab captures mouse-look to aim
+its head. Space stops, **E e-stops**, R resumes, Home recenters, F12 captures a screenshot,
+and Escape quits. Gamepad left stick drives, right stick looks; A resumes, B e-stops, X stops.
+Focus loss stops motion. After a lost link Ito reconnects automatically; press R to resume.
+The ImGui overlay reports driver state, link RTT, input latency, and capture-to-visible latency.
+`--metrics path.jsonl` records these alongside display timing. Live scenes require posed RGB-D;
+OpenXR is not included in this build (`--mode desktop` is the default).
+
+Comfort and input preferences are saved per driver address and robot name: `--fov 75`,
+`--sensitivity 0.0025`, `--invert-y` / `--no-invert-y`, `--move-x move_x`, `--move-y move_y`.
+`--camera NAME --cameras N` selects a camera from a driver with N video tracks.
+The ImGui panel saves the robot's maximum splat count; lowering it fades excess splats first.
 Defaults are 16K for software rendering, 256K for hardware, or 1M with at least 8 GB NVIDIA VRAM.
+`ito-desktop scene.ply` remains a local scene viewer with WASD and Page Up/Down free flight.
 
 `ito.reconstruction.Reconstruction(intrinsics, max_splats=window.max_splats)` accepts synchronized
 `submit(rgb_uint8, depth_float32_metres, world_from_camera, capture_time)` frames and is a live
@@ -50,6 +60,7 @@ uv run python e2e/webrtc.py
 uv run python e2e/lifecycle.py
 uv run python e2e/mujoco_driver.py                         # saves RGB-D samples in e2e/out/mujoco
 uv run python e2e/reconstruction_faults.py
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/app.py # live MuJoCo, SDL input, reconnect
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/render.py
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/desktop.py
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/stream.py
