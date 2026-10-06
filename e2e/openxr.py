@@ -19,6 +19,8 @@ import time
 from itertools import groupby
 from pathlib import Path
 
+import psutil
+
 OUT = Path("e2e/out/xr")
 
 
@@ -163,15 +165,10 @@ def main():
             assert not app.state.status.e_stop
             assert app.max_splats == 8192
             key(pygame.K_F12)
-            if sys.platform != "win32":
-                frozen = app.worker.process.pid
-                os.kill(frozen, signal.SIGSTOP)
-                timer = threading.Timer(2.5, os.kill, (frozen, signal.SIGCONT))
-                timer.start()
-            else:
-                # The real driver disappearing stalls camera/reconstruction on every OS.
-                robot.kill()
-                robot.wait()
+            frozen = psutil.Process(app.worker.process.pid)
+            frozen.suspend()
+            timer = threading.Timer(2.5, frozen.resume)
+            timer.start()
             stage, changed = 5, now
         elif stage == 5:
             if now - changed > 0.7:
@@ -179,7 +176,7 @@ def main():
             if now - changed > 2:
                 assert stall_frames >= 5, "Display waited for reconstruction"
                 if frozen:
-                    os.kill(frozen, signal.SIGCONT)
+                    frozen.resume()
                     frozen = None
                     timer.cancel()
                     robot.kill()
@@ -227,7 +224,7 @@ def main():
         assert result == 0 and stage == 10, (result, stage)
     finally:
         if frozen:
-            os.kill(frozen, signal.SIGCONT)
+            frozen.resume()
         if timer:
             timer.cancel()
         if robot.poll() is None:
