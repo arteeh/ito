@@ -8,11 +8,20 @@ version = "1.0.0"
 description = "Immersive teleoperation: one pilot, one robot"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["aiortc>=1.14,<2", "aiohttp>=3.12,<4", "pydantic>=2.11,<3"]
+dependencies = [
+    "aiortc>=1.14,<2",
+    "aiohttp>=3.12,<4",
+    "pydantic>=2.11,<3",
+    "moderngl>=5.12,<6",
+    "numpy>=2,<3",
+    "plyfile>=1.1,<2",
+    "pygame-ce>=2.5,<3",
+]
 
 [project.scripts]
 ito-link = "ito.link.cli:main"
 ito-driver = "ito.driver.cli:main"
+ito-desktop = "ito.desktop.__main__:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["ito"]

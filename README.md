@@ -6,34 +6,24 @@ Most teleoperation software treats the pilot experience as secondary. It is usua
 
 ## Usage
 
-Python 3.12+ and [uv](https://docs.astral.sh/uv/) are required.
+Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
 
 ```sh
 uv sync
-uv run ito-driver your_robot.adapter:create --host 0.0.0.0 --port 8080
-uv run ito-link robot-address:8080
+uv run ito-driver your_robot.adapter:create --port 8080   # on the robot
+uv run ito-link robot-address:8080                        # on the pilot PC
+uv run ito-desktop scene.ply                              # explore a splat scene
 ```
 
-The driver command loads a `module:factory` returning `ito.driver.Adapter`;
-`--adapter-args` accepts its configuration as a JSON object. The adapter supplies camera/audio
-tracks, robot description and nonblocking `apply`/`neutral` commands. It publishes capture
-metadata through `publish_frame`. The driver defaults to a 250 ms input timeout and 90 Hz
-command limit; stop and e-stop take effect immediately. Resume requires fresh deadman input.
+Desktop controls: WASD move, click for mouse-look (Tab releases), Page Up/Down rise/fall,
+Home recenter, Space stop, E e-stop, R resume, F12 screenshot, Escape quit. Gamepads work too.
 
-`ito.link.connect(address)` returns an asynchronous `Peer` context manager. Its `tracks` queue
-provides media with bounded buffering, `messages` provides validated control/metadata/status,
-and `frames` holds the latest metadata by camera. Send `PilotState` or `Command` with `send`;
-a false result means the channel is unavailable or backed up, so retry commands and send the
-next fresh pilot state. Timestamps use `time.monotonic()`; `peer.clock.remote_to_local` converts
-remote capture times. `ito-link` consumes media and prints live link/driver metrics.
-
-Verify with separate driver and pilot processes over real WebRTC (no GPU or headset needed):
+End-to-end checks (no GPU or headset needed):
 
 ```sh
 uv run python e2e/webrtc.py
 uv run python e2e/lifecycle.py
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/render.py
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/desktop.py
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/stream.py
 ```
-
-These runs check video, bidirectional audio, pose/depth, malformed-message fuzzing, deadman,
-command rate limiting, timeout after killing the pilot, reconnects, the e-stop latch and adapter
-failures. Robot fixtures live only in `e2e/`.
