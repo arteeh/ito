@@ -32,6 +32,9 @@ class DesktopInput:
         self.yaw = self.pitch = 0.0
         self.captured = False
         self.active = True
+        self.translate = True
+        self.sensitivity = 0.0025
+        self.invert_y = False
         self.keys: set[int] = set()
         self.pad = None
         self.pad_buttons: set[str] = set()
@@ -71,7 +74,7 @@ class DesktopInput:
         if keyboard_ui:
             self.keys.clear()
         for event in pygame.event.get() if events is None else events:
-            if keyboard_ui and event.type == pygame.KEYDOWN:
+            if keyboard_ui and event.type == pygame.KEYDOWN and event.key != pygame.K_e:
                 continue
             if (
                 mouse_ui
@@ -115,8 +118,8 @@ class DesktopInput:
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and self.active:
                 self.capture(True)
             elif event.type == pygame.MOUSEMOTION and self.captured and self.active:
-                self.yaw -= event.rel[0] * 0.0025
-                self.pitch -= event.rel[1] * 0.0025
+                self.yaw -= event.rel[0] * self.sensitivity
+                self.pitch -= event.rel[1] * self.sensitivity * (-1 if self.invert_y else 1)
             elif event.type in (pygame.CONTROLLERDEVICEADDED, pygame.CONTROLLERDEVICEREMOVED):
                 if self.pad is not None and not self.pad.attached():
                     commands.append("stop")
@@ -170,7 +173,8 @@ class DesktopInput:
         self.yaw = math.remainder(self.yaw, 2 * math.pi)
         rotation = pose(yaw=self.yaw)[:3, :3]
         local = np.array((movement[0], movement[1], -movement[2]))
-        self.position += rotation @ local * self.speed * dt
+        if self.translate:
+            self.position += rotation @ local * self.speed * dt
         buttons.update(pygame.key.name(key) for key in self.keys)
         return PilotInput(
             time.monotonic(),

@@ -120,6 +120,7 @@ class DesktopWindow:
         on_input: Callable[[PilotInput], None] | None = None,
         max_frames: int = 0,
         metrics: TextIO | None = None,
+        save_settings: Callable[[int], None] = save_budget,
     ) -> None:
         """Keep drawing the last scene while source.poll() returns None.
 
@@ -134,6 +135,8 @@ class DesktopWindow:
         clock = pygame.time.Clock()
         revision = None
         captured_at = None
+        visible_capture = None
+        capture_to_visible_ms = None
         frames = 0
         next_metric = 0.0
         request = None
@@ -146,7 +149,7 @@ class DesktopWindow:
                 now - previous,
                 events,
                 mouse_ui=io.want_capture_mouse,
-                keyboard_ui=io.want_capture_keyboard,
+                keyboard_ui=io.want_capture_keyboard and not self.input.captured,
             )
             previous = now
             if on_input is not None:
@@ -193,6 +196,7 @@ class DesktopWindow:
                 self.input.captured,
                 request,
                 live=live,
+                capture_latency_ms=capture_to_visible_ms,
             )
             if budget is not None and budget > self.splat_limit:
                 self.overlay.error = f"This GPU supports at most {self.splat_limit:,} splats"
@@ -200,7 +204,7 @@ class DesktopWindow:
             if budget is not None:
                 source.set_max_splats(budget)
                 try:
-                    save_budget(budget)
+                    save_settings(budget)
                 except OSError as exc:
                     self.overlay.error = f"Could not save setting: {exc}"
             capture = None
@@ -210,6 +214,9 @@ class DesktopWindow:
                 except OSError as exc:
                     log.error("Could not save capture: %s", exc)
             pygame.display.flip()
+            if captured_at is not None and captured_at != visible_capture:
+                visible_capture = captured_at
+                capture_to_visible_ms = max(0, (time.monotonic() - captured_at) * 1000)
             frames += 1
             if metrics is not None and (now >= next_metric or pilot.commands or capture):
                 metrics.write(
@@ -229,6 +236,14 @@ class DesktopWindow:
                             "capture": capture,
                             "size": self.size,
                             "renderer": self.context.info["GL_RENDERER"],
+                            "link": current.status.link,
+                            "robot": current.status.robot,
+                            "status": current.status.detail,
+                            "e_stop": current.status.e_stop,
+                            "rtt_ms": current.status.latency_ms,
+                            "pilot_input_to_robot_ms": current.status.input_latency_ms,
+                            "capture_to_splat_visible_ms": capture_to_visible_ms,
+                            "scene_capture_time": captured_at,
                         }
                     )
                     + "\n"
