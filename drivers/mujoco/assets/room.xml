@@ -1,0 +1,98 @@
+<mujoco model="Ito room">
+  <compiler angle="radian"/>
+  <option timestep="0.002" integrator="implicitfast"/>
+  <visual>
+    <global offwidth="640" offheight="480"/>
+    <quality shadowsize="1024" offsamples="2"/>
+    <headlight ambient="0.3 0.3 0.3" diffuse="0.4 0.4 0.4"/>
+    <map znear="0.002" zfar="6"/>
+  </visual>
+  <default>
+    <geom condim="4" friction="0.8 0.005 0.001" solref="0.01 1"/>
+  </default>
+  <asset>
+    <texture name="floor_tiles" type="2d" builtin="checker" width="256" height="256" rgb1="0.34 0.28 0.20" rgb2="0.48 0.40 0.29"/>
+    <texture name="fabric" type="cube" builtin="checker" width="64" height="64" rgb1="0.10 0.30 0.32" rgb2="0.14 0.38 0.39"/>
+    <texture name="wood" type="cube" builtin="checker" width="128" height="128" rgb1="0.37 0.19 0.08" rgb2="0.44 0.25 0.11"/>
+    <texture name="rug_weave" type="2d" builtin="checker" width="128" height="128" rgb1="0.70 0.26 0.12" rgb2="0.88 0.62 0.32"/>
+    <texture name="shell" type="cube" builtin="flat" width="32" height="32" rgb1="0.86 0.76 0.51" mark="edge" markrgb="0.25 0.22 0.17"/>
+    <material name="floor" texture="floor_tiles" texrepeat="8 6" reflectance="0.05"/>
+    <material name="upholstery" texture="fabric" texrepeat="8 8"/>
+    <material name="oak" texture="wood" texrepeat="4 16"/>
+    <material name="rug" texture="rug_weave" texrepeat="10 7"/>
+    <material name="robot_shell" texture="shell"/>
+    <material name="rubber" rgba="0.06 0.065 0.07 1"/>
+  </asset>
+  <worldbody>
+    <light pos="0 0 3.4" dir="0 0 -1" diffuse="0.75 0.72 0.66"/>
+    <light pos="2 -2 2.8" dir="-1 1 -1" diffuse="0.4 0.45 0.5" castshadow="false"/>
+    <geom name="floor" type="plane" size="5 4 0.1" material="floor"/>
+    <geom type="box" pos="4 0 1.7" size="0.1 3 1.7" rgba="0.79 0.76 0.66 1"/>
+    <geom type="box" pos="-4 0 1.7" size="0.1 3 1.7" rgba="0.79 0.76 0.66 1"/>
+    <geom type="box" pos="0 3 1.7" size="4 0.1 1.7" rgba="0.62 0.71 0.70 1"/>
+    <geom type="box" pos="0 -3 1.7" size="4 0.1 1.7" rgba="0.84 0.81 0.72 1"/>
+    <geom type="box" pos="0 0 3.4" size="4 3 0.05" rgba="0.9 0.9 0.85 1"/>
+    <geom type="box" pos="1 0 0.008" size="1.7 1.5 0.008" material="rug"/>
+    <!-- Sofa and cushions. -->
+    <body pos="1.4 2.2 0">
+      <geom type="box" pos="0 0 0.28" size="1.15 0.45 0.22" material="oak"/>
+      <geom type="box" pos="0 0.35 0.72" size="1.2 0.15 0.48" material="upholstery"/>
+      <geom type="box" pos="-1.1 0 0.63" size="0.15 0.5 0.25" material="upholstery"/>
+      <geom type="box" pos="1.1 0 0.63" size="0.15 0.5 0.25" material="upholstery"/>
+      <geom type="box" pos="-0.5 -0.03 0.52" size="0.46 0.34 0.10" material="upholstery"/>
+      <geom type="box" pos="0.5 -0.03 0.52" size="0.46 0.34 0.10" material="upholstery"/>
+      <geom type="box" pos="-0.7 0.15 0.84" size="0.22 0.08 0.23" euler="0.1 0.2 0" rgba="0.89 0.56 0.16 1"/>
+    </body>
+    <!-- Coffee table with books, ceramic bowl, and fruit. -->
+    <body pos="1.3 0.5 0">
+      <geom type="box" pos="0 0 0.48" size="0.8 0.45 0.045" material="oak"/>
+      <geom type="box" pos="-0.65 -0.3 0.23" size="0.05 0.05 0.23" material="oak"/>
+      <geom type="box" pos="0.65 -0.3 0.23" size="0.05 0.05 0.23" material="oak"/>
+      <geom type="box" pos="-0.65 0.3 0.23" size="0.05 0.05 0.23" material="oak"/>
+      <geom type="box" pos="0.65 0.3 0.23" size="0.05 0.05 0.23" material="oak"/>
+      <geom type="box" pos="-0.35 0 0.55" size="0.2 0.14 0.025" rgba="0.75 0.12 0.07 1"/>
+      <geom type="box" pos="-0.32 0.02 0.59" size="0.18 0.13 0.015" euler="0 0 0.2" rgba="0.12 0.25 0.58 1"/>
+      <geom type="ellipsoid" pos="0.3 0 0.55" size="0.2 0.2 0.04" rgba="0.9 0.88 0.8 1"/>
+      <geom type="sphere" pos="0.27 0 0.62" size="0.07" rgba="0.88 0.3 0.02 1"/>
+      <geom type="sphere" pos="0.38 0.07 0.61" size="0.06" rgba="0.28 0.6 0.08 1"/>
+    </body>
+    <!-- Bookcase, shelves, and colored spines. -->
+    <body pos="3.6 -0.4 0">
+      <geom type="box" pos="0.1 0 1.1" size="0.08 0.85 1.1" material="oak"/>
+      <geom type="box" pos="-0.1 -0.85 1.1" size="0.28 0.05 1.1" material="oak"/>
+      <geom type="box" pos="-0.1 0.85 1.1" size="0.28 0.05 1.1" material="oak"/>
+      <geom type="box" pos="-0.1 0 0.15" size="0.28 0.85 0.04" material="oak"/>
+      <geom type="box" pos="-0.1 0 0.75" size="0.28 0.85 0.04" material="oak"/>
+      <geom type="box" pos="-0.1 0 1.4" size="0.28 0.85 0.04" material="oak"/>
+      <geom type="box" pos="-0.1 0 2.15" size="0.28 0.85 0.04" material="oak"/>
+      <geom type="box" pos="-0.12 -0.6 1.03" size="0.19 0.07 0.23" rgba="0.65 0.15 0.12 1"/>
+      <geom type="box" pos="-0.12 -0.42 1.04" size="0.18 0.09 0.24" rgba="0.12 0.3 0.53 1"/>
+      <geom type="box" pos="-0.12 -0.22 1" size="0.18 0.06 0.2" rgba="0.8 0.64 0.19 1"/>
+      <geom type="box" pos="-0.12 0.4 1.7" size="0.18 0.09 0.26" rgba="0.23 0.43 0.2 1"/>
+      <geom type="box" pos="-0.12 0.6 1.68" size="0.18 0.07 0.24" rgba="0.62 0.25 0.14 1"/>
+      <geom type="sphere" pos="-0.1 -0.4 1.65" size="0.2" rgba="0.35 0.65 0.73 1"/>
+    </body>
+    <!-- Window, framed abstract artwork, floor lamp and potted plant. -->
+    <geom type="box" pos="0.3 -2.87 1.9" size="1.1 0.04 0.7" material="oak"/>
+    <geom type="box" pos="0.3 -2.82 1.9" size="1.02 0.02 0.62" rgba="0.38 0.65 0.83 1"/>
+    <geom type="box" pos="0.3 -2.79 1.9" size="0.025 0.02 0.64" rgba="0.85 0.85 0.8 1"/>
+    <geom type="box" pos="0.3 -2.79 1.9" size="1.04 0.02 0.025" rgba="0.85 0.85 0.8 1"/>
+    <geom type="box" pos="3.87 1.65 1.85" size="0.03 0.65 0.5" material="oak"/>
+    <geom type="box" pos="3.83 1.65 1.85" size="0.02 0.59 0.44" rgba="0.19 0.34 0.48 1"/>
+    <geom type="sphere" pos="3.79 1.45 2.03" size="0.15" rgba="0.94 0.63 0.19 1"/>
+    <geom type="box" pos="3.79 1.73 1.63" size="0.015 0.4 0.14" rgba="0.25 0.51 0.42 1"/>
+    <body pos="2.9 2.3 0">
+      <geom type="cylinder" pos="0 0 0.035" size="0.22 0.035" rgba="0.13 0.14 0.15 1"/>
+      <geom type="cylinder" pos="0 0 0.85" size="0.025 0.85" rgba="0.13 0.14 0.15 1"/>
+      <geom type="cylinder" pos="0 0 1.7" size="0.28 0.20" rgba="0.93 0.81 0.54 1"/>
+    </body>
+    <body pos="2.7 -2.3 0">
+      <geom type="cylinder" pos="0 0 0.2" size="0.23 0.2" rgba="0.64 0.3 0.16 1"/>
+      <geom type="capsule" fromto="0 0 0.35 0 0 1.3" size="0.025" rgba="0.22 0.32 0.09 1"/>
+      <geom type="ellipsoid" pos="0.14 0 0.95" size="0.28 0.12 0.14" euler="0 -0.7 0" rgba="0.13 0.38 0.12 1"/>
+      <geom type="ellipsoid" pos="-0.14 0.05 0.75" size="0.27 0.12 0.14" euler="0 0.6 0" rgba="0.2 0.46 0.15 1"/>
+      <geom type="ellipsoid" pos="0 0.08 1.2" size="0.16 0.12 0.26" rgba="0.16 0.42 0.13 1"/>
+    </body>
+  </worldbody>
+  <include file="robot.xml"/>
+</mujoco>

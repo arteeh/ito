@@ -1,0 +1,39 @@
+<mujoco>
+  <worldbody>
+    <!-- +X forward, +Y left, +Z up; differential drive with passive ball casters. -->
+    <body name="base" pos="-2 0 0.19">
+      <freejoint/>
+      <geom type="box" size="0.29 0.22 0.10" mass="12" material="robot_shell"/>
+      <geom type="box" pos="0.02 0 0.13" size="0.19 0.17 0.04" mass="1" rgba="0.08 0.12 0.16 1"/>
+      <geom type="sphere" pos="0.23 0 -0.14" size="0.05" mass="0.1" priority="1" friction="0.002 0.001 0.001"/>
+      <geom type="sphere" pos="-0.23 0 -0.14" size="0.05" mass="0.1" priority="1" friction="0.002 0.001 0.001"/>
+      <body name="left_wheel" pos="0 0.26 -0.05">
+        <joint name="left_wheel_joint" axis="0 1 0" damping="0.1"/>
+        <geom type="cylinder" size="0.14 0.035" quat="0.707107 0.707107 0 0" mass="0.6" material="rubber" friction="1.2 0.005 0.001"/>
+      </body>
+      <body name="right_wheel" pos="0 -0.26 -0.05">
+        <joint name="right_wheel_joint" axis="0 1 0" damping="0.1"/>
+        <geom type="cylinder" size="0.14 0.035" quat="0.707107 0.707107 0 0" mass="0.6" material="rubber" friction="1.2 0.005 0.001"/>
+      </body>
+      <geom type="cylinder" pos="0 0 0.4" size="0.045 0.3" mass="1" rgba="0.14 0.18 0.21 1"/>
+      <body name="pan" pos="0 0 0.72">
+        <joint name="head_pan_joint" axis="0 0 1" range="-1.4 1.4" damping="1"/>
+        <geom type="cylinder" size="0.09 0.055" mass="0.4" material="robot_shell"/>
+        <geom type="box" pos="0 0.16 0.10" size="0.04 0.02 0.10" mass="0.1" material="robot_shell"/>
+        <geom type="box" pos="0 -0.16 0.10" size="0.04 0.02 0.10" mass="0.1" material="robot_shell"/>
+        <body name="tilt" pos="0 0 0.16">
+          <joint name="head_tilt_joint" axis="0 -1 0" range="-0.65 0.65" damping="1"/>
+          <geom type="box" size="0.10 0.13 0.065" mass="0.6" material="robot_shell"/>
+          <geom type="box" pos="0.103 0 0" size="0.005 0.095 0.04" mass="0.01" rgba="0.015 0.025 0.03 1"/>
+          <camera name="head" pos="0.115 0 0" xyaxes="0 -1 0 0 0 1" fovy="65"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <position name="head_pan" joint="head_pan_joint" kp="35" kv="5" ctrlrange="-1.4 1.4" forcerange="-12 12"/>
+    <position name="head_tilt" joint="head_tilt_joint" kp="35" kv="5" ctrlrange="-0.65 0.65" forcerange="-12 12"/>
+    <velocity name="left_drive" joint="left_wheel_joint" kv="5" ctrlrange="-15 15" forcerange="-15 15"/>
+    <velocity name="right_drive" joint="right_wheel_joint" kv="5" ctrlrange="-15 15" forcerange="-15 15"/>
+  </actuator>
+</mujoco>
