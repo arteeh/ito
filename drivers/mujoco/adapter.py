@@ -260,6 +260,9 @@ class MujocoAdapter(Adapter):
                     if not np.isfinite(self.data.qpos).all() or any(self.data.warning.number):
                         raise RuntimeError("unstable MJCF simulation; check model dynamics")
                     self._telemetry = {
+                        "base_x": float(self.data.xpos[self.base_id][0]),
+                        "base_y": float(self.data.xpos[self.base_id][1]),
+                        "base_z": float(self.data.xpos[self.base_id][2]),
                         "simulation_time": float(self.data.time),
                         "active": state is not None,
                         "head_pan": float(self.data.qpos[self.model.jnt_qposadr[self.head[0][1]]]),
