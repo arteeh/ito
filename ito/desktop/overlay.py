@@ -31,7 +31,7 @@ class Overlay:
         self.error = None
         self.commands = []
 
-    def begin(self, events, size, captured):
+    def begin(self, events, size, captured, *, pointer=None):
         for event in events:
             if event.type == pygame.VIDEORESIZE:
                 continue  # SDL owns the context; resizing must not recreate it.
@@ -49,6 +49,10 @@ class Overlay:
             self.backend.process_event(event)
         self.backend.io.display_size = size
         self.backend.process_inputs()
+        if pointer is not None:
+            x, y, down = pointer
+            self.backend.io.add_mouse_pos_event(x, y)
+            self.backend.io.add_mouse_button_event(0, down)
         imgui.new_frame()
         return imgui.get_io()
 
