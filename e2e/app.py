@@ -30,7 +30,8 @@ def main():
     OUT.mkdir(parents=True, exist_ok=True)
     for path in OUT.glob("capture-*.png"):
         path.unlink()
-    os.environ["XDG_CONFIG_HOME"] = str(OUT / "config")
+    os.environ["XDG_CONFIG_HOME"] = os.environ["APPDATA"] = str(OUT / "config")
+    gl = {"LD_LIBRARY_PATH": "/opt/data/lib/osmesa", "MUJOCO_GL": "osmesa"} if sys.platform == "linux" else {}
     with socket.socket() as port:
         port.bind(("127.0.0.1", 0))
         address = f"127.0.0.1:{port.getsockname()[1]}"
@@ -39,7 +40,7 @@ def main():
     def driver():
         return subprocess.Popen(
             [sys.executable, "-m", "drivers.mujoco.cli", "--port", address.split(":")[1]],
-            env=os.environ | {"LD_LIBRARY_PATH": "/opt/data/lib/osmesa", "MUJOCO_GL": "osmesa"},
+            env=os.environ | gl,
             stdout=log,
             stderr=log,
         )
