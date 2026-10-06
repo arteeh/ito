@@ -27,10 +27,11 @@ def _run(recon):
         cursor = 0
         revision = 0
         captured = recon.epoch
-        while not recon.stopped.is_set():
+        while not recon.stopped.value:
             now = time.monotonic() - recon.epoch
             backend.expire(now, recon.ring.last_acknowledged())
-            backend.resize(recon.budget.value, now)
+            if backend.budget != recon.budget.value:
+                backend.resize(recon.budget.value, now)
             frame = None
             if recon.input_lock.acquire(False):
                 try:
@@ -67,7 +68,7 @@ def _run(recon):
                 cursor = (int(indices[-1]) + 1) % len(backend.keys)
                 backend.dirty[indices] = False
                 revision += 1
-            recon.stopped.wait(0.005)
+            time.sleep(0.01)
     except Exception as exc:
         recon.errors.send(f"Reconstruction failed: {exc}")
     finally:
@@ -108,7 +109,7 @@ class Reconstruction:
         self.sequence = context.RawValue("Q", 0)
         self.budget = context.RawValue("I", max_splats)
         self.input_lock = context.Lock()
-        self.stopped = context.Event()
+        self.stopped = context.RawValue("b", False)
         reader, self.errors = context.Pipe(duplex=False)
         self.process = None
         process = context.Process(target=_run, args=(self,), name="ito-reconstruction")
@@ -171,7 +172,8 @@ class Reconstruction:
 
     def close(self):
         if not self.closed:
-            self.stopped.set()
+            # A killed worker may leave an Event's internal condition locked forever.
+            self.stopped.value = True
             self.process.join(timeout=3)
             if self.process.is_alive():
                 self.process.terminate()

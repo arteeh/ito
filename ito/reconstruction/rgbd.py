@@ -70,10 +70,10 @@ class RGBDBackend:
         excess = max(0, self.count - budget - int(self.retiring.sum()))
         candidates = np.flatnonzero((self.keys >= 0) & ~self.retiring)
         if excess:
-            self.retire(candidates[np.argsort(self.seen[candidates])[:excess]], now)
+            self.retire(candidates[np.argsort(self.seen[candidates])[:excess]])
 
-    def retire(self, indices, now):
-        self.records[indices, 1, 3] = np.minimum(self.records[indices, 1, 3], now + self.fade)
+    def retire(self, indices):
+        # Preserve the natural deadline so delayed eviction packets cannot revive stale geometry.
         self.records[indices, 3, 3] = 1
         self.retiring[indices] = True
         self.dirty[indices] = True
@@ -145,4 +145,4 @@ class RGBDBackend:
         pressure = max(0, pressure - int(self.retiring.sum()))
         candidates = np.flatnonzero((self.keys >= 0) & ~self.retiring & (self.seen < now))
         if pressure:
-            self.retire(candidates[np.argsort(self.seen[candidates])[:pressure]], now)
+            self.retire(candidates[np.argsort(self.seen[candidates])[:pressure]])

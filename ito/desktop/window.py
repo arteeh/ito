@@ -102,6 +102,7 @@ class DesktopWindow:
             path = self.capture_dir / f"capture-{self.capture_number:03d}.png"
             if not path.exists():
                 break
+        # SDL owns the default framebuffer; select its back buffer explicitly.
         GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, 0)
         GL.glReadBuffer(GL.GL_BACK)
         GL.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1)
