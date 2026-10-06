@@ -17,6 +17,7 @@ def main(argv=None, *, on_frame=None):
     parser = argparse.ArgumentParser(description="Pilot one Ito robot")
     parser.add_argument("address", help="driver host:port or HTTP(S) URL")
     parser.add_argument("--mode", choices=("desktop", "xr"), default="desktop")
+    parser.add_argument("--reference-space", choices=("seated", "standing"), default="seated")
     parser.add_argument("--camera", help="camera name (defaults to the first camera)")
     parser.add_argument("--cameras", type=int, default=1, help="number of driver video tracks")
     parser.add_argument("--size", type=int, nargs=2, default=(1280, 720))
@@ -32,14 +33,19 @@ def main(argv=None, *, on_frame=None):
     parser.add_argument("--frames", type=int, default=0, help="exit after N display frames")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    if args.mode == "xr":
-        parser.exit(1, "ito: OpenXR piloting is not installed in this build; use --mode desktop.\n")
     overrides = {
         key: getattr(args, key)
         for key in Settings.model_fields
         if getattr(args, key, None) is not None
     }
     try:
+        window_type = DesktopWindow
+        window_options = {}
+        if args.mode == "xr":
+            from ito.xr import XRWindow
+
+            window_type = XRWindow
+            window_options["reference_space"] = args.reference_space
         Settings.model_validate(Settings().model_dump() | overrides)
         if args.frames < 0 or not 1 <= args.cameras <= 16:
             raise ValueError("frames must be nonnegative and cameras between 1 and 16")
@@ -47,8 +53,12 @@ def main(argv=None, *, on_frame=None):
             args.metrics.parent.mkdir(parents=True, exist_ok=True)
         with (
             args.metrics.open("w") if args.metrics else nullcontext() as metrics,
-            DesktopWindow(
-                args.size, fps=args.fps, capture_dir=args.capture_dir, max_splats=args.max_splats
+            window_type(
+                args.size,
+                fps=args.fps,
+                capture_dir=args.capture_dir,
+                max_splats=args.max_splats,
+                **window_options,
             ) as window,
             Pilot(
                 args.address,

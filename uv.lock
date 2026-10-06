@@ -726,6 +726,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pygame-ce" },
     { name = "pyopengl" },
+    { name = "pyopenxr" },
 ]
 
 [package.optional-dependencies]
@@ -752,6 +753,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.11,<3" },
     { name = "pygame-ce", specifier = ">=2.5,<3" },
     { name = "pyopengl", specifier = ">=3.1.10,<4" },
+    { name = "pyopenxr", specifier = ">=1.1.6302,<2" },
 ]
 provides-extras = ["cuda"]
 
@@ -1473,6 +1475,20 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/3f/e8/7325d258199b159eb2c03fe32107533e2832e70e63f4fb88a6aa00023201/pyopenssl-26.4.0.tar.gz", hash = "sha256:28dfcce0162b9211413e26dfbfdf1d24317fbeba18fc93c12400a1856b2a0bc7", size = 182046, upload-time = "2026-08-01T19:50:50.512Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/51/ad/2cf6d3fa2fae5c79e1ed9960c0d42badd0f94d81dd12b50604cdc839e648/pyopenssl-26.4.0-py3-none-any.whl", hash = "sha256:f0eb0cb2d581d3ad2b9c489468485e7f2ab6727d08401bcf9d824c3caddf3c1c", size = 56026, upload-time = "2026-08-01T19:50:48.94Z" },
+]
+
+[[package]]
+name = "pyopenxr"
+version = "1.1.6302"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "glfw" },
+    { name = "numpy" },
+    { name = "pyopengl" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d9/8e/c4ae45a9a5e7b8738550dbdca4682c6fb3fa603f581b37f04de0f5881193/pyopenxr-1.1.6302.tar.gz", hash = "sha256:eb2ae0d2a60ae45a430385e1a6f6a650d380c0324e460d714c33b47d9dfdcb44", size = 20521135, upload-time = "2026-09-29T23:47:37.929Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a4/a7/d841edc6630ec8e312850c9d3d3c3d157776a1b072a698a458f0c2ad3eae/pyopenxr-1.1.6302-py3-none-any.whl", hash = "sha256:e646cea7bbbb4fd22bd42edb4aa3e5fe301c2d42b7981fdb81fb51fec4e0a721", size = 55632673, upload-time = "2026-09-29T23:47:28.511Z" },
 ]
 
 [[package]]
