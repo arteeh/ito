@@ -3,7 +3,6 @@
 import asyncio
 import contextlib
 import logging
-import math
 import threading
 import time
 from collections import deque
@@ -14,6 +13,7 @@ from ito.link import connect
 from ito.protocol import Command, FrameMetadata, PilotState, Pose, Status
 from ito.reconstruction import Reconstruction
 from ito.render import pose
+from ito.render.pose import quaternion
 
 from . import settings
 from .frames import FrameJoin
@@ -144,7 +144,7 @@ class Pilot:
         with self.worker_lock:
             self.worker = Reconstruction(camera.intrinsics, max_splats=self.max_splats)
         self.connections += 1
-        self._status("CONNECTED", "Press R to resume piloting", peer=peer)
+        self._status("CONNECTED", "Resume to begin piloting", peer=peer)
         joined = FrameJoin()
         tasks = []
         armed = False
@@ -213,10 +213,6 @@ class Pilot:
                     if not fresh:
                         armed = False
                     matrix = value.head
-                    yaw = math.atan2(float(matrix[0, 2]), float(matrix[2, 2]))
-                    pitch = math.asin(max(-1, min(1, -float(matrix[1, 2]))))
-                    sy, cy = math.sin(yaw / 2), math.cos(yaw / 2)
-                    sp, cp = math.sin(pitch / 2), math.cos(pitch / 2)
                     peer.send(
                         PilotState(
                             sequence=sequence,
@@ -224,10 +220,13 @@ class Pilot:
                             deadman=armed and fresh,
                             head=Pose(
                                 position=tuple(map(float, matrix[:3, 3])),
-                                orientation=(cy * sp, sy * cp, -sy * sp, cy * cp),
+                                orientation=quaternion(matrix),
                             ),
+                            hands=value.hands if fresh else {},
+                            trackers=value.trackers if fresh else {},
                             buttons={name: True for name in value.buttons},
                             axes={
+                                **value.axes,
                                 self.settings.move_x: value.movement[0],
                                 self.settings.move_y: value.movement[2],
                             },
