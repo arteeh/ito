@@ -29,7 +29,7 @@ ito-desktop = "ito.desktop.__main__:main"
 
 [project.optional-dependencies]
 cuda = [
-    "cupy-cuda12x>=13,<15",
+    "cupy-cuda12x[ctk]>=14,<15",
 ]
 
 [tool.hatch.build.targets.wheel]
