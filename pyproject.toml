@@ -22,7 +22,7 @@ dependencies = [
 ]
 
 [project.scripts]
-ito-link = "ito.link.cli:main"
+ito = "ito.app.__main__:main"
 ito-driver = "ito.driver.cli:main"
 ito-driver-mujoco = "drivers.mujoco.cli:main"
 ito-desktop = "ito.desktop.__main__:main"

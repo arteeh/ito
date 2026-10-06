@@ -14,6 +14,8 @@ class PilotStatus:
     latency_ms: float | None = None
     robot: str = "No robot connected"
     e_stop: bool = False  # Reported by the driver, never inferred from a button press.
+    detail: str = ""
+    input_latency_ms: float | None = None
 
 
 class Overlay:
@@ -59,6 +61,7 @@ class Overlay:
         request: str | None,
         *,
         live=False,
+        capture_latency_ms: float | None = None,
         target: moderngl.Framebuffer | None = None,
     ) -> int | None:
         if target is not None:
@@ -69,7 +72,7 @@ class Overlay:
             "E-STOP LATCHED"
             if status.e_stop
             else "E-STOP: not latched"
-            if status.link != "OFFLINE"
+            if status.link == "CONNECTED"
             else "E-STOP: unavailable offline"
         )
         imgui.set_next_window_pos((12, 12), imgui.Cond_.always)
@@ -80,7 +83,7 @@ class Overlay:
             | imgui.WindowFlags_.no_move
             | imgui.WindowFlags_.no_collapse,
         )
-        imgui.text(f"{status.link} | latency {latency} | {status.robot}")
+        imgui.text(f"{status.link} | RTT {latency} | {status.robot}")
         imgui.text_colored((1, 0.45, 0.4, 1) if status.e_stop else (0.85, 0.9, 0.95, 1), safety)
         imgui.text(f"{count:,} splats | {fps:.0f} fps | scene {scene_age}")
         imgui.text("WASD move | PgUp/PgDn rise/fall | Home recenter")
@@ -99,6 +102,12 @@ class Overlay:
                     self.error = "Choose between 1 and 4,194,304 splats"
         if request:
             imgui.text(request)
+        if status.detail:
+            imgui.text(status.detail)
+        if status.input_latency_ms is not None:
+            imgui.text(f"Pilot input -> robot: {status.input_latency_ms:.1f} ms")
+        if capture_latency_ms is not None:
+            imgui.text(f"Camera capture -> splat visible: {capture_latency_ms:.1f} ms")
         if self.error:
             imgui.text_colored((1, 0.45, 0.4, 1), self.error)
         imgui.end()

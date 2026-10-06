@@ -79,8 +79,7 @@ async def run():
     async with robot() as (address, journal, driver):
         monitor = await asyncio.create_subprocess_exec(
             sys.executable,
-            "-c",
-            "from ito.link.cli import main; main()",
+            str(ROOT / "e2e" / "link_monitor.py"),
             address,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,

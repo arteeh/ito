@@ -71,3 +71,7 @@ def main() -> None:
         pass
     except (ConnectionError, TimeoutError, OSError, ValueError, aiohttp.ClientError) as exc:
         parser.exit(1, f"ito-link: {exc}\n")
+
+
+if __name__ == "__main__":
+    main()
