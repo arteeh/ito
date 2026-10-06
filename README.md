@@ -13,6 +13,7 @@ uv sync
 uv run ito-driver your_robot.adapter:create --port 8080   # on the robot
 uv run ito-driver-mujoco --gl osmesa                      # furnished simulation
 uv run ito robot-address:8080                             # on the pilot PC
+uv run ito robot-address:8080 --mode xr                    # active OpenXR runtime
 uv run ito-desktop scene.ply                              # explore a splat scene
 ```
 
@@ -21,8 +22,24 @@ its head. Space stops, **E e-stops**, R resumes, Home recenters, F12 captures a 
 and Escape quits. Gamepad left stick drives, right stick looks; A resumes, B e-stops, X stops.
 Focus loss stops motion. After a lost link Ito reconnects automatically; press R to resume.
 The ImGui overlay reports driver state, link RTT, input latency, and capture-to-visible latency.
-`--metrics path.jsonl` records these alongside display timing. Live scenes require posed RGB-D;
-OpenXR is not included in this build (`--mode desktop` is the default).
+`--metrics path.jsonl` records these alongside display timing. Live scenes require posed RGB-D; `--mode desktop` is the default.
+
+XR uses the active OpenXR runtime (SteamVR, Virtual Desktop/VDXR, or Monado) and OpenGL 4.3.
+Use `--reference-space seated` (default) or `standing` after room setup. Each eye renders at
+the runtime display rate from the current predicted pose, independently of the robot stream.
+Aim a controller and press its trigger to use the world-locked ImGui panel; the companion
+window has the same controls. Left stick drives; on Touch controllers A resumes, B e-stops,
+X stops and Y recenters. Other controllers can use the panel (right menu also e-stops).
+Home or the panel recenters position and yaw and stops motion; resume explicitly afterward.
+Tracking/focus loss disarms input. E-stop and link loss pulse the controllers.
+Role-assigned Vive trackers are sent when the runtime supports `XR_HTCX_vive_tracker_interaction`.
+F12 saves left-eye, right-eye and panel images. On Linux, `XR_RUNTIME_JSON` selects a runtime.
+
+XR end-to-end check on Windows: start SteamVR or Virtual Desktop with VDXR set as the active
+OpenXR runtime, wear the headset, then run `uv run python e2e/openxr.py` from the checkout.
+It launches its own MuJoCo driver and saves eye captures, logs and metrics in `e2e/out/xr`.
+Add `--reference-space standing` to check room-scale space. The same script runs on Linux
+with a configured OpenXR runtime, including Monado’s simulated HMD.
 
 Comfort and input preferences are saved per driver address and robot name: `--fov 75`,
 `--sensitivity 0.0025`, `--invert-y` / `--no-invert-y`, `--move-x move_x`, `--move-y move_y`.
