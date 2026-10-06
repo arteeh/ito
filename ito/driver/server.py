@@ -53,6 +53,7 @@ class Driver:
         self._runner: web.AppRunner | None = None
         self._last_status = 0.0
         self._last_apply = 0.0
+        self._input_latency_ms: float | None = None
         self._connected_at = 0.0
         self._negotiating = False
         self._closing = False
@@ -132,7 +133,12 @@ class Driver:
                     if self._command_sequence >= 0
                     else None,
                     rejected_messages=self.peer.rejected_messages,
-                    telemetry=self.adapter.telemetry(),
+                    telemetry=self.adapter.telemetry()
+                    | (
+                        {"pilot_input_latency_ms": self._input_latency_ms}
+                        if self._input_latency_ms is not None
+                        else {}
+                    ),
                 )
             )
         except Exception:
@@ -181,6 +187,7 @@ class Driver:
                     try:
                         self._is_neutral = False
                         self.adapter.apply(self._latest)
+                        self._input_latency_ms = max(0, (time.monotonic() - self._capture) * 1000)
                         self._applied_sequence = self._latest.sequence
                         self._last_apply = now
                         self.state, self.reason = "active", "pilot input"

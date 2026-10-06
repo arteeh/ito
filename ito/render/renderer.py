@@ -65,7 +65,8 @@ class GaussianRenderer:
     def apply(self, update) -> None:
         """Scatter a bounded incremental packet on GPU; never read back the scene."""
         required = update.capacity
-        if self.fade_seconds == 0 or required > self.draw_count:
+        new_scene = self.epoch != update.epoch
+        if self.fade_seconds == 0 or new_scene or required > self.draw_count:
             capacity = max(256, 1 << max(0, required - 1).bit_length())
             limit = self.context.info["GL_MAX_SHADER_STORAGE_BLOCK_SIZE"]
             if max(required * 64, capacity * 8) > limit:
@@ -74,7 +75,7 @@ class GaussianRenderer:
             scene.clear()
             order = self.context.buffer(reserve=capacity * 8)
             if self.scene_buffer is not None:
-                if self.fade_seconds:
+                if self.fade_seconds and not new_scene:
                     self.context.copy_buffer(scene, self.scene_buffer, size=self.draw_count * 64)
                 self.scene_buffer.release()
                 self.order.release()
