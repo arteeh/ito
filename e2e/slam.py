@@ -70,14 +70,15 @@ def main():
     parser.add_argument("--mode", choices=("desktop", "xr"), default="desktop")
     parser.add_argument("--startup-timeout", type=float, default=1800)
     args = parser.parse_args()
-    if not args.cuda:
+    if args.cuda:
+        args.models = "present"
+    else:
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
     out = Path(
         "e2e/out/slam-"
         + ("cuda" if args.cuda else "no-cuda")
         + ("-xr" if args.mode == "xr" else "")
-        + "-"
-        + args.models
+        + ("-" + args.models if not args.cuda else "")
     )
     out.mkdir(parents=True, exist_ok=True)
     for capture in out.glob("capture-*.png"):
@@ -134,6 +135,10 @@ def main():
         "corrupt": f"MASt3R model checksum failed at {model}",
         "present": f"MASt3R CUDA extensions missing from {MODELS / 'native'}",
     }[args.models]
+    if not args.cuda and args.models == "present":
+        manifest = json.loads((MODELS / "manifest.json").read_text())
+        if manifest["native"]:
+            expected = "MASt3R needs an NVIDIA CUDA device and driver"
 
     def drive(app, window, value):
         nonlocal stage, changed, previous, suspended, first_position, tracked_before_stall

@@ -68,7 +68,10 @@ def main():
         )
         cases = [["--models", case] for case in ("missing", "corrupt", "present")]
         if manifest["native"]:
-            cases[-1] = ["--cuda"]
+            import torch
+
+            if torch.cuda.is_available():
+                cases[-1] = ["--cuda"]
         for args in cases:
             subprocess.run(
                 [str(python), str(ROOT / "e2e/slam.py"), *args],
