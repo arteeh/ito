@@ -203,6 +203,17 @@ def main():
             assert pilot.code == codes["rotated"]
             screenshot("rotated-paired")
             key(pygame.K_ESCAPE)
+            go("escape piloting")
+        elif stage == "escape piloting" and waited > 0.5:
+            assert connected
+            click(DISCONNECT)
+            live.clear()
+            go("escape connect")
+        elif stage == "escape connect" and waited > 0.5 and at("address"):
+            key(pygame.K_ESCAPE)
+            go("escape idle")
+        elif stage == "escape idle" and waited > 0.5:
+            pygame.event.post(pygame.event.Event(pygame.QUIT))
             go("done")
         flip()
 

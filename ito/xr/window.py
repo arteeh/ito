@@ -89,10 +89,7 @@ class XRWindow(DesktopWindow):
                 break
             events = pygame.event.get()
             if not self.xr.running:
-                if any(
-                    e.type == pygame.QUIT or (e.type == pygame.KEYDOWN and e.key == pygame.K_ESCAPE)
-                    for e in events
-                ):
+                if any(e.type == pygame.QUIT for e in events):
                     break
                 time.sleep(0.01)
                 continue

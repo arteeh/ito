@@ -30,7 +30,7 @@ The bundled simulated robot pairs automatically.
 
 Press **R** to pilot. WASD drives/turns the robot; click or Tab captures mouse-look to aim
 its head. Space stops, **E e-stops**, R resumes, Home recenters, F12 captures a screenshot,
-and Escape quits. Gamepad left stick drives, right stick looks; A resumes, B e-stops, X stops.
+and Escape releases the mouse. Close the window to quit. Gamepad left stick drives, right stick looks; A resumes, B e-stops, X stops.
 Focus loss stops motion. After a lost link Ito reconnects automatically; press R to resume.
 The ImGui overlay reports driver state, link RTT, input latency, and capture-to-visible latency.
 `--metrics path.jsonl` records these alongside display timing. Ito selects posed RGB-D when the robot advertises depth and camera pose, otherwise monocular
