@@ -3,8 +3,10 @@
 import asyncio
 import contextlib
 import logging
+import sys
 import threading
 import time
+import traceback
 from collections import deque
 from dataclasses import replace
 
@@ -34,6 +36,7 @@ class Pilot:
         self.budget_change = None
         self.worker = None
         self.worker_lock = threading.Lock()
+        self.retiring = []
         self.failure = None
         self.backend = "rgbd"
         self.reconstruction_status = ""
@@ -130,6 +133,12 @@ class Pilot:
                 return
             self._anchor(camera, peer)
 
+    def _retire(self, worker):
+        # Never on the link loop: a suspended or wedged worker takes seconds to kill.
+        closer = threading.Thread(target=worker.close, name="ito-reconstruction-close")
+        closer.start()
+        self.retiring = [thread for thread in self.retiring if thread.is_alive()] + [closer]
+
     def _anchor(self, camera, peer):
         self.camera_pose = camera
         anchor = camera.copy()
@@ -190,7 +199,6 @@ class Pilot:
         self._status("CONNECTED", "Resume to begin piloting", peer=peer)
         joined = FrameJoin()
         tasks = []
-        cleanup = []
         armed = False
         sequence = command_sequence = 0
         pending = None
@@ -256,7 +264,7 @@ class Pilot:
                         raise RuntimeError(self.failure)
                     with self.worker_lock:
                         failed, self.worker = self.worker, None
-                    cleanup.append(asyncio.create_task(asyncio.to_thread(failed.close)))
+                    self._retire(failed)
                 if now - self.last_frame > 5:
                     raise ConnectionError("No synchronized camera frames for five seconds")
                 for task in tasks:
@@ -312,12 +320,12 @@ class Pilot:
             for task in tasks:
                 task.cancel()
             try:
-                await asyncio.gather(*tasks, *cleanup, return_exceptions=True)
+                await asyncio.gather(*tasks, return_exceptions=True)
             finally:
                 with self.worker_lock:
                     worker, self.worker = self.worker, None
-                    if worker:
-                        worker.close()
+                if worker:
+                    self._retire(worker)
 
     async def _run(self):
         self.loop = asyncio.get_running_loop()
@@ -360,12 +368,19 @@ class Pilot:
         if self.thread:
             self.thread.join(timeout=12)
             if self.thread.is_alive():
+                stack = sys._current_frames().get(self.thread.ident)
+                log.error("Pilot link stuck at:\n%s", "".join(traceback.format_stack(stack)))
                 raise RuntimeError("Pilot link did not shut down")
         # Cancellation during connection setup can precede the session's cleanup block.
         with self.worker_lock:
-            if self.worker is not None:
-                worker, self.worker = self.worker, None
-                worker.close()
+            worker, self.worker = self.worker, None
+        if worker is not None:
+            self._retire(worker)
+        deadline = time.monotonic() + 8
+        for closer in self.retiring:
+            closer.join(timeout=max(0, deadline - time.monotonic()))
+            if closer.is_alive():
+                raise RuntimeError("Reconstruction worker did not shut down")
 
     def __enter__(self):
         return self.start()
