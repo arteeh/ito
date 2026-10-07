@@ -1,6 +1,5 @@
 """Nonblocking RGB-D/monocular input and incremental shared-memory scene output."""
 
-import contextlib
 import multiprocessing as mp
 import time
 
@@ -129,12 +128,11 @@ class Reconstruction:
         context = mp.get_context("spawn")
         self.status_lock = context.Lock()
         self.status_text = context.RawArray("B", 1024)
-        self.progress = context.RawValue("f", -1)
         self.output_lock = context.Lock()
         self.output_camera = context.RawArray("f", 16)
         self.tracked = context.RawValue("Q", 0)
         self.tracking = context.RawValue("b", False)
-        self.report("Starting MASt3R-SLAM" if backend == "slam" else "Posed RGB-D", -1)
+        self.report("Starting MASt3R-SLAM" if backend == "slam" else "Posed RGB-D")
         self.ring = UpdateRing(context, self.epoch, fade_seconds)
         pixels = intrinsics.width * intrinsics.height
         self.rgb = context.RawArray("B", pixels * 3)
@@ -163,13 +161,12 @@ class Reconstruction:
             raise ValueError("Max splats must be between 1 and 4,194,304")
         self.budget.value = value
 
-    def report(self, message, progress=-1):
+    def report(self, message):
         if self.status_lock.acquire(False):
             try:
                 encoded = message.encode("utf-8")[:1023]
                 self.status_text[: len(encoded)] = encoded
                 self.status_text[len(encoded)] = 0
-                self.progress.value = progress
             finally:
                 self.status_lock.release()
 
@@ -177,9 +174,7 @@ class Reconstruction:
         if not self.status_lock.acquire(False):
             return None
         try:
-            return bytes(self.status_text).split(b"\0", 1)[0].decode(
-                "utf-8", errors="replace"
-            ), self.progress.value
+            return bytes(self.status_text).split(b"\0", 1)[0].decode("utf-8", errors="replace")
         finally:
             self.status_lock.release()
 
@@ -243,24 +238,10 @@ class Reconstruction:
         if not self.closed:
             # A killed worker may leave an Event's internal condition locked forever.
             self.stopped.value = True
-            # Native extension builds spawn compilers. Own their lifetime too,
-            # including a pilot closing the app during its first CUDA build.
-            children = []
-            if self.backend == "slam":
-                with contextlib.suppress(ImportError, OSError):
-                    import psutil
-
-                    with contextlib.suppress(psutil.Error):
-                        children = psutil.Process(self.process.pid).children(recursive=True)
             self.process.join(timeout=3)
             if self.process.is_alive():
                 self.process.terminate()
                 self.process.join()
-            for child in children:
-                with contextlib.suppress(psutil.Error):
-                    child.kill()
-            if children:
-                psutil.wait_procs(children, timeout=3)
             self.errors.close()
             self.closed = True
 
