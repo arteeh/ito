@@ -230,11 +230,12 @@ class Reconstruction:
     def poll(self):
         if self.closed:
             return None
-        if self.errors.poll():
-            try:
-                message = self.errors.recv()
-            except EOFError:
-                message = "Reconstruction process exited unexpectedly"
+        try:
+            message = self.errors.recv() if self.errors.poll() else None
+        except (EOFError, OSError):
+            # A dead writer reads as EOF on POSIX and as a broken pipe on Windows.
+            message = "Reconstruction process exited unexpectedly"
+        if message is not None:
             raise RuntimeError(message)
         if not self.process.is_alive():
             raise RuntimeError(f"Reconstruction process exited ({self.process.exitcode})")
