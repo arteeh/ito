@@ -13,6 +13,9 @@ class HeadCamera(Camera):
         option.geomgroup[2] = 0
         with world.lock:
             self.renderer.update_scene(world.data, camera=self.camera, scene_option=option)
+        # MuJoCo's shadow pass produces dark floor triangles at this low camera height.
+        # Keep the head image clean without changing the viewer or the robot's physics.
+        self.renderer.scene.flags[mujoco.mjtRndFlag.mjRND_SHADOW] = False
         packed = to_uyvy(self.renderer.render())
         with self.lock:
             self.latest = packed
