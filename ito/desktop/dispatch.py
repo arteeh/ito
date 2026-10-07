@@ -31,7 +31,7 @@ class DisplayDispatch:
         self.value = None
         self.commands = []
         self.screenshot = self.quit = False
-        self.mouse_ui = self.keyboard_ui = False
+        self.keyboard_ui = self.capture_requested = False
         self.ui_commands = []
         self.failure = None
 
@@ -42,12 +42,17 @@ class DisplayDispatch:
     def sample(self, dt, on_sample):
         events = pygame.event.get()
         with self.lock:
-            mouse_ui, keyboard_ui = self.mouse_ui, self.keyboard_ui
+            keyboard_ui = self.keyboard_ui
+            capture, self.capture_requested = self.capture_requested, False
             commands, self.ui_commands = self.ui_commands, []
+        if capture and self.window.input.active:
+            self.window.input.capture(True)
         value = self.window.input.poll(
             dt,
             events,
-            mouse_ui=mouse_ui,
+            # ImGui must classify uncaptured clicks before entering mouse-look.
+            # Already captured motion and safety keys still poll independently.
+            mouse_ui=True,
             keyboard_ui=keyboard_ui and not self.window.input.captured,
         )
         value = replace(value, commands=value.commands + tuple(commands))
@@ -76,11 +81,14 @@ class DisplayDispatch:
             self.screenshot = False
         return events, value
 
-    def ui(self, io, commands):
+    def ui(self, io, commands, events=()):
         with self.lock:
-            self.mouse_ui = io.want_capture_mouse
             self.keyboard_ui = io.want_capture_keyboard
             self.ui_commands.extend(commands)
+            if not io.want_capture_mouse and not self.window.input.captured:
+                self.capture_requested |= any(
+                    event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 for event in events
+                )
 
     def run(self, draw, on_sample):
         self.sample(0, on_sample)

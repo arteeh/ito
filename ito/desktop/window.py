@@ -154,7 +154,7 @@ class DesktopWindow:
             now = time.monotonic()
             events, pilot = dispatch.frame()
             io = self.overlay.begin(events, pygame.display.get_window_size(), self.input.captured)
-            dispatch.ui(io, ())
+            dispatch.ui(io, (), events)
             if on_input is not None:
                 on_input(pilot)
             if pilot.quit or self.overlay.leave:
