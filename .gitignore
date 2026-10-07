@@ -7,3 +7,6 @@ __pycache__/
 /e2e/out/
 /models/
 /captures/
+/ito/_slam/
+/ito/.slam-build/
+/ito/.slam-e2e-saved/
