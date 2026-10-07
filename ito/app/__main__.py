@@ -196,7 +196,6 @@ def pilot_window(window, args, overrides, metrics, choice, on_frame):
                 window.overlay.leave = True
             if sim and (failure := sim.failure()):
                 window.overlay.error = failure
-            pilot.input(value)
             if on_frame:
                 on_frame(pilot, window, value)
 
@@ -204,6 +203,7 @@ def pilot_window(window, args, overrides, metrics, choice, on_frame):
             pilot,
             state=lambda: pilot.state,
             on_input=input_frame,
+            on_sample=pilot.input,
             max_frames=args.frames,
             metrics=metrics,
             save_settings=lambda _: None,

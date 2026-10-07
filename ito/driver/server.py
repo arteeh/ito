@@ -80,6 +80,11 @@ class Driver:
         )
         if self._is_neutral:
             return
+        log.info(
+            "Robot neutral: %s; input_age_ms=%.1f",
+            reason,
+            (time.monotonic() - self._capture) * 1000 if self._capture >= 0 else -1,
+        )
         self._last_neutral_attempt = time.monotonic()
         try:
             self.adapter.neutral()

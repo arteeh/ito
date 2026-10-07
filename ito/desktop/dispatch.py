@@ -1,0 +1,120 @@
+"""SDL input stays on the window thread; GL work owns the context on a worker."""
+
+import ctypes
+import sys
+import threading
+import time
+from dataclasses import replace
+from pathlib import Path
+
+import pygame
+from imgui_bundle import imgui
+
+
+class DisplayDispatch:
+    def __init__(self, window):
+        self.window = window
+        library = (
+            str(Path(pygame.__file__).parent / "SDL2.dll")
+            if sys.platform == "win32"
+            else pygame.base.__file__
+        )
+        self.sdl = ctypes.CDLL(library)
+        self.sdl.SDL_GL_GetCurrentWindow.restype = ctypes.c_void_p
+        self.sdl.SDL_GL_GetCurrentContext.restype = ctypes.c_void_p
+        self.sdl.SDL_GL_MakeCurrent.argtypes = (ctypes.c_void_p, ctypes.c_void_p)
+        self.handle = self.sdl.SDL_GL_GetCurrentWindow()
+        self.context = self.sdl.SDL_GL_GetCurrentContext()
+        self.lock = threading.Lock()
+        self.done = threading.Event()
+        self.events = []
+        self.value = None
+        self.commands = []
+        self.screenshot = self.quit = False
+        self.mouse_ui = self.keyboard_ui = False
+        self.ui_commands = []
+        self.failure = None
+
+    def bind(self, context):
+        if self.sdl.SDL_GL_MakeCurrent(self.handle, context) != 0:
+            raise RuntimeError("Could not transfer the SDL OpenGL context")
+
+    def sample(self, dt, on_sample):
+        events = pygame.event.get()
+        with self.lock:
+            mouse_ui, keyboard_ui = self.mouse_ui, self.keyboard_ui
+            commands, self.ui_commands = self.ui_commands, []
+        value = self.window.input.poll(
+            dt,
+            events,
+            mouse_ui=mouse_ui,
+            keyboard_ui=keyboard_ui and not self.window.input.captured,
+        )
+        value = replace(value, commands=value.commands + tuple(commands))
+        if on_sample:
+            on_sample(value)
+        with self.lock:
+            # A wedged display must not grow an unbounded event/command queue.
+            if len(self.events) + len(events) > 4096 or len(self.commands) > 256:
+                raise RuntimeError("Display stopped consuming pilot input")
+            self.events.extend(events)
+            self.value = value
+            self.commands.extend(value.commands)
+            self.screenshot |= value.screenshot
+            self.quit |= value.quit
+
+    def frame(self):
+        with self.lock:
+            events, self.events = self.events, []
+            value = replace(
+                self.value,
+                commands=tuple(self.commands),
+                screenshot=self.screenshot,
+                quit=self.quit,
+            )
+            self.commands.clear()
+            self.screenshot = False
+        return events, value
+
+    def ui(self, io, commands):
+        with self.lock:
+            self.mouse_ui = io.want_capture_mouse
+            self.keyboard_ui = io.want_capture_keyboard
+            self.ui_commands.extend(commands)
+
+    def run(self, draw, on_sample):
+        self.sample(0, on_sample)
+        self.bind(None)
+
+        def render():
+            try:
+                self.bind(self.context)
+                imgui.set_current_context(self.window.overlay.imgui)
+                draw()
+            except BaseException as exc:
+                self.failure = exc
+            finally:
+                try:
+                    self.bind(None)
+                finally:
+                    self.done.set()
+
+        thread = threading.Thread(target=render, name="ito-display")
+        previous = time.monotonic()
+        thread.start()
+        try:
+            while not self.done.wait(1 / 90):
+                now = time.monotonic()
+                self.sample(now - previous, on_sample)
+                previous = now
+        finally:
+            with self.lock:
+                self.quit = True
+            # Closing input always disarms, including exceptions during polling.
+            if on_sample:
+                on_sample(replace(self.value, active=False, commands=("stop",)))
+            thread.join()
+            self.bind(self.context)
+            imgui.set_current_context(self.window.overlay.imgui)
+        if self.failure:
+            raise self.failure
