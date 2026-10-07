@@ -22,6 +22,12 @@ uv run ito robot-address:8080 --mode xr                    # active OpenXR runti
 uv run ito-desktop scene.ply                              # explore a splat scene
 ```
 
+Drivers listen on all interfaces for LAN or tailnet connections and print their persisted
+pairing code at startup. Enter it once on the connect screen; Ito remembers it with the robot.
+`ito-driver-mujoco --show-code` shows it again; `--rotate-code` replaces it, including while
+the driver is running. Use the same `--pairing-file PATH` on each command if you override it.
+The bundled simulated robot pairs automatically.
+
 Press **R** to pilot. WASD drives/turns the robot; click or Tab captures mouse-look to aim
 its head. Space stops, **E e-stops**, R resumes, Home recenters, F12 captures a screenshot,
 and Escape quits. Gamepad left stick drives, right stick looks; A resumes, B e-stops, X stops.

@@ -71,14 +71,11 @@ async def serve(args) -> None:
             loop.add_signal_handler(sig, stopped.set)
         except NotImplementedError:
             pass
-    code, created = pairing.ensure(args.pairing_file)
+    code, _ = pairing.ensure(args.pairing_file)
     try:
         address = await driver.start(args.host, args.port)
         print(f"Ito driver listening at {address}", flush=True)
-        if created:
-            print(f"Pairing code: {display(code)} (the pilot enters it once)", flush=True)
-        else:
-            print(f"Pairing code unchanged; {args.prog} --show-code prints it", flush=True)
+        print(f"Pairing code: {display(code)} (the pilot enters it once)", flush=True)
         await stopped.wait()
     finally:
         await driver.close()

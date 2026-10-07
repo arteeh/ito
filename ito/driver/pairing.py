@@ -2,6 +2,7 @@
 
 import os
 import secrets
+import tempfile
 import time
 from collections import deque
 from pathlib import Path
@@ -29,11 +30,14 @@ def default_path() -> Path:
 
 def write(path: Path, code: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".tmp")
-    temporary.unlink(missing_ok=True)
-    with os.fdopen(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as f:
-        f.write(code + "\n")
-    temporary.replace(path)
+    fd, filename = tempfile.mkstemp(dir=path.parent, prefix=".pairing-")
+    temporary = Path(filename)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            stream.write(code + "\n")
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def read(path: Path) -> str:
@@ -54,7 +58,13 @@ def ensure(path: Path) -> tuple[str, bool]:
 
 
 def rotate(path: Path) -> str:
+    try:
+        previous = read(path)
+    except (FileNotFoundError, ValueError):
+        previous = None
     code = generate()
+    while code == previous:
+        code = generate()
     write(path, code)
     return code
 
