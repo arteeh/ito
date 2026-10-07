@@ -142,6 +142,9 @@ def main():
         if stage == 0 and app.matched_frames > 8 and window.renderer.count > 1000 and value.active:
             position = np.array((telemetry["base_x"], telemetry["base_y"]))
             key(pygame.K_F12)
+            stage, changed = "captured", now
+        elif stage == "captured" and now - changed > 0.6:
+            # Software stereo readback can exceed the input watchdog; resume afterward.
             key(pygame.K_r)
             key(pygame.K_w, True)
             stage, changed = 1, now
@@ -149,7 +152,7 @@ def main():
             assert (
                 np.linalg.norm(np.array((telemetry["base_x"], telemetry["base_y"])) - position)
                 > 0.2
-            )
+            ), (position, telemetry, value.movement, value.active, app.state.status.detail)
             key(pygame.K_e)
             key(pygame.K_w, False)
             stage, changed = 2, now
