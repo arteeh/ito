@@ -7,6 +7,7 @@ Use --reference-space standing to exercise room-scale reference space.
 """
 
 import argparse
+import contextlib
 import json
 import multiprocessing as mp
 import os
@@ -110,6 +111,7 @@ def main():
     stall_frames = 0
     observed_hands = set()
     ui_steps = []
+    input_stalls = {}
 
     def drive(app, window, value):
         nonlocal stage, changed, robot, position, recentered, frozen, timer
@@ -144,10 +146,62 @@ def main():
             key(pygame.K_F12)
             stage, changed = "captured", now
         elif stage == "captured" and now - changed > 0.6:
-            # Software stereo readback can exceed the input watchdog; resume afterward.
+            # Begin driving after the capture has completed.
             key(pygame.K_r)
             key(pygame.K_w, True)
             stage, changed = 1, now
+        elif stage == 1 and not input_stalls and telemetry.get("active"):
+            ages = []
+            until = time.monotonic() + 0.65
+            while time.monotonic() < until:
+                ages.append((time.monotonic() - app.latest_input.timestamp) * 1000)
+                assert ages[-1] < 200, ages[-1]
+                assert app.telemetry["active"], app.telemetry
+                time.sleep(0.01)
+            released = time.monotonic()
+            key(pygame.K_w, False)
+            while app.telemetry["left_command"] or app.telemetry["right_command"]:
+                assert time.monotonic() - released < 0.5, app.telemetry
+                time.sleep(0.01)
+            assert app.telemetry["active"], app.telemetry
+            input_stalls["render_stall_input_age_ms_max"] = max(ages)
+            input_stalls["render_stall_key_release_ms"] = (time.monotonic() - released) * 1000
+            stopped = time.monotonic()
+            key(pygame.K_e)
+            while not app.state.status.e_stop:
+                assert time.monotonic() - stopped < 0.5, app.telemetry
+                time.sleep(0.01)
+            input_stalls["render_stall_estop_ms"] = (time.monotonic() - stopped) * 1000
+            key(pygame.K_r)
+            key(pygame.K_w, True)
+            stage, changed = "sampler_stall", now
+        elif stage == "sampler_stall" and telemetry.get("active"):
+            poll = window.actions.poll
+            entered, release = threading.Event(), threading.Event()
+
+            def blocked(at):
+                assert threading.current_thread() is threading.main_thread()
+                entered.set()
+                assert release.wait(2), "Sampler stall was not released"
+                return poll(at)
+
+            window.actions.poll = blocked
+            try:
+                assert entered.wait(1), "XR sampler waited for rendering"
+                stale = app.latest_input.timestamp
+                while app.telemetry["active"]:
+                    assert time.monotonic() - stale < 0.5, app.telemetry
+                    time.sleep(0.01)
+                assert app.telemetry["left_command"] == app.telemetry["right_command"] == 0
+                input_stalls["sampler_stall_deadman_release_ms"] = (time.monotonic() - stale) * 1000
+            finally:
+                window.actions.poll = poll
+                release.set()
+            # Fresh tracking must not silently re-arm a deadman that timed out.
+            time.sleep(0.3)
+            assert not app.telemetry["active"], app.telemetry
+            key(pygame.K_r)
+            stage, changed = 1, time.monotonic()
         elif stage == 1 and now - changed > 2:
             assert (
                 np.linalg.norm(np.array((telemetry["base_x"], telemetry["base_y"])) - position)
@@ -173,16 +227,18 @@ def main():
             assert not app.state.status.e_stop
             assert app.max_splats == 8192
             key(pygame.K_F12)
+            stage, changed = "captured_scene", now
+        elif stage == "captured_scene" and window.capture_number >= 3 and now - changed > 0.6:
             frozen = psutil.Process(app.worker.process.pid)
             frozen.suspend()
-            timer = threading.Timer(2.5, frozen.resume)
+            timer = threading.Timer(10, frozen.resume)
             timer.start()
             stage, changed = 5, now
         elif stage == 5:
             if now - changed > 0.7:
                 stall_frames += 1
-            if now - changed > 2:
-                assert stall_frames >= 5, "Display waited for reconstruction"
+            assert now - changed < 8, "Display waited for reconstruction"
+            if now - changed > 2 and stall_frames >= 5:
                 if frozen:
                     frozen.resume()
                     frozen = None
@@ -234,9 +290,11 @@ def main():
         assert result == 0 and stage == 10, (result, stage)
     finally:
         if frozen:
-            frozen.resume()
+            with contextlib.suppress(psutil.NoSuchProcess):
+                frozen.resume()
         if timer:
             timer.cancel()
+            timer.join()
         if robot.poll() is None:
             robot.terminate()
             robot.wait(timeout=10)
@@ -273,6 +331,7 @@ def main():
     assert right.std() > 10, "Empty right eye"
     assert np.abs(first - right).mean() > 0.2, "Eyes rendered the same view"
     report = {
+        **input_stalls,
         "display_frames": len(rows),
         "stalled_scene_display_frames": stall_frames,
         "unchanged_scene_display_frames": frozen_frames,
