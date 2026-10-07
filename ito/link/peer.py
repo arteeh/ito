@@ -314,12 +314,14 @@ class Peer:
             self.rejected_messages += 1
             return
         rtt = (now - sent) - (message.replied - message.received)
-        if rtt < 0 or rtt > 5:
+        # Windows Python 3.12 uses 15.6 ms ticks: a LAN reply can arrive in the same tick.
+        # Its remote processing time then makes the measured RTT slightly negative.
+        if rtt < -time.get_clock_info("monotonic").resolution or rtt > 5:
             self.rejected_messages += 1
             return
         offset = ((message.received - sent) + (message.replied - now)) / 2
         self.last_received = now
-        self._samples.append((rtt, offset))
+        self._samples.append((max(0, rtt), offset))
         self.clock.rtt, self.clock.offset = min(self._samples)
         self.clock_ready.set()
 

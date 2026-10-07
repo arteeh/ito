@@ -56,6 +56,10 @@ async def connect(
             elif receive_audio:
                 peer.pc.addTransceiver("audio", direction="recvonly")
             opus(peer.pc)
+            if not ice_servers:
+                from ito.link.routing import direct_interface
+
+                await direct_interface(peer.pc, address)
             await peer.pc.setLocalDescription(await peer.pc.createOffer())
             sdp = peer.pc.localDescription.sdp
             base = address.rstrip("/")
