@@ -178,6 +178,7 @@ def pilot_window(window, args, overrides, metrics, choice, on_frame):
             code=sim.code if sim else choice.code,
         ) as pilot,
     ):
+        window.overlay.simulation = sim
         window.input.translate = False
         revision = -1
 
@@ -208,6 +209,7 @@ def pilot_window(window, args, overrides, metrics, choice, on_frame):
             metrics=metrics,
             save_settings=lambda _: None,
         )
+    window.overlay.simulation = None
     return pilot.refusal
 
 

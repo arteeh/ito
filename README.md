@@ -26,7 +26,8 @@ Drivers listen on all interfaces for LAN or tailnet connections and print their 
 pairing code at startup. Enter it once on the connect screen; Ito remembers it with the robot.
 `ito-driver-mujoco --show-code` shows it again; `--rotate-code` replaces it, including while
 the driver is running. Use the same `--pairing-file PATH` on each command if you override it.
-The bundled simulated robot pairs automatically.
+The bundled simulated robot pairs automatically and has no microphone or speaker.
+**Show simulation** opens a separate MuJoCo viewer; closing it leaves piloting connected.
 
 Press **R** to pilot. WASD moves relative to where you look; click or Tab captures mouse-look to aim
 its head. The body follows your gaze while moving and stays still while looking around.
