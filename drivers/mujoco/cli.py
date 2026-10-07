@@ -5,6 +5,7 @@ import logging
 import os
 
 from ito.driver.cli import serve
+from ito.link.audio import arguments
 
 from .adapter import ROOM
 
@@ -38,6 +39,7 @@ def main():
     parser.add_argument("--ice-server", action="append", default=[], help="STUN/TURN URL")
     parser.add_argument("--turn-username")
     parser.add_argument("--turn-credential")
+    arguments(parser, source="tone:440")
     args = parser.parse_args()
     args.adapter = "drivers.mujoco.adapter:MujocoAdapter"
     args.adapter_args = json.dumps(

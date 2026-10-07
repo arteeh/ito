@@ -59,7 +59,9 @@ class Peer:
         on_disconnect: Callable[[], None] | None = None,
         on_track: Callable[[MediaStreamTrack], None] | None = None,
         description: RobotDescription | None = None,
+        audio=None,
     ):
+        self.audio = audio
         self.role = role
         self.pc = RTCPeerConnection(RTCConfiguration(iceServers=list(ice_servers)))
         self.on_message = on_message
@@ -96,7 +98,9 @@ class Peer:
             else:
                 latest = LatestTrack(track)
                 self._media.append(latest)
-                if self.on_track:
+                if track.kind == "audio" and self.audio:
+                    self.audio.receive(latest)
+                elif self.on_track:
                     try:
                         self.on_track(latest)
                     except Exception:
@@ -333,7 +337,11 @@ class Peer:
             await asyncio.gather(*(track._task for track in self._media), return_exceptions=True)
             await self.pc.close()
         finally:
-            self.closed.set()
+            try:
+                if self.audio:
+                    await self.audio.close()
+            finally:
+                self.closed.set()
 
     async def __aenter__(self):
         return self
