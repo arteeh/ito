@@ -21,6 +21,8 @@ import numpy as np
 import pygame
 
 from ito.app.__main__ import main as pilot_main
+from ito.driver import pairing
+from ito.link.pairing import display
 
 OUT = Path("e2e/out/microduck")
 
@@ -86,6 +88,23 @@ def main():
         contextlib.ExitStack() as stack,
     ):
         state = Path(temporary)
+        code_file = state / "pairing-code"
+        show = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "drivers.microduck.cli",
+                "--pairing-file",
+                str(code_file),
+                "--show-code",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        )
+        code = pairing.read(code_file)
+        assert f"Pairing code: {display(code)}" in show.stdout
         robot_socket = state / "robot.sock"
         media_config = state / "media.toml"
         media_config.write_text('[media]\nquality = "360p30"\n')
@@ -226,6 +245,8 @@ def main():
                 "127.0.0.1",
                 "--port",
                 driver_port,
+                "--pairing-file",
+                code_file,
                 "--robot",
                 f"ws://127.0.0.1:{media_port}",
             ],
@@ -335,6 +356,8 @@ def main():
             result = pilot_main(
                 [
                     f"127.0.0.1:{driver_port}",
+                    "--code",
+                    code,
                     "--size",
                     "800",
                     "600",
@@ -350,6 +373,8 @@ def main():
             assert result == 0 and stage == 5
         finally:
             (OUT / "telemetry.json").write_text(json.dumps(telemetry) + "\n")
+        assert f"Pairing code: {display(code)}" in (OUT / "driver.log").read_text()
+        report["paired"] = True
         first, last = telemetry[0], telemetry[-1]
         realtime = (last["physical"]["sim_time"] - first["physical"]["sim_time"]) / (
             last["time"] - first["time"]
