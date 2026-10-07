@@ -286,8 +286,11 @@ async def run():
 
         await pilot.drive(1.0, turn=0.8)
         _, turned_base = await pilot.latest("turn-right")
+        _, status = await pilot.status("active")
+        assert status.telemetry["base_yaw"] < -0.45, status
+        # The base steers right while the head keeps looking in the startup direction.
         forward = -rotation(turned_base.camera_pose)[:, 2]
-        assert forward[0] > 0.45, forward
+        assert abs(forward[0]) < 0.15, forward
         await pilot.drive(0.3, forward=0.8)
         sent = time.monotonic()
         assert peer.send(Command(sequence=0, action="e-stop"))

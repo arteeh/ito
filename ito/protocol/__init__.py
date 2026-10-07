@@ -157,6 +157,7 @@ class FrameMetadata(Message):
         default=None, description="Camera-to-world pose; world anchored at robot startup"
     )
     depth: Depth | None = None
+    body_yaw: Number = Field(default=0, description="Startup-relative body yaw at exposure")
     head_angles: tuple[Number, Number] | None = Field(
         default=None, description="Measured pan and tilt in radians from this exposure"
     )

@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 
 from ito.driver import Adapter
+from ito.driver.walking import walking
 from ito.protocol import Camera, DegreeOfFreedom, Intrinsics, PilotState, Pose, RobotDescription
 
 from .camera import CameraTrack
@@ -196,6 +197,10 @@ class MujocoAdapter(Adapter):
             position=tuple(map(float, position)), orientation=tuple(map(float, quat[[1, 2, 3, 0]]))
         )
 
+    def body_yaw(self, data):
+        rotation = self._world_rotation @ data.xmat[self.base_id].reshape(3, 3) @ ITO_FROM_MJ.T
+        return math.atan2(float(rotation[0, 2]), float(rotation[2, 2]))
+
     def apply(self, state):
         self._check_fault()
         self._command = (time.monotonic(), state) if state.deadman else None
@@ -209,7 +214,12 @@ class MujocoAdapter(Adapter):
 
     def telemetry(self):
         self._check_fault()
-        return self._telemetry.copy()
+        values = self._telemetry.copy()
+        command = self._command
+        if command is None or time.monotonic() - command[0] >= self.input_timeout:
+            # Neutral is enqueued immediately; measured velocity follows on the physics tick.
+            values.update(left_command=0.0, right_command=0.0)
+        return values
 
     def media_tracks(self):
         self._check_fault()
@@ -227,20 +237,17 @@ class MujocoAdapter(Adapter):
             for index, *_ in self.wheels:
                 data.ctrl[index] = 0
             return
+        move = walking(
+            state,
+            self.body_yaw(data),
+            speed=self.speed,
+            lateral_speed=0,
+            turn_speed=self.turn_speed,
+        )
         if state.head:
-            x, y, z, w = np.array(state.head.orientation) / np.linalg.norm(state.head.orientation)
-            forward = np.array(
-                [-2 * (x * z + y * w), 2 * (x * w - y * z), -(1 - 2 * (x * x + y * y))]
-            )
-            angles = (
-                math.atan2(-forward[0], -forward[2]),
-                math.asin(float(np.clip(forward[1], -1, 1))),
-            )
-            for (index, _, low, high), angle in zip(self.head, angles, strict=True):
+            for (index, _, low, high), angle in zip(self.head, (move.pan, move.tilt), strict=True):
                 data.ctrl[index] = np.clip(angle, low, high)
-        forward = state.axes.get("move_y", 0.0) * self.speed
-        # Stick right turns right; positive MuJoCo yaw turns left.
-        turn = -state.axes.get("move_x", 0.0) * self.turn_speed
+        forward, turn = move.forward, move.turn
         velocities = (
             (forward - turn * self.axle_width / 2) / self.wheel_radius,
             (forward + turn * self.axle_width / 2) / self.wheel_radius,
@@ -266,6 +273,7 @@ class MujocoAdapter(Adapter):
                         "base_x": float(self.data.xpos[self.base_id][0]),
                         "base_y": float(self.data.xpos[self.base_id][1]),
                         "base_z": float(self.data.xpos[self.base_id][2]),
+                        "base_yaw": self.body_yaw(self.data),
                         "simulation_time": float(self.data.time),
                         "active": state is not None,
                         "head_pan": float(self.data.qpos[self.model.jnt_qposadr[self.head[0][1]]]),
