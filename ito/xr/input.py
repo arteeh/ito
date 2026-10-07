@@ -151,6 +151,7 @@ class Actions:
             self.session, xr.SessionActionSetsAttachInfo(action_sets=[self.set])
         )
         self.previous = set()
+        self.head_flags = 0
         self.focused = False
         self.aims = {}
         self.triggers = {}
@@ -212,6 +213,7 @@ class Actions:
         return None
 
     def poll(self, at):
+        sampled_at = time.monotonic()
         focused = self.owner.state == xr.SessionState.FOCUSED
         location = xr.locate_space(self.owner.head, self.owner.space, at)
         self.head_flags = location.location_flags
@@ -278,7 +280,7 @@ class Actions:
         self.previous = buttons
         self.focused = focused
         return PilotInput(
-            time.monotonic(),
+            sampled_at,
             head,
             (axes.get("left_stick_x", 0.0), 0.0, axes.get("left_stick_y", 0.0)),
             (axes.get("right_stick_x", 0.0), axes.get("right_stick_y", 0.0)),

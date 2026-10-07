@@ -3,6 +3,8 @@
 import ctypes as ct
 import logging
 import math
+import threading
+import time
 from contextlib import ExitStack, contextmanager
 
 import moderngl
@@ -15,7 +17,7 @@ log = logging.getLogger(__name__)
 
 class SDLContext:
     def make_current(self):
-        pass  # All XR and GL calls run on the SDL display thread.
+        pass  # DisplayDispatch binds the SDL context on the rendering thread.
 
 
 class Swapchain:
@@ -71,6 +73,10 @@ class Session:
         self.running = self.exiting = False
         self.state = xr.SessionState.IDLE
         self.space_changed = False
+        self.space_lock = threading.Lock()
+        self.frame_space = None
+        self.retired_space = None
+        self.clock = None
         try:
             try:
                 available = {
@@ -167,7 +173,10 @@ class Session:
 
     def _close_centered(self):
         if self.space != self.base:
-            xr.destroy_space(self.space)
+            if self.space == self.frame_space:
+                self.retired_space = self.space
+            else:
+                xr.destroy_space(self.space)
             self.space = self.base
 
     def recenter(self, at):
@@ -190,8 +199,10 @@ class Session:
                 ),
             ),
         )
-        self._close_centered()
-        self.space = centered
+        # A submitted frame retains its reference space until xrEndFrame returns.
+        with self.space_lock:
+            self._close_centered()
+            self.space = centered
         log.info("OpenXR recentered (%s)", self.reference_mode)
         return True
 
@@ -231,19 +242,29 @@ class Session:
     @contextmanager
     def frame(self):
         frame = xr.wait_frame(self.session)
+        self.clock = (frame.predicted_display_time, time.monotonic_ns())
         xr.begin_frame(self.session)
+        with self.space_lock:
+            self.frame_space = space = self.space
         layers = []
         try:
-            yield frame, layers
+            yield frame, layers, space
         finally:
-            xr.end_frame(
-                self.session,
-                xr.FrameEndInfo(
-                    display_time=frame.predicted_display_time,
-                    environment_blend_mode=self.blend,
-                    layers=[ct.byref(layer) for layer in layers],
-                ),
-            )
+            try:
+                xr.end_frame(
+                    self.session,
+                    xr.FrameEndInfo(
+                        display_time=frame.predicted_display_time,
+                        environment_blend_mode=self.blend,
+                        layers=[ct.byref(layer) for layer in layers],
+                    ),
+                )
+            finally:
+                with self.space_lock:
+                    self.frame_space = None
+                    if self.retired_space is not None:
+                        xr.destroy_space(self.retired_space)
+                        self.retired_space = None
 
     def close(self):
         self.resources.close()
