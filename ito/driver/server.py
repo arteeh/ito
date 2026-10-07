@@ -262,8 +262,11 @@ class Driver:
                 remote_media = SessionDescription.parse(offer.sdp).media
                 if len(remote_media) > 18:
                     raise ValueError("too many media tracks")
-                await peer.pc.setRemoteDescription(RTCSessionDescription(offer.sdp, "offer"))
                 tracks = list(self.adapter.media_tracks())
+                # Adapters with their own audio keep ownership of both directions.
+                if any(track.kind == "audio" for track in tracks):
+                    peer.audio = None
+                await peer.pc.setRemoteDescription(RTCSessionDescription(offer.sdp, "offer"))
                 if peer.audio:
                     await peer.audio.start()
                     if any(
