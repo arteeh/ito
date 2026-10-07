@@ -8,7 +8,6 @@ import re
 import shutil
 import sys
 import tarfile
-import tempfile
 import time
 import urllib.request
 from pathlib import Path
@@ -74,11 +73,19 @@ def source(cache, work, name, url, digest, report):
     if root.exists():
         shutil.rmtree(root)
     report(f"Preparing {name}", -1)
-    with tempfile.TemporaryDirectory(dir=cache) as temporary:
+    # Not tempfile: on Windows its owner-only ACL is inherited by everything extracted,
+    # so a release built from an elevated shell would be unreadable by the pilot.
+    staging = cache / f".{name}-extract"
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir()
+    try:
         with tarfile.open(archive) as tar:
-            tar.extractall(temporary, filter="data")
-        (extracted,) = Path(temporary).iterdir()
+            tar.extractall(staging, filter="data")
+        (extracted,) = staging.iterdir()
         extracted.rename(root)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
     return root
 
 
