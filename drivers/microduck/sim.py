@@ -76,6 +76,9 @@ def simulation(
         "OPENBLAS_NUM_THREADS": "1",
         "OMP_NUM_THREADS": "1",
     }
+    if Path("/dev/dxg").exists() and "GALLIUM_DRIVER" not in os.environ:
+        # WSL's Mesa defaults to llvmpipe; d3d12 renders the viewer and head camera on the GPU.
+        sim_env["GALLIUM_DRIVER"] = "d3d12"
     ort = list(
         (rl / ".venv/lib").glob("python*/site-packages/onnxruntime/capi/libonnxruntime.so.*")
     )
