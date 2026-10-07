@@ -69,8 +69,11 @@ class Camera:
 
     async def receive(self, track):
         while True:
-            async with asyncio.timeout(2):
-                frame = await track.recv()
+            try:
+                async with asyncio.timeout(2):
+                    frame = await track.recv()
+            except TimeoutError as exc:
+                raise RuntimeError("Microduck camera stalled for two seconds") from exc
             # mediad's WebRTC API exposes no per-frame capture timestamp. This is receive time,
             # not sensor exposure time; keep that distinction visible in telemetry.
             received = time.monotonic()
@@ -112,7 +115,10 @@ class Track(VideoStreamTrack):
         frame.time_base = Fraction(1, 90000)
         self.publish(
             FrameMetadata(
-                camera="head", sequence=self.sequence, capture_time=captured, video_pts=frame.pts
+                camera="head",
+                sequence=self.sequence,
+                capture_time=captured,
+                video_pts=frame.pts,
             )
         )
         self.sequence += 1
