@@ -74,12 +74,14 @@ def main():
     release_latency_ms = None
     estop_latency_ms = None
     tested_input_stall = False
+    steady_start = steady_end = None
 
     def drive(app, window, value):
         nonlocal stage, changed, previous, robot, killed, restarted, first_position
         nonlocal reached_stop, stall, last_revisions, worker
         nonlocal first_camera, new_surfaces
         nonlocal release_latency_ms, estop_latency_ms, tested_input_stall
+        nonlocal steady_start, steady_end
         now = time.monotonic()
         assert now - began < 65, (stage, app.state, app.telemetry)
         samples.append((now, now - previous, app.state.status.link))
@@ -90,6 +92,10 @@ def main():
             positions.append(t.copy())
         counts.append(window.renderer.count)
         if stage == 0 and app.matched_frames > 12 and window.renderer.count > 1000:
+            steady_start = now
+            stage, changed = "steady", now
+        elif stage == "steady" and now - changed > 6:
+            steady_end = now
             Window.from_display_module().focus()
             first_position = (t["base_x"], t["base_y"])
             first_camera = app.camera_pose.copy()
@@ -288,10 +294,17 @@ def main():
     # A paused/reconnecting scene repeats its last visibility measurement on
     # every display frame. Measure each exposure once, not once per redraw.
     exposures = {}
+    steady_exposures = {}
     for row in rows:
         if row["capture_to_splat_visible_ms"] is not None and row["link"] == "CONNECTED":
             exposures.setdefault(row["scene_capture_time"], row["capture_to_splat_visible_ms"])
-    visible = list(exposures.values())
+            # Measure normal pipeline latency before deliberately freezing it
+            # or blocking on screenshot readback. Retain fault-phase metrics too.
+            if steady_start <= row["time"] < steady_end:
+                steady_exposures.setdefault(
+                    row["scene_capture_time"], row["capture_to_splat_visible_ms"]
+                )
+    visible = list(steady_exposures.values())
     connected = [dt for t, dt, link in samples if link == "CONNECTED" and dt < 0.3]
     offline = [dt for t, dt, link in samples if killed + 1 < t < restarted]
     assert len(offline) > 30
@@ -311,6 +324,8 @@ def main():
     report = {
         "pilot_input_to_robot_ms_median": float(np.median(latency)),
         "camera_capture_to_splat_visible_ms_median": float(np.median(visible)),
+        "all_exposures_including_faults_ms_median": float(np.median(list(exposures.values()))),
+        "steady_exposures": len(visible),
         "connected_frame_ms_p95": float(np.percentile(connected, 95) * 1000),
         "driver_dead_frame_ms_p95": float(np.percentile(offline, 95) * 1000),
         "max_splats": max(counts),
