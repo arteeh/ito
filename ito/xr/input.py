@@ -1,12 +1,12 @@
 """Action bindings are shared across both hands; inactive tracking is never sent."""
 
 import logging
-import time
 
 import numpy as np
 import xr
 from xr.utils import Matrix4x4f
 
+from ito import clock
 from ito.desktop import PilotInput
 from ito.protocol import Pose
 from ito.render import pose
@@ -213,7 +213,7 @@ class Actions:
         return None
 
     def poll(self, at):
-        sampled_at = time.monotonic()
+        sampled_at = clock.now()
         focused = self.owner.state == xr.SessionState.FOCUSED
         location = xr.locate_space(self.owner.head, self.owner.space, at)
         self.head_flags = location.location_flags

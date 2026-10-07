@@ -6,6 +6,7 @@ import time
 
 import numpy as np
 
+from ito import clock
 from ito.protocol import Intrinsics
 from ito.render.pose import validate_pose
 
@@ -42,7 +43,7 @@ def _run(recon):
         revision = 0
         captured = recon.epoch
         while not recon.stopped.value:
-            now = time.monotonic() - recon.epoch
+            now = clock.now() - recon.epoch
             backend.expire(now, recon.ring.last_acknowledged())
             if backend.budget != recon.budget.value:
                 backend.resize(recon.budget.value, now)
@@ -131,7 +132,7 @@ class Reconstruction:
             fade_seconds=fade_seconds,
             device=device,
         )
-        self.epoch = time.monotonic()
+        self.epoch = clock.now()
         context = mp.get_context("spawn")
         self.status_lock = context.Lock()
         self.status_text = context.RawArray("B", 1024)
@@ -214,7 +215,7 @@ class Reconstruction:
             if depth is None or depth.shape != self.shape or depth.dtype != np.float32:
                 raise ValueError("RGB-D needs float32 HxW depth and camera pose from the driver")
             camera = validate_pose(camera)
-        captured_at = time.monotonic() if captured_at is None else captured_at
+        captured_at = clock.now() if captured_at is None else captured_at
         if not np.isfinite(captured_at):
             raise ValueError("Capture time must be finite")
         if not self.input_lock.acquire(False):

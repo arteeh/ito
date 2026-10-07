@@ -11,12 +11,12 @@ import os
 import subprocess
 import sys
 import threading
-import time
 from pathlib import Path
 
 import psutil
 import pygame
 
+from ito import clock
 from ito.app.__main__ import main as pilot_main
 
 OUT = Path("e2e/out/simulated")
@@ -43,15 +43,15 @@ def main():
     os.environ["XDG_CONFIG_HOME"] = os.environ["APPDATA"] = str(OUT / "config")
     if sys.platform == "linux":
         os.environ.setdefault("MUJOCO_GL", "osmesa")
-    stage, changed, began = "connecting", time.monotonic(), time.monotonic()
+    stage, changed, began = "connecting", clock.now(), clock.now()
     report = {}
 
     def go(name):
         nonlocal stage, changed
-        stage, changed = name, time.monotonic()
+        stage, changed = name, clock.now()
 
     def drive(app, window, value):
-        now = time.monotonic()
+        now = clock.now()
         waited = now - changed
         assert now - began < 120, (stage, app.state.status)
         status = app.state.status

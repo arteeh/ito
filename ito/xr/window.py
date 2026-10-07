@@ -10,7 +10,7 @@ from imgui_bundle import imgui
 from OpenGL import GL
 from xr.utils import GraphicsAPI, Matrix4x4f
 
-from ito import diagnostics
+from ito import clock, diagnostics
 from ito.desktop import DesktopWindow
 from ito.reconstruction import SplatUpdate
 from ito.render import pose
@@ -94,7 +94,7 @@ class XRWindow(DesktopWindow):
         revision = captured_at = None
         frames = 0
         request = None
-        previous = time.monotonic()
+        previous = clock.now()
         mouse_until = 0.0
         while not max_frames or frames < max_frames:
             self.xr.poll()
@@ -107,7 +107,7 @@ class XRWindow(DesktopWindow):
                 time.sleep(0.01)
                 continue
             with self.xr.frame() as (frame, layers, space):
-                now = time.monotonic()
+                now = clock.now()
                 dt = now - previous
                 previous = now
                 at = frame.predicted_display_time

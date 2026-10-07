@@ -12,13 +12,13 @@ import os
 import socket
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import psutil
 import pygame
 from OpenGL import GL
 
+from ito import clock
 from ito.app import connect
 from ito.app.__main__ import main as pilot_main
 from ito.driver import pairing
@@ -84,7 +84,7 @@ def main():
     robot = subprocess.Popen(
         driver + ["--port", str(port)], env=os.environ | gl, stdout=log, stderr=log
     )
-    stage, changed, began = "simulated", time.monotonic(), time.monotonic()
+    stage, changed, began = "simulated", clock.now(), clock.now()
     live = {}
     seen = []  # Every Pilot the app made, to read why the robot refused it.
     sims = []
@@ -96,11 +96,11 @@ def main():
 
     def go(name):
         nonlocal stage, changed
-        stage, changed = name, time.monotonic()
+        stage, changed = name, clock.now()
         connect.layout.clear()  # Only a redrawn connect screen counts as being back there.
 
     def frame():
-        now = time.monotonic()
+        now = clock.now()
         waited = now - changed
         if now - began >= 240:
             screenshot("timeout")

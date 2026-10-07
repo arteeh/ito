@@ -22,6 +22,8 @@ from pathlib import Path
 
 import psutil
 
+from ito import clock
+
 OUT = Path("e2e/out/xr")
 
 
@@ -102,7 +104,7 @@ def main():
             )
 
     robot = start_driver()
-    began = changed = time.monotonic()
+    began = changed = clock.now()
     stage = 0
     position = None
     recentered = 0
@@ -117,7 +119,7 @@ def main():
     def drive(app, window, value):
         nonlocal stage, changed, robot, position, recentered, frozen, timer
         nonlocal stall_frames
-        now = time.monotonic()
+        now = clock.now()
         assert now - began < 110, (stage, app.state, app.telemetry)
         observed_hands.update(value.hands)
         telemetry = app.telemetry
@@ -147,7 +149,7 @@ def main():
 
             def checked_capture(target, name):
                 result = capture(target, name)
-                age = (time.monotonic() - app.latest_input.timestamp) * 1000
+                age = (clock.now() - app.latest_input.timestamp) * 1000
                 capture_input_ages.append(age)
                 assert age < 200, (name, age)
                 return result
@@ -163,29 +165,29 @@ def main():
             stage, changed = 1, now
         elif stage == 1 and not input_stalls and telemetry.get("active"):
             ages = []
-            until = time.monotonic() + 0.65
-            while time.monotonic() < until:
-                ages.append((time.monotonic() - app.latest_input.timestamp) * 1000)
+            until = clock.now() + 0.65
+            while clock.now() < until:
+                ages.append((clock.now() - app.latest_input.timestamp) * 1000)
                 assert ages[-1] < 200, ages[-1]
                 assert app.telemetry["active"], app.telemetry
                 time.sleep(0.01)
-            released = time.monotonic()
+            released = clock.now()
             key(pygame.K_w, False)
             while app.telemetry["left_command"] or app.telemetry["right_command"]:
-                assert time.monotonic() - released < 0.5, app.telemetry
+                assert clock.now() - released < 0.5, app.telemetry
                 time.sleep(0.01)
             assert app.telemetry["active"], app.telemetry
             input_stalls["render_stall_input_age_ms_max"] = max(ages)
-            input_stalls["render_stall_key_release_ms"] = (time.monotonic() - released) * 1000
-            stopped = time.monotonic()
+            input_stalls["render_stall_key_release_ms"] = (clock.now() - released) * 1000
+            stopped = clock.now()
             key(pygame.K_e)
             while not app.state.status.e_stop:
-                assert time.monotonic() - stopped < 0.5, app.telemetry
+                assert clock.now() - stopped < 0.5, app.telemetry
                 time.sleep(0.01)
-            input_stalls["render_stall_estop_ms"] = (time.monotonic() - stopped) * 1000
+            input_stalls["render_stall_estop_ms"] = (clock.now() - stopped) * 1000
             key(pygame.K_r)
             key(pygame.K_w, True)
-            stage, changed = "resume_estop", time.monotonic()
+            stage, changed = "resume_estop", clock.now()
         elif stage in ("resume_estop", "resume_sampler"):
             assert now - changed < 3, (stage, app.state.status, telemetry)
             if telemetry.get("active") and not app.state.status.e_stop:
@@ -211,14 +213,14 @@ def main():
                 assert entered.wait(1), "XR sampler waited for rendering"
                 stale = app.latest_input.timestamp
                 released = None
-                while app.telemetry["active"] or time.monotonic() - stale < 0.3:
-                    assert time.monotonic() - stale < 0.5, app.telemetry
+                while app.telemetry["active"] or clock.now() - stale < 0.3:
+                    assert clock.now() - stale < 0.5, app.telemetry
                     if not app.telemetry["active"] and released is None:
-                        released = time.monotonic()
+                        released = clock.now()
                     time.sleep(0.01)
                 assert app.telemetry["left_command"] == app.telemetry["right_command"] == 0
                 input_stalls["sampler_stall_deadman_release_ms"] = (
-                    (released or time.monotonic()) - stale
+                    (released or clock.now()) - stale
                 ) * 1000
             finally:
                 window.actions.poll = poll
@@ -227,7 +229,7 @@ def main():
             time.sleep(0.3)
             assert not app.telemetry["active"], app.telemetry
             key(pygame.K_r)
-            stage, changed = "resume_sampler", time.monotonic()
+            stage, changed = "resume_sampler", clock.now()
         elif stage == 1 and now - changed > 2:
             assert (
                 np.linalg.norm(np.array((telemetry["base_x"], telemetry["base_y"])) - position)

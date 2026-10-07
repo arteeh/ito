@@ -3,7 +3,6 @@
 import asyncio
 import contextlib
 import logging
-import time
 from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -17,7 +16,7 @@ from aiortc import (
     RTCPeerConnection,
 )
 
-from ito import diagnostics
+from ito import clock, diagnostics
 from ito.link.media import LatestTrack
 from ito.protocol import (
     Command,
@@ -70,7 +69,7 @@ class Peer:
         self.on_track = on_track
         self.description = description
         self.clock = Clock()
-        self.last_received = time.monotonic()
+        self.last_received = clock.now()
         self.rejected_messages = 0
         self.dropped_messages = 0
         self.messages: asyncio.Queue[WireMessage] = asyncio.Queue(maxsize=128)
@@ -218,14 +217,14 @@ class Peer:
                 if not isinstance(message, allowed):
                     raise ProtocolError("wrong message direction or channel")
                 if isinstance(message, Ping):
-                    self.last_received = time.monotonic()
-                    received = time.monotonic()
+                    self.last_received = clock.now()
+                    received = clock.now()
                     self.send(
                         Pong(
                             sequence=message.sequence,
                             sent=message.sent,
                             received=received,
-                            replied=time.monotonic(),
+                            replied=clock.now(),
                         )
                     )
                     return
@@ -254,7 +253,7 @@ class Peer:
                         self.dropped_messages += 1
                         return
                     self.frames[message.camera] = message
-            self.last_received = time.monotonic()
+            self.last_received = clock.now()
             if self.on_message:
                 self.on_message(message)
             elif not isinstance(message, PilotState):
@@ -300,7 +299,7 @@ class Peer:
     async def _synchronize(self) -> None:
         sequence = 0
         while not self._closing:
-            sent = time.monotonic()
+            sent = clock.now()
             self._pending_pings = {s: t for s, t in self._pending_pings.items() if sent - t < 5}
             if self.send(Ping(sequence=sequence, sent=sent)):
                 self._pending_pings[sequence] = sent
@@ -309,14 +308,13 @@ class Peer:
 
     def _clock_sample(self, message: Pong) -> None:
         sent = self._pending_pings.pop(message.sequence, None)
-        now = time.monotonic()
+        now = clock.now()
         if sent is None or sent != message.sent:
             self.rejected_messages += 1
             return
         rtt = (now - sent) - (message.replied - message.received)
-        # Windows Python 3.12 uses 15.6 ms ticks: a LAN reply can arrive in the same tick.
-        # Its remote processing time then makes the measured RTT slightly negative.
-        if rtt < -time.get_clock_info("monotonic").resolution or rtt > 5:
+        # Clock granularity on either end can make a LAN round trip read slightly negative.
+        if rtt < -0.001 or rtt > 5:
             self.rejected_messages += 1
             return
         offset = ((message.received - sent) + (message.replied - now)) / 2

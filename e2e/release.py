@@ -28,6 +28,8 @@ import numpy as np
 import psutil
 import pygame
 
+from ito import clock
+
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "e2e/out/release"
 user32, gdi32, kernel32 = ctypes.windll.user32, ctypes.windll.gdi32, ctypes.windll.kernel32
@@ -110,10 +112,10 @@ class App:
         )
         App.running.append(self.process)
         self.window = None
-        deadline = time.monotonic() + 120
+        deadline = clock.now() + 120
         while self.window is None:
             self.alive()
-            assert time.monotonic() < deadline, f"{name}: no Ito window"
+            assert clock.now() < deadline, f"{name}: no Ito window"
             found = windows({p.pid for p in self.tree()})
             self.window = found[0] if found else None
             time.sleep(0.5)
@@ -140,7 +142,7 @@ class App:
         return [json.loads(line) for line in text.splitlines() if line.endswith("}")]
 
     def wait(self, label, condition, timeout, *, failed=lambda row: False):
-        deadline = time.monotonic() + timeout
+        deadline = clock.now() + timeout
         while True:
             self.alive()
             rows = self.rows()
@@ -148,7 +150,7 @@ class App:
             if rows and condition(rows):
                 log(f"{self.name}: {label}")
                 return rows
-            if time.monotonic() > deadline:
+            if clock.now() > deadline:
                 last = rows[-1] if rows else None
                 raise AssertionError(f"{self.name}: timed out waiting for {label}; last {last}")
             time.sleep(1)

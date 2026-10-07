@@ -2,7 +2,6 @@ import asyncio
 import contextlib
 import logging
 import math
-import time
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -10,6 +9,7 @@ from aiohttp import web
 from aiortc import RTCIceServer, RTCSessionDescription
 from aiortc.sdp import SessionDescription
 
+from ito import clock
 from ito.driver.adapter import Adapter
 from ito.driver.pairing import Pairing, PairingRefused, default_path
 from ito.link import Peer
@@ -85,9 +85,9 @@ class Driver:
         log.info(
             "Robot neutral: %s; input_age_ms=%.1f",
             reason,
-            (time.monotonic() - self._capture) * 1000 if self._capture >= 0 else -1,
+            (clock.now() - self._capture) * 1000 if self._capture >= 0 else -1,
         )
-        self._last_neutral_attempt = time.monotonic()
+        self._last_neutral_attempt = clock.now()
         try:
             self.adapter.neutral()
             self._is_neutral = True
@@ -106,7 +106,7 @@ class Driver:
         if isinstance(message, PilotState):
             if self.peer is None or self.peer.clock.offset is None:
                 return
-            now = time.monotonic()
+            now = clock.now()
             capture = self.peer.clock.remote_to_local(message.capture_time)
             if (
                 capture <= self._capture
@@ -135,7 +135,7 @@ class Driver:
                 self._neutral("stop")
             elif not self._fault:
                 self._stopped = self._estop = False
-                self._not_before = time.monotonic()
+                self._not_before = clock.now()
                 self._neutral("resumed; waiting for fresh deadman input")
             self._status()
 
@@ -191,7 +191,7 @@ class Driver:
     async def _run(self) -> None:
         interval = min(0.01, self.input_timeout / 4, 1 / self.command_rate)
         while True:
-            now = time.monotonic()
+            now = clock.now()
             if self._fault and not self._is_neutral:
                 if now - self._last_neutral_attempt >= 1 / self.command_rate:
                     self._neutral(self.reason)
@@ -206,7 +206,7 @@ class Driver:
                     try:
                         self._is_neutral = False
                         self.adapter.apply(self._latest)
-                        self._input_latency_ms = max(0, (time.monotonic() - self._capture) * 1000)
+                        self._input_latency_ms = max(0, (clock.now() - self._capture) * 1000)
                         self._applied_sequence = self._latest.sequence
                         self._last_apply = now
                         self.state, self.reason = "active", "pilot input"
@@ -248,7 +248,7 @@ class Driver:
         encode(description)
         self._neutral("connecting")
         self._capture = -1.0
-        self._not_before = time.monotonic()
+        self._not_before = clock.now()
         self._received = 0.0
         self._command_sequence = self._applied_sequence = -1
         peer = Peer(
@@ -261,7 +261,7 @@ class Driver:
             on_track=lambda track: audio_received(track),
         )
         self.peer = peer
-        self._connected_at = time.monotonic()
+        self._connected_at = clock.now()
         self._negotiating = True
 
         def audio_received(track):

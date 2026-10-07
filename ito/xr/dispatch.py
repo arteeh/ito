@@ -1,11 +1,11 @@
 """Sample XR on the session-creation thread, independently of GPU and frame waits."""
 
-import time
 from dataclasses import replace
 
 import numpy as np
 import pygame
 
+from ito import clock
 from ito.desktop.dispatch import DisplayDispatch
 
 
@@ -22,12 +22,12 @@ class XRDispatch(DisplayDispatch):
         desktop = super().poll(dt, events, keyboard_ui, commands)
         window = self.window
         owner = window.xr
-        clock = owner.clock
-        if not owner.running or clock is None:
+        timing = owner.clock
+        if not owner.running or timing is None:
             return replace(desktop, active=False)
         # Advance the runtime's clock even when xrWaitFrame or GPU work stalls.
         # This is a new tracking query, never a re-timestamped cached input sample.
-        at = clock[0] + time.monotonic_ns() - clock[1]
+        at = timing[0] + clock.now_ns() - timing[1]
         changed_space = owner.space_changed and at >= owner.space_changed
         keyboard_center = any(e.type == pygame.KEYDOWN and e.key == pygame.K_HOME for e in events)
         if not window.centered or self.recenter or keyboard_center or changed_space:

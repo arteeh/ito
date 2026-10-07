@@ -1,11 +1,12 @@
 """OpenGL 4.3 renderer. No CUDA, CPU sorting, or GPU readback in the draw path."""
 
-import time
 from importlib.resources import files
 
 import moderngl
 import numpy as np
 from OpenGL import GL
+
+from ito import clock
 
 from .pose import validate_pose
 from .scene import FloatArray, GaussianBuffer
@@ -94,7 +95,7 @@ class GaussianRenderer:
         records = update.records.copy()
         retiring = records[:, 3, 3] == 1
         records[retiring, 1, 3] = np.minimum(
-            records[retiring, 1, 3], time.monotonic() - self.epoch + self.fade_seconds
+            records[retiring, 1, 3], clock.now() - self.epoch + self.fade_seconds
         )
         self.changes.write(records)
         self.slots.write(update.indices)
@@ -175,7 +176,7 @@ class GaussianRenderer:
         self.program["projection"].write(projection.T.copy())
         self.program["eye"] = tuple(world_from_eye[:3, 3])
         self.program["viewport"] = viewport[2:]
-        self.program["scene_time"] = time.monotonic() - self.epoch if self.fade_seconds else 0
+        self.program["scene_time"] = clock.now() - self.epoch if self.fade_seconds else 0
         self.program["fade_seconds"] = self.fade_seconds
         self.program["stride"] = self.stride
         self.program["sh_degree"] = self.degree

@@ -5,12 +5,11 @@ import contextlib
 import logging
 import sys
 import threading
-import time
 import traceback
 from collections import deque
 from dataclasses import replace
 
-from ito import diagnostics
+from ito import clock, diagnostics
 from ito.desktop import DesktopState, PilotStatus
 from ito.link import PairingError, connect
 from ito.link.audio import Audio
@@ -161,17 +160,17 @@ class Pilot:
         if pair is None:
             return
         captured = peer.clock.remote_to_local(pair[1].capture_time)
-        if captured <= self.state.video_time or not -0.1 <= time.monotonic() - captured <= 2:
+        if captured <= self.state.video_time or not -0.1 <= clock.now() - captured <= 2:
             diagnostics.event(
                 "frame_rejected",
                 interval=1,
                 sequence=pair[1].sequence,
                 out_of_order=captured <= self.state.video_time,
-                age_ms=(time.monotonic() - captured) * 1000,
+                age_ms=(clock.now() - captured) * 1000,
             )
             return
         rgb, depth, camera, _ = FrameJoin.arrays(pair, peer.clock)
-        self.last_frame = time.monotonic()
+        self.last_frame = clock.now()
         self.state = replace(self.state, video=rgb, video_time=captured)
         if self.backend == "rgbd" and camera is not None:
             self._anchor(camera, pair[1].head_angles, pair[1].body_yaw)
@@ -186,7 +185,7 @@ class Pilot:
             return
         if accepted:
             self.matched_frames += 1
-            self.last_frame = time.monotonic()
+            self.last_frame = clock.now()
             self.frame_heads.append((captured, pair[1].head_angles, pair[1].body_yaw))
 
     def _retire(self, worker):
@@ -269,7 +268,7 @@ class Pilot:
         previous_fresh = None
         sequence = command_sequence = 0
         pending = None
-        last_status = time.monotonic()
+        last_status = clock.now()
         self.last_frame = last_status
 
         async def messages():
@@ -279,7 +278,7 @@ class Pilot:
                 if isinstance(message, FrameMetadata) and message.camera == camera.name:
                     self._submit(joined.described(message), peer)
                 elif isinstance(message, Status):
-                    last_status = time.monotonic()
+                    last_status = clock.now()
                     self.telemetry = message.telemetry
                     if pending and message.command_sequence == pending.sequence:
                         pending = None
@@ -300,10 +299,10 @@ class Pilot:
                     track.stop()
 
         tasks.extend([asyncio.create_task(messages()), asyncio.create_task(tracks())])
-        deadline = time.monotonic()
+        deadline = clock.now()
         try:
             while not self.stop.is_set():
-                now = time.monotonic()
+                now = clock.now()
                 if not peer.connected or now - last_status > 2:
                     raise ConnectionError("Driver status lost; input disarmed")
                 if self.worker and not self.failure:
@@ -421,7 +420,7 @@ class Pilot:
                     )
                     sequence += 1
                 deadline = max(deadline + 1 / 60, now)
-                await asyncio.sleep(max(0, deadline - time.monotonic()))
+                await asyncio.sleep(max(0, deadline - clock.now()))
         finally:
             peer.send(Command(sequence=command_sequence, action="stop"))
             for task in tasks:
@@ -498,10 +497,10 @@ class Pilot:
             worker, self.worker = self.worker, None
         if worker is not None:
             self._retire(worker)
-        deadline = time.monotonic() + 8
+        deadline = clock.now() + 8
         for closer in self.retiring:
             with diagnostics.stage("reconstruction"):
-                closer.join(timeout=max(0, deadline - time.monotonic()))
+                closer.join(timeout=max(0, deadline - clock.now()))
             if closer.is_alive():
                 raise RuntimeError("Reconstruction worker did not shut down")
 

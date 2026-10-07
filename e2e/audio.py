@@ -29,7 +29,7 @@ import numpy as np
 import psutil
 import pygame
 
-from ito import diagnostics
+from ito import clock, diagnostics
 from ito.app.__main__ import main as pilot_main
 from ito.driver import pairing
 
@@ -102,23 +102,23 @@ def phase(name):
             stdout=log,
             stderr=log,
         )
-        start = time.monotonic()
+        start = clock.now()
         stage, changed = "connecting", start
         closing = None
         jitter = None
 
         def go(next_stage):
             nonlocal stage, changed
-            stage, changed = next_stage, time.monotonic()
+            stage, changed = next_stage, clock.now()
 
         def drive(app, window, value):
             nonlocal closing, jitter
             if diagnostics.current().enabled:
                 report["diagnostic_run"] = diagnostics.current().run_id
-            waited = time.monotonic() - changed
+            waited = clock.now() - changed
             status = app.state.status
             layout = window.overlay.layout
-            assert time.monotonic() - start < 40, (stage, status)
+            assert clock.now() - start < 40, (stage, status)
             if stage == "connecting":
                 if status.link == "CONNECTED" and waited > 3:
                     if name == "missing":
@@ -182,7 +182,7 @@ def phase(name):
                     freeze()
                 go("close")
             elif stage == "close" and waited > 1:
-                closing = time.monotonic()
+                closing = clock.now()
                 pygame.event.post(pygame.event.Event(pygame.QUIT))
                 go("closed")
 
@@ -193,7 +193,7 @@ def phase(name):
                 arguments += ["--audio-source", "tone:880"]
                 arguments += ["--audio-sink", str(OUT / "pilot.wav")]
             result = pilot_main(arguments, on_frame=drive)
-            closed = time.monotonic()
+            closed = clock.now()
             assert not errors.messages, errors.messages
             if "diagnostic_run" in report:
                 path = OUT / "config/ito/diagnostics.jsonl"
@@ -245,7 +245,7 @@ def freeze():
 
 
 def run(name, env=None):
-    started = time.monotonic()
+    started = clock.now()
     process = subprocess.run(
         [sys.executable, __file__, "--phase", name],
         env=os.environ | (env or {}),
@@ -257,7 +257,7 @@ def run(name, env=None):
     # The process exits once its window closes, even with a stalled audio service.
     assert process.returncode == 0, f"{name} failed; see {OUT / f'{name}.log'}"
     lines = [line for line in process.stdout.splitlines() if line.startswith("REPORT ")]
-    return json.loads(lines[-1][7:]) | {"process_s": time.monotonic() - started}
+    return json.loads(lines[-1][7:]) | {"process_s": clock.now() - started}
 
 
 def devices_available():

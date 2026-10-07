@@ -3,12 +3,12 @@ import asyncio
 import base64
 import json
 import random
-import time
 import zlib
 
 from aiortc import AudioStreamTrack
 from aiortc.mediastreams import MediaStreamError
 
+from ito import clock
 from ito.link import connect
 from ito.protocol import Command, PilotState, Pose, Status
 
@@ -44,7 +44,7 @@ async def run(address: str, code: str):
             sequence += 1
             return PilotState(
                 sequence=sequence,
-                capture_time=time.monotonic() if capture is None else capture,
+                capture_time=clock.now() if capture is None else capture,
                 deadman=deadman,
                 head=Pose(position=(0.1, 0.2, 0.3)),
                 hands={"left": Pose()},
@@ -54,8 +54,8 @@ async def run(address: str, code: str):
             )
 
         async def drive(duration=0.5, deadman=True):
-            deadline = time.monotonic() + duration
-            while time.monotonic() < deadline:
+            deadline = clock.now() + duration
+            while clock.now() < deadline:
                 peer.send(state(deadman))
                 await asyncio.sleep(0.01)
 
@@ -85,7 +85,7 @@ async def run(address: str, code: str):
             assert metadata.depth.to_bytes() == b"\xe8\x03" * (160 * 120)
             assert peer.description.cameras[0].track_id == "front-video"
             assert peer.clock.rtt is not None and peer.clock.rtt < 0.2
-            assert abs(time.monotonic() - peer.clock.remote_to_local(metadata.capture_time)) < 2
+            assert abs(clock.now() - peer.clock.remote_to_local(metadata.capture_time)) < 2
 
             released = state(False)
             peer.send(released)
@@ -152,7 +152,7 @@ async def run(address: str, code: str):
                         "type": "frame",
                         "camera": "front",
                         "sequence": 1,
-                        "capture_time": time.monotonic(),
+                        "capture_time": clock.now(),
                         "depth": {
                             "width": 1,
                             "height": 1,
@@ -168,7 +168,7 @@ async def run(address: str, code: str):
             # New sequence with old capture time must neither actuate nor refresh deadman.
             await drive(0.3)
             await status(lambda s: s.state == "active")
-            peer.send(state(capture=time.monotonic() - 10))
+            peer.send(state(capture=clock.now() - 10))
             await status(lambda s: s.state == "neutral" and s.reason == "input timeout")
             await drive(0.4)
             await status(lambda s: s.state == "active")

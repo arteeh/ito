@@ -3,7 +3,6 @@
 import json
 import logging
 import math
-import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -12,7 +11,7 @@ from typing import TextIO
 import pygame
 from OpenGL import GL
 
-from ito import diagnostics
+from ito import clock, diagnostics
 from ito.reconstruction import SplatUpdate, default_budget
 from ito.render import GaussianRenderer, SceneSource, current_context, perspective, pose
 from ito.render.scene import FloatArray
@@ -143,7 +142,7 @@ class DesktopWindow:
             if source.max_splats > self.splat_limit:
                 raise ValueError(f"This GPU supports at most {self.splat_limit:,} splats")
             self.overlay.max_splats = source.max_splats
-        clock = pygame.time.Clock()
+        pacing = pygame.time.Clock()
         revision = None
         captured_at = None
         visible_capture = None
@@ -152,7 +151,7 @@ class DesktopWindow:
         next_metric = 0.0
         request = None
         while not max_frames or frames < max_frames:
-            now = time.monotonic()
+            now = clock.now()
             events, pilot = dispatch.frame()
             io = self.overlay.begin(events, pygame.display.get_window_size(), self.input.captured)
             dispatch.ui(io, (), events)
@@ -189,7 +188,7 @@ class DesktopWindow:
             age = None if visible_time is None else max(0, now - visible_time)
             budget = self.overlay.draw(
                 current.status,
-                clock.get_fps(),
+                pacing.get_fps(),
                 self.renderer.count,
                 age,
                 self.input.captured,
@@ -217,13 +216,13 @@ class DesktopWindow:
             pygame.display.flip()
             if captured_at is not None and captured_at != visible_capture:
                 visible_capture = captured_at
-                capture_to_visible_ms = max(0, (time.monotonic() - captured_at) * 1000)
+                capture_to_visible_ms = max(0, (clock.now() - captured_at) * 1000)
             frames += 1
             diagnostics.event(
                 "display_frame",
                 interval=1,
                 frame=frames,
-                frame_ms=(time.monotonic() - now) * 1000,
+                frame_ms=(clock.now() - now) * 1000,
                 revision=revision,
                 capture_time=visible_time,
                 capture_age_ms=None if age is None else age * 1000,
@@ -234,8 +233,8 @@ class DesktopWindow:
                         {
                             "frame": frames,
                             "time": now,
-                            "fps": clock.get_fps(),
-                            "frame_ms": (time.monotonic() - now) * 1000,
+                            "fps": pacing.get_fps(),
+                            "frame_ms": (clock.now() - now) * 1000,
                             "gaussians": self.renderer.count,
                             "revision": revision,
                             "head": pilot.head.tolist(),
@@ -263,7 +262,7 @@ class DesktopWindow:
                 )
                 metrics.flush()
                 next_metric = now + 0.5
-            clock.tick(self.fps)
+            pacing.tick(self.fps)
 
     def draw_view(self, current, head, projection, target, viewport):
         if current.flat_video:

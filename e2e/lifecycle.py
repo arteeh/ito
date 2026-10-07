@@ -7,12 +7,12 @@ import os
 import signal
 import sys
 import tempfile
-import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from webrtc import ROOT, events, line
 
+from ito import clock
 from ito.driver import pairing
 from ito.link import connect
 from ito.protocol import Command, PilotState, Status
@@ -73,11 +73,11 @@ async def fresh_peer(address):
 
 async def drive(peer, start=0, duration=0.4):
     sequence = start
-    deadline = time.monotonic() + duration
-    while time.monotonic() < deadline:
+    deadline = clock.now() + duration
+    while clock.now() < deadline:
         sequence += 1
         assert peer.connected
-        peer.send(PilotState(sequence=sequence, capture_time=time.monotonic(), deadman=True))
+        peer.send(PilotState(sequence=sequence, capture_time=clock.now(), deadman=True))
         await asyncio.sleep(0.015)
     return sequence
 
@@ -139,7 +139,7 @@ async def run():
                 "applied"
             ] == count
             # A state captured before resume, but delivered afterward, must not actuate.
-            delayed = PilotState(sequence=1000, capture_time=time.monotonic(), deadman=True)
+            delayed = PilotState(sequence=1000, capture_time=clock.now(), deadman=True)
             assert peer.send(Command(sequence=0, action="resume"))
             await status(peer, lambda s: s.command_sequence == 0 and s.state == "neutral")
             assert peer.send(delayed)
@@ -148,12 +148,12 @@ async def run():
             sequence = await drive(peer, 1000)
             await status(peer, lambda s: s.state == "active")
             # An older sequence with a fresh timestamp cannot override current input.
-            older = PilotState(sequence=999, capture_time=time.monotonic(), deadman=False)
+            older = PilotState(sequence=999, capture_time=clock.now(), deadman=False)
             peer.pilot.send(older.model_dump_json())
             await drive(peer, sequence, 0.15)
             assert not peer.closed.is_set()
             # Losing reliable control neutralizes immediately, even if pilot state is alive.
-            closed_at = time.monotonic()
+            closed_at = clock.now()
             peer.control.close()
             async with asyncio.timeout(2):
                 await peer.closed.wait()

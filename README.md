@@ -73,7 +73,7 @@ Defaults are 16K for software rendering, 256K for hardware, or 1M with at least 
 
 `ito.reconstruction.Reconstruction(intrinsics, max_splats=window.max_splats)` accepts synchronized
 `submit(rgb_uint8, depth_float32_metres, world_from_camera, capture_time)` frames and is a live
-source for `DesktopWindow.run()`. Capture times use the pilot monotonic clock; poses use +Y up,
+source for `DesktopWindow.run()`. Capture times use the pilot clock (`ito.clock.now`); poses use +Y up,
 -Z forward. Use it as a context manager to own its worker process. Input drops when busy;
 changed slots coalesce in a bounded shared-memory ring. `uv sync --extra cuda` enables CUDA
 projection/voxelization on NVIDIA; the default automatically falls back to NumPy on CPU.

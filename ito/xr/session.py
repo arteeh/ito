@@ -4,13 +4,14 @@ import ctypes as ct
 import logging
 import math
 import threading
-import time
 from contextlib import ExitStack, contextmanager
 
 import moderngl
 import xr
 from OpenGL import GL
 from xr.utils.gl import OpenGLGraphics
+
+from ito import clock
 
 log = logging.getLogger(__name__)
 
@@ -242,7 +243,7 @@ class Session:
     @contextmanager
     def frame(self):
         frame = xr.wait_frame(self.session)
-        self.clock = (frame.predicted_display_time, time.monotonic_ns())
+        self.clock = (frame.predicted_display_time, clock.now_ns())
         xr.begin_frame(self.session)
         with self.space_lock:
             self.frame_space = space = self.space

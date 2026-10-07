@@ -6,11 +6,11 @@ import os
 import signal
 import sys
 import tempfile
-import time
 from pathlib import Path
 
 import aiohttp
 
+from ito import clock
 from ito.driver import pairing
 from ito.link.pairing import proof
 
@@ -108,7 +108,7 @@ async def run():
                 async with session.post(address + "/offer", json=busy) as response:
                     assert response.status == 409
             await asyncio.sleep(0.15)
-            killed_at = time.monotonic()
+            killed_at = clock.now()
             pilot.kill()
             await pilot.wait()
             async with asyncio.timeout(2):
