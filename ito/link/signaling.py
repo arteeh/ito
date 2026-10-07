@@ -5,6 +5,7 @@ import aiohttp
 from aiortc import MediaStreamTrack, RTCIceServer, RTCSessionDescription
 from pydantic import Field, ValidationError
 
+from ito.link.audio import opus
 from ito.link.peer import Peer
 from ito.protocol import VERSION, Model
 
@@ -20,6 +21,7 @@ async def connect(
     *,
     video_tracks: int = 1,
     receive_audio: bool = True,
+    audio_io=None,
     audio: MediaStreamTrack | None = None,
     ice_servers: Sequence[RTCIceServer] = (),
     connect_timeout: float = 15,
@@ -31,15 +33,19 @@ async def connect(
         raise ValueError("pilot outgoing track must be audio")
     if "://" not in address:
         address = "http://" + address
-    peer = Peer("pilot", ice_servers=ice_servers)
+    peer = Peer("pilot", ice_servers=ice_servers, audio=audio_io)
     try:
         async with asyncio.timeout(connect_timeout):
             for _ in range(video_tracks):
                 peer.pc.addTransceiver("video", direction="recvonly")
+            if audio_io is not None:
+                await audio_io.start()
+                audio = audio_io.track
             if audio is not None:
                 peer.pc.addTrack(audio)
             elif receive_audio:
                 peer.pc.addTransceiver("audio", direction="recvonly")
+            opus(peer.pc)
             await peer.pc.setLocalDescription(await peer.pc.createOffer())
             async with aiohttp.ClientSession() as session:
                 offer = Offer(version=VERSION, type="offer", sdp=peer.pc.localDescription.sdp)

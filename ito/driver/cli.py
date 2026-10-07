@@ -8,6 +8,7 @@ import signal
 from aiortc import RTCIceServer
 
 from ito.driver import Adapter, Driver
+from ito.link.audio import arguments
 
 
 async def serve(args) -> None:
@@ -25,6 +26,8 @@ async def serve(args) -> None:
     ]
     driver = Driver(
         adapter,
+        audio_source=args.audio_source,
+        audio_sink=args.audio_sink,
         input_timeout=args.input_timeout,
         command_rate=args.command_rate,
         ice_servers=ice_servers,
@@ -55,6 +58,7 @@ def main() -> None:
     parser.add_argument("--ice-server", action="append", default=[], help="STUN/TURN URL")
     parser.add_argument("--turn-username")
     parser.add_argument("--turn-credential")
+    arguments(parser)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
     try:

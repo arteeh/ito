@@ -11,6 +11,7 @@ from aiortc.sdp import SessionDescription
 
 from ito.driver.adapter import Adapter
 from ito.link import Peer
+from ito.link.audio import Audio, opus
 from ito.link.signaling import parse_offer
 from ito.protocol import Command, FrameMetadata, PilotState, Status, WireMessage, encode
 
@@ -22,6 +23,8 @@ class Driver:
         self,
         adapter: Adapter,
         *,
+        audio_source: str | None = None,
+        audio_sink: str = "device",
         input_timeout: float = 0.25,
         command_rate: float = 90,
         ice_servers: Sequence[RTCIceServer] = (),
@@ -30,6 +33,9 @@ class Driver:
             raise ValueError("input_timeout must be between 0.02 and 5 seconds")
         if not math.isfinite(command_rate) or not 1 <= command_rate <= 240:
             raise ValueError("command_rate must be between 1 and 240 Hz")
+        if audio_source is not None:
+            Audio(audio_source, audio_sink)  # Reject invalid CLI sources before serving.
+        self.audio_source, self.audio_sink = audio_source, audio_sink
         self.adapter = adapter
         adapter.frame_sink = self.publish_frame
         self.input_timeout = input_timeout
@@ -134,6 +140,7 @@ class Driver:
                     else None,
                     rejected_messages=self.peer.rejected_messages,
                     telemetry=self.adapter.telemetry()
+                    | ({"audio": self.peer.audio.status} if self.peer.audio else {})
                     | (
                         {"pilot_input_latency_ms": self._input_latency_ms}
                         if self._input_latency_ms is not None
@@ -227,6 +234,7 @@ class Driver:
         peer = Peer(
             "driver",
             description=description,
+            audio=Audio(self.audio_source, self.audio_sink) if self.audio_source else None,
             ice_servers=self.ice_servers,
             on_message=lambda message: self._message(peer, message),
             on_disconnect=lambda: self._disconnect(peer),
@@ -256,6 +264,13 @@ class Driver:
                     raise ValueError("too many media tracks")
                 await peer.pc.setRemoteDescription(RTCSessionDescription(offer.sdp, "offer"))
                 tracks = list(self.adapter.media_tracks())
+                if peer.audio:
+                    await peer.audio.start()
+                    if any(
+                        m.kind == "audio" and m.direction in {"recvonly", "sendrecv"}
+                        for m in remote_media
+                    ):
+                        tracks.append(peer.audio.track)
                 video = [track for track in tracks if track.kind == "video"]
                 if len(video) != len(description.cameras) or {track.id for track in video} != {
                     c.track_id for c in description.cameras
@@ -271,6 +286,7 @@ class Driver:
                         raise ValueError(f"pilot must offer {outgoing} receiving {kind} tracks")
                 for track in tracks:
                     peer.pc.addTrack(track)
+                opus(peer.pc)
                 await peer.pc.setLocalDescription(await peer.pc.createAnswer())
             return web.json_response(
                 {"version": 1, "type": "answer", "sdp": peer.pc.localDescription.sdp}
