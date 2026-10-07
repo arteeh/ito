@@ -42,7 +42,7 @@ Every commit says who made it:
 
 GitHub noreply addresses only; never a personal email or an internal host name. A local
 `commit-msg` hook adds the trailers (the agent's from `ITO_AGENT_COAUTHOR`), so agents leave them
-out of their commit messages.
+out of their commit messages. Never bypass it (`--no-verify`, `core.hooksPath`).
 
 ## Architecture
 
