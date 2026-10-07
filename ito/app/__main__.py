@@ -49,7 +49,7 @@ def configure_logging():
 
 
 def main(argv=None, *, on_frame=None):
-    parser = argparse.ArgumentParser(description="Pilot one Ito robot")
+    parser = argparse.ArgumentParser(prog="ito", description="Pilot one Ito robot")
     parser.add_argument(
         "address", nargs="?", help="driver host:port or HTTP(S) URL (omit to choose on screen)"
     )
