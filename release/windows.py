@@ -18,6 +18,7 @@ plain interpreter with ordinary site-packages runs exactly what was tested from 
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -94,6 +95,15 @@ def models(stage, source):
     for name, size in manifest["files"].items():
         if (target / name).stat().st_size != size:
             raise SystemExit(f"Damaged model file: {target / name}")
+    # SLAM only runs on GPUs the kernels were compiled for (or can JIT from PTX).
+    for name in manifest["native"].values():
+        found = []
+        for kind in ("elf", "ptx"):
+            listing = subprocess.run(
+                ["cuobjdump", f"--list-{kind}", target / name], capture_output=True, text=True
+            ).stdout
+            found += [f"{arch} {kind}" for arch in sorted(set(re.findall(r"sm_\d+", listing)))]
+        print(f"{name} CUDA code: {', '.join(found) or 'none found'}", flush=True)
 
 
 def check(stage):
