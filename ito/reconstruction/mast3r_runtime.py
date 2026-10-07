@@ -110,7 +110,11 @@ def load_model(weights, report):
 
         # No from_pretrained/hub path, pickle checkpoint, cache or runtime writes.
         model = AsymmetricMASt3R(**json.loads((weights / "config.json").read_text()))
-        model.load_state_dict(load_file(weights / "model.safetensors"), strict=True)
+        result = model.load_state_dict(load_file(weights / "model.safetensors"), strict=False)
+        # Safetensors stores each shared tensor once; DPT's layer_rn list aliases layerN_rn.
+        missing = [key for key in result.missing_keys if ".dpt.scratch.layer_rn." not in key]
+        if missing or result.unexpected_keys:
+            raise RuntimeError(f"weights do not match MASt3R: {missing + result.unexpected_keys}")
         return model.eval().to("cuda")
     except (ImportError, OSError, ValueError, RuntimeError) as exc:
         raise RuntimeError(f"MASt3R model could not load from {weights}") from exc
