@@ -14,9 +14,19 @@ from ito.driver.adapter import Adapter
 from ito.driver.pairing import Pairing, PairingRefused, default_path
 from ito.link import Peer
 from ito.link.audio import Audio, opus
-from ito.link.pairing import proof
+from ito.link.pairing import proof, token
 from ito.link.signaling import parse_offer
-from ito.protocol import Command, FrameMetadata, PilotState, Status, WireMessage, encode
+from ito.protocol import (
+    VERSION,
+    Command,
+    Credential,
+    FrameMetadata,
+    Paired,
+    PilotState,
+    Status,
+    WireMessage,
+    encode,
+)
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +58,7 @@ class Driver:
         self.command_rate = command_rate
         self.ice_servers = ice_servers
         self.pairing = Pairing(pairing_file or default_path())
+        self._pairing_code: str | None = None  # The code the current pilot paired with.
         self.peer: Peer | None = None
         self.state = "neutral"
         self.reason = "waiting for pilot"
@@ -121,6 +132,17 @@ class Driver:
                 self._neutral("deadman released")
             elif not (self._estop or self._stopped or self._fault):
                 self._latest = message
+        elif isinstance(message, Paired):
+            credential = peer.credential
+            if self._pairing_code and credential and message.pilot == credential.pilot:
+                code, self._pairing_code = self._pairing_code, None
+                try:
+                    self.pairing.paired(code, credential.pilot, credential.secret)
+                    log.info("Pilot paired; the pairing code is used up")
+                except (OSError, ValueError):
+                    log.exception("Cannot store the pilot's credential; the code stays valid")
+            else:
+                peer.rejected_messages += 1
         elif isinstance(message, Command):
             if message.sequence <= self._command_sequence:
                 if self.peer:
@@ -238,7 +260,9 @@ class Driver:
         if self._closing:
             raise web.HTTPServiceUnavailable()
         try:
-            code = self.pairing.check(offer.nonce, offer.proof, offer.sdp)
+            grant = self.pairing.check(
+                offer.nonce, offer.proof, offer.sdp, offer.pilot, request.remote or ""
+            )
         except PairingRefused as refused:
             log.warning("Refused pilot at %s: %s", request.remote, refused)
             return web.Response(status=refused.status, text=str(refused))
@@ -254,6 +278,7 @@ class Driver:
         peer = Peer(
             "driver",
             description=description,
+            credential=Credential(pilot=token(), secret=token()) if grant.code else None,
             audio=Audio(self.audio_source, self.audio_sink) if self.audio_source else None,
             ice_servers=self.ice_servers,
             on_message=lambda message: self._message(peer, message),
@@ -261,6 +286,7 @@ class Driver:
             on_track=lambda track: audio_received(track),
         )
         self.peer = peer
+        self._pairing_code = grant.code
         self._connected_at = clock.now()
         self._negotiating = True
 
@@ -323,10 +349,10 @@ class Driver:
             sdp = peer.pc.localDescription.sdp
             return web.json_response(
                 {
-                    "version": 1,
+                    "version": VERSION,
                     "type": "answer",
                     "sdp": sdp,
-                    "proof": proof(code, offer.nonce, "answer", sdp),
+                    "proof": proof(grant.key, offer.nonce, "answer", sdp),
                 }
             )
         except asyncio.CancelledError:

@@ -10,13 +10,14 @@ from aiortc.mediastreams import MediaStreamError
 
 from ito import clock
 from ito.link import connect
-from ito.protocol import Command, PilotState, Pose, Status
+from ito.protocol import VERSION, Command, Paired, PilotState, Pose, Status
 
 
 async def run(address: str, code: str):
     async with await connect(address, audio=AudioStreamTrack(), code=code) as peer:
         assert peer.control.ordered and peer.control.maxRetransmits is None
         assert not peer.pilot.ordered and peer.pilot.maxRetransmits == 0
+        assert peer.send(Paired(pilot=peer.credential.pilot))
         frames = {"video": 0, "audio": 0}
         luma = set()
         sequence = 0
@@ -119,7 +120,7 @@ async def run(address: str, code: str):
                 json.dumps({k: v for k, v in valid.items() if k != "version"}),
             ]
             changes = {
-                "version": [0, 2, True, "1", None],
+                "version": [0, 1, VERSION + 1, True, "2", None],
                 "type": ["robot", "unknown", 42],
                 "deadman": [1, "true", None],
                 "sequence": [-1, 1.5, "4"],
@@ -141,14 +142,16 @@ async def run(address: str, code: str):
                 await asyncio.sleep(0.002)
             peer.control.send(state().model_dump_json())
             peer.control.send(
-                json.dumps({"version": 2, "type": "command", "sequence": 500, "action": "resume"})
+                json.dumps(
+                    {"version": VERSION + 1, "type": "command", "sequence": 500, "action": "resume"}
+                )
             )
             peer.control.send("x" * 1_500_001)
             # A decompression bomb is rejected by the real driver decoder before direction checks.
             peer.control.send(
                 json.dumps(
                     {
-                        "version": 1,
+                        "version": VERSION,
                         "type": "frame",
                         "camera": "front",
                         "sequence": 1,
@@ -181,6 +184,7 @@ async def run(address: str, code: str):
                         "rejected": rejected.rejected_messages,
                         "rtt": peer.clock.rtt,
                         "offset": peer.clock.offset,
+                        "credential": peer.credential.model_dump(include={"pilot", "secret"}),
                     }
                 ),
                 flush=True,

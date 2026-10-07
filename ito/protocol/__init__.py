@@ -1,4 +1,4 @@
-"""Wire v1: metres, xyzw rotations, and local monotonic seconds for timestamps."""
+"""Wire v2: metres, xyzw rotations, and local monotonic seconds for timestamps."""
 
 import base64
 import zlib
@@ -15,12 +15,13 @@ from pydantic import (
     model_validator,
 )
 
-VERSION = 1
+VERSION = 2
 MAX_MESSAGE_BYTES = 1_500_000
 Number = Annotated[float, Field(allow_inf_nan=False)]
 Time = Annotated[Number, Field(ge=0)]
 Sequence = Annotated[int, Field(ge=0, le=2**53 - 1)]
 Name = Annotated[str, Field(min_length=1, max_length=128)]
+Token = Annotated[str, Field(pattern="^[0-9a-f]{32}$")]
 
 
 class Model(BaseModel):
@@ -76,7 +77,7 @@ class DegreeOfFreedom(Model):
 
 
 class Message(Model):
-    version: Literal[1] = VERSION
+    version: Literal[2] = VERSION
 
     @model_validator(mode="after")
     def wire_version(self, info: ValidationInfo) -> Self:
@@ -183,6 +184,25 @@ class Command(Message):
     action: Literal["stop", "e-stop", "resume"]
 
 
+class Credential(Message):
+    """The driver's answer to a correct pairing code: a 128-bit secret for this pilot alone.
+
+    It only travels over the DTLS-encrypted data channel. Later offers prove the secret
+    instead of the guessable six-digit code.
+    """
+
+    type: Literal["credential"] = "credential"
+    pilot: Token
+    secret: Token
+
+
+class Paired(Message):
+    """The pilot stored its credential; the driver may retire the pairing code."""
+
+    type: Literal["paired"] = "paired"
+    pilot: Token
+
+
 class Status(Message):
     type: Literal["status"] = "status"
     state: Literal["neutral", "active", "stopped", "e-stopped", "fault"]
@@ -219,7 +239,15 @@ class Pong(Message):
 
 
 WireMessage = Annotated[
-    RobotDescription | FrameMetadata | PilotState | Command | Status | Ping | Pong,
+    RobotDescription
+    | FrameMetadata
+    | PilotState
+    | Command
+    | Credential
+    | Paired
+    | Status
+    | Ping
+    | Pong,
     Field(discriminator="type"),
 ]
 _adapter = TypeAdapter(WireMessage)

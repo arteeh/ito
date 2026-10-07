@@ -20,7 +20,9 @@ from ito import clock, diagnostics
 from ito.link.media import LatestTrack
 from ito.protocol import (
     Command,
+    Credential,
     FrameMetadata,
+    Paired,
     PilotState,
     Ping,
     Pong,
@@ -59,6 +61,7 @@ class Peer:
         on_disconnect: Callable[[], None] | None = None,
         on_track: Callable[[MediaStreamTrack], None] | None = None,
         description: RobotDescription | None = None,
+        credential: Credential | None = None,
         audio=None,
     ):
         self.audio = audio
@@ -68,6 +71,8 @@ class Peer:
         self.on_disconnect = on_disconnect
         self.on_track = on_track
         self.description = description
+        # The driver sends a new pilot its credential; the pilot keeps the one it received.
+        self.credential = credential
         self.clock = Clock()
         self.last_received = clock.now()
         self.rejected_messages = 0
@@ -82,6 +87,7 @@ class Peer:
         self.closed = asyncio.Event()
         self.robot_received = asyncio.Event()
         self.clock_ready = asyncio.Event()
+        self.credential_received = asyncio.Event()
         self._clock_task: asyncio.Task | None = None
         self._closing = False
         self._disconnect_notified = False
@@ -194,6 +200,8 @@ class Peer:
         self.ready.set()
         if self.role == "driver" and self.description:
             self.send(self.description)
+        if self.role == "driver" and self.credential:
+            self.send(self.credential)
         self._clock_task = asyncio.create_task(self._synchronize())
 
     def _receive(self, label: str, data: str | bytes) -> None:
@@ -210,12 +218,18 @@ class Peer:
                 self._pilot_sequence = message.sequence
             else:
                 allowed = (
-                    (Command, Ping, Pong)
+                    (Command, Paired, Ping, Pong)
                     if self.role == "driver"
-                    else (RobotDescription, FrameMetadata, Status, Ping, Pong)
+                    else (RobotDescription, FrameMetadata, Credential, Status, Ping, Pong)
                 )
                 if not isinstance(message, allowed):
                     raise ProtocolError("wrong message direction or channel")
+                if isinstance(message, Credential):
+                    if self.credential_received.is_set():
+                        raise ProtocolError("one credential per connection")
+                    self.credential = message
+                    self.credential_received.set()
+                    return
                 if isinstance(message, Ping):
                     self.last_received = clock.now()
                     received = clock.now()
@@ -276,9 +290,9 @@ class Peer:
             limit = 0
         else:
             allowed = (
-                (Command, Ping, Pong)
+                (Command, Paired, Ping, Pong)
                 if self.role == "pilot"
-                else (RobotDescription, FrameMetadata, Status, Ping, Pong)
+                else (RobotDescription, FrameMetadata, Credential, Status, Ping, Pong)
             )
             if not isinstance(message, allowed):
                 raise ValueError("wrong message direction")

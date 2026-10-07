@@ -56,7 +56,7 @@ def main(argv=None, *, on_frame=None):
         "address", nargs="?", help="driver host:port or HTTP(S) URL (omit to choose on screen)"
     )
     parser.add_argument("--sim", action="store_true", help="pilot the bundled simulated robot")
-    parser.add_argument("--code", help="the robot's pairing code (remembered after it connects)")
+    parser.add_argument("--code", help="the robot's pairing code (needed once per robot)")
     parser.add_argument("--mode", choices=("desktop", "xr"), default="desktop")
     parser.add_argument("--reference-space", choices=("seated", "standing"), default="seated")
     parser.add_argument(
@@ -93,9 +93,8 @@ def main(argv=None, *, on_frame=None):
     }
     # Without an address or --sim, the pilot picks a robot on screen and can come back to it.
     choosing = args.address is None and not args.sim
-    if args.address and code is None:
-        code = settings.code(args.address)
-    choice = connect.Choice(args.address, args.mode == "xr", code)
+    credential = settings.credential(args.address) if args.address else None
+    choice = connect.Choice(args.address, args.mode == "xr", code, credential)
     window = window_mode = error = pairing = None
 
     def open_window(mode):
@@ -150,8 +149,6 @@ def main(argv=None, *, on_frame=None):
                 refusal = pilot_window(window, args, overrides, metrics, choice, on_frame)
                 if refusal:
                     # Ask for the code on the connect screen, whichever way ito started.
-                    if choice.code:
-                        settings.forget_code(choice.address)
                     choosing, pairing, error = True, choice.address, refusal
                     continue
                 if not window.overlay.leave:
@@ -182,6 +179,7 @@ def pilot_window(window, args, overrides, metrics, choice, on_frame):
             audio_sink=args.audio_sink,
             persist=sim is None,
             code=sim.code if sim else choice.code,
+            credential=None if sim else choice.credential,
         ) as pilot,
     ):
         window.overlay.simulation = sim
