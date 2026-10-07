@@ -1,0 +1,34 @@
+# A robot-only distribution: no renderer, CUDA, headset or simulation dependencies.
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ito-driver-microduck"
+version = "1.0.0"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "aiortc==1.14.0",
+    "aiohttp==3.13.3",
+    "pydantic==2.12.5",
+    "numpy==2.2.6",
+    "opencv-python-headless==4.11.0.86",
+    "sounddevice==0.5.5",
+]
+
+[project.scripts]
+ito-driver-microduck = "drivers.microduck.cli:main"
+
+[tool.hatch.build.targets.wheel]
+bypass-selection = true
+dev-mode-dirs = ["../.."]
+
+[tool.hatch.build.targets.wheel.force-include]
+"../../ito" = "ito"
+"../__init__.py" = "drivers/__init__.py"
+"__init__.py" = "drivers/microduck/__init__.py"
+"adapter.py" = "drivers/microduck/adapter.py"
+"camera.py" = "drivers/microduck/camera.py"
+"remote.py" = "drivers/microduck/remote.py"
+"cli.py" = "drivers/microduck/cli.py"
+
