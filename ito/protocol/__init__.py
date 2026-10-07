@@ -157,6 +157,9 @@ class FrameMetadata(Message):
         default=None, description="Camera-to-world pose; world anchored at robot startup"
     )
     depth: Depth | None = None
+    head_angles: tuple[Number, Number] | None = Field(
+        default=None, description="Measured pan and tilt in radians from this exposure"
+    )
 
 
 class PilotState(Message):
