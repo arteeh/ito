@@ -3,6 +3,8 @@
 import hashlib
 import json
 import logging
+import os
+import tempfile
 from typing import Literal
 
 from pydantic import Field, model_validator
@@ -79,22 +81,33 @@ def recent():
         return []
 
 
+def canonical(address):
+    return address.removeprefix("http://").rstrip("/")
+
+
 def code(address):
     """The pairing code that last let this pilot in at address."""
-    return next((e["code"] for e in recent() if e["address"] == address), None)
+    return next(
+        (e["code"] for e in recent() if canonical(e["address"]) == canonical(address)), None
+    )
 
 
 def remember(address, name, code):
-    entries = [e for e in recent() if e["address"] != address]
+    entries = [e for e in recent() if canonical(e["address"]) != canonical(address)]
     _write_recent([{"address": address, "name": name, "code": code}, *entries])
 
 
 def forget_code(address):
     """A refused code is asked for again instead of being retried."""
     entries = recent()
-    if any(e["address"] == address and e["code"] for e in entries):
+    if any(canonical(e["address"]) == canonical(address) and e["code"] for e in entries):
         try:
-            _write_recent([e | {"code": None} if e["address"] == address else e for e in entries])
+            _write_recent(
+                [
+                    e | {"code": None} if canonical(e["address"]) == canonical(address) else e
+                    for e in entries
+                ]
+            )
         except OSError as exc:
             logging.getLogger(__name__).warning("Cannot forget pairing code: %s", exc)
 
@@ -102,6 +115,11 @@ def forget_code(address):
 def _write_recent(entries):
     path = recent_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(entries[:RECENT]))
-    temporary.replace(path)
+    fd, filename = tempfile.mkstemp(dir=path.parent, prefix=".recent-")
+    temporary = type(path)(filename)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            stream.write(json.dumps(entries[:RECENT]))
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)

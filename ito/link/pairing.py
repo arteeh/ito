@@ -24,7 +24,7 @@ def generate() -> str:
 def normalize(code: str) -> str | None:
     """Accept what a pilot types ("482 913", "482-913"); None if it cannot be a code."""
     digits = re.sub(r"[\s-]", "", code)
-    return digits if re.fullmatch(rf"\d{{{DIGITS}}}", digits) else None
+    return digits if re.fullmatch(rf"[0-9]{{{DIGITS}}}", digits) else None
 
 
 def display(code: str) -> str:

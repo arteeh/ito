@@ -4,6 +4,8 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
+from pathlib import Path
 
 from ito.desktop.settings import settings_path
 from ito.driver import pairing
@@ -17,8 +19,9 @@ class SimulatedRobot:
         self.address = f"127.0.0.1:{port}"
         self.log = settings_path().parent / "simulated-robot.log"
         self.log.parent.mkdir(parents=True, exist_ok=True)
-        # A fresh code per run pairs this pilot without a prompt and nothing else on the PC.
-        code_file = self.log.with_name("simulated-robot.code")
+        # Each launched robot has its own code, including concurrent app instances.
+        self._directory = tempfile.TemporaryDirectory(prefix="ito-sim-")
+        code_file = Path(self._directory.name) / "pairing-code"
         self.code = pairing.rotate(code_file)
         with self.log.open("w") as log:
             self.process = subprocess.Popen(
@@ -42,6 +45,7 @@ class SimulatedRobot:
         except subprocess.TimeoutExpired:
             self.process.kill()
             self.process.wait(5)
+        self._directory.cleanup()
 
     def __enter__(self):
         return self
