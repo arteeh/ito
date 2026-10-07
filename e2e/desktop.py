@@ -42,6 +42,12 @@ def main():
         key(pygame.K_F12)
         key(pygame.K_F12, False)
 
+    def sample(pilot):
+        # Input now advances at its own rate: slow drawing must not walk past
+        # the sculptures just because the next screenshot takes more frames.
+        if pygame.K_w in window.input.keys and pilot.head[2, 3] < -1:
+            key(pygame.K_w, False)
+
     def drive(pilot):
         nonlocal ticks
         ticks += 1
@@ -87,7 +93,7 @@ def main():
         metrics.open("w") as log,
         DesktopWindow((960, 720), fps=60, capture_dir=captures) as window,
     ):
-        window.run(FileScene(scene), on_input=drive, metrics=log, max_frames=150)
+        window.run(FileScene(scene), on_input=drive, on_sample=sample, metrics=log, max_frames=150)
 
     def read(number):
         path = captures / f"capture-{number:03d}.png"
