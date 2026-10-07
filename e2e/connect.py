@@ -89,7 +89,6 @@ def main():
     seen = []  # Every Pilot the app made, to read why the robot refused it.
     sims = []
     codes = {}
-    pair = None
     flip = pygame.display.flip
 
     def at(name):
@@ -101,10 +100,11 @@ def main():
         connect.layout.clear()  # Only a redrawn connect screen counts as being back there.
 
     def frame():
-        nonlocal pair
         now = time.monotonic()
         waited = now - changed
-        assert now - began < 240, f"stuck at stage {stage}"
+        if now - began >= 240:
+            screenshot("timeout")
+            raise AssertionError(f"stuck at stage {stage}")
         pilot, window = live.get("pilot"), live.get("window")
         connected = pilot and pilot.state.status.link == "CONNECTED"
         scene = connected and window.renderer.count > 1000
@@ -151,15 +151,14 @@ def main():
         elif stage == "wrong code" and waited > 0.3:
             key(pygame.K_RETURN)
             go("wrong code refused")
-        elif stage == "wrong code refused" and len(seen) == 3 and at("code"):
-            pair = at("pair")
+        elif stage == "wrong code refused" and len(seen) == 3 and at("code") and waited > 0.5:
             assert seen[-1].refusal == "Wrong pairing code", seen[-1].refusal
             assert not any(e.get("code") for e in json.loads(recent.read_text()))
             screenshot("wrong-code")
             type_text(codes["first"][:3] + "-" + codes["first"][3:])
             go("correct code")
         elif stage == "correct code" and waited > 0.3:
-            click(pair)
+            click(at("pair"))
             go("paired")
         elif stage == "paired" and scene:
             assert pilot.address == address and pilot.code == codes["first"], pilot.address
