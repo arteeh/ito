@@ -38,6 +38,8 @@ slam = [
     "torch==2.5.1; python_version < '3.13'",
     "torchvision==0.20.1; python_version < '3.13'",
     "cupy-cuda12x==13.6.0",
+    # CuPy compiles with torch's NVRTC; these CUDA headers spare pilots the CUDA Toolkit.
+    "nvidia-cuda-runtime-cu12==12.4.127",
     "einops==0.8.1",
     "huggingface-hub==0.30.2",
     "safetensors==0.5.3",
