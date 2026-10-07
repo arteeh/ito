@@ -36,8 +36,15 @@ class Overlay:
         self.error = None
         self.commands = []
         self.can_leave = self.leave = False  # Disconnect returns to the connect screen.
+        self.captured = False
+        self.layout = {}  # Where the last frame drew each control, so e2e clicks what pilots see.
 
     def begin(self, events, size, captured, *, pointer=None):
+        io = self.backend.io
+        if captured != self.captured:
+            # The hidden cursor must not hover controls; on release it is back where SDL left it.
+            io.add_mouse_pos_event(*((-imgui.FLT_MAX,) * 2 if captured else pygame.mouse.get_pos()))
+            self.captured = captured
         for event in events:
             if event.type == pygame.VIDEORESIZE:
                 continue  # SDL owns the context; resizing must not recreate it.
@@ -46,11 +53,9 @@ class Overlay:
                 continue
             if event.type == pygame.KEYDOWN:
                 event.unicode = ""  # SDL TEXTINPUT also supports composed keyboard text.
-            if captured and event.type in (
-                pygame.MOUSEMOTION,
-                pygame.MOUSEBUTTONDOWN,
-                pygame.MOUSEBUTTONUP,
-            ):
+            # Releases still reach ImGui: the click that starts mouse-look is released while
+            # captured, and a button ImGui believes held swallows every later click.
+            if captured and event.type in (pygame.MOUSEMOTION, pygame.MOUSEBUTTONDOWN):
                 continue
             self.backend.process_event(event)
         self.backend.io.display_size = size
@@ -124,10 +129,12 @@ class Overlay:
                 imgui.same_line()
             if imgui.button(label):
                 self.commands.append(command)
+            self._placed(command)
         if self.can_leave:
             imgui.same_line()
             if imgui.button("Disconnect"):
                 self.leave = True
+            self._placed("disconnect")
         if request:
             imgui.text(request)
         if status.detail:
@@ -151,6 +158,7 @@ class Overlay:
                 changed, _ = imgui.checkbox(label, muted)
                 if changed:
                     self.commands.append(command)
+                self._placed(command)
                 imgui.same_line()
             imgui.new_line()
         if self.error:
@@ -158,6 +166,10 @@ class Overlay:
         imgui.end()
         self.render()
         return selected
+
+    def _placed(self, name):
+        low, high = imgui.get_item_rect_min(), imgui.get_item_rect_max()
+        self.layout[name] = ((low.x + high.x) / 2, (low.y + high.y) / 2)
 
     def render(self):
         imgui.render()
