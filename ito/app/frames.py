@@ -4,6 +4,7 @@ import time
 
 import numpy as np
 
+from ito import diagnostics
 from ito.render import pose
 
 
@@ -38,7 +39,15 @@ class FrameJoin:
         _, frame = self.video.pop(stamp)
         _, metadata = self.metadata.pop(stamp)
         if metadata.capture_time <= self.last_capture:
+            diagnostics.event("frame_out_of_order", interval=1, sequence=metadata.sequence)
             return None
+        diagnostics.event(
+            "frame_join",
+            interval=1,
+            sequence=metadata.sequence,
+            capture_time=metadata.capture_time,
+            video_pts=stamp,
+        )
         self.last_capture = metadata.capture_time
         for pending in (self.video, self.metadata):
             for old in list(pending):

@@ -10,6 +10,7 @@ from imgui_bundle import imgui
 from OpenGL import GL
 from xr.utils import GraphicsAPI, Matrix4x4f
 
+from ito import diagnostics
 from ito.desktop import DesktopWindow
 from ito.reconstruction import SplatUpdate
 from ito.render import pose
@@ -256,6 +257,17 @@ class XRWindow(DesktopWindow):
                         )
                     )
                 frames += 1
+                diagnostics.event(
+                    "display_frame",
+                    interval=1,
+                    frame=frames,
+                    frame_ms=dt * 1000,
+                    revision=revision,
+                    capture_time=captured_at,
+                    predicted_display_time=at,
+                    should_render=bool(frame.should_render),
+                    rendered=rendered,
+                )
                 if metrics:
                     metrics.write(
                         json.dumps(

@@ -12,6 +12,7 @@ from typing import TextIO
 import pygame
 from OpenGL import GL
 
+from ito import diagnostics
 from ito.reconstruction import SplatUpdate, default_budget
 from ito.render import GaussianRenderer, SceneSource, current_context, perspective, pose
 from ito.render.scene import FloatArray
@@ -218,6 +219,15 @@ class DesktopWindow:
                 visible_capture = captured_at
                 capture_to_visible_ms = max(0, (time.monotonic() - captured_at) * 1000)
             frames += 1
+            diagnostics.event(
+                "display_frame",
+                interval=1,
+                frame=frames,
+                frame_ms=(time.monotonic() - now) * 1000,
+                revision=revision,
+                capture_time=visible_time,
+                capture_age_ms=None if age is None else age * 1000,
+            )
             if metrics is not None and (now >= next_metric or pilot.commands or capture):
                 metrics.write(
                     json.dumps(

@@ -23,6 +23,7 @@ def driver_arguments(parser) -> None:
     parser.add_argument("--turn-username")
     parser.add_argument("--turn-credential")
     parser.add_argument("--pairing-file", type=Path, default=pairing.default_path())
+    parser.add_argument("--hide-code", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--show-code", action="store_true", help="print the pairing code, exit")
     parser.add_argument(
         "--rotate-code",
@@ -75,7 +76,8 @@ async def serve(args) -> None:
     try:
         address = await driver.start(args.host, args.port)
         print(f"Ito driver listening at {address}", flush=True)
-        print(f"Pairing code: {display(code)} (the pilot enters it once)", flush=True)
+        if not args.hide_code:
+            print(f"Pairing code: {display(code)} (the pilot enters it once)", flush=True)
         await stopped.wait()
     finally:
         await driver.close()

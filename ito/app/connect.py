@@ -121,6 +121,7 @@ def choose(window, *, xr=False, error=None, pairing=None):
             placed("simulated")
         if headset:
             _, xr = imgui.checkbox("Pilot in VR headset", xr)
+        window.overlay.diagnostic_controls()
         if error:
             imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + 380)
             imgui.text_colored((1, 0.45, 0.4, 1), error)

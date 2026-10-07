@@ -8,6 +8,7 @@ import numpy as np
 import pygame
 from pygame._sdl2 import controller
 
+from ito import diagnostics
 from ito.protocol import Pose
 from ito.render import pose
 from ito.render.scene import FloatArray
@@ -57,6 +58,8 @@ class DesktopInput:
                 break
 
     def capture(self, enabled: bool) -> None:
+        if enabled != self.captured:
+            diagnostics.event("input_capture", captured=enabled)
         self.captured = enabled
         pygame.event.set_grab(enabled)
         pygame.mouse.set_visible(not enabled)

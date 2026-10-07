@@ -7,6 +7,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from ito import diagnostics
 from ito.desktop.settings import settings_path
 from ito.driver import pairing
 
@@ -34,7 +35,7 @@ class SimulatedRobot:
                 + ["--pairing-file", str(code_file), "--viewer-state", str(self.viewer_state)]
                 # It runs on the pilot's own PC: a robot microphone would hear the pilot's
                 # room and its speaker would play the pilot back to themselves.
-                + ["--audio-source", "none", "--audio-sink", "none"],
+                + ["--audio-source", "none", "--audio-sink", "none", "--hide-code"],
                 stdin=subprocess.DEVNULL,
                 stdout=log,
                 stderr=subprocess.STDOUT,
@@ -77,14 +78,15 @@ class SimulatedRobot:
         return None if code is None else f"Simulated robot stopped ({code}); see {self.log}"
 
     def close(self):
-        self.show(False)
-        for viewer in self.retired_viewers:
-            try:
-                viewer.wait(3)
-            except subprocess.TimeoutExpired:
-                viewer.kill()
-                viewer.wait(3)
-        self.retired_viewers.clear()
+        with diagnostics.stage("simulation_viewer"):
+            self.show(False)
+            for viewer in self.retired_viewers:
+                try:
+                    viewer.wait(3)
+                except subprocess.TimeoutExpired:
+                    viewer.kill()
+                    viewer.wait(3)
+            self.retired_viewers.clear()
         self.process.terminate()
         try:
             self.process.wait(5)

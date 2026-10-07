@@ -17,6 +17,7 @@ from aiortc import (
     RTCPeerConnection,
 )
 
+from ito import diagnostics
 from ito.link.media import LatestTrack
 from ito.protocol import (
     Command,
@@ -113,6 +114,7 @@ class Peer:
 
         @self.pc.on("connectionstatechange")
         async def connection_changed():
+            diagnostics.event("peer_state", role=self.role, state=self.pc.connectionState)
             if self.pc.connectionState in {"failed", "closed"}:
                 await self.close()
 
@@ -335,11 +337,13 @@ class Peer:
             for track in self._media:
                 track.stop()
             await asyncio.gather(*(track._task for track in self._media), return_exceptions=True)
-            await self.pc.close()
+            with diagnostics.stage("webrtc"):
+                await self.pc.close()
         finally:
             try:
                 if self.audio:
-                    await self.audio.close()
+                    with diagnostics.stage("audio"):
+                        await self.audio.close()
             finally:
                 self.closed.set()
 

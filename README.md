@@ -30,7 +30,8 @@ The bundled simulated robot pairs automatically and has no microphone or speaker
 **Show simulation** opens a separate MuJoCo viewer; closing it leaves piloting connected.
 
 Press **R** to pilot. WASD moves relative to where you look; click or Tab captures mouse-look to aim
-its head. The body follows your gaze while moving and stays still while looking around.
+its head. The body follows your gaze while moving. Standing still, it turns only far enough
+to reach a gaze beyond the head's pan limit.
 Differential-drive robots steer into sideways movement. Space stops, **E e-stops**, R resumes, Home recenters, F12 captures a screenshot,
 and Escape releases the mouse. Close the window to quit. Gamepad left stick moves, right
 stick looks; A resumes, B e-stops, X stops.
@@ -40,6 +41,11 @@ The ImGui overlay reports driver state, link RTT, input latency, and capture-to-
 MASt3R-SLAM; `--mode desktop` is the default. `--reconstruction auto|rgbd|slam|video` saves a
 per-robot override. Missing CUDA, loading, lost tracking and SLAM failures show a flat live
 camera panel in desktop and VR, with the reason in ImGui; controls stay connected.
+
+**Diagnostic logging** is off by default. Toggle it in the panel, or set `ITO_DEBUG=1` to
+force it on (`0` forces it off). `diagnostics.jsonl` beside the settings file retains up to
+8 MiB across four rotating files, with run/build IDs and operational timings and counters.
+It excludes pairing codes, credentials, media and input contents; hover the toggle for its path.
 
 XR uses the active OpenXR runtime (SteamVR, Virtual Desktop/VDXR, or Monado) and OpenGL 4.3.
 Use `--reference-space seated` (default) or `standing` after room setup. Each eye renders at

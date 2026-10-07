@@ -9,6 +9,7 @@ from pathlib import Path
 import moderngl
 import pygame
 
+from ito import diagnostics
 from ito.desktop import DesktopWindow
 from ito.desktop.settings import settings_path
 from ito.link.audio import Audio, arguments
@@ -84,6 +85,7 @@ def main(argv=None, *, on_frame=None):
     if code is not None and (code := normalize(code)) is None:
         parser.error(f"a pairing code is {DIGITS} digits")
     configure_logging()
+    diagnostics.current()
     overrides = {
         key: getattr(args, key)
         for key in Settings.model_fields
@@ -159,8 +161,12 @@ def main(argv=None, *, on_frame=None):
         alert(str(exc))
         return 1
     finally:
-        if window:
-            window.close()
+        try:
+            if window:
+                with diagnostics.stage("window"):
+                    window.close()
+        finally:
+            diagnostics.close()
 
 
 def pilot_window(window, args, overrides, metrics, choice, on_frame):
