@@ -13,14 +13,19 @@ from pathlib import Path
 
 from webrtc import ROOT, events, line
 
+from ito.driver import pairing
 from ito.link import connect
 from ito.protocol import Command, PilotState, Status
+
+CODE = "246813"
 
 
 @asynccontextmanager
 async def robot(**options):
     with tempfile.TemporaryDirectory(prefix="ito-lifecycle-") as directory:
         journal = Path(directory) / "robot.jsonl"
+        code_file = Path(directory) / "pairing-code"
+        pairing.write(code_file, CODE)
         env = os.environ | {"PYTHONPATH": str(ROOT) + os.pathsep + str(ROOT / "e2e")}
         driver = await asyncio.create_subprocess_exec(
             sys.executable,
@@ -31,6 +36,8 @@ async def robot(**options):
             json.dumps({"journal": str(journal), **options}),
             "--port",
             "0",
+            "--pairing-file",
+            str(code_file),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
             env=env,
@@ -59,7 +66,7 @@ async def fresh_peer(address):
     async with asyncio.timeout(5):
         while True:
             try:
-                return await connect(address)
+                return await connect(address, code=CODE)
             except ConnectionError:
                 await asyncio.sleep(0.05)
 
@@ -81,6 +88,7 @@ async def run():
             sys.executable,
             str(ROOT / "e2e" / "link_monitor.py"),
             address,
+            CODE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=ROOT,
@@ -100,7 +108,7 @@ async def run():
                 await monitor.wait()
         # A failed media offer must release its peer and camera resources.
         with contextlib.suppress(ConnectionError):
-            bad = await connect(address, video_tracks=0)
+            bad = await connect(address, video_tracks=0, code=CODE)
             await bad.close()
             raise AssertionError("offer without receiving camera unexpectedly succeeded")
         async with await fresh_peer(address) as peer:
@@ -159,7 +167,7 @@ async def run():
 
     for failure in ("fail_apply", "fail_telemetry", "fail_neutral_once"):
         async with robot(**{failure: True}) as (address, journal, driver):
-            async with await connect(address) as peer:
+            async with await connect(address, code=CODE) as peer:
                 await drive(peer)
                 await status(peer, lambda s: s.state == "fault")
                 assert peer.send(Command(sequence=0, action="resume"))

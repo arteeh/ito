@@ -16,6 +16,7 @@ import numpy as np
 import pygame
 
 from ito.app.__main__ import main as pilot_main
+from ito.driver import pairing
 
 OUT = Path("e2e/out/audio")
 
@@ -48,6 +49,8 @@ def run(devices=False):
         sock.bind(("127.0.0.1", 0))
         port = str(sock.getsockname()[1])
     label = "devices" if devices else "tones"
+    code_file = OUT / f"{label}-pairing-code"
+    code = pairing.rotate(code_file)
     with (OUT / f"{label}-driver.log").open("w") as log:
         driver = subprocess.Popen(
             [
@@ -56,6 +59,8 @@ def run(devices=False):
                 "drivers.mujoco.cli",
                 "--port",
                 port,
+                "--pairing-file",
+                str(code_file),
                 "--audio-source",
                 "device" if devices else "tone:440",
                 "--audio-sink",
@@ -124,6 +129,8 @@ def run(devices=False):
                 pilot_main(
                     [
                         f"127.0.0.1:{port}",
+                        "--code",
+                        code,
                         "--size",
                         "800",
                         "600",

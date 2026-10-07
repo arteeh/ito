@@ -60,6 +60,7 @@ def main():
     from pygame._sdl2 import Window
 
     from ito.app.__main__ import main as pilot_main
+    from ito.driver import pairing
 
     for path in OUT.glob("capture-*.png"):
         path.unlink()
@@ -68,6 +69,8 @@ def main():
         port.bind(("127.0.0.1", 0))
         address = f"127.0.0.1:{port.getsockname()[1]}"
     driver_log = (OUT / "driver.log").open("w")
+    code_file = OUT / "pairing-code"
+    code = pairing.rotate(code_file)
 
     def start_driver():
         env = dict(os.environ)
@@ -83,6 +86,8 @@ def main():
                 address.split(":")[1],
                 "--gl",
                 gl,
+                "--pairing-file",
+                str(code_file),
             ],
             env=env,
             stdout=driver_log,
@@ -205,6 +210,8 @@ def main():
         result = pilot_main(
             [
                 address,
+                "--code",
+                code,
                 "--mode",
                 "xr",
                 "--reference-space",
