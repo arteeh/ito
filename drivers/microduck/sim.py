@@ -14,6 +14,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
 
+from drivers.microduck.scene import furnish
 from ito.driver import pairing
 from ito.link.pairing import display
 
@@ -135,7 +136,7 @@ def simulation(
         for geom in robot_model.findall(".//worldbody//geom"):
             geom.set("group", "2" if geom.get("class") == "visual" else "3")
         robot_model.write(state / "robot_groundcontact.xml")
-        scene = ET.parse(source_scene)
+        scene = furnish(source_scene)
         ET.SubElement(scene.find("visual"), "quality", shadowsize="256", offsamples="1")
         scene_path = state / "scene.xml"
         scene.write(scene_path)

@@ -1,0 +1,176 @@
+<mujoco model="Microduck living room">
+  <default>
+    <default class="room">
+      <geom group="0" condim="3" friction="1 0.005 0.0001" />
+    </default>
+  </default>
+  <asset>
+    <texture name="room_oak" type="2d" file="oak.png" />
+    <texture name="room_linen" type="cube" fileback="linen.png" filedown="linen.png" filefront="linen.png" fileleft="linen.png" fileright="linen.png" fileup="linen.png" />
+    <texture name="room_botanical" type="2d" file="botanical.png" />
+    <material name="room_oak" texture="room_oak" texuniform="true" texrepeat="2.5 2.5" reflectance="0.02" />
+    <material name="room_wood" texture="room_oak" texuniform="true" texrepeat="1 1" rgba=".72 .60 .44 1" />
+    <material name="room_plaster" rgba=".81 .79 .73 1" />
+    <material name="room_linen" texture="room_linen" texuniform="true" texrepeat="3 3" />
+    <material name="room_paper" rgba=".86 .82 .72 1" />
+    <material name="room_teal" rgba=".18 .33 .34 1" />
+    <material name="room_clay" rgba=".60 .28 .16 1" />
+    <material name="room_brass" rgba=".48 .36 .15 1" specular=".5" />
+    <material name="room_leaf" rgba=".17 .30 .13 1" />
+    <material name="room_leaf_light" rgba=".27 .39 .18 1" />
+    <material name="room_cream" rgba=".79 .75 .65 1" />
+    <material name="room_dark" rgba=".13 .16 .15 1" />
+    <material name="room_botanical" texture="room_botanical" texrepeat="1 1" texuniform="false" />
+  </asset>
+  <worldbody>
+    <body name="room_walls" pos="0 0 0" childclass="room">
+      <geom name="room_east" pos="2.74 0 1.15" size="0.04 1.84 1.15" type="box" material="room_plaster" group="0" />
+      <geom name="room_east_trim" pos="2.695 0 0.045" size="0.012 1.84 0.045" type="box" material="room_cream" group="0" />
+      <geom name="room_west" pos="-1.34 0 1.15" size="0.04 1.84 1.15" type="box" material="room_plaster" group="5" />
+      <geom name="room_west_trim" pos="-1.295 0 0.045" size="0.012 1.84 0.045" type="box" material="room_cream" group="5" />
+      <geom name="room_north" pos="0.7 1.84 1.15" size="2 0.04 1.15" type="box" material="room_plaster" group="0" />
+      <geom name="room_north_trim" pos="0.7 1.795 0.045" size="2 0.012 0.045" type="box" material="room_cream" group="0" />
+      <geom name="room_south" pos="0.7 -1.84 1.15" size="2 0.04 1.15" type="box" material="room_plaster" group="5" />
+      <geom name="room_south_trim" pos="0.7 -1.795 0.045" size="2 0.012 0.045" type="box" material="room_cream" group="5" />
+      <geom name="room_ceiling" pos=".7 0 2.33" size="2 1.8 .03" type="box" material="room_plaster" group="5" />
+    </body>
+    <body name="room_window" pos="0.5 1.782 1.27" childclass="room">
+      <geom name="room_window_reveal" pos="0 0 0" size="0.69 0.012 0.57" type="box" material="room_dark" />
+      <geom name="room_window_glass" pos="0 -0.014 0" size="0.65 0.006 0.53" type="box" material="room_cream" rgba=".54 .67 .69 1" />
+      <geom name="room_window_frame_x-0.67" pos="-0.67 -0.025 0" size="0.018 0.025 0.56" type="box" material="room_cream" />
+      <geom name="room_window_frame_x0" pos="0 -0.025 0" size="0.018 0.025 0.56" type="box" material="room_cream" />
+      <geom name="room_window_frame_x0.67" pos="0.67 -0.025 0" size="0.018 0.025 0.56" type="box" material="room_cream" />
+      <geom name="room_window_frame_z-0.55" pos="0 -0.025 -0.55" size="0.68 0.025 0.018" type="box" material="room_cream" />
+      <geom name="room_window_frame_z0" pos="0 -0.025 0" size="0.68 0.025 0.018" type="box" material="room_cream" />
+      <geom name="room_window_frame_z0.55" pos="0 -0.025 0.55" size="0.68 0.025 0.018" type="box" material="room_cream" />
+      <geom name="room_window_sill" pos="0 -0.07 -0.58" size="0.74 0.1 0.025" type="box" material="room_wood" />
+    </body>
+    <body name="room_sofa" pos="0.2 1.37 0" childclass="room">
+      <geom name="room_sofa_foot_-0.66_-0.22" pos="-0.66 -0.22 0.08" size="0.027 0.027 0.08" type="box" material="room_wood" />
+      <geom name="room_sofa_foot_-0.66_0.22" pos="-0.66 0.22 0.08" size="0.027 0.027 0.08" type="box" material="room_wood" />
+      <geom name="room_sofa_foot_0.66_-0.22" pos="0.66 -0.22 0.08" size="0.027 0.027 0.08" type="box" material="room_wood" />
+      <geom name="room_sofa_foot_0.66_0.22" pos="0.66 0.22 0.08" size="0.027 0.027 0.08" type="box" material="room_wood" />
+      <geom name="room_sofa_base" pos="0 0 0.23" size="0.81 0.33 0.11" type="box" material="room_linen" />
+      <geom name="room_sofa_back" pos="0 0.25 0.49" size="0.81 0.09 0.27" type="box" material="room_linen" />
+      <geom name="room_sofa_arm-0.73" pos="-0.73 0 0.4" size="0.08 0.33 0.17" type="box" material="room_linen" />
+      <geom name="room_sofa_arm0.73" pos="0.73 0 0.4" size="0.08 0.33 0.17" type="box" material="room_linen" />
+      <geom name="room_sofa_cushion-0.32" pos="-0.32 -0.04 0.375" size="0.315 0.255 0.065" type="ellipsoid" material="room_linen" />
+      <geom name="room_sofa_cushion0.32" pos="0.32 -0.04 0.375" size="0.315 0.255 0.065" type="ellipsoid" material="room_linen" />
+      <geom name="room_ochre_pillow" pos="-0.46 0.1 0.51" size="0.13 0.075 0.15" type="ellipsoid" material="room_clay" euler="0 -.13 .15" />
+      <geom name="room_cream_pillow" pos="0.42 0.1 0.51" size="0.14 0.075 0.14" type="ellipsoid" material="room_cream" euler="0 .12 -.1" />
+    </body>
+    <body name="room_bookcase" pos="2.5 0.57 0" childclass="room">
+      <geom name="room_bookcase_back" pos="0.11 0 0.55" size="0.018 0.57 0.53" type="box" material="room_wood" />
+      <geom name="room_bookcase_side-0.56" pos="0 -0.56 0.56" size="0.14 0.018 0.55" type="box" material="room_wood" />
+      <geom name="room_bookcase_side0.56" pos="0 0.56 0.56" size="0.14 0.018 0.55" type="box" material="room_wood" />
+      <geom name="room_shelf0" pos="0 0 0.07" size="0.14 0.56 0.018" type="box" material="room_wood" />
+      <geom name="room_shelf1" pos="0 0 0.36" size="0.14 0.56 0.018" type="box" material="room_wood" />
+      <geom name="room_shelf2" pos="0 0 0.7" size="0.14 0.56 0.018" type="box" material="room_wood" />
+      <geom name="room_shelf3" pos="0 0 1.1" size="0.14 0.56 0.018" type="box" material="room_wood" />
+      <geom name="room_book_0_0" pos="-0.035 -0.46 0.19" size="0.095 0.033 0.1" type="box" material="room_teal" />
+      <geom name="room_book_band_0_0" pos="-0.132 -0.46 0.234" size="0.001 0.027 0.004" type="box" material="room_paper" contype="0" conaffinity="0" />
+      <geom name="room_book_0_1" pos="-0.035 -0.367 0.205" size="0.095 0.033 0.115" type="box" material="room_clay" />
+      <geom name="room_book_band_0_1" pos="-0.132 -0.367 0.2556" size="0.001 0.027 0.004" type="box" material="room_paper" contype="0" conaffinity="0" />
+      <geom name="room_book_0_2" pos="-0.035 -0.274 0.17" size="0.095 0.033 0.08" type="box" material="room_paper" />
+      <geom name="room_book_band_0_2" pos="-0.132 -0.274 0.2052" size="0.001 0.027 0.004" type="box" material="room_paper" contype="0" conaffinity="0" />
+      <geom name="room_book_0_3" pos="-0.035 -0.181 0.2" size="0.095 0.033 0.11" type="box" material="room_dark" />
+      <geom name="room_book_band_0_3" pos="-0.132 -0.181 0.2484" size="0.001 0.027 0.004" type="box" material="room_paper" contype="0" conaffinity="0" />
+      <geom name="room_book_1_0" pos="-0.035 -0.46 0.495" size="0.095 0.033 0.115" type="box" material="room_paper" />
+      <geom name="room_book_band_1_0" pos="-0.132 -0.46 0.5456" size="0.001 0.027 0.004" type="box" material="room_paper" contype="0" conaffinity="0" />
+      <geom name="room_book_1_1" pos="-0.035 -0.367 0.46" size="0.095 0.033 0.08" type="box" material="room_dark" />
+      <geom name="room_book_band_1_1" pos="-0.132 -0.367 0.4952" size="0.001 0.027 0.004" type="box" material="room_paper" contype="0" conaffinity="0" />
+      <geom name="room_book_1_2" pos="-0.035 -0.274 0.49" size="0.095 0.033 0.11" type="box" material="room_cream" />
+      <geom name="room_book_band_1_2" pos="-0.132 -0.274 0.5384" size="0.001 0.027 0.004" type="box" material="room_paper" contype="0" conaffinity="0" />
+      <geom name="room_book_1_3" pos="-0.035 -0.181 0.47" size="0.095 0.033 0.09" type="box" material="room_teal" />
+      <geom name="room_book_band_1_3" pos="-0.132 -0.181 0.5096" size="0.001 0.027 0.004" type="box" material="room_paper" contype="0" conaffinity="0" />
+      <geom name="room_book_1_4" pos="-0.035 -0.088 0.485" size="0.095 0.033 0.105" type="box" material="room_clay" />
+      <geom name="room_book_band_1_4" pos="-0.132 -0.088 0.5312" size="0.001 0.027 0.004" type="box" material="room_paper" contype="0" conaffinity="0" />
+      <geom name="room_book_1_5" pos="-0.035 0.005 0.505" size="0.095 0.033 0.125" type="box" material="room_teal" />
+      <geom name="room_book_band_1_5" pos="-0.132 0.005 0.56" size="0.001 0.027 0.004" type="box" material="room_paper" contype="0" conaffinity="0" />
+      <geom name="room_book_1_6" pos="-0.035 0.098 0.48" size="0.095 0.033 0.1" type="box" material="room_clay" />
+      <geom name="room_book_band_1_6" pos="-0.132 0.098 0.524" size="0.001 0.027 0.004" type="box" material="room_paper" contype="0" conaffinity="0" />
+      <geom name="room_book_2_0" pos="-0.035 -0.46 0.8" size="0.095 0.033 0.08" type="box" material="room_cream" />
+      <geom name="room_book_band_2_0" pos="-0.132 -0.46 0.8352" size="0.001 0.027 0.004" type="box" material="room_paper" contype="0" conaffinity="0" />
+      <geom name="room_book_2_1" pos="-0.035 -0.367 0.83" size="0.095 0.033 0.11" type="box" material="room_teal" />
+      <geom name="room_book_band_2_1" pos="-0.132 -0.367 0.8784" size="0.001 0.027 0.004" type="box" material="room_paper" contype="0" conaffinity="0" />
+      <geom name="room_book_2_2" pos="-0.035 -0.274 0.81" size="0.095 0.033 0.09" type="box" material="room_clay" />
+      <geom name="room_book_band_2_2" pos="-0.132 -0.274 0.8496" size="0.001 0.027 0.004" type="box" material="room_paper" contype="0" conaffinity="0" />
+      <geom name="room_book_2_3" pos="-0.035 -0.181 0.825" size="0.095 0.033 0.105" type="box" material="room_teal" />
+      <geom name="room_book_band_2_3" pos="-0.132 -0.181 0.8712" size="0.001 0.027 0.004" type="box" material="room_paper" contype="0" conaffinity="0" />
+      <geom name="room_book_2_4" pos="-0.035 -0.088 0.845" size="0.095 0.033 0.125" type="box" material="room_clay" />
+      <geom name="room_book_band_2_4" pos="-0.132 -0.088 0.9" size="0.001 0.027 0.004" type="box" material="room_paper" contype="0" conaffinity="0" />
+      <geom name="room_book_2_5" pos="-0.035 0.005 0.82" size="0.095 0.033 0.1" type="box" material="room_paper" />
+      <geom name="room_book_band_2_5" pos="-0.132 0.005 0.864" size="0.001 0.027 0.004" type="box" material="room_paper" contype="0" conaffinity="0" />
+      <geom name="room_book_2_6" pos="-0.035 0.098 0.835" size="0.095 0.033 0.115" type="box" material="room_dark" />
+      <geom name="room_book_band_2_6" pos="-0.132 0.098 0.8856" size="0.001 0.027 0.004" type="box" material="room_paper" contype="0" conaffinity="0" />
+      <geom name="room_storage_box" pos="-0.015 0.3 0.205" size="0.115 0.17 0.11" type="box" material="room_cream" />
+      <geom name="room_storage_handle" pos="-0.132 0.3 0.22" size="0.002 0.04 0.013" type="box" material="room_dark" contype="0" conaffinity="0" />
+    </body>
+    <body name="room_table" pos="1.57 1.1 0" childclass="room">
+      <geom name="room_table_leg_-0.22_-0.22" pos="-0.22 -0.22 0.21" size="0.018 0.018 0.21" type="box" material="room_wood" />
+      <geom name="room_table_leg_-0.22_0.22" pos="-0.22 0.22 0.21" size="0.018 0.018 0.21" type="box" material="room_wood" />
+      <geom name="room_table_leg_0.22_-0.22" pos="0.22 -0.22 0.21" size="0.018 0.018 0.21" type="box" material="room_wood" />
+      <geom name="room_table_leg_0.22_0.22" pos="0.22 0.22 0.21" size="0.018 0.018 0.21" type="box" material="room_wood" />
+      <geom name="room_table_top" pos="0 0 0.435" size="0.3 0.3 0.025" type="box" material="room_wood" />
+      <geom name="room_table_book0" pos="-0.04 0.02 0.475" size="0.13 0.09 0.012" type="box" material="room_teal" euler="0 0 0.0" />
+      <geom name="room_table_book1" pos="-0.04 0.02 0.5" size="0.13 0.09 0.012" type="box" material="room_paper" euler="0 0 0.09" />
+      <geom name="room_table_book2" pos="-0.04 0.02 0.525" size="0.13 0.09 0.012" type="box" material="room_clay" euler="0 0 0.18" />
+      <geom name="room_cup" pos="0.17 -0.12 0.51" size="0.04 0.05" type="cylinder" material="room_cream" />
+      <geom name="room_cup_coffee" pos="0.17 -0.12 0.561" size="0.032 0.001" type="cylinder" material="room_dark" contype="0" conaffinity="0" />
+    </body>
+    <body name="room_plant" pos="2.13 -1.15 0" childclass="room">
+      <geom name="room_pot" pos="0 0 0.15" size="0.16 0.15" type="cylinder" material="room_clay" />
+      <geom name="room_pot_rim" pos="0 0 0.285" size="0.174 0.025" type="cylinder" material="room_clay" />
+      <geom name="room_soil" pos="0 0 0.312" size="0.147 0.003" type="cylinder" material="room_dark" contype="0" conaffinity="0" />
+      <geom name="room_stem0" type="capsule" fromto="0 0 .30 0.22 0 0.59" size=".008" material="room_leaf" contype="0" conaffinity="0" />
+      <geom name="room_leaf0" pos="0.22 0 0.59" size="0.17 0.065 0.012" type="ellipsoid" material="room_leaf_light" euler=".3 0.5 0.0" contype="0" conaffinity="0" />
+      <geom name="room_stem1" type="capsule" fromto="0 0 .30 -0.22 0.1 0.7" size=".008" material="room_leaf" contype="0" conaffinity="0" />
+      <geom name="room_leaf1" pos="-0.22 0.1 0.7" size="0.17 0.065 0.012" type="ellipsoid" material="room_leaf" euler=".3 -0.5 0.9" contype="0" conaffinity="0" />
+      <geom name="room_stem2" type="capsule" fromto="0 0 .30 0.1 0.21 0.84" size=".008" material="room_leaf" contype="0" conaffinity="0" />
+      <geom name="room_leaf2" pos="0.1 0.21 0.84" size="0.17 0.065 0.012" type="ellipsoid" material="room_leaf_light" euler=".3 0.5 1.8" contype="0" conaffinity="0" />
+      <geom name="room_stem3" type="capsule" fromto="0 0 .30 -0.1 -0.22 0.91" size=".008" material="room_leaf" contype="0" conaffinity="0" />
+      <geom name="room_leaf3" pos="-0.1 -0.22 0.91" size="0.17 0.065 0.012" type="ellipsoid" material="room_leaf" euler=".3 -0.5 2.7" contype="0" conaffinity="0" />
+      <geom name="room_stem4" type="capsule" fromto="0 0 .30 0.17 -0.1 1.03" size=".008" material="room_leaf" contype="0" conaffinity="0" />
+      <geom name="room_leaf4" pos="0.17 -0.1 1.03" size="0.17 0.065 0.012" type="ellipsoid" material="room_leaf_light" euler=".3 0.5 3.6" contype="0" conaffinity="0" />
+      <geom name="room_stem5" type="capsule" fromto="0 0 .30 -0.12 0.07 1.13" size=".008" material="room_leaf" contype="0" conaffinity="0" />
+      <geom name="room_leaf5" pos="-0.12 0.07 1.13" size="0.17 0.065 0.012" type="ellipsoid" material="room_leaf" euler=".3 -0.5 4.5" contype="0" conaffinity="0" />
+    </body>
+    <body name="room_basket" pos="0.72 -1.47 0" childclass="room">
+      <geom name="room_basket_base" pos="0 0 0.025" size="0.23 0.18 0.025" type="box" material="room_cream" />
+      <geom name="room_basket_side_y-0.17" pos="0 -0.17 0.12" size="0.23 0.014 0.12" type="box" material="room_cream" />
+      <geom name="room_basket_side_y0.17" pos="0 0.17 0.12" size="0.23 0.014 0.12" type="box" material="room_cream" />
+      <geom name="room_basket_side_x-0.22" pos="-0.22 0 0.12" size="0.014 0.17 0.12" type="box" material="room_cream" />
+      <geom name="room_basket_side_x0.22" pos="0.22 0 0.12" size="0.014 0.17 0.12" type="box" material="room_cream" />
+      <geom name="room_basket_weave_0_-0.186" pos="0 -0.186 0.04" size="0.23 0.002 0.003" type="box" material="room_wood" contype="0" conaffinity="0" />
+      <geom name="room_basket_weave_0_0.186" pos="0 0.186 0.04" size="0.23 0.002 0.003" type="box" material="room_wood" contype="0" conaffinity="0" />
+      <geom name="room_basket_weave_1_-0.186" pos="0 -0.186 0.08" size="0.23 0.002 0.003" type="box" material="room_wood" contype="0" conaffinity="0" />
+      <geom name="room_basket_weave_1_0.186" pos="0 0.186 0.08" size="0.23 0.002 0.003" type="box" material="room_wood" contype="0" conaffinity="0" />
+      <geom name="room_basket_weave_2_-0.186" pos="0 -0.186 0.12" size="0.23 0.002 0.003" type="box" material="room_wood" contype="0" conaffinity="0" />
+      <geom name="room_basket_weave_2_0.186" pos="0 0.186 0.12" size="0.23 0.002 0.003" type="box" material="room_wood" contype="0" conaffinity="0" />
+      <geom name="room_basket_weave_3_-0.186" pos="0 -0.186 0.16" size="0.23 0.002 0.003" type="box" material="room_wood" contype="0" conaffinity="0" />
+      <geom name="room_basket_weave_3_0.186" pos="0 0.186 0.16" size="0.23 0.002 0.003" type="box" material="room_wood" contype="0" conaffinity="0" />
+      <geom name="room_basket_weave_4_-0.186" pos="0 -0.186 0.2" size="0.23 0.002 0.003" type="box" material="room_wood" contype="0" conaffinity="0" />
+      <geom name="room_basket_weave_4_0.186" pos="0 0.186 0.2" size="0.23 0.002 0.003" type="box" material="room_wood" contype="0" conaffinity="0" />
+      <geom name="room_basket_blanket" pos="0.015 0 0.22" size="0.17 0.12 0.05" type="ellipsoid" material="room_linen" />
+    </body>
+    <body name="room_toys" pos="1.43 -0.76 0" childclass="room">
+      <geom name="room_toy_cube" pos="0 0 0.035" size="0.035 0.035 0.035" type="box" material="room_clay" euler="0 0 .25" />
+      <geom name="room_toy_block" pos="0.14 -0.08 0.025" size="0.05 0.027 0.025" type="box" material="room_teal" euler="0 0 -.4" />
+      <geom name="room_toy_ball" pos="0.07 -0.23 0.041" size="0.041" type="sphere" material="room_cream" />
+    </body>
+    <body name="room_art" pos="2.687 -0.56 1.37" childclass="room">
+      <geom name="room_art_frame" pos="0 0 0" size="0.015 0.29 0.36" type="box" material="room_wood" />
+      <geom name="room_art_paper" pos="-0.017 0 0" size="0.002 0.265 0.335" type="box" material="room_paper" />
+      <geom name="room_art_print" pos="-0.02 0 0" size="0.245 0.315 0.001" type="box" material="room_botanical" euler="0 -1.5708 -1.5708" contype="0" conaffinity="0" />
+    </body>
+    <body name="room_rear_console" pos="-1.1 -0.58 0" childclass="room">
+      <geom name="room_console_leg-0.48" pos="0 -0.48 0.24" size="0.025 0.025 0.24" type="box" material="room_wood" />
+      <geom name="room_console_leg0.48" pos="0 0.48 0.24" size="0.025 0.025 0.24" type="box" material="room_wood" />
+      <geom name="room_console_top" pos="0 0 0.5" size="0.17 0.57 0.025" type="box" material="room_wood" />
+      <geom name="room_console_low" pos="0 0 0.16" size="0.15 0.53 0.015" type="box" material="room_wood" />
+      <geom name="room_console_box" pos="0 0.12 0.27" size="0.13 0.23 0.095" type="box" material="room_teal" />
+      <geom name="room_console_vase" pos="0 0.24 0.6" size="0.075 0.095" type="cylinder" material="room_clay" />
+      <geom name="room_console_bowl" pos="0 -0.25 0.54" size="0.105 0.03" type="cylinder" material="room_cream" />
+    </body>
+  </worldbody>
+</mujoco>

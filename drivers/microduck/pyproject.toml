@@ -34,3 +34,5 @@ dev-mode-dirs = ["../.."]
 "sim.py" = "drivers/microduck/sim.py"
 "sim_body.py" = "drivers/microduck/sim_body.py"
 
+"scene.py" = "drivers/microduck/scene.py"
+"assets" = "drivers/microduck/assets"

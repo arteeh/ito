@@ -7,6 +7,7 @@ import sys
 import time
 from pathlib import Path
 
+import psutil
 from PIL import Image
 from Xlib import X, display, protocol
 
@@ -37,10 +38,14 @@ def main():
                     ),
                     None,
                 )
-                if window:
+                if window and "Virtual Microduck ready" in (out / "launcher.log").read_text():
                     break
                 time.sleep(0.1)
             assert window, "Pollen's MuJoCo window did not appear"
+            assert "Virtual Microduck ready" in (out / "launcher.log").read_text(), (
+                "viewer appeared but the robot stack did not become ready"
+            )
+            descendants = psutil.Process(child.pid).children(recursive=True)
             time.sleep(1)
             geometry = window.get_geometry()
             pixels = window.get_image(0, 0, geometry.width, geometry.height, X.ZPixmap, 0xFFFFFFFF)
@@ -57,10 +62,12 @@ def main():
             )
             connection.flush()
             assert child.wait(timeout=5) == 0, "closing viewer did not stop the stack cleanly"
+            assert not [p.pid for p in descendants if p.is_running()], "simulator children remain"
             report = {
                 "viewer": "MuJoCo",
                 "viewable": True,
                 "closed": True,
+                "children_reaped": len(descendants),
                 "elapsed_s": time.monotonic() - started,
             }
             (out / "summary.json").write_text(json.dumps(report, indent=2) + "\n")

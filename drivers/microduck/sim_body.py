@@ -11,6 +11,7 @@ class HeadCamera(Camera):
     def render(self, world):
         option = mujoco.MjvOption()
         option.geomgroup[2] = 0
+        option.geomgroup[5] = 1  # Room cutaway walls are hidden only in the overview viewer.
         with world.lock:
             self.renderer.update_scene(world.data, camera=self.camera, scene_option=option)
         # MuJoCo's shadow pass produces dark floor triangles at this low camera height.
@@ -27,9 +28,12 @@ if __name__ == "__main__":
 
         launch = mujoco.viewer.launch_passive
 
-        def visible_viewer(*args, **kwargs):
+        def visible_viewer(model, data, **kwargs):
             try:
-                return launch(*args, **kwargs)
+                viewer = launch(model, data, **kwargs)
+                with viewer.lock():
+                    mujoco.mjv_defaultFreeCamera(model, viewer.cam)
+                return viewer
             except Exception as exc:
                 raise SystemExit(f"MuJoCo viewer unavailable: {exc}") from exc
 
