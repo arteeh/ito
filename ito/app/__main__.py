@@ -8,6 +8,7 @@ import moderngl
 import pygame
 
 from ito.desktop import DesktopWindow
+from ito.link.audio import Audio, arguments
 
 from .pilot import Pilot
 from .settings import Settings
@@ -36,6 +37,7 @@ def main(argv=None, *, on_frame=None):
     parser.add_argument("--capture-dir", type=Path, default=Path("captures"))
     parser.add_argument("--metrics", type=Path, help="write display and latency metrics as JSONL")
     parser.add_argument("--frames", type=int, default=0, help="exit after N display frames")
+    arguments(parser)
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     overrides = {
@@ -44,6 +46,7 @@ def main(argv=None, *, on_frame=None):
         if getattr(args, key, None) is not None
     }
     try:
+        Audio(args.audio_source, args.audio_sink)  # Validate before starting the link thread.
         window_type = DesktopWindow
         window_options = {}
         if args.mode == "xr":
@@ -71,6 +74,8 @@ def main(argv=None, *, on_frame=None):
                 overrides=overrides,
                 camera=args.camera,
                 cameras=args.cameras,
+                audio_source=args.audio_source,
+                audio_sink=args.audio_sink,
             ) as pilot,
         ):
             window.input.translate = False

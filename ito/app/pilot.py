@@ -12,6 +12,7 @@ from dataclasses import replace
 
 from ito.desktop import DesktopState, PilotStatus
 from ito.link import connect
+from ito.link.audio import Audio
 from ito.protocol import Command, FrameMetadata, PilotState, Pose, Status
 from ito.reconstruction import Reconstruction
 from ito.render import pose
@@ -24,7 +25,20 @@ log = logging.getLogger(__name__)
 
 
 class Pilot:
-    def __init__(self, address, *, defaults=None, overrides=None, camera=None, cameras=1):
+    def __init__(
+        self,
+        address,
+        *,
+        defaults=None,
+        overrides=None,
+        camera=None,
+        cameras=1,
+        audio_source="device",
+        audio_sink="device",
+    ):
+        self.audio_options = (audio_source, audio_sink)
+        self.audio = None
+        self.mic_muted = self.speaker_muted = False
         self.address, self.camera_name, self.cameras = address, camera, cameras
         self.settings = defaults or settings.Settings()
         self.defaults = self.settings
@@ -63,6 +77,12 @@ class Pilot:
     def input(self, value):
         self.latest_input = value
         for command in value.commands:
+            if command in {"mute_mic", "mute_speaker"}:
+                name = "mic_muted" if command == "mute_mic" else "speaker_muted"
+                setattr(self, name, not getattr(self, name))
+                if self.audio:
+                    setattr(self.audio, name, getattr(self, name))
+                continue
             if len(self.commands) >= 32:
                 self.commands.clear()
                 self.commands.append("e_stop")
@@ -100,6 +120,10 @@ class Pilot:
                 detail=detail or (f"{status.state}: {status.reason}" if status else ""),
                 input_latency_ms=self.telemetry.get("pilot_input_latency_ms") if peer else None,
                 reconstruction=self.reconstruction_status,
+                audio=(self.audio.status if self.audio else "Audio: disconnected"),
+                robot_audio=self.telemetry.get("audio", "") if peer else "",
+                mic_muted=self.mic_muted,
+                speaker_muted=self.speaker_muted,
             ),
         )
 
@@ -229,7 +253,10 @@ class Pilot:
         async def tracks():
             while True:
                 track = await peer.tracks.get()
-                tasks.append(asyncio.create_task(video(track)))
+                if track.kind == "video":
+                    tasks.append(asyncio.create_task(video(track)))
+                else:
+                    track.stop()
 
         tasks.extend([asyncio.create_task(messages()), asyncio.create_task(tracks())])
         deadline = time.monotonic()
@@ -340,8 +367,14 @@ class Pilot:
                     "CONNECTING" if not self.connections else "RECONNECTING",
                     "Connecting to " + self.address,
                 )
+                self.audio = Audio(*self.audio_options)
+                self.audio.mic_muted = self.mic_muted
+                self.audio.speaker_muted = self.speaker_muted
                 async with await connect(
-                    self.address, video_tracks=self.cameras, connect_timeout=8
+                    self.address,
+                    video_tracks=self.cameras,
+                    connect_timeout=8,
+                    audio_io=self.audio,
                 ) as peer:
                     delay = 0.5
                     await self._session(peer)

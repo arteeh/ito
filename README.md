@@ -96,9 +96,16 @@ RGB, optical-axis depth in millimetres, and camera pose share one physics snapsh
 metadata `video_pts` is the source video timestamp in 90 kHz ticks, starting at zero
 per connection. Poses use Ito coordinates relative to the base at startup.
 
+Audio uses the system default microphone and speakers (select the headset as the default
+output in VR). The shared desktop/VR panel mutes the microphone and speakers independently.
+Linux device audio needs PortAudio (`libportaudio2` on Debian/Ubuntu); missing devices leave
+piloting available with an audio status line. Both CLIs accept `--audio-source device|none|tone:440`
+and `--audio-sink device|none|capture.wav`. MuJoCo defaults to a 440 Hz source.
+
 End-to-end checks (no GPU or headset needed):
 
 ```sh
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/audio.py # two-way tones, mute, no device
 uv run python e2e/webrtc.py
 uv run python e2e/lifecycle.py
 uv run python e2e/mujoco_driver.py                         # saves RGB-D samples in e2e/out/mujoco
