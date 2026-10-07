@@ -74,6 +74,9 @@ Monocular SLAM needs an NVIDIA GPU. Models and their licence notices are include
 Recent keyframes are bounded to four; tracking recovery searches that local window. Monocular
 scale is estimated, so reconstructed distances are not a measurement tool.
 
+On Microduck, from this checkout: `uv run --project drivers/microduck ito-driver-microduck`; connect with `uv run ito <duck-address>:8081`.
+Microduck must have robotd/mediad running and be enabled with `robotctl robot enable`; G/right trigger opens the beak, C crouches.
+
 ## Development and releases
 
 Windows release, from a VS 2022 x64 developer shell with CUDA Toolkit 12.4:

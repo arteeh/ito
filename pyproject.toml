@@ -26,10 +26,13 @@ dependencies = [
 [project.scripts]
 ito = "ito.app.__main__:main"
 ito-driver = "ito.driver.cli:main"
+ito-driver-microduck = "drivers.microduck.cli:main"
 ito-driver-mujoco = "drivers.mujoco.cli:main"
 ito-desktop = "ito.desktop.__main__:main"
 
 [project.optional-dependencies]
+microduck = ["opencv-python-headless==4.11.0.86"]
+
 cuda = [
     "cupy-cuda12x[ctk]>=14,<15",
 ]
