@@ -256,6 +256,12 @@ async def run():
         _, status = await pilot.status("active")
         assert 1.3 < status.telemetry["head_pan"] < 1.42, status
         assert 0.58 < status.telemetry["head_tilt"] < 0.67, status
+        # Past its pan limit the standing base turns toward the gaze. Gaze at the right
+        # limit brings it home: the base turns until the head can just reach.
+        assert status.telemetry["base_yaw"] > 0.3, status
+        await pilot.drive(3.5, yaw=-1.4)
+        _, status = await pilot.status("active")
+        assert abs(status.telemetry["base_yaw"]) < 0.04, status
         await pilot.drive(1.0)
         _, before = await pilot.latest("before-drive")
         await pilot.drive(1.8, forward=0.8)

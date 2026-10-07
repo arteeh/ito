@@ -6,7 +6,7 @@ import math
 import time
 
 from ito.driver import Adapter
-from ito.driver.walking import walking
+from ito.driver.walking import Walker
 from ito.protocol import Camera as CameraDescription
 from ito.protocol import DegreeOfFreedom, RobotDescription
 
@@ -30,6 +30,7 @@ class MicroduckAdapter(Adapter):
             raise ValueError("Microduck input timeout must be between 0.02 and 0.5 seconds")
         self.remote = Remote(robot, self._notification)
         self.input_timeout = input_timeout
+        self.walker = Walker(HEAD_LIMITS["head_yaw"], speed=0.3, lateral_speed=0.10, turn_speed=0.6)
         self.camera = None
         self._description = None
         self._tasks = []
@@ -155,13 +156,7 @@ class MicroduckAdapter(Adapter):
                 continue
             state = latest[1]
             axes, buttons = state.axes, state.buttons
-            move = walking(
-                state,
-                self._telemetry["base_yaw"],
-                speed=0.3,
-                lateral_speed=0.10,
-                turn_speed=0.6,
-            )
+            move = self.walker(state, self._telemetry["base_yaw"])
             # The walking policy needs enough command range to enter its stepping gait.
             commands = [
                 (

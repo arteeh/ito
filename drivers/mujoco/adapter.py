@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 
 from ito.driver import Adapter
-from ito.driver.walking import walking
+from ito.driver.walking import Walker
 from ito.protocol import Camera, DegreeOfFreedom, Intrinsics, PilotState, Pose, RobotDescription
 
 from .camera import CameraTrack
@@ -93,6 +93,7 @@ class MujocoAdapter(Adapter):
         self.width, self.height, self.fps = width, height, fps
         self.wheel_radius, self.axle_width = wheel_radius, axle_width
         self.speed, self.turn_speed, self.input_timeout = speed, turn_speed, input_timeout
+        self.walker = Walker(self.head[0][2:], speed=speed, lateral_speed=0, turn_speed=turn_speed)
         self.rgb_only = rgb_only
         self.camera_name = camera
         self.backend = backend
@@ -237,13 +238,7 @@ class MujocoAdapter(Adapter):
             for index, *_ in self.wheels:
                 data.ctrl[index] = 0
             return
-        move = walking(
-            state,
-            self.body_yaw(data),
-            speed=self.speed,
-            lateral_speed=0,
-            turn_speed=self.turn_speed,
-        )
+        move = self.walker(state, self.body_yaw(data))
         if state.head:
             for (index, _, low, high), angle in zip(self.head, (move.pan, move.tilt), strict=True):
                 data.ctrl[index] = np.clip(angle, low, high)
