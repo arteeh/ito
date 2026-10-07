@@ -6,6 +6,7 @@ import subprocess
 import sys
 
 from ito.desktop.settings import settings_path
+from ito.driver import pairing
 
 
 class SimulatedRobot:
@@ -16,10 +17,14 @@ class SimulatedRobot:
         self.address = f"127.0.0.1:{port}"
         self.log = settings_path().parent / "simulated-robot.log"
         self.log.parent.mkdir(parents=True, exist_ok=True)
+        # A fresh code per run pairs this pilot without a prompt and nothing else on the PC.
+        code_file = self.log.with_name("simulated-robot.code")
+        self.code = pairing.rotate(code_file)
         with self.log.open("w") as log:
             self.process = subprocess.Popen(
                 [sys.executable, *(["-I"] if sys.flags.isolated else [])]
-                + ["-m", "drivers.mujoco.cli", "--port", str(port)],
+                + ["-m", "drivers.mujoco.cli", "--host", "127.0.0.1", "--port", str(port)]
+                + ["--pairing-file", str(code_file)],
                 stdin=subprocess.DEVNULL,
                 stdout=log,
                 stderr=subprocess.STDOUT,
