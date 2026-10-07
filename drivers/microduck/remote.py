@@ -9,6 +9,10 @@ from aiortc import RTCConfiguration, RTCPeerConnection, RTCSessionDescription
 from aiortc.sdp import candidate_from_sdp
 
 
+class RemoteError(RuntimeError):
+    """An RPC refusal, distinct from a broken or stalled control connection."""
+
+
 class Remote:
     def __init__(self, address, notification):
         self.address = address
@@ -73,7 +77,7 @@ class Remote:
             if future and not future.done():
                 result = message.get("result", {})
                 if "error" in message or result.get("accepted") is False:
-                    future.set_exception(RuntimeError(str(message.get("error", result))))
+                    future.set_exception(RemoteError(str(message.get("error", result))))
                 else:
                     future.set_result(result)
             elif "method" in message:
@@ -133,6 +137,11 @@ class Remote:
                         await ws.send_json({"type": "list"})
                     elif kind == "list" and not starting:
                         producers = message.get("producers", [])
+                        if not producers:
+                            # mediad listens before its camera pipeline reaches PLAYING.
+                            await asyncio.sleep(0.2)
+                            await ws.send_json({"type": "list"})
+                            continue
                         if len(producers) != 1:
                             raise RuntimeError("mediad must publish exactly one robot camera")
                         starting = True
@@ -144,7 +153,12 @@ class Remote:
                             await self.pc.setRemoteDescription(
                                 RTCSessionDescription(**message["sdp"])
                             )
-                            await self.pc.setLocalDescription(await self.pc.createAnswer())
+                            answer = await self.pc.createAnswer()
+                            # GStreamer's default certificate is RSA; aiortc offers ECDSA-only
+                            # ciphers. As DTLS server we present our ECDSA certificate, which
+                            # GStreamer accepts, without weakening either peer's cipher list.
+                            answer.sdp = answer.sdp.replace("a=setup:active", "a=setup:passive")
+                            await self.pc.setLocalDescription(answer)
                             await ws.send_json(
                                 {
                                     "type": "peer",
