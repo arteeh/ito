@@ -14,6 +14,8 @@ from .ring import SplatUpdate, UpdateRing
 
 __all__ = ["Reconstruction", "SplatUpdate", "default_budget"]
 
+log = logging.getLogger(__name__)
+
 
 def default_budget(renderer: str = "", video_memory_mb: int = 0) -> int:
     if any(name in renderer.lower() for name in ("llvmpipe", "softpipe", "software")):
@@ -92,7 +94,7 @@ def _run(recon):
             time.sleep(0.01)
     except Exception as exc:
         # The pilot sees one plain line; the log keeps the cause for whoever debugs it.
-        logging.getLogger("ito.reconstruction").exception("Reconstruction stopped")
+        log.exception("Reconstruction stopped")
         message = str(exc) if recon.backend == "slam" else f"Reconstruction failed: {exc}"
         recon.errors.send(message[:2000])
     finally:
@@ -239,15 +241,19 @@ class Reconstruction:
         return self.ring.poll()
 
     def close(self):
+        """Bounded even for a suspended or wedged worker."""
         if not self.closed:
+            self.closed = True
             # A killed worker may leave an Event's internal condition locked forever.
             self.stopped.value = True
             self.process.join(timeout=3)
             if self.process.is_alive():
-                self.process.terminate()
-                self.process.join()
+                # SIGTERM stays pending on a stopped process; SIGKILL does not.
+                self.process.kill()
+                self.process.join(timeout=3)
+                if self.process.is_alive():
+                    log.error("Reconstruction process %d did not exit", self.process.pid)
             self.errors.close()
-            self.closed = True
 
     def __enter__(self):
         return self
