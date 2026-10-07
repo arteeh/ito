@@ -221,6 +221,13 @@ def main():
         fixed = re.sub(r"\blong\b", "int64_t", original)
         if fixed != original:
             path.write_text(fixed, encoding="utf-8")
+    # MSVC gives CPU templates and NVCC's host launch stubs identical symbols.
+    # The linker can select a CPU implementation that then dereferences CUDA memory.
+    cpu = cache / "lie/lietorch/src/lietorch_cpu.cpp"
+    cpu.write_text(
+        re.sub(r"\b(\w+)_kernel\b", r"\1_cpu_kernel", cpu.read_text(encoding="utf-8")),
+        encoding="utf-8",
+    )
     weights = cache
     base = f"https://huggingface.co/{MODEL}/resolve/{MODEL_REV}"
     download(
@@ -244,7 +251,8 @@ def main():
         f"https://huggingface.co/{MODEL}/tree/{MODEL_REV}\n"
         "Unmodified safetensors weights. CC BY-NC-SA 4.0; see LICENSE, NOTICE and "
         "CHECKPOINTS_NOTICE for attribution and training-dataset restrictions.\n"
-        "Ito source adaptations: lazy retrieval import and fixed-width CUDA indices.\n",
+        "Ito source adaptations: lazy retrieval import, fixed-width CUDA indices, "
+        "and distinct lietorch CPU kernel symbols.\n",
         encoding="utf-8",
     )
     # Never carry kernels from a different Python/platform through a skipped build.

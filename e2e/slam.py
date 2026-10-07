@@ -121,6 +121,7 @@ def main():
     display_times = []
     camera_frames = []
     poses = []
+    tracking_updates = []
     counts = []
     messages = set()
     workers = set()
@@ -157,6 +158,11 @@ def main():
         t = app.telemetry
         if app.tracked_frames:
             poses.append(app.camera_pose.copy())
+            # Measure live tracking before deliberately suspending/killing the worker.
+            if stage < 4 and (
+                not tracking_updates or app.tracked_frames != tracking_updates[-1][1]
+            ):
+                tracking_updates.append((now, app.tracked_frames))
         if args.cuda and app.failure and stage < 5:
             raise AssertionError("Real CUDA SLAM failed: " + app.failure)
         ready = (
@@ -316,6 +322,15 @@ def main():
     )
     audited = {int(pid) for pid in network_log.with_suffix(".pids").read_text().splitlines()}
     assert workers and workers <= audited, ("Worker network audit not installed", workers, audited)
+    rows = [json.loads(line) for line in (out / "metrics.jsonl").read_text().splitlines()]
+    input_latency = [
+        row["pilot_input_to_robot_ms"] for row in rows if row["pilot_input_to_robot_ms"] is not None
+    ]
+    splat_latency = [
+        row["capture_to_splat_visible_ms"]
+        for row in rows
+        if not row["flat_video"] and row["capture_to_splat_visible_ms"] is not None
+    ]
     report = dict(
         cuda=args.cuda,
         external_network_attempts=0,
@@ -323,6 +338,16 @@ def main():
         display_frame_ms_p95=frame_p95 * 1000,
         max_splats=max(counts),
         tracked_pose_samples=len(poses),
+        tracking_hz=(
+            (tracking_updates[-1][1] - tracking_updates[0][1])
+            / (tracking_updates[-1][0] - tracking_updates[0][0])
+            if len(tracking_updates) > 1
+            else None
+        ),
+        pilot_input_to_robot_ms_median=(float(np.median(input_latency)) if input_latency else None),
+        camera_capture_to_splat_visible_ms_median=(
+            float(np.median(splat_latency)) if splat_latency else None
+        ),
         fallback=error,
         messages=sorted(messages),
         captures=list(map(str, captures)),

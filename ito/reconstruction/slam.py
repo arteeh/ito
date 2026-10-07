@@ -90,11 +90,13 @@ class SLAMBackend(RGBDBackend):
                 raise RuntimeError("MASt3R-SLAM produced an invalid camera pose")
             # OpenCV camera/world axes (+Y down, +Z forward) to Ito; remove Sim3
             # scale from the renderer pose, but retain it on the dense world points.
-            rigid = matrix.clone()
-            rigid[:3, :3] /= scale
+            rigid = matrix.double()
+            # Sim3 rotations drift from orthonormal in float32; snap to the nearest one.
+            u, _, vh = torch.linalg.svd(rigid[:3, :3])
+            rigid[:3, :3] = u @ vh
             rigid[:3, :3] *= self.axes[:, None] * self.axes[None, :]
             rigid[:3, 3] *= self.axes
-            rigid = self.origin @ rigid
+            rigid = self.origin.double() @ rigid
             self.camera_pose = rigid.cpu().numpy().astype(np.float32)
             points = self.transform.act(frame.X_canon) * self.axes
             points = points @ self.origin[:3, :3].T + self.origin[:3, 3]
