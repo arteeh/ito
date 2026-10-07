@@ -3,7 +3,7 @@ import asyncio
 import json
 import logging
 
-from ito.driver.cli import serve
+from ito.driver.cli import driver_arguments, pairing_command, serve
 
 
 def main():
@@ -11,25 +11,21 @@ def main():
     parser.add_argument(
         "--robot", default="ws://127.0.0.1:8443", help="robot mediad LAN signalling address"
     )
-    parser.add_argument("--host", default="0.0.0.0")
-    parser.add_argument(
-        "--port", type=int, default=8081, help="Ito port (8080 belongs to Microduck's console)"
-    )
-    parser.add_argument("--input-timeout", type=float, default=0.25)
-    parser.add_argument("--ice-server", action="append", default=[])
-    parser.add_argument("--turn-username")
-    parser.add_argument("--turn-credential")
+    driver_arguments(parser)
+    # Microduck's console owns port 8080; robotd runs its control loop at 50 Hz.
+    parser.set_defaults(port=8081, command_rate=50)
     args = parser.parse_args()
-    args.command_rate = 50
+    args.prog = parser.prog
     args.audio_source, args.audio_sink = None, "none"
     args.adapter = "drivers.microduck.adapter:MicroduckAdapter"
     args.adapter_args = json.dumps({"robot": args.robot, "input_timeout": args.input_timeout})
     logging.basicConfig(level=logging.INFO)
     try:
-        asyncio.run(serve(args))
+        if not pairing_command(args):
+            asyncio.run(serve(args))
     except KeyboardInterrupt:
         pass
-    except (ValueError, ImportError, OSError, RuntimeError, TimeoutError) as exc:
+    except (ValueError, KeyError, ImportError, AttributeError, OSError, RuntimeError) as exc:
         parser.exit(1, f"ito-driver-microduck: {exc}\n")
 
 
