@@ -1,5 +1,6 @@
 """Nonblocking RGB-D/monocular input and incremental shared-memory scene output."""
 
+import logging
 import multiprocessing as mp
 import time
 
@@ -90,6 +91,8 @@ def _run(recon):
                 revision += 1
             time.sleep(0.01)
     except Exception as exc:
+        # The pilot sees one plain line; the log keeps the cause for whoever debugs it.
+        logging.getLogger("ito.reconstruction").exception("Reconstruction stopped")
         message = str(exc) if recon.backend == "slam" else f"Reconstruction failed: {exc}"
         recon.errors.send(message[:2000])
     finally:
