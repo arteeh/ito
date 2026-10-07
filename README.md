@@ -6,10 +6,15 @@ Most teleoperation software treats the pilot experience as secondary. It is usua
 
 ## Usage
 
-Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
+On Windows with an NVIDIA GPU: download `ito-windows-x64.zip`, unzip it and run `ito.exe` in
+the `ito` folder. Connect to a robot by address or a recent robot, or try the simulated robot.
+
+From source (Python 3.12+ and [uv](https://docs.astral.sh/uv/)):
 
 ```sh
 uv sync
+uv run ito                                                # connect screen, as ito.exe
+uv run ito --sim                                          # pilot the bundled simulated robot
 uv run ito-driver your_robot.adapter:create --port 8080   # on the robot
 uv run ito-driver-mujoco --gl osmesa                      # furnished simulation
 uv run ito robot-address:8080                             # on the pilot PC
@@ -65,7 +70,11 @@ scale is estimated, so reconstructed distances are not a measurement tool.
 
 ## Development and releases
 
-Release assets: `uv run --python 3.12 --extra slam python -m ito.build --output dist/ito/models` (Python 3.12, CUDA Toolkit 12.4, VS 2022 C++ tools on Windows); ship that folder beside `ito.exe`, including the CC BY-NC-SA licences/notices.
+Windows release, from a VS 2022 x64 developer shell with CUDA Toolkit 12.4:
+`uv run --python 3.12 --extra slam python release/windows.py` writes `dist/ito-windows-x64.zip`
+(Python runtime, `ito.exe`, and `models/` from `ito.build` with its CC BY-NC-SA licences;
+`--models DIR` reuses a built bundle). `uv run python e2e/release.py > release.log 2>&1`,
+run in the desktop session, unzips it into a clean environment and pilots it.
 
 CUDA end-to-end check on Windows (Developer PowerShell for VS 2022, CUDA 12.4 on PATH;
 `UV_PROJECT_ENVIRONMENT` can point to the existing venv):
@@ -111,6 +120,7 @@ uv run python e2e/lifecycle.py
 uv run python e2e/mujoco_driver.py                         # saves RGB-D samples in e2e/out/mujoco
 uv run python e2e/reconstruction_faults.py
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/app.py # live MuJoCo, SDL input, reconnect
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/connect.py # connect screen, simulated robot
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/render.py
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/desktop.py
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/stream.py
