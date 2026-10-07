@@ -37,7 +37,6 @@ class Pilot:
         self.failure = None
         self.backend = "rgbd"
         self.reconstruction_status = ""
-        self.download_progress = -1
         self.tracked_frames = 0
         self.stop = threading.Event()
         self.thread = None
@@ -97,7 +96,6 @@ class Pilot:
                 detail=detail or (f"{status.state}: {status.reason}" if status else ""),
                 input_latency_ms=self.telemetry.get("pilot_input_latency_ms") if peer else None,
                 reconstruction=self.reconstruction_status,
-                download_progress=self.download_progress,
             ),
         )
 
@@ -178,7 +176,6 @@ class Pilot:
         self.reconstruction_status = (
             "Flat camera feed" if self.backend == "video" else "Starting " + self.backend
         )
-        self.download_progress = -1
         self.tracked_frames = 0
         self.state = replace(self.state, flat_video=self.backend != "rgbd", video=None)
         with self.worker_lock:
@@ -232,9 +229,9 @@ class Pilot:
                 if not peer.connected or now - last_status > 2:
                     raise ConnectionError("Driver status lost; input disarmed")
                 if self.worker and not self.failure:
-                    progress = self.worker.status()
-                    if progress:
-                        self.reconstruction_status, self.download_progress = progress
+                    message = self.worker.status()
+                    if message:
+                        self.reconstruction_status = message
                     if self.backend == "slam":
                         tracked = self.worker.pose()
                         if tracked:
@@ -260,7 +257,6 @@ class Pilot:
                     with self.worker_lock:
                         failed, self.worker = self.worker, None
                     cleanup.append(asyncio.create_task(asyncio.to_thread(failed.close)))
-                    self.download_progress = -1
                 if now - self.last_frame > 5:
                     raise ConnectionError("No synchronized camera frames for five seconds")
                 for task in tasks:

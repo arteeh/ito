@@ -240,7 +240,6 @@ class DesktopWindow:
                             "robot": current.status.robot,
                             "status": current.status.detail,
                             "reconstruction": current.status.reconstruction,
-                            "download_progress": current.status.download_progress,
                             "flat_video": current.flat_video,
                             "video_capture_time": current.video_time,
                             "e_stop": current.status.e_stop,
