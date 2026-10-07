@@ -12,6 +12,7 @@ import numpy as np
 import pygame
 from sample_scene import write_scene
 
+from ito import clock
 from ito.desktop import DesktopState, DesktopWindow, PilotStatus
 from ito.render import GaussianBuffer, GaussianFrame, load_ply, pose
 
@@ -25,7 +26,7 @@ def produce(name, shape, path, connection):
         for revision in range(2):
             shared[:] = original
             shared[:, 0, 0] += revision * 0.3
-            connection.send((revision, time.monotonic()))
+            connection.send((revision, clock.now()))
             assert connection.poll(20), "Display did not acknowledge scene upload"
             connection.recv()
             time.sleep(1.5)  # Deliberately slower than the display and pilot input.

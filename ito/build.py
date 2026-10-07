@@ -8,10 +8,10 @@ import re
 import shutil
 import sys
 import tarfile
-import time
 import urllib.request
 from pathlib import Path
 
+from ito import clock
 from ito.reconstruction.mast3r_runtime import BUNDLE_VERSION, MODEL_FILES, MODELS, abi
 
 BUILD_COMMAND = "uv run --python 3.12 --extra slam python -m ito.build"
@@ -48,7 +48,7 @@ def download(url, path, report, label, sha256=None):
                 out.write(block)
                 digest.update(block)
                 received += len(block)
-                now = time.monotonic()
+                now = clock.now()
                 if now - notified > 0.2:
                     report(
                         f"Downloading {label}: {received / 1e6:.0f} MB"

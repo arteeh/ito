@@ -1,14 +1,13 @@
 """Desktop tracking and input, using SDL's standardized controller mappings."""
 
 import math
-import time
 from dataclasses import dataclass, field
 
 import numpy as np
 import pygame
 from pygame._sdl2 import controller
 
-from ito import diagnostics
+from ito import clock, diagnostics
 from ito.protocol import Pose
 from ito.render import pose
 from ito.render.scene import FloatArray
@@ -183,7 +182,7 @@ class DesktopInput:
             self.position += rotation @ local * self.speed * dt
         buttons.update(pygame.key.name(key) for key in self.keys)
         return PilotInput(
-            time.monotonic(),
+            clock.now(),
             pose(self.position, self.yaw, self.pitch),
             tuple(map(float, movement)),
             look,

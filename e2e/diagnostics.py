@@ -7,13 +7,12 @@ import json
 import os
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pygame
 
 from e2e.simulated import click, key
-from ito import diagnostics
+from ito import clock, diagnostics
 from ito.app.__main__ import main as pilot_main
 
 OUT = Path("e2e/out/diagnostics")
@@ -30,16 +29,16 @@ def phase(mode):
         path.mkdir(parents=True)  # A real filesystem error, even when run as root.
     # Exercise the same rotating handler with a small budget in a real running app.
     diagnostics.MAX_BYTES = 8000
-    stage, changed = "start", time.monotonic()
+    stage, changed = "start", clock.now()
     saved_size = 0
 
     def go(value):
         nonlocal stage, changed
-        stage, changed = value, time.monotonic()
+        stage, changed = value, clock.now()
 
     def drive(app, window, value):
         nonlocal saved_size
-        waited = time.monotonic() - changed
+        waited = clock.now() - changed
         assert waited < 25, stage
         layout = window.overlay.layout
         if app.state.status.link != "CONNECTED" or "diagnostics" not in layout:

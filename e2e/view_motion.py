@@ -7,13 +7,13 @@ import argparse
 import json
 import math
 import os
-import time
 from pathlib import Path
 
 import numpy as np
 import pygame
 from pygame._sdl2 import Window
 
+from ito import clock
 from ito.app.__main__ import main as pilot_main
 
 OUT = Path("e2e/out/view-motion")
@@ -27,7 +27,7 @@ def key(code):
 def run(measure=False):
     OUT.mkdir(parents=True, exist_ok=True)
     os.environ["XDG_CONFIG_HOME"] = os.environ["APPDATA"] = str(OUT / "config")
-    began = time.monotonic()
+    began = clock.now()
     stage, changed = 0, began
     samples = []
     updates = []
@@ -38,7 +38,7 @@ def run(measure=False):
 
     def drive(app, window, value):
         nonlocal stage, changed, installed, previous
-        now = time.monotonic()
+        now = clock.now()
         assert now - began < 35, (stage, app.state.status)
         if not installed:
             draw = window.draw_view
@@ -68,7 +68,7 @@ def run(measure=False):
                     view = current.robot_camera @ head
                     samples.append(
                         {
-                            "time": time.monotonic(),
+                            "time": clock.now(),
                             "yaw": math.atan2(float(view[0, 2]), float(view[2, 2])),
                             "head_yaw": math.atan2(float(head[0, 2]), float(head[2, 2])),
                             "video_time": current.video_time,

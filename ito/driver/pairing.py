@@ -3,10 +3,10 @@
 import os
 import secrets
 import tempfile
-import time
 from collections import deque
 from pathlib import Path
 
+from ito import clock
 from ito.link.pairing import generate, normalize, valid
 
 NONCE_SECONDS = 30
@@ -82,7 +82,7 @@ class Pairing:
         self._failures: deque[float] = deque()
 
     def nonce(self) -> str:
-        now = time.monotonic()
+        now = clock.now()
         self._nonces = {n: t for n, t in self._nonces.items() if now - t < NONCE_SECONDS}
         while len(self._nonces) >= MAX_NONCES:
             del self._nonces[next(iter(self._nonces))]
@@ -92,7 +92,7 @@ class Pairing:
 
     def check(self, nonce: str | None, proof: str | None, sdp: str) -> str:
         """The code the offer proved; raises PairingRefused with a reason the pilot reads."""
-        now = time.monotonic()
+        now = clock.now()
         while self._failures and now - self._failures[0] > 60:
             self._failures.popleft()
         if len(self._failures) >= MAX_FAILURES:

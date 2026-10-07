@@ -17,6 +17,7 @@ os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 import numpy as np
 import pygame
 
+from ito import clock
 from ito.desktop import DesktopState, DesktopWindow, PilotStatus
 from ito.desktop.settings import load_budget
 from ito.protocol import Intrinsics
@@ -87,11 +88,11 @@ class Observe:
             valid = (previous[:, 0, 3] > 0) & (packet.records[:, 0, 3] > 0)
             same = np.linalg.norm(previous[:, 0, :3] - packet.records[:, 0, :3], axis=1) < 0.18
             replaced = ((previous[:, 0, 3] > 0) & (packet.records[:, 0, 3] == 0)) | (valid & ~same)
-            assert np.all(self.release_after[packet.indices[replaced]] <= time.monotonic()), (
+            assert np.all(self.release_after[packet.indices[replaced]] <= clock.now()), (
                 "Slot reused before its acknowledged fade finished"
             )
             pressure = packet.records[:, 3, 3] == 1
-            self.release_after[packet.indices[pressure]] = time.monotonic() + packet.fade_seconds
+            self.release_after[packet.indices[pressure]] = clock.now() + packet.fade_seconds
             self.release_after[packet.indices[~pressure]] = 0
             self.refreshes += int(np.count_nonzero(valid & same))
             self.evictions += int(np.count_nonzero(packet.records[:, 3, 3] == 1))
@@ -188,7 +189,7 @@ def main():
     failures = []
     samples = []
     snapshots = []
-    began = time.monotonic()
+    began = clock.now()
     with Reconstruction(
         CAMERA, max_splats=BUDGET, voxel_size=0.12, window_seconds=2, fade_seconds=0.4
     ) as reconstruction:
@@ -198,7 +199,7 @@ def main():
             nonlocal anchor
             try:
                 while not stop.is_set():
-                    elapsed = time.monotonic() - began
+                    elapsed = clock.now() - began
                     angle = elapsed * 0.25
                     anchor = pose(
                         (2 * math.sin(angle), 0, 6 * math.cos(angle)), yaw=angle + math.pi
@@ -213,13 +214,13 @@ def main():
 
         producer = threading.Thread(target=produce)
         producer.start()
-        last_tick = time.monotonic()
+        last_tick = clock.now()
         ticks = 0
         captures = set()
 
         def drive(pilot):
             nonlocal last_tick, ticks
-            now = time.monotonic()
+            now = clock.now()
             elapsed = now - began
             samples.append((elapsed, now - last_tick))
             last_tick = now

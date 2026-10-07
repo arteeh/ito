@@ -11,6 +11,8 @@ from pathlib import Path
 
 import numpy as np
 
+from ito import clock
+
 
 async def publish(adapter, path):
     path = Path(path)
@@ -51,7 +53,7 @@ def main():
         view.cam.trackbodyid = model.body("base").id
         view.cam.distance = 2.8
         view.cam.elevation = -25
-        last_frame = time.monotonic()
+        last_frame = clock.now()
         while view.is_running():
             try:
                 state = np.load(state_path, allow_pickle=False)
@@ -65,12 +67,12 @@ def main():
                     mujoco.mj_forward(model, data)
                 view.sync()
                 updated += 1
-                last_frame = time.monotonic()
+                last_frame = clock.now()
                 # Report the displayed simulation time without recording poses.
                 temporary = status.with_suffix(".tmp-viewer")
                 temporary.write_text(json.dumps(dict(frames=updated, simulation_time=data.time)))
                 temporary.replace(status)
-            if time.monotonic() - last_frame > 5:
+            if clock.now() - last_frame > 5:
                 raise RuntimeError("Simulation viewer stopped receiving the robot state")
             time.sleep(1 / 30)
     with contextlib.suppress(FileNotFoundError):

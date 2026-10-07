@@ -8,12 +8,12 @@ import json
 import math
 import os
 import sys
-import time
 from pathlib import Path
 
 import numpy as np
 from mujoco_driver import Pilot
 
+from ito import clock
 from ito.driver import pairing
 from ito.link import connect
 
@@ -78,7 +78,7 @@ async def run():
             )
             beyond = math.radians(30)
             gaze = facing + limit + beyond
-            following = time.monotonic()
+            following = clock.now()
             await pilot.drive(4, yaw=gaze)
             _, status = await pilot.status("active")
             reached = status.telemetry

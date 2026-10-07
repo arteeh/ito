@@ -17,6 +17,7 @@ import psutil
 import pygame
 from pygame._sdl2 import Window
 
+from ito import clock
 from ito.app.__main__ import main as pilot_main
 from ito.driver import pairing
 from ito.link.pairing import display
@@ -54,7 +55,7 @@ def main():
         )
 
     robot = driver()
-    began = time.monotonic()
+    began = clock.now()
     stage = 0
     changed = began
     previous = began
@@ -82,7 +83,7 @@ def main():
         nonlocal first_camera, new_surfaces
         nonlocal release_latency_ms, estop_latency_ms, tested_input_stall
         nonlocal steady_start, steady_end
-        now = time.monotonic()
+        now = clock.now()
         assert now - began < 65, (stage, app.state, app.telemetry)
         samples.append((now, now - previous, app.state.status.link))
         previous = now
@@ -109,26 +110,26 @@ def main():
         elif stage == 1 and not tested_input_stall and t.get("active"):
             # Block the display for longer than both watchdogs. Held input must
             # stay live, and releasing W must reach the robot before we draw again.
-            until = time.monotonic() + 0.65
-            while time.monotonic() < until:
-                age = time.monotonic() - app.latest_input.timestamp
+            until = clock.now() + 0.65
+            while clock.now() < until:
+                age = clock.now() - app.latest_input.timestamp
                 stalled_input_ages.append(age * 1000)
                 assert age < 0.2, age
                 assert app.telemetry["active"], app.state.status
                 time.sleep(0.01)
-            released = time.monotonic()
+            released = clock.now()
             pygame.event.post(pygame.event.Event(pygame.KEYUP, key=pygame.K_w))
             while app.telemetry["left_command"] or app.telemetry["right_command"]:
-                assert time.monotonic() - released < 0.5, app.telemetry
+                assert clock.now() - released < 0.5, app.telemetry
                 time.sleep(0.01)
             assert app.telemetry["active"], app.state.status
-            release_latency_ms = (time.monotonic() - released) * 1000
-            stopped = time.monotonic()
+            release_latency_ms = (clock.now() - released) * 1000
+            stopped = clock.now()
             key(pygame.K_e)
             while not app.state.status.e_stop:
-                assert time.monotonic() - stopped < 0.5, app.state.status
+                assert clock.now() - stopped < 0.5, app.state.status
                 time.sleep(0.01)
-            estop_latency_ms = (time.monotonic() - stopped) * 1000
+            estop_latency_ms = (clock.now() - stopped) * 1000
             assert app.telemetry["left_command"] == app.telemetry["right_command"] == 0
             key(pygame.K_r)
             pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_w))
