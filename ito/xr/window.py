@@ -60,6 +60,9 @@ class XRWindow(DesktopWindow):
 
     def _capture_target(self, target, name):
         self.capture_dir.mkdir(parents=True, exist_ok=True)
+        # ModernGL readback holds the GIL; wait for the GPU through ctypes first
+        # so a slow stereo capture cannot starve tracking and the link sender.
+        GL.glFinish()
         pixels = target.read(components=3, alignment=1)
         image = pygame.image.frombytes(pixels, target.size, "RGB")
         path = self.capture_dir / f"capture-{self.capture_number:03d}-{name}.png"
