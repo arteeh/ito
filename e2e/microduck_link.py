@@ -78,10 +78,16 @@ async def run(args):
             await asyncio.sleep(1 / 60)
 
     async def until(predicate):
-        async with asyncio.timeout(20):
-            while not predicate():
-                assert peer.connected, "link disconnected"
-                await asyncio.sleep(0.01)
+        try:
+            async with asyncio.timeout(20):
+                while not predicate():
+                    assert peer.connected, "link disconnected"
+                    for task in tasks:
+                        if task.done():
+                            task.result()
+                    await asyncio.sleep(0.01)
+        except TimeoutError:
+            raise AssertionError(f"Timed out: frames={frames}, status={latest}") from None
 
     tasks = [asyncio.create_task(f()) for f in (video, telemetry, input_loop)]
     try:

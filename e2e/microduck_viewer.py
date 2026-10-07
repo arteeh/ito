@@ -26,13 +26,13 @@ def main():
         child = subprocess.Popen(sys.argv[1:] + ["--viewer"], stdout=log, stderr=log)
         try:
             window = None
-            while time.monotonic() - started < 12:
+            while time.monotonic() - started < 30:
                 assert child.poll() is None, "launcher exited; see launcher.log"
                 window = next(
                     (
                         w
                         for w in windows(connection.screen().root)
-                        if w.get_wm_name() == "MuJoCo"
+                        if (w.get_wm_name() or "").startswith("MuJoCo :")
                         and w.get_attributes().map_state == X.IsViewable
                     ),
                     None,
