@@ -8,6 +8,7 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from ito.desktop.settings import settings_path
+from ito.link.pairing import normalize
 from ito.protocol import Model, Name
 
 RECENT = 6
@@ -59,11 +60,15 @@ def recent_path():
 
 
 def recent():
-    """Most recent first: [{"address": ..., "name": ...}]."""
+    """Most recent first: [{"address": ..., "name": ..., "code": pairing code or None}]."""
     try:
         entries = json.loads(recent_path().read_text())
         return [
-            {"address": str(e["address"]), "name": str(e["name"])}
+            {
+                "address": str(e["address"]),
+                "name": str(e["name"]),
+                "code": normalize(e["code"]) if isinstance(e.get("code"), str) else None,
+            }
             for e in entries
             if isinstance(e, dict)
         ][:RECENT]
@@ -74,10 +79,29 @@ def recent():
         return []
 
 
-def remember(address, name):
+def code(address):
+    """The pairing code that last let this pilot in at address."""
+    return next((e["code"] for e in recent() if e["address"] == address), None)
+
+
+def remember(address, name, code):
     entries = [e for e in recent() if e["address"] != address]
+    _write_recent([{"address": address, "name": name, "code": code}, *entries])
+
+
+def forget_code(address):
+    """A refused code is asked for again instead of being retried."""
+    entries = recent()
+    if any(e["address"] == address and e["code"] for e in entries):
+        try:
+            _write_recent([e | {"code": None} if e["address"] == address else e for e in entries])
+        except OSError as exc:
+            logging.getLogger(__name__).warning("Cannot forget pairing code: %s", exc)
+
+
+def _write_recent(entries):
     path = recent_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps([{"address": address, "name": name}, *entries][:RECENT]))
+    temporary.write_text(json.dumps(entries[:RECENT]))
     temporary.replace(path)

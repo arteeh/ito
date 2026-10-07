@@ -12,8 +12,9 @@ import pygame
 from ito.desktop import DesktopWindow
 from ito.desktop.settings import settings_path
 from ito.link.audio import Audio, arguments
+from ito.link.pairing import DIGITS, normalize
 
-from . import connect
+from . import connect, settings
 from .pilot import Pilot
 from .settings import Settings
 from .sim import SimulatedRobot
@@ -54,6 +55,7 @@ def main(argv=None, *, on_frame=None):
         "address", nargs="?", help="driver host:port or HTTP(S) URL (omit to choose on screen)"
     )
     parser.add_argument("--sim", action="store_true", help="pilot the bundled simulated robot")
+    parser.add_argument("--code", help="the robot's pairing code (remembered after it connects)")
     parser.add_argument("--mode", choices=("desktop", "xr"), default="desktop")
     parser.add_argument("--reference-space", choices=("seated", "standing"), default="seated")
     parser.add_argument(
@@ -78,6 +80,9 @@ def main(argv=None, *, on_frame=None):
     args = parser.parse_args(argv)
     if args.sim and args.address:
         parser.error("--sim replaces the robot address")
+    code = args.code
+    if code is not None and (code := normalize(code)) is None:
+        parser.error(f"a pairing code is {DIGITS} digits")
     configure_logging()
     overrides = {
         key: getattr(args, key)
@@ -86,8 +91,10 @@ def main(argv=None, *, on_frame=None):
     }
     # Without an address or --sim, the pilot picks a robot on screen and can come back to it.
     choosing = args.address is None and not args.sim
-    choice = connect.Choice(args.address, args.mode == "xr")
-    window = window_mode = error = None
+    if args.address and code is None:
+        code = settings.code(args.address)
+    choice = connect.Choice(args.address, args.mode == "xr", code)
+    window = window_mode = error = pairing = None
 
     def open_window(mode):
         window_type = DesktopWindow
@@ -119,10 +126,10 @@ def main(argv=None, *, on_frame=None):
                         if window:
                             window.close()
                         window, window_mode = open_window("desktop"), "desktop"
-                    choice = connect.choose(window, xr=choice.xr, error=error)
+                    choice = connect.choose(window, xr=choice.xr, error=error, pairing=pairing)
                     if choice is None:
                         return 0
-                    error = None
+                    error = pairing = None
                 mode = "xr" if choice.xr else "desktop"
                 if mode != window_mode:
                     if window:
@@ -138,7 +145,13 @@ def main(argv=None, *, on_frame=None):
                         continue
                 window.overlay.can_leave = choosing
                 window.overlay.leave = False
-                pilot_window(window, args, overrides, metrics, choice, on_frame)
+                refusal = pilot_window(window, args, overrides, metrics, choice, on_frame)
+                if refusal:
+                    # Ask for the code on the connect screen, whichever way ito started.
+                    if choice.code:
+                        settings.forget_code(choice.address)
+                    choosing, pairing, error = True, choice.address, refusal
+                    continue
                 if not window.overlay.leave:
                     return 0
     except (OSError, ValueError, RuntimeError, pygame.error, moderngl.Error) as exc:
@@ -162,6 +175,7 @@ def pilot_window(window, args, overrides, metrics, choice, on_frame):
             audio_source=args.audio_source,
             audio_sink=args.audio_sink,
             persist=sim is None,
+            code=sim.code if sim else choice.code,
         ) as pilot,
     ):
         window.input.translate = False
@@ -178,6 +192,8 @@ def pilot_window(window, args, overrides, metrics, choice, on_frame):
                 window.overlay.max_splats = selected.max_splats
                 if selected.max_splats > window.splat_limit:
                     pilot.set_max_splats(window.splat_limit)
+            if pilot.refusal:
+                window.overlay.leave = True
             if sim and (failure := sim.failure()):
                 window.overlay.error = failure
             pilot.input(value)
@@ -192,6 +208,7 @@ def pilot_window(window, args, overrides, metrics, choice, on_frame):
             metrics=metrics,
             save_settings=lambda _: None,
         )
+    return pilot.refusal
 
 
 if __name__ == "__main__":
