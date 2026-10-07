@@ -21,11 +21,16 @@ def write_scene(path: Path, *, text: bool = False, degree: int = 3) -> int:
     for x in np.linspace(-4, 4, 45):
         for z in np.linspace(-9, -1, 45):
             light = (int(np.floor(x)) + int(np.floor(z))) % 2
-            add((x, -1.1, z), (0.24, 0.31, 0.39) if light else (0.10, 0.17, 0.23),
-                (0.095, 0.015, 0.095))
-    for center, rgb, radius in (((-1.15, -0.15, -3.5), (0.95, 0.24, 0.07), 0.78),
-                                ((1.1, -0.4, -4.4), (0.05, 0.65, 0.92), 0.65),
-                                ((0.05, 0.9, -5.1), (0.91, 0.69, 0.08), 0.6)):
+            add(
+                (x, -1.1, z),
+                (0.24, 0.31, 0.39) if light else (0.10, 0.17, 0.23),
+                (0.095, 0.015, 0.095),
+            )
+    for center, rgb, radius in (
+        ((-1.15, -0.15, -3.5), (0.95, 0.24, 0.07), 0.78),
+        ((1.1, -0.4, -4.4), (0.05, 0.65, 0.92), 0.65),
+        ((0.05, 0.9, -5.1), (0.91, 0.69, 0.08), 0.6),
+    ):
         for _ in range(800):
             normal = rng.normal(size=3)
             normal /= np.linalg.norm(normal)
@@ -35,8 +40,12 @@ def write_scene(path: Path, *, text: bool = False, degree: int = 3) -> int:
     # Tilted, anisotropic green rods behind the spheres.
     for side in (-1, 1):
         for y in np.linspace(-0.9, 1.8, 35):
-            add((side * (2.1 - 0.25 * y), y, -6), (0.08, 0.7, 0.35),
-                (0.045, 0.12, 0.045), (np.cos(0.13), 0, 0, side * np.sin(0.13)))
+            add(
+                (side * (2.1 - 0.25 * y), y, -6),
+                (0.08, 0.7, 0.35),
+                (0.045, 0.12, 0.045),
+                (np.cos(0.13), 0, 0, side * np.sin(0.13)),
+            )
     rest_count = 3 * ((degree + 1) ** 2 - 1)
     names = ["x", "y", "z", "nx", "ny", "nz"] + [f"f_dc_{i}" for i in range(3)]
     names += [f"f_rest_{i}" for i in range(rest_count)]
