@@ -13,7 +13,7 @@ from ito import clock, diagnostics
 from ito.desktop import DesktopState, PilotStatus
 from ito.link import PairingError, connect
 from ito.link.audio import Audio
-from ito.protocol import Command, FrameMetadata, PilotState, Pose, Status
+from ito.protocol import Command, FrameMetadata, Paired, PilotState, Pose, Status
 from ito.reconstruction import Reconstruction
 from ito.render import pose
 from ito.render.pose import quaternion
@@ -37,14 +37,16 @@ class Pilot:
         audio_sink="device",
         persist=True,
         code=None,
+        credential=None,
     ):
         self.audio_options = (audio_source, audio_sink)
         self.audio = None
         self.mic_muted = self.speaker_muted = False
         self.address, self.camera_name, self.cameras = address, camera, cameras
         self.persist = persist  # The simulated robot's address changes every run.
-        self.code = code
-        self.refusal = None  # Why the robot refused the pairing code; the pilot must act.
+        self.code = code  # Used once, when the robot does not know this pilot yet.
+        self.credential = credential
+        self.refusal = None  # Why the robot refused to pair; the pilot must act.
         self.settings = defaults or settings.Settings()
         self.defaults = self.settings
         self.overrides = overrides or {}
@@ -148,13 +150,15 @@ class Pilot:
 
     def _save(self, name):
         if not self.persist:
-            return
+            return False
         try:
             settings.save(self.address, name, self.settings)
-            settings.remember(self.address, name, self.code)
+            settings.remember(self.address, name, self.credential)
+            return True
         except OSError as exc:
             log.warning("Cannot save pilot settings: %s", exc)
             self._status("CONNECTED", f"Could not save settings: {exc}")
+            return False
 
     def _submit(self, pair, peer):
         if pair is None:
@@ -223,7 +227,13 @@ class Pilot:
         self.settings = settings.Settings.model_validate(selected.model_dump() | self.overrides)
         self.overrides = {}
         self.settings_revision += 1
-        self._save(description.name)
+        paired = peer.credential_received.is_set()
+        if paired:
+            self.credential = peer.credential
+        # The robot retires its code once this pilot can come back without it.
+        if self._save(description.name) or (paired and not self.persist):
+            if paired and peer.send(Paired(pilot=self.credential.pilot)):
+                self.code = None
         self.telemetry = {}
         self.failure = None
         # Resume is never replayed across a connection; safety requests survive it.
@@ -452,14 +462,22 @@ class Pilot:
                     connect_timeout=8,
                     audio_io=self.audio,
                     code=self.code,
+                    credential=self.credential,
                 ) as peer:
                     delay = 0.5
                     await self._session(peer)
             except asyncio.CancelledError:
                 break
             except PairingError as exc:
-                # Retrying the same code cannot succeed and counts against the robot's limit.
                 log.warning("Pilot connection: %s", exc)
+                if self.credential is not None:
+                    # The robot's code was rotated, so it forgot this pilot.
+                    self.credential = None
+                    if self.persist:
+                        settings.forget_credential(self.address)
+                    if self.code is not None:
+                        continue
+                # Retrying the same code cannot succeed and counts against the robot's limit.
                 self.refusal = str(exc)
                 self._status("REFUSED", self.refusal)
                 break

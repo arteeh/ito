@@ -28,8 +28,15 @@ def driver_arguments(parser) -> None:
     parser.add_argument(
         "--rotate-code",
         action="store_true",
-        help="replace the pairing code and exit; every pilot must enter the new one",
+        help="make a new single-use pairing code and exit; every pilot must enter it",
     )
+
+
+def shown(path) -> str:
+    code, _ = pairing.ensure(path)
+    if pairing.armed(path):
+        return f"Pairing code: {display(code)} (the pilot enters it once)"
+    return "Pairing code used by a paired pilot; --rotate-code makes a new one"
 
 
 def pairing_command(args) -> bool:
@@ -38,8 +45,7 @@ def pairing_command(args) -> bool:
         code = pairing.rotate(args.pairing_file)
         print(f"New pairing code: {display(code)}", flush=True)
     elif args.show_code:
-        code, _ = pairing.ensure(args.pairing_file)
-        print(f"Pairing code: {display(code)}", flush=True)
+        print(shown(args.pairing_file), flush=True)
     return args.rotate_code or args.show_code
 
 
@@ -72,12 +78,12 @@ async def serve(args) -> None:
             loop.add_signal_handler(sig, stopped.set)
         except NotImplementedError:
             pass
-    code, _ = pairing.ensure(args.pairing_file)
+    code = shown(args.pairing_file)
     try:
         address = await driver.start(args.host, args.port)
         print(f"Ito driver listening at {address}", flush=True)
         if not args.hide_code:
-            print(f"Pairing code: {display(code)} (the pilot enters it once)", flush=True)
+            print(code, flush=True)
         await stopped.wait()
     finally:
         await driver.close()

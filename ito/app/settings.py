@@ -10,8 +10,7 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from ito.desktop.settings import settings_path
-from ito.link.pairing import normalize
-from ito.protocol import Model, Name
+from ito.protocol import Credential, Model, Name
 
 RECENT = 6
 
@@ -61,15 +60,22 @@ def recent_path():
     return settings_path().parent / "recent.json"
 
 
+def _credential(value):
+    try:
+        return Credential(pilot=value["pilot"], secret=value["secret"])
+    except (TypeError, KeyError, ValueError):
+        return None
+
+
 def recent():
-    """Most recent first: [{"address": ..., "name": ..., "code": pairing code or None}]."""
+    """Most recent first: [{"address": ..., "name": ..., "credential": Credential or None}]."""
     try:
         entries = json.loads(recent_path().read_text())
         return [
             {
                 "address": str(e["address"]),
                 "name": str(e["name"]),
-                "code": normalize(e["code"]) if isinstance(e.get("code"), str) else None,
+                "credential": _credential(e.get("credential")),
             }
             for e in entries
             if isinstance(e, dict)
@@ -85,31 +91,32 @@ def canonical(address):
     return address.removeprefix("http://").rstrip("/")
 
 
-def code(address):
-    """The pairing code that last let this pilot in at address."""
+def credential(address):
+    """The secret the robot at address gave this pilot when it paired."""
     return next(
-        (e["code"] for e in recent() if canonical(e["address"]) == canonical(address)), None
+        (e["credential"] for e in recent() if canonical(e["address"]) == canonical(address)),
+        None,
     )
 
 
-def remember(address, name, code):
+def remember(address, name, credential):
     entries = [e for e in recent() if canonical(e["address"]) != canonical(address)]
-    _write_recent([{"address": address, "name": name, "code": code}, *entries])
+    _write_recent([{"address": address, "name": name, "credential": credential}, *entries])
 
 
-def forget_code(address):
-    """A refused code is asked for again instead of being retried."""
+def forget_credential(address):
+    """A refused credential is replaced by pairing again instead of being retried."""
     entries = recent()
-    if any(canonical(e["address"]) == canonical(address) and e["code"] for e in entries):
+    if any(canonical(e["address"]) == canonical(address) and e["credential"] for e in entries):
         try:
             _write_recent(
                 [
-                    e | {"code": None} if canonical(e["address"]) == canonical(address) else e
+                    e | {"credential": None} if canonical(e["address"]) == canonical(address) else e
                     for e in entries
                 ]
             )
         except OSError as exc:
-            logging.getLogger(__name__).warning("Cannot forget pairing code: %s", exc)
+            logging.getLogger(__name__).warning("Cannot forget pairing credential: %s", exc)
 
 
 def _write_recent(entries):
@@ -119,7 +126,19 @@ def _write_recent(entries):
     temporary = type(path)(filename)
     try:
         with os.fdopen(fd, "w") as stream:
-            stream.write(json.dumps(entries[:RECENT]))
+            stream.write(
+                json.dumps(
+                    [
+                        e
+                        | {
+                            "credential": e["credential"].model_dump(include={"pilot", "secret"})
+                            if e["credential"]
+                            else None
+                        }
+                        for e in entries[:RECENT]
+                    ]
+                )
+            )
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)

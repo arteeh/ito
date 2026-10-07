@@ -13,6 +13,7 @@ import aiohttp
 from ito import clock
 from ito.driver import pairing
 from ito.link.pairing import proof
+from ito.protocol import VERSION
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -34,6 +35,21 @@ async def challenge(session, address):
     async with session.post(address + "/pairing") as response:
         assert response.status == 200
         return (await response.json())["nonce"]
+
+
+async def guesses(address, codes, host="127.0.0.1"):
+    """Offer each code from one local address; the driver sees that TCP peer address."""
+    sdp = "v=0\r\n"
+    connector = aiohttp.TCPConnector(local_addr=(host, 0))
+    async with aiohttp.ClientSession(connector=connector) as session:
+        replies = []
+        for code in codes:
+            nonce = await challenge(session, address)
+            offer = {"version": VERSION, "type": "offer", "sdp": sdp, "nonce": nonce}
+            offer["proof"] = proof(code, nonce, "offer", sdp)
+            async with session.post(address + "/offer", json=offer) as response:
+                replies.append((response.status, await response.text()))
+        return replies
 
 
 async def run():
@@ -68,7 +84,7 @@ async def run():
             async with aiohttp.ClientSession() as session:
                 for payload in [
                     {},
-                    {"version": 2, "type": "offer", "sdp": "invalid"},
+                    {"version": VERSION + 1, "type": "offer", "sdp": "invalid"},
                     {"version": True, "type": "offer", "sdp": "invalid"},
                 ]:
                     async with session.post(address + "/offer", json=payload) as response:
@@ -76,7 +92,7 @@ async def run():
                 async with session.post(address + "/offer", data="x" * 230_000) as response:
                     assert response.status == 413
                 sdp = "v=0\r\n"
-                offer = {"version": 1, "type": "offer", "sdp": sdp}
+                offer = {"version": VERSION, "type": "offer", "sdp": sdp}
                 async with session.post(address + "/offer", json=offer) as response:
                     assert response.status == 401
                     assert await response.text() == "This robot needs its pairing code"
@@ -90,6 +106,9 @@ async def run():
                 paired["proof"] = proof(code, nonce, "offer", sdp)
                 async with session.post(address + "/offer", json=paired) as response:
                     assert response.status == 400, response.status
+            # Wrong codes from one host lock out that host, not the pilot elsewhere on the LAN.
+            replies = await guesses(address, [wrong] * 10 + [code], host="127.0.0.2")
+            assert [status for status, _ in replies] == [403] * 10 + [429], replies
             pilot = await asyncio.create_subprocess_exec(
                 sys.executable,
                 str(ROOT / "e2e" / "pilot.py"),
@@ -102,9 +121,14 @@ async def run():
             )
             result = json.loads(await line(pilot, 35))
             assert result["event"] == "verified"
+            credential = result.pop("credential")
             async with aiohttp.ClientSession() as session:
                 nonce = await challenge(session, address)
-                busy = offer | {"nonce": nonce, "proof": proof(code, nonce, "offer", sdp)}
+                busy = offer | {
+                    "nonce": nonce,
+                    "proof": proof(credential["secret"], nonce, "offer", sdp),
+                    "pilot": credential["pilot"],
+                }
                 async with session.post(address + "/offer", json=busy) as response:
                     assert response.status == 409
             await asyncio.sleep(0.15)
@@ -134,15 +158,22 @@ async def run():
             assert not any(e["time"] > neutral[0]["time"] for e in applied)
             assert any(e["event"] == "incoming_audio" for e in entries)
             assert driver.returncode is None
-            # Guessing codes stops after ten wrong ones a minute, even for the right code.
-            async with aiohttp.ClientSession() as session:
-                statuses = []
-                for guess in [wrong] * 9 + [code]:
-                    nonce = await challenge(session, address)
-                    paired = offer | {"nonce": nonce, "proof": proof(guess, nonce, "offer", sdp)}
-                    async with session.post(address + "/offer", json=paired) as response:
-                        statuses.append(response.status)
-                assert statuses == [403] * 9 + [429], statuses
+            # The pilot's code paired it once; nobody can use it again, so guessing is moot.
+            replies = await guesses(address, [code, wrong])
+            assert all(status == 403 and "already used" in text for status, text in replies)
+            # With a fresh code armed, many hosts together hit the network-wide ceiling.
+            code = pairing.rotate(code_file)
+            hosts = 0
+            while True:
+                hosts += 1
+                replies = await guesses(address, [wrong] * 10, host=f"127.0.0.{2 + hosts}")
+                if replies[-1][0] == 429:
+                    break
+                assert [status for status, _ in replies] == [403] * 10, replies
+                assert hosts <= 10, "no network-wide limit on wrong codes"
+            assert "on this network" in replies[-1][1], replies
+            replies = await guesses(address, [code], host="127.0.0.200")
+            assert replies[0][0] == 429, replies
             print(
                 json.dumps(
                     result
@@ -150,6 +181,7 @@ async def run():
                         "neutral_after_kill_ms": round(latency * 1000, 1),
                         "applied_commands": len(applied),
                         "command_rate_hz": 20,
+                        "hosts_to_network_limit": hosts,
                     }
                 )
             )

@@ -23,9 +23,10 @@ uv run ito-desktop scene.ply                              # explore a splat scen
 ```
 
 Drivers listen on all interfaces for LAN or tailnet connections and print their persisted
-pairing code at startup. Enter it once on the connect screen; Ito remembers it with the robot.
-`ito-driver-mujoco --show-code` shows it again; `--rotate-code` replaces it, including while
-the driver is running. Use the same `--pairing-file PATH` on each command if you override it.
+pairing code at startup. Enter it once on the connect screen: the robot then gives Ito a secret
+of its own over the encrypted link and the code is used up. `ito-driver-mujoco --show-code`
+shows it again; `--rotate-code` makes a new code and forgets every paired pilot, including
+while the driver is running. Use the same `--pairing-file PATH` on each command if you override it.
 The bundled simulated robot pairs automatically and has no microphone or speaker.
 **Show simulation** opens a separate MuJoCo viewer; closing it leaves piloting connected.
 
@@ -138,6 +139,7 @@ End-to-end checks (no GPU or headset needed):
 ```sh
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/audio.py # two-way tones, mute, no device
 uv run python e2e/webrtc.py
+uv run python e2e/pairing.py                               # recorded signaling yields nothing reusable
 uv run python e2e/lifecycle.py
 uv run python e2e/mujoco_driver.py                         # saves RGB-D samples in e2e/out/mujoco
 uv run python e2e/reconstruction_faults.py

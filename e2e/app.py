@@ -254,7 +254,7 @@ def main():
             )
             == 0
         )
-        assert reloaded, "Per-robot comfort settings or pairing code did not survive restart"
+        assert reloaded, "Per-robot comfort settings or pairing did not survive restart"
         # Exercise the installed console entry point as well as SDL injection above.
         with (OUT / "cli.log").open("w") as cli_log:
             subprocess.run(
@@ -287,7 +287,10 @@ def main():
             robot.terminate()
             robot.wait(timeout=8)
         log.close()
-    assert (OUT / "driver.log").read_text().count(f"Pairing code: {display(code)}") == 2
+    # The restarted driver knows the pilot and keeps its spent code to itself.
+    driver_log = (OUT / "driver.log").read_text()
+    assert driver_log.count(f"Pairing code: {display(code)}") == 1, driver_log
+    assert driver_log.count("Pairing code used by a paired pilot") == 1, driver_log
     rows = [json.loads(line) for line in (OUT / "metrics.jsonl").read_text().splitlines()]
     latency = [
         r["pilot_input_to_robot_ms"] for r in rows if r["pilot_input_to_robot_ms"] is not None
