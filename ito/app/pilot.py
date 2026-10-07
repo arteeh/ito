@@ -35,11 +35,13 @@ class Pilot:
         cameras=1,
         audio_source="device",
         audio_sink="device",
+        persist=True,
     ):
         self.audio_options = (audio_source, audio_sink)
         self.audio = None
         self.mic_muted = self.speaker_muted = False
         self.address, self.camera_name, self.cameras = address, camera, cameras
+        self.persist = persist  # The simulated robot's address changes every run.
         self.settings = defaults or settings.Settings()
         self.defaults = self.settings
         self.overrides = overrides or {}
@@ -128,8 +130,11 @@ class Pilot:
         )
 
     def _save(self, name):
+        if not self.persist:
+            return
         try:
             settings.save(self.address, name, self.settings)
+            settings.remember(self.address, name)
         except OSError as exc:
             log.warning("Cannot save pilot settings: %s", exc)
             self._status("CONNECTED", f"Could not save settings: {exc}")

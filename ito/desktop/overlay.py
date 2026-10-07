@@ -35,6 +35,7 @@ class Overlay:
         self.max_splats = max_splats
         self.error = None
         self.commands = []
+        self.can_leave = self.leave = False  # Disconnect returns to the connect screen.
 
     def begin(self, events, size, captured, *, pointer=None):
         for event in events:
@@ -123,6 +124,10 @@ class Overlay:
                 imgui.same_line()
             if imgui.button(label):
                 self.commands.append(command)
+        if self.can_leave:
+            imgui.same_line()
+            if imgui.button("Disconnect"):
+                self.leave = True
         if request:
             imgui.text(request)
         if status.detail:
@@ -151,9 +156,12 @@ class Overlay:
         if self.error:
             imgui.text_colored((1, 0.45, 0.4, 1), self.error)
         imgui.end()
+        self.render()
+        return selected
+
+    def render(self):
         imgui.render()
         self.backend.render(imgui.get_draw_data())
-        return selected
 
     def close(self):
         self.backend.shutdown()

@@ -326,7 +326,7 @@ class XRWindow(DesktopWindow):
                         + "\n"
                     )
                     metrics.flush()
-                if value.quit:
+                if value.quit or self.overlay.leave:
                     break
 
     def close(self):
