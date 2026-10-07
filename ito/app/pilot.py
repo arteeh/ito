@@ -359,7 +359,8 @@ class Pilot:
             with contextlib.suppress(asyncio.CancelledError):
                 asyncio.run(self._run())
 
-        self.thread = threading.Thread(target=run, name="ito-link")
+        # Daemon: a link stuck in teardown must not keep the closed app alive.
+        self.thread = threading.Thread(target=run, name="ito-link", daemon=True)
         self.thread.start()
         return self
 
