@@ -47,15 +47,7 @@ class DisplayDispatch:
             commands, self.ui_commands = self.ui_commands, []
         if capture and self.window.input.active:
             self.window.input.capture(True)
-        value = self.window.input.poll(
-            dt,
-            events,
-            # ImGui must classify uncaptured clicks before entering mouse-look.
-            # Already captured motion and safety keys still poll independently.
-            mouse_ui=True,
-            keyboard_ui=keyboard_ui and not self.window.input.captured,
-        )
-        value = replace(value, commands=value.commands + tuple(commands))
+        value = self.poll(dt, events, keyboard_ui, commands)
         if on_sample:
             on_sample(value)
         with self.lock:
@@ -67,6 +59,17 @@ class DisplayDispatch:
             self.commands.extend(value.commands)
             self.screenshot |= value.screenshot
             self.quit |= value.quit
+
+    def poll(self, dt, events, keyboard_ui, commands):
+        value = self.window.input.poll(
+            dt,
+            events,
+            # ImGui must classify uncaptured clicks before entering mouse-look.
+            # Already captured motion and safety keys still poll independently.
+            mouse_ui=True,
+            keyboard_ui=keyboard_ui and not self.window.input.captured,
+        )
+        return replace(value, commands=value.commands + tuple(commands))
 
     def frame(self):
         with self.lock:

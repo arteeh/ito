@@ -3,9 +3,7 @@
 import json
 import logging
 import time
-from dataclasses import replace
 
-import numpy as np
 import pygame
 import xr
 from imgui_bundle import imgui
@@ -16,6 +14,7 @@ from ito.desktop import DesktopWindow
 from ito.reconstruction import SplatUpdate
 from ito.render import pose
 
+from .dispatch import XRDispatch
 from .input import Actions
 from .session import Session
 
@@ -79,92 +78,42 @@ class XRWindow(DesktopWindow):
         save_settings=None,
     ):
         try:
-            self._run(source, state, on_input, on_sample, max_frames, metrics)
+            dispatch = XRDispatch(self, state)
+            dispatch.run(
+                lambda: self._run(source, state, on_input, max_frames, metrics, dispatch),
+                on_sample,
+            )
         except xr.XrException as exc:
             raise RuntimeError(f"OpenXR session failed: {type(exc).__name__}: {exc}") from exc
 
-    def _run(self, source, state, on_input, on_sample, max_frames, metrics):
+    def _run(self, source, state, on_input, max_frames, metrics, dispatch):
         revision = captured_at = None
         frames = 0
         request = None
         previous = time.monotonic()
-        last_status = state().status
-        was_active = False
-        last_head = pose()
-        pending_recenter = False
         mouse_until = 0.0
         while not max_frames or frames < max_frames:
             self.xr.poll()
             if self.xr.exiting:
                 break
-            events = pygame.event.get()
+            events, value = dispatch.frame()
             if not self.xr.running:
-                if any(e.type == pygame.QUIT for e in events):
+                if value.quit:
                     break
                 time.sleep(0.01)
                 continue
-            with self.xr.frame() as (frame, layers):
+            with self.xr.frame() as (frame, layers, space):
                 now = time.monotonic()
                 dt = now - previous
                 previous = now
                 at = frame.predicted_display_time
-                changed_space = self.xr.space_changed and at >= self.xr.space_changed
-                keyboard_center = any(
-                    e.type == pygame.KEYDOWN and e.key == pygame.K_HOME for e in events
-                )
-                if not self.centered or pending_recenter or keyboard_center or changed_space:
-                    if self.xr.recenter(at):
-                        self.centered = True
-                        self.recenters += 1
-                        pending_recenter = False
-                        self.xr.space_changed = False
-                        self.overlay.commands.append("stop")
-                value = self.actions.poll(at)
-                if value.active:
-                    last_head = value.head
-                desktop = self.input.poll(
-                    dt,
-                    events,
-                    mouse_ui=True,
-                    keyboard_ui=self.overlay.backend.io.want_capture_keyboard,
-                )
-                commands = value.commands + desktop.commands + tuple(self.overlay.commands)
-                self.overlay.commands.clear()
-                if "recenter" in commands:
-                    pending_recenter = True
-                    commands = tuple(c for c in commands if c != "resume") + ("stop",)
-                commands = tuple(c for c in commands if c != "recenter")
-                if was_active and not value.active:
-                    commands += ("stop",)
-                if "e_stop" in commands:
-                    commands = ("e_stop",)
-                was_active = value.active
-                movement = tuple(
-                    float(np.clip(a + b, -1, 1))
-                    for a, b in zip(value.movement, desktop.movement, strict=True)
-                )
-                value = replace(
-                    value,
-                    commands=commands,
-                    movement=movement,
-                    quit=desktop.quit,
-                    screenshot=desktop.screenshot,
-                )
-                if on_sample:
-                    on_sample(value)
+                commands = value.commands
                 if on_input:
                     on_input(value)
                 if commands:
                     request = f"{commands[-1].replace('_', '-').upper()} requested"
                     log.info("Command: %s", commands[-1])
                 current = state()
-                if (
-                    (current.status.e_stop and not last_status.e_stop)
-                    or (last_status.link == "CONNECTED" and current.status.link != "CONNECTED")
-                    or "e_stop" in commands
-                ):
-                    self.actions.pulse()
-                last_status = current.status
                 for _ in range(4):
                     update = source.poll()
                     if update is None:
@@ -183,7 +132,7 @@ class XRWindow(DesktopWindow):
                         xr.ViewLocateInfo(
                             view_configuration_type=xr.ViewConfigurationType.PRIMARY_STEREO,
                             display_time=at,
-                            space=self.xr.space,
+                            space=space,
                         ),
                     )
                     flags = (
@@ -225,13 +174,11 @@ class XRWindow(DesktopWindow):
                                 )
                             )
                         layers.append(
-                            xr.CompositionLayerProjection(
-                                space=self.xr.space, views=projection_views
-                            )
+                            xr.CompositionLayerProjection(space=space, views=projection_views)
                         )
                         rendered = True
                     # Panel remains available when positional tracking temporarily disappears.
-                    pointer = self._pointer(last_head) if value.active else (-10000, -10000, False)
+                    pointer = dispatch.pointer
                     panel_events = []
                     for event in events:
                         if event.type == pygame.MOUSEMOTION:
@@ -245,7 +192,7 @@ class XRWindow(DesktopWindow):
                     )
                     if mouse:
                         mouse_until = now + 2
-                    self.overlay.begin(
+                    io = self.overlay.begin(
                         panel_events,
                         self.xr.panel.size,
                         False,
@@ -277,6 +224,8 @@ class XRWindow(DesktopWindow):
                                 self.overlay.error = (
                                     f"This GPU supports at most {self.splat_limit:,} splats"
                                 )
+                        dispatch.ui(io, self.overlay.commands)
+                        self.overlay.commands.clear()
                         if value.screenshot:
                             captures.append(self._capture_target(target, "panel"))
                         GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, target.glo)
@@ -296,7 +245,7 @@ class XRWindow(DesktopWindow):
                     layers.append(
                         xr.CompositionLayerQuad(
                             layer_flags=xr.CompositionLayerFlags.BLEND_TEXTURE_SOURCE_ALPHA_BIT,
-                            space=self.xr.space,
+                            space=space,
                             eye_visibility=xr.EyeVisibility.BOTH,
                             sub_image=self.xr.panel.sub_image,
                             pose=xr.Posef(position=xr.Vector3f(0, -0.15, -1.2)),
