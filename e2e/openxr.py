@@ -185,8 +185,18 @@ def main():
             input_stalls["render_stall_estop_ms"] = (time.monotonic() - stopped) * 1000
             key(pygame.K_r)
             key(pygame.K_w, True)
-            stage, changed = "sampler_stall", now
-        elif stage == "sampler_stall" and telemetry.get("active"):
+            stage, changed = "resume_estop", time.monotonic()
+        elif stage in ("resume_estop", "resume_sampler"):
+            assert now - changed < 3, (stage, app.state.status, telemetry)
+            if telemetry.get("active") and not app.state.status.e_stop:
+                input_stalls[stage + "_ms"] = (now - changed) * 1000
+                stage, changed = ("sampler_stall" if stage == "resume_estop" else 1), now
+        elif stage == "sampler_stall":
+            # Re-arm must survive busy stereo rendering, not just a stale active
+            # status from before the e-stop or the first fresh input packet.
+            assert telemetry.get("active") and not app.state.status.e_stop, app.state.status
+            if now - changed < 0.65:
+                return
             poll = window.actions.poll
             entered, release = threading.Event(), threading.Event()
 
@@ -200,11 +210,16 @@ def main():
             try:
                 assert entered.wait(1), "XR sampler waited for rendering"
                 stale = app.latest_input.timestamp
-                while app.telemetry["active"]:
+                released = None
+                while app.telemetry["active"] or time.monotonic() - stale < 0.3:
                     assert time.monotonic() - stale < 0.5, app.telemetry
+                    if not app.telemetry["active"] and released is None:
+                        released = time.monotonic()
                     time.sleep(0.01)
                 assert app.telemetry["left_command"] == app.telemetry["right_command"] == 0
-                input_stalls["sampler_stall_deadman_release_ms"] = (time.monotonic() - stale) * 1000
+                input_stalls["sampler_stall_deadman_release_ms"] = (
+                    (released or time.monotonic()) - stale
+                ) * 1000
             finally:
                 window.actions.poll = poll
                 release.set()
@@ -212,7 +227,7 @@ def main():
             time.sleep(0.3)
             assert not app.telemetry["active"], app.telemetry
             key(pygame.K_r)
-            stage, changed = 1, time.monotonic()
+            stage, changed = "resume_sampler", time.monotonic()
         elif stage == 1 and now - changed > 2:
             assert (
                 np.linalg.norm(np.array((telemetry["base_x"], telemetry["base_y"])) - position)
