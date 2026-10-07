@@ -81,6 +81,8 @@ def simulation(
     if not ort:
         raise FileNotFoundError("Install ONNX Runtime in the simulator's .venv")
     media_env = os.environ.copy()
+    # Pollen's hardware encoder presets are not portable to every desktop NVENC driver.
+    media_env.setdefault("GST_PLUGIN_FEATURE_RANK", "x264enc:1024")
     if "MEDIAD_LD_LIBRARY_PATH" in os.environ:
         media_env["LD_LIBRARY_PATH"] = os.environ["MEDIAD_LD_LIBRARY_PATH"]
     with (

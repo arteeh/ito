@@ -86,6 +86,10 @@ scale is estimated, so reconstructed distances are not a measurement tool.
 On Microduck, from this checkout: `uv run --project drivers/microduck ito-driver-microduck`; connect with `uv run ito <duck-address>:8081` and enter its printed pairing code.
 Microduck must have robotd/mediad running and be enabled with `robotctl robot enable`; G/right trigger opens the beak, C crouches.
 
+Virtual Microduck on Ubuntu: `drivers/microduck/setup-sim.sh /path/to/prefix`, then `/path/to/prefix/microduck-sim --viewer`.
+From built checkouts: `uv run --extra microduck python -m drivers.microduck.sim --microduck /path/to/microduck --rl /path/to/microduck_rl --policies /path/to/policies/current [--viewer]`.
+Enter the printed address and pairing code in Ito; Ctrl+C or closing the viewer stops the complete robot.
+
 ## Development and releases
 
 Windows release, from a VS 2022 x64 developer shell with CUDA Toolkit 12.4:
