@@ -67,13 +67,23 @@ class XRWindow(DesktopWindow):
         pygame.image.save(pygame.transform.flip(image, False, True), path)
         return str(path)
 
-    def run(self, source, *, state, on_input=None, max_frames=0, metrics=None, save_settings=None):
+    def run(
+        self,
+        source,
+        *,
+        state,
+        on_input=None,
+        on_sample=None,
+        max_frames=0,
+        metrics=None,
+        save_settings=None,
+    ):
         try:
-            self._run(source, state, on_input, max_frames, metrics)
+            self._run(source, state, on_input, on_sample, max_frames, metrics)
         except xr.XrException as exc:
             raise RuntimeError(f"OpenXR session failed: {type(exc).__name__}: {exc}") from exc
 
-    def _run(self, source, state, on_input, max_frames, metrics):
+    def _run(self, source, state, on_input, on_sample, max_frames, metrics):
         revision = captured_at = None
         frames = 0
         request = None
@@ -140,6 +150,8 @@ class XRWindow(DesktopWindow):
                     quit=desktop.quit,
                     screenshot=desktop.screenshot,
                 )
+                if on_sample:
+                    on_sample(value)
                 if on_input:
                     on_input(value)
                 if commands:

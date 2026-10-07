@@ -342,6 +342,12 @@ class Pilot:
                 if value is not None:
                     fresh = value.active and now - value.timestamp < 0.2
                     if not fresh:
+                        if armed:
+                            log.warning(
+                                "Pilot input disarmed: active=%s sample_age_ms=%.1f",
+                                value.active,
+                                (now - value.timestamp) * 1000,
+                            )
                         armed = False
                     matrix = value.head
                     peer.send(

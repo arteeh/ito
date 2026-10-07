@@ -1,11 +1,11 @@
-"""Display-thread loop. Providers and the input sink must be nonblocking."""
+"""Independently paced SDL input and desktop drawing."""
 
 import json
 import logging
 import math
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TextIO
 
@@ -17,6 +17,7 @@ from ito.render import GaussianRenderer, SceneSource, current_context, perspecti
 from ito.render.scene import FloatArray
 from ito.render.video import VideoPanel
 
+from .dispatch import DisplayDispatch
 from .input import DesktopInput, PilotInput
 from .overlay import Overlay, PilotStatus
 from .settings import load_budget, save_budget
@@ -121,15 +122,21 @@ class DesktopWindow:
         *,
         state: Callable[[], DesktopState] = DesktopState,
         on_input: Callable[[PilotInput], None] | None = None,
+        on_sample: Callable[[PilotInput], None] | None = None,
         max_frames: int = 0,
         metrics: TextIO | None = None,
         save_settings: Callable[[int], None] = save_budget,
     ) -> None:
-        """Keep drawing the last scene while source.poll() returns None.
+        """Poll input at 90 Hz while the display draws the latest snapshot."""
+        dispatch = DisplayDispatch(self)
+        dispatch.run(
+            lambda: self._draw(
+                source, state, on_input, max_frames, metrics, save_settings, dispatch
+            ),
+            on_sample,
+        )
 
-        The app supplies fresh camera/status snapshots and queues PilotInput for
-        its independent link loop. E-stop confirmation comes only from status.
-        """
+    def _draw(self, source, state, on_input, max_frames, metrics, save_settings, dispatch):
         live = hasattr(source, "set_max_splats")
         if live:
             if source.max_splats > self.splat_limit:
@@ -143,20 +150,11 @@ class DesktopWindow:
         frames = 0
         next_metric = 0.0
         request = None
-        previous = time.monotonic()
         while not max_frames or frames < max_frames:
             now = time.monotonic()
-            events = pygame.event.get()
+            events, pilot = dispatch.frame()
             io = self.overlay.begin(events, pygame.display.get_window_size(), self.input.captured)
-            pilot = self.input.poll(
-                now - previous,
-                events,
-                mouse_ui=io.want_capture_mouse,
-                keyboard_ui=io.want_capture_keyboard and not self.input.captured,
-            )
-            pilot = replace(pilot, commands=pilot.commands + tuple(self.overlay.commands))
-            self.overlay.commands.clear()
-            previous = now
+            dispatch.ui(io, ())
             if on_input is not None:
                 on_input(pilot)
             if pilot.quit or self.overlay.leave:
@@ -198,6 +196,8 @@ class DesktopWindow:
                 live=live,
                 capture_latency_ms=capture_to_visible_ms,
             )
+            dispatch.ui(io, self.overlay.commands)
+            self.overlay.commands.clear()
             if budget is not None and budget > self.splat_limit:
                 self.overlay.error = f"This GPU supports at most {self.splat_limit:,} splats"
                 budget = None
