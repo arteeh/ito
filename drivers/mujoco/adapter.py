@@ -42,6 +42,7 @@ class MujocoAdapter(Adapter):
         input_timeout: float = 0.25,
         gl: str | None = None,
         rgb_only: bool = False,
+        viewer_state: str | None = None,
     ):
         for name, value, low, high in (
             ("fps", fps, 1, 60),
@@ -95,6 +96,8 @@ class MujocoAdapter(Adapter):
         self.speed, self.turn_speed, self.input_timeout = speed, turn_speed, input_timeout
         self.walker = Walker(self.head[0][2:], speed=speed, lateral_speed=0, turn_speed=turn_speed)
         self.rgb_only = rgb_only
+        self.viewer_state = viewer_state
+        self._viewer_task = None
         self.camera_name = camera
         self.backend = backend
         self._command: tuple[float, PilotState] | None = None
@@ -309,9 +312,16 @@ class MujocoAdapter(Adapter):
         await asyncio.get_running_loop().run_in_executor(self._executor, self._open_renderer)
         self._thread = threading.Thread(target=self._simulate, name="mujoco-physics", daemon=True)
         self._thread.start()
+        if self.viewer_state:
+            from .viewer import publish
+
+            self._viewer_task = asyncio.create_task(publish(self, self.viewer_state))
 
     async def close(self):
         self.neutral()
+        if self._viewer_task:
+            self._viewer_task.cancel()
+            await asyncio.gather(self._viewer_task, return_exceptions=True)
         self._stop.set()
         for track in self._tracks:
             track.stop()

@@ -38,6 +38,7 @@ class Overlay:
         self.error = None
         self.commands = []
         self.can_leave = self.leave = False  # Disconnect returns to the connect screen.
+        self.simulation = None
         self.captured = False
         self.layout = {}  # Where the last frame drew each control, so e2e clicks what pilots see.
 
@@ -140,6 +141,16 @@ class Overlay:
         if status.link == "CONNECTED":
             # Above the status lines that come and go, so the toggles never move under a click.
             self._audio(status)
+        if self.simulation:
+            changed, visible = imgui.checkbox("Show simulation", self.simulation.visible)
+            self._placed("show_simulation")
+            if changed:
+                try:
+                    self.simulation.show(visible)
+                except OSError:
+                    self.error = "Could not launch simulation viewer"
+            if self.simulation.viewer_error:
+                imgui.text_colored((1, 0.45, 0.4, 1), self.simulation.viewer_error)
         if request:
             imgui.text(request)
         if status.detail:

@@ -32,6 +32,7 @@ def main():
     parser.add_argument("--axle-width", type=float, default=0.52)
     parser.add_argument("--speed", type=float, default=0.7, help="maximum forward speed in m/s")
     parser.add_argument("--turn-speed", type=float, default=1.2, help="maximum yaw speed in rad/s")
+    parser.add_argument("--viewer-state", help=argparse.SUPPRESS)
     driver_arguments(parser)
     arguments(parser, source="tone:440")
     args = parser.parse_args()
@@ -42,6 +43,7 @@ def main():
             name: getattr(args, name)
             for name in (
                 "model",
+                "viewer_state",
                 "rgb_only",
                 "gl",
                 "camera",
