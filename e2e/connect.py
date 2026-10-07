@@ -129,6 +129,10 @@ def main():
             listening = (OUT / "driver.log").read_text()
             assert f"listening at http://0.0.0.0:{port}" in listening, listening
             codes["first"] = pairing.read(code_file)
+            shown = subprocess.run(driver + ["--show-code"], check=True, capture_output=True)
+            assert display(codes["first"]) in shown.stdout.decode()
+            if os.name != "nt":
+                assert code_file.stat().st_mode & 0o077 == 0
             assert f"Pairing code: {display(codes['first'])}" in listening, listening
             screenshot("back")
             click(at("address"))
@@ -160,6 +164,8 @@ def main():
         elif stage == "paired" and scene:
             assert pilot.address == address and pilot.code == codes["first"], pilot.address
             saved = json.loads(recent.read_text())
+            if os.name != "nt":
+                assert recent.stat().st_mode & 0o077 == 0
             assert saved[0] == {"address": address, "name": saved[0]["name"]} | {
                 "code": codes["first"]
             }, saved
