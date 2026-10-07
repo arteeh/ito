@@ -49,11 +49,8 @@ class MicroduckAdapter(Adapter):
     async def start(self):
         try:
             await self.remote.start()
-            hello = await self.remote.call("hello", {"api_version": 40})
-            if hello.get("api_version", 0) < 25:
-                raise RuntimeError(
-                    "Microduck firmware must support camera geometry and robot.model"
-                )
+            # `hello` belongs to updaterd, not robotd. Ask the services we actually use;
+            # a simulator or a robot without its updater still has control and video.
             model = await self.remote.call("robot.model")
             if model.get("asset") != "alpha":
                 raise RuntimeError("Microduck driver requires the alpha head model")
@@ -156,11 +153,12 @@ class MicroduckAdapter(Adapter):
                 continue
             state = latest[1]
             axes, buttons = state.axes, state.buttons
+            # The walking policy needs enough command range to enter its stepping gait.
             commands = [
                 (
                     "robot.move",
                     {
-                        "vx": axes.get("move_y", 0.0) * 0.15,
+                        "vx": axes.get("move_y", 0.0) * 0.3,
                         "vy": -axes.get("strafe", 0.0) * 0.10,
                         "vyaw": -axes.get("move_x", 0.0) * 0.6,
                     },
@@ -229,8 +227,11 @@ class MicroduckAdapter(Adapter):
             return
         values = {"policy": data["policy"]}
         for name, angle in zip(self.joint_names, data["joints"], strict=True):
-            if name in HEAD_LIMITS:
+            if name in HEAD_LIMITS or name == "mouth":
                 values[name] = angle
+        for name, target in zip(self.joint_names, data["targets"], strict=True):
+            if name in HEAD_LIMITS or name == "mouth":
+                values[f"{name}_target"] = target
         for prefix, vector in data["move"].items():
             if prefix in {"requested", "applied"}:
                 values.update(

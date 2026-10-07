@@ -104,6 +104,8 @@ class Remote:
             )
             async with asyncio.timeout(deadline):
                 return await future
+        except TimeoutError as exc:
+            raise RuntimeError(f"Microduck {method} did not answer within {deadline:g}s") from exc
         finally:
             self.pending.pop(sequence, None)
 
