@@ -14,6 +14,7 @@ from pathlib import Path
 import av
 import numpy as np
 
+from ito.driver import pairing
 from ito.link import connect
 from ito.protocol import Command, FrameMetadata, PilotState, Pose, Status
 
@@ -188,12 +189,16 @@ async def run():
         assert process.returncode == 1, (arguments, stdout, stderr)
         assert expected in stderr.decode() and b"Traceback" not in stderr, stderr
     log = (OUT / "driver.log").open("w")
+    code_file = OUT / "pairing-code"
+    code = pairing.rotate(code_file)
     driver = await asyncio.create_subprocess_exec(
         executable,
         "--gl",
         "osmesa",
         "--port",
         "0",
+        "--pairing-file",
+        str(code_file),
         stdout=asyncio.subprocess.PIPE,
         stderr=log,
         cwd=ROOT,
@@ -205,7 +210,7 @@ async def run():
             line = await driver.stdout.readline()
         assert line.startswith(b"Ito driver listening"), (OUT / "driver.log").read_text()
         address = line.decode().strip().rsplit(" ", 1)[1]
-        peer = await connect(address, receive_audio=False)
+        peer = await connect(address, receive_audio=False, code=code)
         pilot = Pilot(peer)
         assert peer.description.capabilities == (
             "depth",
@@ -321,7 +326,7 @@ async def run():
         pilot = None
         await asyncio.sleep(0.4)
         # A new pilot gets a fresh video epoch and working camera, not a stopped relay.
-        pilot = Pilot(await connect(address, receive_audio=False))
+        pilot = Pilot(await connect(address, receive_audio=False, code=code))
         await pilot.drive(0.5)
         await pilot.latest("reconnected")
         assert pilot.frames > 2 and pilot.unmatched == 0

@@ -288,17 +288,19 @@ def pilot(folder, args, env):
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
+    code_file = args.target / "pairing-code"
+    code_file.write_text("135790\n")
     with (OUT / "rgb-only-robot.log").open("w") as robot_log:
         robot = subprocess.Popen(
             [str(folder / "runtime/python.exe"), "-I", "-m", "drivers.mujoco.cli"]
-            + ["--rgb-only", "--port", str(port)],
+            + ["--rgb-only", "--port", str(port), "--pairing-file", str(code_file)],
             env=env,
             stdout=robot_log,
             stderr=subprocess.STDOUT,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
     try:
-        app = App(folder, env, "slam", f"127.0.0.1:{port}")
+        app = App(folder, env, "slam", f"127.0.0.1:{port}", "--code", "135790")
         rows = app.wait(
             "MASt3R-SLAM splats",
             lambda rows: live(rows, flat=False) and rows[-1]["gaussians"] > 500,

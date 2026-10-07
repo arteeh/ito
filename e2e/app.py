@@ -15,8 +15,11 @@ from pathlib import Path
 import numpy as np
 import psutil
 import pygame
+from pygame._sdl2 import Window
 
 from ito.app.__main__ import main as pilot_main
+from ito.driver import pairing
+from ito.link.pairing import display
 
 OUT = Path("e2e/out/app")
 
@@ -38,10 +41,13 @@ def main():
         port.bind(("127.0.0.1", 0))
         address = f"127.0.0.1:{port.getsockname()[1]}"
     log = (OUT / "driver.log").open("w")
+    code_file = OUT / "pairing-code"
+    code = pairing.rotate(code_file)
 
     def driver():
         return subprocess.Popen(
-            [sys.executable, "-m", "drivers.mujoco.cli", "--port", address.split(":")[1]],
+            [sys.executable, "-m", "drivers.mujoco.cli", "--port", address.split(":")[1]]
+            + ["--pairing-file", str(code_file)],
             env=os.environ | gl,
             stdout=log,
             stderr=log,
@@ -79,9 +85,13 @@ def main():
             positions.append(t.copy())
         counts.append(window.renderer.count)
         if stage == 0 and app.matched_frames > 12 and window.renderer.count > 1000:
+            Window.from_display_module().focus()
             first_position = (t["base_x"], t["base_y"])
             first_camera = app.camera_pose.copy()
             key(pygame.K_F12)
+            stage, changed = "captured", now
+        elif stage == "captured" and now - changed > 0.5:
+            # Software screenshot readback can exceed the input watchdog; resume afterward.
             key(pygame.K_r)
             pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_w))
             key(pygame.K_TAB)
@@ -94,7 +104,12 @@ def main():
             )
             stage, changed = 2, now
         elif stage == 2 and now - changed > 2:
-            assert np.linalg.norm(np.array((t["base_x"], t["base_y"])) - first_position) > 0.4
+            assert np.linalg.norm(np.array((t["base_x"], t["base_y"])) - first_position) > 0.4, (
+                t,
+                value,
+                window.input.keys,
+                window.input.active,
+            )
             assert t["head_pan"] > 0.4, t
             records = np.frombuffer(window.renderer.scene_buffer.read(), np.float32)
             records = records.reshape(-1, 4, 4)
@@ -158,6 +173,8 @@ def main():
         result = pilot_main(
             [
                 address,
+                "--code",
+                code,
                 "--size",
                 "800",
                 "600",
@@ -188,11 +205,12 @@ def main():
 
         assert (
             pilot_main(
-                [address, "--size", "320", "240", "--frames", "600"], on_frame=reload_settings
+                [f"http://{address}/", "--size", "320", "240", "--frames", "600"],
+                on_frame=reload_settings,
             )
             == 0
         )
-        assert reloaded, "Per-robot comfort settings did not survive app restart"
+        assert reloaded, "Per-robot comfort settings or pairing code did not survive restart"
         # Exercise the installed console entry point as well as SDL injection above.
         with (OUT / "cli.log").open("w") as cli_log:
             subprocess.run(
@@ -221,6 +239,7 @@ def main():
             robot.terminate()
             robot.wait(timeout=8)
         log.close()
+    assert (OUT / "driver.log").read_text().count(f"Pairing code: {display(code)}") == 2
     rows = [json.loads(line) for line in (OUT / "metrics.jsonl").read_text().splitlines()]
     latency = [
         r["pilot_input_to_robot_ms"] for r in rows if r["pilot_input_to_robot_ms"] is not None

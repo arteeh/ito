@@ -13,8 +13,8 @@ from ito.link import connect
 from ito.protocol import Command, PilotState, Pose, Status
 
 
-async def run(address: str):
-    async with await connect(address, audio=AudioStreamTrack()) as peer:
+async def run(address: str, code: str):
+    async with await connect(address, audio=AudioStreamTrack(), code=code) as peer:
         assert peer.control.ordered and peer.control.maxRetransmits is None
         assert not peer.pilot.ordered and peer.pilot.maxRetransmits == 0
         frames = {"video": 0, "audio": 0}
@@ -198,4 +198,6 @@ async def run(address: str):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("address")
-    asyncio.run(run(parser.parse_args().address))
+    parser.add_argument("code", help="the driver's pairing code")
+    args = parser.parse_args()
+    asyncio.run(run(args.address, args.code))

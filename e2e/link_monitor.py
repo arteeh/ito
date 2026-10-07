@@ -12,8 +12,8 @@ from ito.link import connect
 from ito.protocol import Status
 
 
-async def monitor(address: str, cameras: int) -> None:
-    async with await connect(address, video_tracks=cameras) as peer:
+async def monitor(address: str, cameras: int, code: str) -> None:
+    async with await connect(address, video_tracks=cameras, code=code) as peer:
         print(peer.description.model_dump_json(), flush=True)
         counts = {"video": 0, "audio": 0}
 
@@ -63,10 +63,11 @@ async def monitor(address: str, cameras: int) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Inspect a live Ito driver link")
     parser.add_argument("address")
+    parser.add_argument("code", help="the driver's pairing code")
     parser.add_argument("--cameras", type=int, default=1)
     args = parser.parse_args()
     try:
-        asyncio.run(monitor(args.address, args.cameras))
+        asyncio.run(monitor(args.address, args.cameras, args.code))
     except KeyboardInterrupt:
         pass
     except (ConnectionError, TimeoutError, OSError, ValueError, aiohttp.ClientError) as exc:

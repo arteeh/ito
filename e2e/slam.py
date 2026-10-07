@@ -20,6 +20,7 @@ import psutil
 import pygame
 
 from ito.app.__main__ import main as pilot_main
+from ito.driver import pairing
 from ito.reconstruction.mast3r_runtime import MODELS
 
 
@@ -113,6 +114,8 @@ def main():
     with socket.socket() as port:
         port.bind(("127.0.0.1", 0))
         address = f"127.0.0.1:{port.getsockname()[1]}"
+    code_file = out / "pairing-code"
+    code = pairing.rotate(code_file)
     env = os.environ.copy()
     if sys.platform == "linux":
         env.update(MUJOCO_GL="osmesa", LD_LIBRARY_PATH="/opt/data/lib/osmesa")
@@ -262,6 +265,8 @@ def main():
         result = pilot_main(
             [
                 address,
+                "--code",
+                code,
                 "--mode",
                 args.mode,
                 "--size",
@@ -312,6 +317,8 @@ def main():
                 "drivers.mujoco.cli",
                 "--port",
                 address.split(":")[1],
+                "--pairing-file",
+                str(code_file),
                 "--rgb-only",
                 "--speed",
                 "0.2",
