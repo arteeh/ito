@@ -7,6 +7,8 @@ import pygame
 from imgui_bundle import imgui
 from imgui_bundle.python_backends.pygame_backend import PygameRenderer
 
+from ito import diagnostics
+
 
 @dataclass(frozen=True)
 class PilotStatus:
@@ -151,6 +153,7 @@ class Overlay:
                     self.error = "Could not launch simulation viewer"
             if self.simulation.viewer_error:
                 imgui.text_colored((1, 0.45, 0.4, 1), self.simulation.viewer_error)
+        self.diagnostic_controls()
         if request:
             imgui.text(request)
         if status.detail:
@@ -168,6 +171,23 @@ class Overlay:
         imgui.end()
         self.render()
         return selected
+
+    def diagnostic_controls(self):
+        debug = diagnostics.current()
+        imgui.begin_disabled(debug.override is not None)
+        changed, enabled = imgui.checkbox("Diagnostic logging", debug.enabled)
+        self._placed("diagnostics")
+        hovered = imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled)
+        imgui.end_disabled()
+        if changed:
+            debug.set_enabled(enabled)
+        if debug.override is not None:
+            imgui.same_line()
+            imgui.text_disabled("ITO_DEBUG override")
+        if debug.error:
+            imgui.text_colored((1, 0.45, 0.4, 1), debug.error)
+        elif hovered:
+            imgui.set_tooltip(str(debug.path))
 
     def _audio(self, status):
         missing = [

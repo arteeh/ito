@@ -17,6 +17,8 @@ from aiortc import MediaStreamTrack, RTCRtpSender
 from aiortc.mediastreams import MediaStreamError
 from av import AudioFrame, AudioResampler
 
+from ito import diagnostics
+
 RATE, SAMPLES = 48000, 960
 CLOSE_TIMEOUT = 2.0  # A device that takes longer is left to close on its own thread.
 log = logging.getLogger(__name__)
@@ -247,8 +249,10 @@ class Audio:
         self.jobs = None
         try:
             async with asyncio.timeout(CLOSE_TIMEOUT):
-                await asyncio.shield(closed)
+                with diagnostics.stage("audio_devices"):
+                    await asyncio.shield(closed)
         except TimeoutError:
+            diagnostics.event("audio_close_timeout", timeout_s=CLOSE_TIMEOUT)
             log.warning("Audio devices still closing after %.0f s; continuing", CLOSE_TIMEOUT)
             # sounddevice's exit handler would wait on the same device and keep a closed
             # Ito running; the operating system releases the device with the process.

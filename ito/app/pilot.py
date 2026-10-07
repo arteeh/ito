@@ -10,6 +10,7 @@ import traceback
 from collections import deque
 from dataclasses import replace
 
+from ito import diagnostics
 from ito.desktop import DesktopState, PilotStatus
 from ito.link import PairingError, connect
 from ito.link.audio import Audio
@@ -115,6 +116,7 @@ class Pilot:
 
     def _status(self, link, detail=None, *, status=None, peer=None):
         old = self.state.status
+        diagnostics.event("link_state", interval=0 if old.link != link else 1, state=link)
         name = peer.description.name if peer else old.robot
         self.state = replace(
             self.state,
@@ -160,6 +162,13 @@ class Pilot:
             return
         captured = peer.clock.remote_to_local(pair[1].capture_time)
         if captured <= self.state.video_time or not -0.1 <= time.monotonic() - captured <= 2:
+            diagnostics.event(
+                "frame_rejected",
+                interval=1,
+                sequence=pair[1].sequence,
+                out_of_order=captured <= self.state.video_time,
+                age_ms=(time.monotonic() - captured) * 1000,
+            )
             return
         rgb, depth, camera, _ = FrameJoin.arrays(pair, peer.clock)
         self.last_frame = time.monotonic()
@@ -257,6 +266,7 @@ class Pilot:
         joined = FrameJoin()
         tasks = []
         armed = False
+        previous_fresh = None
         sequence = command_sequence = 0
         pending = None
         last_status = time.monotonic()
@@ -359,6 +369,9 @@ class Pilot:
                 value = self.latest_input
                 if value is not None:
                     fresh = value.active and now - value.timestamp < 0.2
+                    if fresh != previous_fresh:
+                        diagnostics.event("input_freshness_transition", fresh=fresh)
+                        previous_fresh = fresh
                     if not fresh:
                         if armed:
                             log.warning(
@@ -367,6 +380,25 @@ class Pilot:
                                 (now - value.timestamp) * 1000,
                             )
                         armed = False
+                    diagnostics.event(
+                        "input_freshness",
+                        interval=1,
+                        fresh=fresh,
+                        active=value.active,
+                        armed=armed,
+                        age_ms=(now - value.timestamp) * 1000,
+                        sequence=sequence,
+                    )
+                    if self.audio:
+                        diagnostics.event(
+                            "audio_state",
+                            interval=1,
+                            input=self.audio.input_status,
+                            output=self.audio.output_status,
+                            mic_muted=self.mic_muted,
+                            speaker_muted=self.speaker_muted,
+                            **self.audio.counters,
+                        )
                     matrix = value.head
                     peer.send(
                         PilotState(
@@ -455,7 +487,8 @@ class Pilot:
             with contextlib.suppress(RuntimeError):
                 self.loop.call_soon_threadsafe(self.task.cancel)
         if self.thread:
-            self.thread.join(timeout=12)
+            with diagnostics.stage("link_thread"):
+                self.thread.join(timeout=12)
             if self.thread.is_alive():
                 stack = sys._current_frames().get(self.thread.ident)
                 log.error("Pilot link stuck at:\n%s", "".join(traceback.format_stack(stack)))
@@ -467,7 +500,8 @@ class Pilot:
             self._retire(worker)
         deadline = time.monotonic() + 8
         for closer in self.retiring:
-            closer.join(timeout=max(0, deadline - time.monotonic()))
+            with diagnostics.stage("reconstruction"):
+                closer.join(timeout=max(0, deadline - time.monotonic()))
             if closer.is_alive():
                 raise RuntimeError("Reconstruction worker did not shut down")
 

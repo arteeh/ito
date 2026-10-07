@@ -29,6 +29,7 @@ import numpy as np
 import psutil
 import pygame
 
+from ito import diagnostics
 from ito.app.__main__ import main as pilot_main
 from ito.driver import pairing
 
@@ -112,6 +113,8 @@ def phase(name):
 
         def drive(app, window, value):
             nonlocal closing, jitter
+            if diagnostics.current().enabled:
+                report["diagnostic_run"] = diagnostics.current().run_id
             waited = time.monotonic() - changed
             status = app.state.status
             layout = window.overlay.layout
@@ -192,6 +195,19 @@ def phase(name):
             result = pilot_main(arguments, on_frame=drive)
             closed = time.monotonic()
             assert not errors.messages, errors.messages
+            if "diagnostic_run" in report:
+                path = OUT / "config/ito/diagnostics.jsonl"
+                records = [json.loads(line) for line in path.read_text().splitlines()]
+                records = [r for r in records if r["run_id"] == report["diagnostic_run"]]
+                assert any(r["event"] == "diagnostics_closed" for r in records)
+                if name == "stalled":
+                    assert any(r["event"] == "audio_close_timeout" for r in records)
+                ends = [
+                    r for r in records if r["event"] == "shutdown_stage" and r["state"] == "end"
+                ]
+                assert {"audio", "audio_devices", "webrtc", "link_thread", "window"} <= {
+                    r["stage"] for r in ends
+                }, ends
             assert result == 0 and stage == "closed", (result, stage)
             report["close_s"] = closed - closing
             limit = STALLED_CLOSE_LIMIT_S if name == "stalled" else CLOSE_LIMIT_S

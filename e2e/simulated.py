@@ -160,6 +160,8 @@ def main():
         elif stage == "close with viewer" and waited > 2:
             sim = window.overlay.simulation
             assert sim.visible
+            log = sim.log.read_text()
+            assert "Pairing code:" not in log and sim.code not in log
             report["viewer_pid"] = sim.viewer.pid
             report["driver_pid"] = sim.process.pid
             pygame.event.post(pygame.event.Event(pygame.QUIT))
