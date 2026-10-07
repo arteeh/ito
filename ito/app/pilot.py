@@ -41,6 +41,7 @@ class Pilot:
         self.backend = "rgbd"
         self.reconstruction_status = ""
         self.tracked_frames = 0
+        self.tracking = False
         self.stop = threading.Event()
         self.thread = None
         self.loop = self.task = None
@@ -186,6 +187,7 @@ class Pilot:
             "Flat camera feed" if self.backend == "video" else "Starting " + self.backend
         )
         self.tracked_frames = 0
+        self.tracking = False
         self.state = replace(self.state, flat_video=self.backend != "rgbd", video=None)
         with self.worker_lock:
             if self.backend != "video":
@@ -241,20 +243,21 @@ class Pilot:
                     if message:
                         self.reconstruction_status = message
                     if self.backend == "slam":
+                        # A stalled worker may hold the pose lock; staleness alone pauses.
                         tracked = self.worker.pose()
                         if tracked:
-                            transform, count, tracking = tracked
+                            transform, count, self.tracking = tracked
                             if count != self.tracked_frames:
                                 self.last_tracking = now
                             self.tracked_frames = count
-                            if tracking and now - self.last_tracking >= 2:
-                                tracking = False
-                                self.reconstruction_status = (
-                                    "SLAM tracking paused; showing flat camera feed"
-                                )
-                            if tracking:
-                                self._anchor(transform, peer)
-                            self.state = replace(self.state, flat_video=not tracking)
+                        live = self.tracking and now - self.last_tracking < 2
+                        if live and tracked:
+                            self._anchor(transform, peer)
+                        elif self.tracking and not live:
+                            self.reconstruction_status = (
+                                "SLAM tracking paused; showing flat camera feed"
+                            )
+                        self.state = replace(self.state, flat_video=not live)
                 if self.failure and self.backend == "slam":
                     self.reconstruction_status = self.failure + "; showing flat camera feed"
                     self.state = replace(self.state, flat_video=True)
