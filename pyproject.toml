@@ -72,7 +72,11 @@ explicit = true
 packages = ["ito", "drivers"]
 
 [dependency-groups]
-dev = ["psutil>=7,<8", "ruff>=0.13"]
+dev = [
+    "pillow>=12.3.0",
+    "psutil>=7,<8",
+    "ruff>=0.13",
+]
 
 [tool.ruff]
 target-version = "py312"
