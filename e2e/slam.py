@@ -198,7 +198,14 @@ def main():
             assert app.connections == 1, "Reconstruction failure restarted the link"
             if args.cuda:
                 assert len(poses) > 5 and np.isfinite(poses).all()
-                assert np.linalg.norm(poses[-1][:3, 3] - poses[0][:3, 3]) > 0.05
+                moved = np.linalg.norm(poses[-1][:3, 3] - poses[0][:3, 3])
+                assert moved > 0.05, (
+                    "SLAM camera did not follow the robot",
+                    moved,
+                    len(poses),
+                    poses[0].round(3).tolist(),
+                    poses[-1].round(3).tolist(),
+                )
                 app.set_max_splats(2048)
                 stage, changed = 3, now
             else:
