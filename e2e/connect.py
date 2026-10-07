@@ -19,7 +19,7 @@ from ito.app.__main__ import main as pilot_main
 
 OUT = Path("e2e/out/connect")
 # The 1280x720 connect panel with one recent robot, and the pilot overlay's button row.
-ADDRESS_FIELD, SIMULATED_ROBOT, DISCONNECT = (600, 340), (640, 414), (218, 173)
+ADDRESS_FIELD, SIMULATED_ROBOT, DISCONNECT = (600, 330), (640, 404), (218, 173)
 
 
 def click(position):
