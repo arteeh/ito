@@ -25,7 +25,7 @@ The ImGui overlay reports driver state, link RTT, input latency, and capture-to-
 `--metrics path.jsonl` records these alongside display timing. Ito selects posed RGB-D when the robot advertises depth and camera pose, otherwise monocular
 MASt3R-SLAM; `--mode desktop` is the default. `--reconstruction auto|rgbd|slam|video` saves a
 per-robot override. Missing CUDA, loading, lost tracking and SLAM failures show a flat live
-camera panel in desktop and VR, with the reason/progress in ImGui; controls stay connected.
+camera panel in desktop and VR, with the reason in ImGui; controls stay connected.
 
 XR uses the active OpenXR runtime (SteamVR, Virtual Desktop/VDXR, or Monado) and OpenGL 4.3.
 Use `--reference-space seated` (default) or `standing` after room setup. Each eye renders at
@@ -60,10 +60,8 @@ projection/voxelization on NVIDIA; the default automatically falls back to NumPy
 
 Monocular SLAM uses Python **3.12**, an NVIDIA GPU, CUDA Toolkit **12.4** (including `nvcc`),
 and a C++ compiler: GCC on Linux or Visual Studio 2022 C++ Build Tools (v143 14.38) on Windows.
-`uv sync --python 3.12 --extra slam` installs the pinned optional dependencies; launch with
-`uv run --extra slam ito robot-address:8080`. The first connection downloads pinned upstream
-sources, compiles their CUDA kernels, and downloads 2.75 GB of checksummed weights into the
-OS user cache (`ito/mast3r-slam`, using `platformdirs`); ImGui shows progress throughout.
+Build once with `uv run --python 3.12 --extra slam python -m ito.build`; ship the generated `ito/_slam` with Ito (sources, CUDA kernels, 2.75 GB of verified CC BY-NC-SA weights and notices).
+Launch with `uv run --extra slam ito robot-address:8080`; SLAM is entirely offline, and a missing/incomplete bundle keeps the flat camera feed with the build command shown in ImGui.
 Recent keyframes are bounded to four; tracking recovery searches that local window. Monocular
 scale is estimated, so reconstructed distances are not a measurement tool.
 [MASt3R-SLAM code](https://github.com/rmurai0610/MASt3R-SLAM/blob/main/LICENSE.md) and [MASt3R weights](https://github.com/naver/mast3r/blob/main/CHECKPOINTS_NOTICE) are non-commercial (CC BY-NC-SA 4.0; weights also carry training-dataset restrictions).

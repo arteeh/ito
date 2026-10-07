@@ -20,7 +20,7 @@ class SLAMBackend(RGBDBackend):
     def __init__(self, capacity, intrinsics, *, report, origin, **options):
         from .mast3r_runtime import load_model, prepare
 
-        source, cache = prepare(report)
+        source, weights = prepare(report)
         import lietorch
         import torch
         from mast3r_slam.config import config, load_config
@@ -30,7 +30,7 @@ class SLAMBackend(RGBDBackend):
         config["single_thread"] = True
         config["tracking"]["filtering_mode"] = "recent"
         config["local_opt"]["max_iters"] = 5
-        self.model = load_model(cache, report)
+        self.model = load_model(weights, report)
         options["device"] = "cuda"
         super().__init__(capacity, intrinsics, **options)
         self.report = report
@@ -43,7 +43,7 @@ class SLAMBackend(RGBDBackend):
         self.lost = False
         self.origin = torch.as_tensor(origin, device="cuda", dtype=torch.float32)
         self.axes = torch.tensor([1, -1, -1], device="cuda")
-        report("MASt3R-SLAM ready; waiting for camera", -1)
+        report("MASt3R-SLAM ready; waiting for camera")
 
     def integrate(self, rgb, depth, camera, now):
         import torch
@@ -69,7 +69,7 @@ class SLAMBackend(RGBDBackend):
                 new_keyframe, _, lost = self.tracker.track(frame)
                 self.lost = bool(lost)
                 if self.lost:
-                    self.report("SLAM tracking lost; move back toward the last view", -1)
+                    self.report("SLAM tracking lost; move back toward the last view")
                     return
                 if new_keyframe:
                     self.frames.append(frame)
@@ -111,4 +111,4 @@ class SLAMBackend(RGBDBackend):
                 now + time.monotonic() - started,
             )
             self.tracked += 1
-            self.report(f"MASt3R-SLAM tracking | {self.tracked} frames", -1)
+            self.report(f"MASt3R-SLAM tracking | {self.tracked} frames")
