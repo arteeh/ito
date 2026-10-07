@@ -146,12 +146,13 @@ class Pilot:
     def _submit(self, pair, peer):
         if pair is None:
             return
-        rgb, depth, camera, captured = FrameJoin.arrays(pair, peer.clock)
+        captured = peer.clock.remote_to_local(pair[1].capture_time)
         if captured <= self.state.video_time or not -0.1 <= time.monotonic() - captured <= 2:
             return
+        rgb, depth, camera, _ = FrameJoin.arrays(pair, peer.clock)
         self.last_frame = time.monotonic()
         self.state = replace(self.state, video=rgb, video_time=captured)
-        if self.backend == "rgbd":
+        if self.backend == "rgbd" and camera is not None:
             self._anchor(camera, pair[1].head_angles, pair[1].body_yaw)
         if self.worker is None or self.failure:
             return
