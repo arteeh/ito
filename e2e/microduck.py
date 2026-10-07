@@ -324,7 +324,8 @@ def main():
                 if position[0] - initial[0] <= 0.06:
                     return
                 assert t["applied_vx"] > 0.05, t
-                assert abs(t["head_yaw"] - report["initial_head_yaw"]) > 0.2, t
+                assert abs(t["head_yaw"] + t["base_yaw"] - report["initial_head_yaw"]) > 0.2, t
+                assert t["base_yaw"] > 0.15, t
                 # Upstream's alpha MJCF has no mouth actuator; verify robotd's real target.
                 assert abs(t["mouth_target"]) > 0.1, t
                 report["mouth_target"] = t["mouth_target"]

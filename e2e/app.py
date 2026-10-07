@@ -110,7 +110,7 @@ def main():
                 window.input.keys,
                 window.input.active,
             )
-            assert t["head_pan"] > 0.4, t
+            assert t["head_pan"] + t["base_yaw"] > 0.4, t
             records = np.frombuffer(window.renderer.scene_buffer.read(), np.float32)
             records = records.reshape(-1, 4, 4)
             points = records[records[:, 0, 3] > 0, 0, :3]

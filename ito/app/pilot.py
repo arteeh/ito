@@ -152,7 +152,7 @@ class Pilot:
         self.last_frame = time.monotonic()
         self.state = replace(self.state, video=rgb, video_time=captured)
         if self.backend == "rgbd":
-            self._anchor(camera, pair[1].head_angles)
+            self._anchor(camera, pair[1].head_angles, pair[1].body_yaw)
         if self.worker is None or self.failure:
             return
         try:
@@ -165,7 +165,7 @@ class Pilot:
         if accepted:
             self.matched_frames += 1
             self.last_frame = time.monotonic()
-            self.frame_heads.append((captured, pair[1].head_angles))
+            self.frame_heads.append((captured, pair[1].head_angles, pair[1].body_yaw))
 
     def _retire(self, worker):
         # Never on the link loop: a suspended or wedged worker takes seconds to kill.
@@ -173,7 +173,7 @@ class Pilot:
         closer.start()
         self.retiring = [thread for thread in self.retiring if thread.is_alive()] + [closer]
 
-    def _anchor(self, camera, head_angles=None):
+    def _anchor(self, camera, head_angles=None, body_yaw=0):
         self.camera_pose = camera
         anchor = camera.copy()
         # Camera and measured joints must belong to the same exposure. Status is
@@ -181,6 +181,9 @@ class Pilot:
         if head_angles is not None:
             pan, tilt = head_angles
             anchor[:3, :3] = camera[:3, :3] @ pose(yaw=pan, pitch=tilt)[:3, :3].T
+        # The body catches up to the pilot's startup-relative gaze while walking.
+        # Remove that heading too: the current local head must only be applied once.
+        anchor[:3, :3] = anchor[:3, :3] @ pose(yaw=-body_yaw)[:3, :3]
         self.state = replace(self.state, robot_camera=anchor)
 
     async def _session(self, peer):
@@ -288,11 +291,15 @@ class Pilot:
                             self.tracked_frames = count
                         live = self.tracking and now - self.last_tracking < 2
                         if live and tracked:
-                            angles = next(
-                                (angles for stamp, angles in self.frame_heads if stamp == captured),
-                                None,
+                            angles, body_yaw = next(
+                                (
+                                    (angles, yaw)
+                                    for stamp, angles, yaw in self.frame_heads
+                                    if stamp == captured
+                                ),
+                                (None, 0),
                             )
-                            self._anchor(transform, angles)
+                            self._anchor(transform, angles, body_yaw)
                         elif self.tracking and not live:
                             self.reconstruction_status = (
                                 "SLAM tracking paused; showing flat camera feed"

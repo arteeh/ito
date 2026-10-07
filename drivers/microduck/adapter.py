@@ -6,6 +6,7 @@ import math
 import time
 
 from ito.driver import Adapter
+from ito.driver.walking import walking
 from ito.protocol import Camera as CameraDescription
 from ito.protocol import DegreeOfFreedom, RobotDescription
 
@@ -38,6 +39,7 @@ class MicroduckAdapter(Adapter):
         self._wake = asyncio.Event()
         self._telemetry = {}
         self._state_at = 0.0
+        self._yaw_origin = None
         self._neutral_done = asyncio.Event()
 
     @property
@@ -153,29 +155,32 @@ class MicroduckAdapter(Adapter):
                 continue
             state = latest[1]
             axes, buttons = state.axes, state.buttons
+            move = walking(
+                state,
+                self._telemetry["base_yaw"],
+                speed=0.3,
+                lateral_speed=0.10,
+                turn_speed=0.6,
+            )
             # The walking policy needs enough command range to enter its stepping gait.
             commands = [
                 (
                     "robot.move",
                     {
-                        "vx": axes.get("move_y", 0.0) * 0.3,
-                        "vy": -axes.get("strafe", 0.0) * 0.10,
-                        "vyaw": -axes.get("move_x", 0.0) * 0.6,
+                        "vx": move.forward,
+                        "vy": move.left,
+                        "vyaw": move.turn,
                     },
                 )
             ]
             if state.head:
-                x, y, z, w = state.head.orientation
-                norm = math.sqrt(x * x + y * y + z * z + w * w)
-                x, y, z, w = (v / norm for v in (x, y, z, w))
-                # Ito -Z forward/+Y up -> trunk +X forward/+Y left/+Z up.
                 commands.append(
                     (
                         "robot.look",
                         {
-                            "x": 2 * (1 - 2 * (x * x + y * y)),
-                            "y": 4 * (x * z + y * w),
-                            "z": 4 * (x * w - y * z),
+                            "x": 2 * math.cos(move.pan) * math.cos(move.tilt),
+                            "y": 2 * math.sin(move.pan) * math.cos(move.tilt),
+                            "z": 2 * math.sin(move.tilt),
                             "neck_pitch": 0.0,
                         },
                     )
@@ -249,6 +254,11 @@ class MicroduckAdapter(Adapter):
         for key, value in data.get("odom", {}).items():
             if type(value) in (float, int, bool):
                 values[f"base_{key}"] = value
+        # robotd's contact odometry supplies IMU heading; keep Ito's startup reference.
+        yaw = data["odom"]["yaw"]
+        if self._yaw_origin is None:
+            self._yaw_origin = yaw
+        values["base_yaw"] = math.remainder(yaw - self._yaw_origin, 2 * math.pi)
         for key, vector in (data.get("imu") or {}).items():
             for index, value in enumerate(vector):
                 values[f"imu_{key}_{index}"] = value
