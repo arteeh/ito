@@ -70,11 +70,16 @@ def main():
     worker = None
     first_camera = None
     new_surfaces = 0
+    stalled_input_ages = []
+    release_latency_ms = None
+    estop_latency_ms = None
+    tested_input_stall = False
 
     def drive(app, window, value):
         nonlocal stage, changed, previous, robot, killed, restarted, first_position
         nonlocal reached_stop, stall, last_revisions, worker
         nonlocal first_camera, new_surfaces
+        nonlocal release_latency_ms, estop_latency_ms, tested_input_stall
         now = time.monotonic()
         assert now - began < 65, (stage, app.state, app.telemetry)
         samples.append((now, now - previous, app.state.status.link))
@@ -91,12 +96,38 @@ def main():
             key(pygame.K_F12)
             stage, changed = "captured", now
         elif stage == "captured" and now - changed > 0.5:
-            # Software screenshot readback can exceed the input watchdog; resume afterward.
             key(pygame.K_r)
             pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_w))
             key(pygame.K_TAB)
             stage, changed = 1, now
-        elif stage == 1 and now - changed > 2:
+        elif stage == 1 and not tested_input_stall and t.get("active"):
+            # Block the display for longer than both watchdogs. Held input must
+            # stay live, and releasing W must reach the robot before we draw again.
+            until = time.monotonic() + 0.65
+            while time.monotonic() < until:
+                age = time.monotonic() - app.latest_input.timestamp
+                stalled_input_ages.append(age * 1000)
+                assert age < 0.2, age
+                assert app.telemetry["active"], app.state.status
+                time.sleep(0.01)
+            released = time.monotonic()
+            pygame.event.post(pygame.event.Event(pygame.KEYUP, key=pygame.K_w))
+            while app.telemetry["left_command"] or app.telemetry["right_command"]:
+                assert time.monotonic() - released < 0.5, app.telemetry
+                time.sleep(0.01)
+            assert app.telemetry["active"], app.state.status
+            release_latency_ms = (time.monotonic() - released) * 1000
+            stopped = time.monotonic()
+            key(pygame.K_e)
+            while not app.state.status.e_stop:
+                assert time.monotonic() - stopped < 0.5, app.state.status
+                time.sleep(0.01)
+            estop_latency_ms = (time.monotonic() - stopped) * 1000
+            assert app.telemetry["left_command"] == app.telemetry["right_command"] == 0
+            key(pygame.K_r)
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_w))
+            tested_input_stall = True
+        elif stage == 1 and tested_input_stall and now - changed > 2:
             pygame.event.post(
                 pygame.event.Event(
                     pygame.MOUSEMOTION, pos=(600, 400), rel=(-260, -25), buttons=(0, 0, 0)
@@ -141,7 +172,13 @@ def main():
             robot.wait()
             killed = now
             stage, changed = 5, now
-        elif stage == 5 and now - changed > 4:
+        elif (
+            stage == 5
+            and now - changed > 4
+            # Collect the same >30 offline frames even on a slow software GPU.
+            # The current sample is excluded by the final t < restarted filter.
+            and sum(stamp > killed + 1 for stamp, _, _ in samples) > 31
+        ):
             assert app.state.status.link == "RECONNECTING", app.state
             key(pygame.K_F12)
             robot = driver()
@@ -222,13 +259,17 @@ def main():
                     "360",
                     "--frames",
                     "300",
+                    # Empty frames are cheap: leave a real startup observation
+                    # window before this installed-entry-point smoke check exits.
+                    "--fps",
+                    "10",
                     "--metrics",
                     str(OUT / "cli-metrics.jsonl"),
                 ],
                 stdout=cli_log,
                 stderr=cli_log,
                 check=True,
-                timeout=30,
+                timeout=120,
             )
         cli_rows = [
             json.loads(line) for line in (OUT / "cli-metrics.jsonl").read_text().splitlines()
@@ -244,11 +285,13 @@ def main():
     latency = [
         r["pilot_input_to_robot_ms"] for r in rows if r["pilot_input_to_robot_ms"] is not None
     ]
-    visible = [
-        r["capture_to_splat_visible_ms"]
-        for r in rows
-        if r["capture_to_splat_visible_ms"] is not None and r["link"] == "CONNECTED"
-    ]
+    # A paused/reconnecting scene repeats its last visibility measurement on
+    # every display frame. Measure each exposure once, not once per redraw.
+    exposures = {}
+    for row in rows:
+        if row["capture_to_splat_visible_ms"] is not None and row["link"] == "CONNECTED":
+            exposures.setdefault(row["scene_capture_time"], row["capture_to_splat_visible_ms"])
+    visible = list(exposures.values())
     connected = [dt for t, dt, link in samples if link == "CONNECTED" and dt < 0.3]
     offline = [dt for t, dt, link in samples if killed + 1 < t < restarted]
     assert len(offline) > 30
@@ -273,6 +316,9 @@ def main():
         "max_splats": max(counts),
         "splats_beyond_initial_view": new_surfaces,
         "display_frames": len(samples),
+        "stalled_display_input_age_ms_max": max(stalled_input_ages),
+        "stalled_display_key_release_ms": release_latency_ms,
+        "stalled_display_estop_ms": estop_latency_ms,
         "captures": list(map(str, captures)),
     }
     (OUT / "summary.json").write_text(json.dumps(report, indent=2) + "\n")
