@@ -1,7 +1,12 @@
 """20 ms mono audio; bounded device queues discard backlog instead of adding latency."""
 
 import asyncio
+import atexit
+import contextlib
 import logging
+import queue
+import sys
+import threading
 import time
 import wave
 from collections import deque
@@ -13,6 +18,7 @@ from aiortc.mediastreams import MediaStreamError
 from av import AudioFrame, AudioResampler
 
 RATE, SAMPLES = 48000, 960
+CLOSE_TIMEOUT = 2.0  # A device that takes longer is left to close on its own thread.
 log = logging.getLogger(__name__)
 
 
@@ -77,6 +83,7 @@ class Audio:
         self.streams = []
         self.writer = None
         self.task = None
+        self.jobs = None
         self.track = Microphone(self)
 
     @property
@@ -179,15 +186,20 @@ class Audio:
             track.stop()
             self.playback.clear()
 
-    @staticmethod
-    async def _io(function, *args):
-        # Finish device/file I/O before cancellation can close its resources.
-        task = asyncio.create_task(asyncio.to_thread(function, *args))
-        try:
-            return await asyncio.shield(task)
-        except asyncio.CancelledError:
-            await task
-            raise
+    def _io(self, function, *args):
+        """Device and file I/O run in order on this Audio's own thread.
+
+        PortAudio opens and closes a stream on the same thread, a close always follows the
+        open it undoes, and a device that blocks never stalls the event loop or the
+        executor asyncio.run joins on shutdown.
+        """
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        if self.jobs is None:
+            self.jobs = queue.SimpleQueue()
+            threading.Thread(target=_work, args=(self.jobs,), name="ito-audio", daemon=True).start()
+        self.jobs.put((function, args, loop, future))
+        return future
 
     async def close(self):
         self.track.stop()
@@ -195,11 +207,26 @@ class Audio:
             self.task.cancel()
             await asyncio.gather(self.task, return_exceptions=True)
             self.task = None
-        await asyncio.to_thread(self._close)
+        if self.jobs is None:
+            return
+        closed = self._io(self._close)
+        self.jobs.put(None)
+        self.jobs = None
+        try:
+            async with asyncio.timeout(CLOSE_TIMEOUT):
+                await asyncio.shield(closed)
+        except TimeoutError:
+            log.warning("Audio devices still closing after %.0f s; continuing", CLOSE_TIMEOUT)
+            # sounddevice's exit handler would wait on the same device and keep a closed
+            # Ito running; the operating system releases the device with the process.
+            if sd := sys.modules.get("sounddevice"):
+                atexit.unregister(sd._exit_handler)
 
     def _close(self):
         for _, stream in self.streams:
             try:
+                # PortAudio can hang closing a running stream; stop it first.
+                stream.stop()
                 stream.close()
             except Exception as exc:
                 log.info("Audio device closed: %s", exc)
@@ -212,3 +239,22 @@ class Audio:
             self.writer = None
         self.capture.clear()
         self.playback.clear()
+
+
+def _work(jobs):
+    while (job := jobs.get()) is not None:
+        function, args, loop, future = job
+        try:
+            result = function(*args)
+        except Exception as exc:
+            settle = future.set_exception
+            result = exc
+        else:
+            settle = future.set_result
+
+        def done(settle=settle, result=result, future=future):
+            if not future.done():
+                settle(result)
+
+        with contextlib.suppress(RuntimeError):  # The loop may be gone after a timed-out close.
+            loop.call_soon_threadsafe(done)
