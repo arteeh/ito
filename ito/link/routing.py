@@ -31,9 +31,9 @@ async def direct_interface(pc, address: str) -> None:
         connection = transport.iceGatherer._connection
         gather = connection.get_component_candidates
 
-        async def routed(component, addresses, timeout=5, gather=gather):
+        async def routed(component, addresses, gather=gather):
             if local not in addresses:
                 raise ConnectionError("The network interface for this robot is unavailable")
-            return await gather(component, [local], timeout)
+            return await gather(component, [local])
 
         connection.get_component_candidates = routed
