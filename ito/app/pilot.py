@@ -70,6 +70,7 @@ class Pilot:
         self.last_tracking = 0.0
         self.settings_revision = 0
         self.last_frame = 0.0
+        self.frame_heads = deque(maxlen=256)
 
     @property
     def max_splats(self):
@@ -146,10 +147,12 @@ class Pilot:
         if pair is None:
             return
         rgb, depth, camera, captured = FrameJoin.arrays(pair, peer.clock)
-        if not -0.1 <= time.monotonic() - captured <= 2:
+        if captured <= self.state.video_time or not -0.1 <= time.monotonic() - captured <= 2:
             return
         self.last_frame = time.monotonic()
         self.state = replace(self.state, video=rgb, video_time=captured)
+        if self.backend == "rgbd":
+            self._anchor(camera, pair[1].head_angles)
         if self.worker is None or self.failure:
             return
         try:
@@ -162,9 +165,7 @@ class Pilot:
         if accepted:
             self.matched_frames += 1
             self.last_frame = time.monotonic()
-            if self.backend != "rgbd":
-                return
-            self._anchor(camera, peer)
+            self.frame_heads.append((captured, pair[1].head_angles))
 
     def _retire(self, worker):
         # Never on the link loop: a suspended or wedged worker takes seconds to kill.
@@ -172,15 +173,14 @@ class Pilot:
         closer.start()
         self.retiring = [thread for thread in self.retiring if thread.is_alive()] + [closer]
 
-    def _anchor(self, camera, peer):
+    def _anchor(self, camera, head_angles=None):
         self.camera_pose = camera
         anchor = camera.copy()
-        # A pan/tilt camera has already followed the head. Remove its measured
-        # rotation before applying the current local head pose at display rate.
-        if "head-pan-tilt" in peer.description.capabilities:
-            pan, tilt = self.telemetry.get("head_pan"), self.telemetry.get("head_tilt")
-            if isinstance(pan, (int, float)) and isinstance(tilt, (int, float)):
-                anchor[:3, :3] = camera[:3, :3] @ pose(yaw=pan, pitch=tilt)[:3, :3].T
+        # Camera and measured joints must belong to the same exposure. Status is
+        # asynchronous: subtracting its newer joints makes a still base oscillate.
+        if head_angles is not None:
+            pan, tilt = head_angles
+            anchor[:3, :3] = camera[:3, :3] @ pose(yaw=pan, pitch=tilt)[:3, :3].T
         self.state = replace(self.state, robot_camera=anchor)
 
     async def _session(self, peer):
@@ -220,6 +220,7 @@ class Pilot:
         )
         self.tracked_frames = 0
         self.tracking = False
+        self.frame_heads.clear()
         self.state = replace(self.state, flat_video=self.backend != "rgbd", video=None)
         with self.worker_lock:
             if self.backend != "video":
@@ -281,13 +282,17 @@ class Pilot:
                         # A stalled worker may hold the pose lock; staleness alone pauses.
                         tracked = self.worker.pose()
                         if tracked:
-                            transform, count, self.tracking = tracked
+                            transform, count, self.tracking, captured = tracked
                             if count != self.tracked_frames:
                                 self.last_tracking = now
                             self.tracked_frames = count
                         live = self.tracking and now - self.last_tracking < 2
                         if live and tracked:
-                            self._anchor(transform, peer)
+                            angles = next(
+                                (angles for stamp, angles in self.frame_heads if stamp == captured),
+                                None,
+                            )
+                            self._anchor(transform, angles)
                         elif self.tracking and not live:
                             self.reconstruction_status = (
                                 "SLAM tracking paused; showing flat camera feed"

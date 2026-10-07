@@ -66,6 +66,7 @@ def _run(recon):
                         np.frombuffer(recon.output_camera, np.float32)[:] = (
                             backend.camera_pose.ravel()
                         )
+                        recon.output_captured.value = captured
                         recon.tracked.value = backend.tracked
                         recon.tracking.value = not backend.lost and backend.tracked > 0
                     finally:
@@ -136,6 +137,7 @@ class Reconstruction:
         self.status_text = context.RawArray("B", 1024)
         self.output_lock = context.Lock()
         self.output_camera = context.RawArray("f", 16)
+        self.output_captured = context.RawValue("d", 0)
         self.tracked = context.RawValue("Q", 0)
         self.tracking = context.RawValue("b", False)
         self.report("Starting MASt3R-SLAM" if backend == "slam" else "Posed RGB-D")
@@ -192,6 +194,7 @@ class Reconstruction:
                 np.frombuffer(self.output_camera, np.float32).reshape(4, 4).copy(),
                 self.tracked.value,
                 bool(self.tracking.value),
+                self.output_captured.value,
             )
         finally:
             self.output_lock.release()
@@ -217,6 +220,8 @@ class Reconstruction:
         if not self.input_lock.acquire(False):
             return False
         try:
+            if self.sequence.value and captured_at <= self.captured.value:
+                return False
             np.frombuffer(self.rgb, np.uint8)[:] = rgb.ravel()
             if self.backend == "rgbd":
                 np.frombuffer(self.depth, np.float32)[:] = depth.ravel()
