@@ -17,6 +17,10 @@ class PilotStatus:
     detail: str = ""
     input_latency_ms: float | None = None
     reconstruction: str = ""
+    audio: str = ""
+    robot_audio: str = ""
+    mic_muted: bool = False
+    speaker_muted: bool = False
 
 
 class Overlay:
@@ -131,6 +135,19 @@ class Overlay:
             imgui.text(f"Pilot input -> robot: {status.input_latency_ms:.1f} ms")
         if capture_latency_ms is not None:
             imgui.text(f"Camera capture -> splat visible: {capture_latency_ms:.1f} ms")
+        if status.audio:
+            imgui.text(status.audio)
+            if status.robot_audio:
+                imgui.text("Robot " + status.robot_audio)
+            for label, muted, command in (
+                ("Mute microphone", status.mic_muted, "mute_mic"),
+                ("Mute speakers", status.speaker_muted, "mute_speaker"),
+            ):
+                changed, _ = imgui.checkbox(label, muted)
+                if changed:
+                    self.commands.append(command)
+                imgui.same_line()
+            imgui.new_line()
         if self.error:
             imgui.text_colored((1, 0.45, 0.4, 1), self.error)
         imgui.end()
