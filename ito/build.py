@@ -191,7 +191,7 @@ def main():
     # Retain all upstream licences. Retrieval's ASMK database is unnecessary for a
     # bounded live map: recovery searches the retained keyframes directly.
     utils = slam / "mast3r_slam/mast3r_utils.py"
-    code = utils.read_text()
+    code = utils.read_text(encoding="utf-8")
     eager = "from mast3r_slam.retrieval_database import RetrievalDatabase\n"
     if eager.rstrip() in code.splitlines():
         code = code.replace(eager, "").replace(
@@ -199,15 +199,21 @@ def main():
             "    from mast3r_slam.retrieval_database import RetrievalDatabase\n"
             "    retriever_path = (",
         )
-        utils.write_text(code)
+        utils.write_text(code, encoding="utf-8")
     for path in (slam / "mast3r_slam/backend/src").glob("*.cu"):
-        original = path.read_text()
+        original = path.read_text(encoding="utf-8")
         fixed = re.sub(r"\blong\b", "int64_t", original)
         if fixed != original:
-            path.write_text(fixed)
+            path.write_text(fixed, encoding="utf-8")
     weights = cache / "weights"
     base = f"https://huggingface.co/{MODEL}/resolve/{MODEL_REV}"
-    download(f"{base}/config.json", weights / "config.json", report, "model config")
+    download(
+        f"{base}/config.json",
+        weights / "config.json",
+        report,
+        "model config",
+        "718eb93dc4f9e4332b60cc0041af962d712cbd346d7770ce35c5b22cff68eae4",
+    )
     download(
         f"{base}/model.safetensors",
         weights / "model.safetensors",
