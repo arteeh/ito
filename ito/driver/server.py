@@ -39,6 +39,8 @@ class Driver:
             raise ValueError("command_rate must be between 1 and 240 Hz")
         if audio_source is not None:
             Audio(audio_source, audio_sink)  # Reject invalid CLI sources before serving.
+        if (audio_source, audio_sink) == ("none", "none"):
+            audio_source = None  # A robot without microphone and speaker carries no audio.
         self.audio_source, self.audio_sink = audio_source, audio_sink
         self.adapter = adapter
         adapter.frame_sink = self.publish_frame
@@ -287,11 +289,20 @@ class Driver:
                 await peer.pc.setRemoteDescription(RTCSessionDescription(offer.sdp, "offer"))
                 if peer.audio:
                     await peer.audio.start()
-                    if any(
+                    if peer.audio.source != "none" and any(
                         m.kind == "audio" and m.direction in {"recvonly", "sendrecv"}
                         for m in remote_media
                     ):
                         tracks.append(peer.audio.track)
+                    # The pilot's microphone needs the robot's speaker and its speakers the
+                    # robot's microphone; it opens only the devices that have a counterpart.
+                    audio = {"microphone": peer.audio.source, "speaker": peer.audio.sink}
+                    capabilities = description.capabilities + tuple(
+                        name
+                        for name, choice in audio.items()
+                        if choice != "none" and name not in description.capabilities
+                    )
+                    peer.description = description.model_copy(update={"capabilities": capabilities})
                 video = [track for track in tracks if track.kind == "video"]
                 if len(video) != len(description.cameras) or {track.id for track in video} != {
                     c.track_id for c in description.cameras

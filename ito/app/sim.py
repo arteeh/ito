@@ -27,7 +27,10 @@ class SimulatedRobot:
             self.process = subprocess.Popen(
                 [sys.executable, *(["-I"] if sys.flags.isolated else [])]
                 + ["-m", "drivers.mujoco.cli", "--host", "127.0.0.1", "--port", str(port)]
-                + ["--pairing-file", str(code_file)],
+                + ["--pairing-file", str(code_file)]
+                # It runs on the pilot's own PC: a robot microphone would hear the pilot's
+                # room and its speaker would play the pilot back to themselves.
+                + ["--audio-source", "none", "--audio-sink", "none"],
                 stdin=subprocess.DEVNULL,
                 stdout=log,
                 stderr=subprocess.STDOUT,

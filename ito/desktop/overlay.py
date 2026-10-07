@@ -21,6 +21,8 @@ class PilotStatus:
     robot_audio: str = ""
     mic_muted: bool = False
     speaker_muted: bool = False
+    robot_microphone: bool = False
+    robot_speaker: bool = False
 
 
 class Overlay:
@@ -135,6 +137,9 @@ class Overlay:
             if imgui.button("Disconnect"):
                 self.leave = True
             self._placed("disconnect")
+        if status.link == "CONNECTED":
+            # Above the status lines that come and go, so the toggles never move under a click.
+            self._audio(status)
         if request:
             imgui.text(request)
         if status.detail:
@@ -147,25 +152,39 @@ class Overlay:
             imgui.text(f"Pilot input -> robot: {status.input_latency_ms:.1f} ms")
         if capture_latency_ms is not None:
             imgui.text(f"Camera capture -> splat visible: {capture_latency_ms:.1f} ms")
-        if status.audio:
-            imgui.text(status.audio)
-            if status.robot_audio:
-                imgui.text("Robot " + status.robot_audio)
-            for label, muted, command in (
-                ("Mute microphone", status.mic_muted, "mute_mic"),
-                ("Mute speakers", status.speaker_muted, "mute_speaker"),
-            ):
-                changed, _ = imgui.checkbox(label, muted)
-                if changed:
-                    self.commands.append(command)
-                self._placed(command)
-                imgui.same_line()
-            imgui.new_line()
         if self.error:
             imgui.text_colored((1, 0.45, 0.4, 1), self.error)
         imgui.end()
         self.render()
         return selected
+
+    def _audio(self, status):
+        missing = [
+            name
+            for name, present in (
+                ("microphone", status.robot_microphone),
+                ("speaker", status.robot_speaker),
+            )
+            if not present
+        ]
+        if missing:
+            imgui.text_disabled("Robot has no " + " or ".join(missing))
+        if len(missing) == 2:
+            return
+        imgui.text(status.audio)
+        controls = []
+        if status.robot_speaker:
+            controls.append(("Mute microphone", status.mic_muted, "mute_mic"))
+        if status.robot_microphone:
+            controls.append(("Mute speakers", status.speaker_muted, "mute_speaker"))
+        for index, (label, muted, command) in enumerate(controls):
+            if index:
+                imgui.same_line()
+            if imgui.checkbox(label, muted)[0]:
+                self.commands.append(command)
+            self._placed(command)
+        if status.robot_audio:
+            imgui.text("Robot " + status.robot_audio)
 
     def _placed(self, name):
         low, high = imgui.get_item_rect_min(), imgui.get_item_rect_max()

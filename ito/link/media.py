@@ -14,7 +14,7 @@ class LatestTrack(MediaStreamTrack):
         super().__init__()
         self.kind = source.kind
         self.source = source
-        self._frames: asyncio.Queue = asyncio.Queue(maxsize=2)
+        self._frames: asyncio.Queue = asyncio.Queue(maxsize=6 if self.kind == "audio" else 2)
         self._task = asyncio.create_task(self._drain())
 
     @property

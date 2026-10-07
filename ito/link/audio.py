@@ -77,7 +77,17 @@ class Audio:
                 raise ValueError("audio tone must be between 20 and 20000 Hz")
         elif source not in {"device", "none"}:
             raise ValueError("audio source must be device, none, or tone:Hz")
-        self.capture, self.playback = deque(maxlen=2), deque(maxlen=2)
+        self.capture, self.playback = deque(maxlen=2), deque(maxlen=5)
+        self.buffering = True
+        self.counters = dict(
+            received=0,
+            played=0,
+            underruns=0,
+            device_underflows=0,
+            capture_overflows=0,
+            dropped=0,
+            rebuffers=0,
+        )
         self.mic_muted = self.speaker_muted = False
         self.input_status = self.output_status = "starting"
         self.streams = []
@@ -90,14 +100,15 @@ class Audio:
     def status(self):
         return f"Audio: mic {self.input_status} | speaker {self.output_status}"
 
-    def _open(self):
+    def _open(self, capture, playback):
+        choices = (self.source if capture else "none", self.sink if playback else "none")
         sd = None
-        if "device" in {self.source, self.sink}:
+        if "device" in choices:
             try:
                 import sounddevice as sd
             except (ImportError, OSError):
                 pass
-        for incoming, choice in ((True, self.source), (False, self.sink)):
+        for incoming, choice in zip((True, False), choices, strict=True):
             status = "off" if choice == "none" else "ready"
             stream = None
             try:
@@ -107,6 +118,7 @@ class Audio:
                     if incoming:
 
                         def capture(data, frames, timing, flags):
+                            self.counters["capture_overflows"] += int(flags.input_overflow)
                             self.capture.append(data[:, 0].copy())
 
                         stream = sd.InputStream(
@@ -120,11 +132,7 @@ class Audio:
                     else:
 
                         def playback(data, frames, timing, flags):
-                            data.fill(0)
-                            if self.playback and not self.speaker_muted:
-                                data[:, 0] = self.playback.popleft()
-                            else:
-                                self.playback.clear()
+                            self._play(data, flags)
 
                         stream = sd.OutputStream(
                             callback=playback,
@@ -150,8 +158,30 @@ class Audio:
                 self.output_status = status
         log.info(self.status)
 
-    async def start(self):
-        await self._io(self._open)
+    def _play(self, data, flags):
+        # Network delivery is bursty even after RTP reordering. Keep 60 ms ahead of
+        # the device clock, with a hard 100 ms ceiling and re-prime after a gap.
+        self.counters["device_underflows"] += int(flags.output_underflow)
+        data.fill(0)
+        if self.speaker_muted:
+            self.playback.clear()
+            self.buffering = True
+            return
+        if self.buffering:
+            if len(self.playback) < 3:
+                return
+            self.buffering = False
+        try:
+            data[:, 0] = self.playback.popleft()
+            self.counters["played"] += 1
+        except IndexError:
+            self.counters["underruns"] += 1
+            self.counters["rebuffers"] += 1
+            self.buffering = True
+
+    def start(self, *, capture=True, playback=True):
+        """Queue opening the source and sink; await the result to wait for the devices."""
+        return self._io(self._open, capture, playback)
 
     def receive(self, track):
         if self.task is not None:
@@ -170,7 +200,10 @@ class Audio:
                         samples.fill(0)
                     if self.writer:
                         await self._io(self.writer.writeframesraw, samples.tobytes())
-                    self.playback.append(samples)
+                    self.counters["received"] += 1
+                    if self.sink == "device":
+                        self.counters["dropped"] += int(len(self.playback) == self.playback.maxlen)
+                        self.playback.append(samples)
                 for incoming, stream in self.streams:
                     if not stream.active:
                         if incoming:
