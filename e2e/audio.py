@@ -33,7 +33,7 @@ from ito.app.__main__ import main as pilot_main
 from ito.driver import pairing
 
 OUT = Path("e2e/out/audio")
-JACK = "ito-e2e-audio"
+JACK = f"ito-e2e-audio-{os.getpid()}"
 CLOSE_LIMIT_S = 1.5  # Window closed to pilot_main returning, devices and link included.
 STALLED_CLOSE_LIMIT_S = 4.0
 
@@ -104,13 +104,14 @@ def phase(name):
         start = time.monotonic()
         stage, changed = "connecting", start
         closing = None
+        jitter = None
 
         def go(next_stage):
             nonlocal stage, changed
             stage, changed = next_stage, time.monotonic()
 
         def drive(app, window, value):
-            nonlocal closing
+            nonlocal closing, jitter
             waited = time.monotonic() - changed
             status = app.state.status
             layout = window.overlay.layout
@@ -125,9 +126,24 @@ def phase(name):
                     else:
                         expected = "mic ready | speaker ready"
                         assert tones or expected in status.audio, status
+                        if name == "devices":
+                            report["audio_before_jitter"] = dict(app.audio.counters)
+
+                            async def scheduling_jitter():
+                                import asyncio
+
+                                for _ in range(30):
+                                    await asyncio.sleep(0.065)
+                                    time.sleep(0.035)  # noqa: ASYNC251 — inject a real scheduling stall
+
+                            import asyncio
+
+                            jitter = asyncio.run_coroutine_threadsafe(scheduling_jitter(), app.loop)
                         click(layout["mute_mic"])
                         go("mic muted")
-            elif stage == "mic muted" and waited > (2 if tones else 0.6):
+            elif stage == "mic muted" and waited > (
+                3.5 if name == "devices" else 2 if tones else 0.6
+            ):
                 assert status.mic_muted and not status.speaker_muted, status
                 click(layout["mute_mic"])
                 go("mic unmuted")
@@ -152,6 +168,13 @@ def phase(name):
                 go("close")
             elif stage == "e-stop" and status.e_stop and waited > 0.5:
                 assert status.mic_muted and status.speaker_muted, status
+                if name == "devices":
+                    assert jitter.done(), "Jitter exercise did not finish"
+                    jitter.result()
+                    report["audio_after_jitter"] = dict(app.audio.counters)
+                    before, after = report["audio_before_jitter"], app.audio.counters
+                    assert after["played"] > before["played"] + 20, report
+                    assert after["underruns"] - before["underruns"] <= 1, report
                 if name == "stalled":
                     freeze()
                 go("close")

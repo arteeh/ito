@@ -1,6 +1,7 @@
 """The bundled simulated robot, piloted the way 'Try simulated robot' starts it.
 
-Mouse-look capture and release must leave every ImGui control clickable.
+It has no microphone or speaker, and mouse-look capture and release must leave every
+ImGui control clickable.
 
 DISPLAY=:97 LIBGL_ALWAYS_SOFTWARE=1 uv run python e2e/simulated.py
 """
@@ -54,6 +55,12 @@ def main():
         status = app.state.status
         layout = window.overlay.layout
         if stage == "connecting" and status.link == "CONNECTED" and window.renderer.count > 1000:
+            # On the pilot's own PC the simulated robot has no microphone or speaker:
+            # the pilot is told so, gets no mute toggles, and no audio device opens.
+            assert not (status.robot_microphone or status.robot_speaker), status
+            assert not {"mute_mic", "mute_speaker"} & set(layout), layout
+            assert app.audio.input_status == app.audio.output_status == "off", app.audio.status
+            assert not app.audio.streams and "audio" not in app.telemetry, app.telemetry
             report["yaw_before_look"] = window.input.yaw
             click(SCENE)
             go("captured")
@@ -86,7 +93,7 @@ def main():
     assert stage == "done", stage
     (OUT / "summary.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))
-    print("PASS: simulated robot; buttons work after mouse-look")
+    print("PASS: simulated robot without audio; buttons work after mouse-look")
 
 
 if __name__ == "__main__":

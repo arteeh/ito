@@ -50,8 +50,7 @@ async def connect(
             for _ in range(video_tracks):
                 peer.pc.addTransceiver("video", direction="recvonly")
             if audio_io is not None:
-                await audio_io.start()
-                audio = audio_io.track
+                audio = audio_io.track  # Devices open once the robot says what it has.
             if audio is not None:
                 peer.pc.addTrack(audio)
             elif receive_audio:

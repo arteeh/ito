@@ -126,12 +126,24 @@ class Pilot:
                 detail=detail or (f"{status.state}: {status.reason}" if status else ""),
                 input_latency_ms=self.telemetry.get("pilot_input_latency_ms") if peer else None,
                 reconstruction=self.reconstruction_status,
-                audio=(self.audio.status if self.audio else "Audio: disconnected"),
+                audio=self._audio_status(peer),
                 robot_audio=self.telemetry.get("audio", "") if peer else "",
+                robot_microphone=bool(peer) and "microphone" in peer.description.capabilities,
+                robot_speaker=bool(peer) and "speaker" in peer.description.capabilities,
                 mic_muted=self.mic_muted,
                 speaker_muted=self.speaker_muted,
             ),
         )
+
+    def _audio_status(self, peer):
+        """The pilot's devices that have a counterpart on the robot."""
+        if not peer or not self.audio:
+            return ""
+        capabilities = peer.description.capabilities
+        parts = [f"mic {self.audio.input_status}"] if "speaker" in capabilities else []
+        if "microphone" in capabilities:
+            parts.append(f"speaker {self.audio.output_status}")
+        return "Audio: " + " | ".join(parts) if parts else ""
 
     def _save(self, name):
         if not self.persist:
@@ -234,6 +246,12 @@ class Pilot:
                     backend=self.backend,
                     origin=camera_matrix(camera.extrinsics),
                 )
+        # Talking to a robot without a speaker, or listening to one without a microphone,
+        # would only hold the pilot's devices open.
+        self.audio.start(
+            capture="speaker" in description.capabilities,
+            playback="microphone" in description.capabilities,
+        )
         self.connections += 1
         self._status("CONNECTED", "Resume to begin piloting", peer=peer)
         joined = FrameJoin()
