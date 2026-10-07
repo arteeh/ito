@@ -4,11 +4,42 @@ import importlib
 import json
 import logging
 import signal
+from pathlib import Path
 
 from aiortc import RTCIceServer
 
-from ito.driver import Adapter, Driver
+from ito.driver import Adapter, Driver, pairing
 from ito.link.audio import arguments
+from ito.link.pairing import display
+
+
+def driver_arguments(parser) -> None:
+    """Network, safety and pairing options every ito-driver-<robot> shares."""
+    parser.add_argument("--host", default="0.0.0.0", help="address to listen on (default: all)")
+    parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument("--input-timeout", type=float, default=0.25)
+    parser.add_argument("--command-rate", type=float, default=90)
+    parser.add_argument("--ice-server", action="append", default=[], help="STUN/TURN URL")
+    parser.add_argument("--turn-username")
+    parser.add_argument("--turn-credential")
+    parser.add_argument("--pairing-file", type=Path, default=pairing.default_path())
+    parser.add_argument("--show-code", action="store_true", help="print the pairing code, exit")
+    parser.add_argument(
+        "--rotate-code",
+        action="store_true",
+        help="replace the pairing code and exit; every pilot must enter the new one",
+    )
+
+
+def pairing_command(args) -> bool:
+    """Handle --show-code/--rotate-code; True when the program should exit."""
+    if args.rotate_code:
+        code = pairing.rotate(args.pairing_file)
+        print(f"New pairing code: {display(code)}", flush=True)
+    elif args.show_code:
+        code, _ = pairing.ensure(args.pairing_file)
+        print(f"Pairing code: {display(code)}", flush=True)
+    return args.rotate_code or args.show_code
 
 
 async def serve(args) -> None:
@@ -31,6 +62,7 @@ async def serve(args) -> None:
         input_timeout=args.input_timeout,
         command_rate=args.command_rate,
         ice_servers=ice_servers,
+        pairing_file=args.pairing_file,
     )
     stopped = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -39,9 +71,14 @@ async def serve(args) -> None:
             loop.add_signal_handler(sig, stopped.set)
         except NotImplementedError:
             pass
+    code, created = pairing.ensure(args.pairing_file)
     try:
         address = await driver.start(args.host, args.port)
         print(f"Ito driver listening at {address}", flush=True)
+        if created:
+            print(f"Pairing code: {display(code)} (the pilot enters it once)", flush=True)
+        else:
+            print(f"Pairing code unchanged; {args.prog} --show-code prints it", flush=True)
         await stopped.wait()
     finally:
         await driver.close()
@@ -49,20 +86,18 @@ async def serve(args) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Serve one robot through an Ito adapter")
-    parser.add_argument("adapter", help="Python module:factory returning an Adapter")
+    parser.add_argument("adapter", nargs="?", help="Python module:factory returning an Adapter")
     parser.add_argument("--adapter-args", default="{}", help="JSON object passed to the factory")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8080)
-    parser.add_argument("--input-timeout", type=float, default=0.25)
-    parser.add_argument("--command-rate", type=float, default=90)
-    parser.add_argument("--ice-server", action="append", default=[], help="STUN/TURN URL")
-    parser.add_argument("--turn-username")
-    parser.add_argument("--turn-credential")
+    driver_arguments(parser)
     arguments(parser)
     args = parser.parse_args()
+    args.prog = parser.prog
+    if not (args.adapter or args.show_code or args.rotate_code):
+        parser.error("the adapter argument is required")
     logging.basicConfig(level=logging.INFO)
     try:
-        asyncio.run(serve(args))
+        if not pairing_command(args):
+            asyncio.run(serve(args))
     except KeyboardInterrupt:
         pass
     except (ValueError, ImportError, AttributeError, OSError) as exc:

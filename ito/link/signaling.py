@@ -5,6 +5,7 @@ import aiohttp
 from aiortc import MediaStreamTrack, RTCIceServer, RTCSessionDescription
 from pydantic import Field, ValidationError
 
+from ito.link import pairing
 from ito.link.audio import opus
 from ito.link.peer import Peer
 from ito.protocol import VERSION, Model
@@ -14,6 +15,12 @@ class Offer(Model):
     version: int
     type: str = Field(pattern="^(offer|answer)$")
     sdp: str = Field(min_length=1, max_length=200_000)
+    nonce: str | None = Field(default=None, pattern="^[0-9a-f]{32}$")
+    proof: str | None = Field(default=None, pattern="^[0-9a-f]{64}$")
+
+
+class Challenge(Model):
+    nonce: str = Field(pattern="^[0-9a-f]{32}$")
 
 
 async def connect(
@@ -25,8 +32,12 @@ async def connect(
     audio: MediaStreamTrack | None = None,
     ice_servers: Sequence[RTCIceServer] = (),
     connect_timeout: float = 15,
+    code: str | None = None,
 ) -> Peer:
-    """Connect directly to a driver; caller consumes tracks without blocking input."""
+    """Connect directly to a driver; caller consumes tracks without blocking input.
+
+    Raises PairingError when the driver refuses the pairing code (or none was given).
+    """
     if not 0 <= video_tracks <= 16:
         raise ValueError("video_tracks must be between 0 and 16")
     if audio is not None and audio.kind != "audio":
@@ -47,18 +58,34 @@ async def connect(
                 peer.pc.addTransceiver("audio", direction="recvonly")
             opus(peer.pc)
             await peer.pc.setLocalDescription(await peer.pc.createOffer())
+            sdp = peer.pc.localDescription.sdp
+            base = address.rstrip("/")
             async with aiohttp.ClientSession() as session:
-                offer = Offer(version=VERSION, type="offer", sdp=peer.pc.localDescription.sdp)
+                nonce = proof = None
+                if code is not None:
+                    async with session.post(base + "/pairing") as response:
+                        if response.status != 200:
+                            raise ConnectionError(
+                                f"driver refused pairing (HTTP {response.status})"
+                            )
+                        nonce = Challenge.model_validate_json(await response.read()).nonce
+                    proof = pairing.proof(code, nonce, "offer", sdp)
+                offer = Offer(version=VERSION, type="offer", sdp=sdp, nonce=nonce, proof=proof)
                 async with session.post(
-                    address.rstrip("/") + "/offer", json=offer.model_dump()
+                    base + "/offer", json=offer.model_dump(exclude_none=True)
                 ) as response:
+                    if response.status in (401, 403):
+                        raise pairing.PairingError(await reason(response))
                     if response.status != 200:
                         raise ConnectionError(
-                            f"driver rejected connection (HTTP {response.status})"
+                            await reason(response)
+                            or f"driver rejected connection (HTTP {response.status})"
                         )
                     answer = Offer.model_validate_json(await response.read())
                     if answer.version != VERSION or answer.type != "answer":
                         raise ConnectionError("incompatible driver answer")
+            if code is None or not pairing.valid(code, nonce, "answer", answer.sdp, answer.proof):
+                raise pairing.PairingError("The robot could not prove it knows the pairing code")
             await peer.pc.setRemoteDescription(RTCSessionDescription(sdp=answer.sdp, type="answer"))
             await peer.ready.wait()
             await peer.robot_received.wait()
@@ -67,6 +94,13 @@ async def connect(
     except BaseException:
         await peer.close()
         raise
+
+
+async def reason(response) -> str:
+    """The driver's plain-text refusal, short enough to show the pilot."""
+    if response.content_type != "text/plain":
+        return ""
+    return (await response.text())[:200].strip()
 
 
 def parse_offer(data: bytes) -> Offer:

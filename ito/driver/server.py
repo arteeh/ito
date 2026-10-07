@@ -4,14 +4,17 @@ import logging
 import math
 import time
 from collections.abc import Sequence
+from pathlib import Path
 
 from aiohttp import web
 from aiortc import RTCIceServer, RTCSessionDescription
 from aiortc.sdp import SessionDescription
 
 from ito.driver.adapter import Adapter
+from ito.driver.pairing import Pairing, PairingRefused, default_path
 from ito.link import Peer
 from ito.link.audio import Audio, opus
+from ito.link.pairing import proof
 from ito.link.signaling import parse_offer
 from ito.protocol import Command, FrameMetadata, PilotState, Status, WireMessage, encode
 
@@ -28,6 +31,7 @@ class Driver:
         input_timeout: float = 0.25,
         command_rate: float = 90,
         ice_servers: Sequence[RTCIceServer] = (),
+        pairing_file: Path | None = None,
     ):
         if not math.isfinite(input_timeout) or not 0.02 <= input_timeout <= 5:
             raise ValueError("input_timeout must be between 0.02 and 5 seconds")
@@ -41,6 +45,7 @@ class Driver:
         self.input_timeout = input_timeout
         self.command_rate = command_rate
         self.ice_servers = ice_servers
+        self.pairing = Pairing(pairing_file or default_path())
         self.peer: Peer | None = None
         self.state = "neutral"
         self.reason = "waiting for pilot"
@@ -215,6 +220,9 @@ class Driver:
                         self.peer = None
             await asyncio.sleep(interval)
 
+    async def _challenge(self, request: web.Request) -> web.Response:
+        return web.json_response({"nonce": self.pairing.nonce()})
+
     async def _offer(self, request: web.Request) -> web.Response:
         try:
             offer = parse_offer(await request.read())
@@ -222,6 +230,11 @@ class Driver:
             raise web.HTTPBadRequest(text="invalid or unsupported Ito offer") from None
         if self._closing:
             raise web.HTTPServiceUnavailable()
+        try:
+            code = self.pairing.check(offer.nonce, offer.proof, offer.sdp)
+        except PairingRefused as refused:
+            log.warning("Refused pilot at %s: %s", request.remote, refused)
+            return web.Response(status=refused.status, text=str(refused))
         if self.peer and not self.peer.closed.is_set():
             raise web.HTTPConflict(text="this robot already has a pilot")
         description = self.adapter.description
@@ -291,8 +304,14 @@ class Driver:
                     peer.pc.addTrack(track)
                 opus(peer.pc)
                 await peer.pc.setLocalDescription(await peer.pc.createAnswer())
+            sdp = peer.pc.localDescription.sdp
             return web.json_response(
-                {"version": 1, "type": "answer", "sdp": peer.pc.localDescription.sdp}
+                {
+                    "version": 1,
+                    "type": "answer",
+                    "sdp": sdp,
+                    "proof": proof(code, offer.nonce, "answer", sdp),
+                }
             )
         except asyncio.CancelledError:
             for track in tracks:
@@ -308,10 +327,11 @@ class Driver:
         finally:
             self._negotiating = False
 
-    async def start(self, host: str = "127.0.0.1", port: int = 8080) -> str:
+    async def start(self, host: str = "0.0.0.0", port: int = 8080) -> str:
         if self._closing or self._runner is not None:
             raise RuntimeError("driver already started or closed")
         app = web.Application(client_max_size=220_000)
+        app.router.add_post("/pairing", self._challenge)
         app.router.add_post("/offer", self._offer)
         self._runner = web.AppRunner(app, shutdown_timeout=2)
         try:

@@ -4,7 +4,7 @@ import json
 import logging
 import os
 
-from ito.driver.cli import serve
+from ito.driver.cli import driver_arguments, pairing_command, serve
 from ito.link.audio import arguments
 
 from .adapter import ROOM
@@ -32,15 +32,10 @@ def main():
     parser.add_argument("--axle-width", type=float, default=0.52)
     parser.add_argument("--speed", type=float, default=0.7, help="maximum forward speed in m/s")
     parser.add_argument("--turn-speed", type=float, default=1.2, help="maximum yaw speed in rad/s")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8080)
-    parser.add_argument("--input-timeout", type=float, default=0.25)
-    parser.add_argument("--command-rate", type=float, default=90)
-    parser.add_argument("--ice-server", action="append", default=[], help="STUN/TURN URL")
-    parser.add_argument("--turn-username")
-    parser.add_argument("--turn-credential")
+    driver_arguments(parser)
     arguments(parser, source="tone:440")
     args = parser.parse_args()
+    args.prog = parser.prog
     args.adapter = "drivers.mujoco.adapter:MujocoAdapter"
     args.adapter_args = json.dumps(
         {
@@ -68,7 +63,8 @@ def main():
     )
     logging.basicConfig(level=logging.INFO)
     try:
-        asyncio.run(serve(args))
+        if not pairing_command(args):
+            asyncio.run(serve(args))
     except KeyboardInterrupt:
         pass
     except (ValueError, KeyError, ImportError, AttributeError, OSError, RuntimeError) as exc:
