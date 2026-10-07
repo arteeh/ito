@@ -11,8 +11,10 @@ from pathlib import Path
 
 
 def models_directory():
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent / "models"
+    # The Windows release: models\ sits beside ito.exe and the runtime\ it starts.
+    release = Path(sys.base_prefix).parent
+    if (release / "ito.exe").is_file() and (release / "runtime").is_dir():
+        return release / "models"
     checkout = Path(__file__).resolve().parents[2]
     if (checkout / "pyproject.toml").is_file():
         return checkout / "models"
