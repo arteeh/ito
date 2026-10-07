@@ -5,6 +5,7 @@ from importlib.resources import files
 
 import moderngl
 import numpy as np
+from OpenGL import GL
 
 from .pose import validate_pose
 from .scene import FloatArray, GaussianBuffer
@@ -103,7 +104,7 @@ class GaussianRenderer:
         self.slots.bind_to_storage_buffer(3)
         self.update["count"] = n
         self.update.run(group_x=(n + 255) // 256)
-        self.context.memory_barrier(moderngl.SHADER_STORAGE_BARRIER_BIT)
+        GL.glMemoryBarrier(GL.GL_SHADER_STORAGE_BARRIER_BIT)
         if update.acknowledge is not None:
             update.acknowledge()
 
@@ -154,7 +155,9 @@ class GaussianRenderer:
         self.keys["capacity"] = self.capacity
         self.keys["stride"] = self.stride
         self.keys.run(group_x=self.capacity // 256)
-        self.context.memory_barrier(moderngl.SHADER_STORAGE_BARRIER_BIT)
+        # A software GPU can block inside a barrier. ctypes releases the GIL so
+        # tracking and the deadman sender keep running while the GPU catches up.
+        GL.glMemoryBarrier(GL.GL_SHADER_STORAGE_BARRIER_BIT)
         self.sort["capacity"] = self.capacity
         stage = 2
         while stage <= self.capacity:
@@ -165,7 +168,7 @@ class GaussianRenderer:
                 self.sort["distance"] = distance
                 self.sort["local_merge"] = local
                 self.sort.run(group_x=self.capacity // 256)
-                self.context.memory_barrier(moderngl.SHADER_STORAGE_BARRIER_BIT)
+                GL.glMemoryBarrier(GL.GL_SHADER_STORAGE_BARRIER_BIT)
                 distance = 0 if local else distance // 2
             stage *= 2
         self.program["view"].write(view.T.copy())
