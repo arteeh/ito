@@ -58,13 +58,14 @@ source for `DesktopWindow.run()`. Capture times use the pilot monotonic clock; p
 changed slots coalesce in a bounded shared-memory ring. `uv sync --extra cuda` enables CUDA
 projection/voxelization on NVIDIA; the default automatically falls back to NumPy on CPU.
 
-Monocular SLAM uses Python **3.12**, an NVIDIA GPU, CUDA Toolkit **12.4** (including `nvcc`),
-and a C++ compiler: GCC on Linux or Visual Studio 2022 C++ Build Tools (v143 14.38) on Windows.
-Build once with `uv run --python 3.12 --extra slam python -m ito.build`; ship the generated `ito/_slam` with Ito (sources, CUDA kernels, 2.75 GB of verified CC BY-NC-SA weights and notices).
-Launch with `uv run --extra slam ito robot-address:8080`; SLAM is entirely offline, and a missing/incomplete bundle keeps the flat camera feed with the build command shown in ImGui.
+Monocular SLAM needs an NVIDIA GPU. Models and their licence notices are included in
+`models/` beside the app. Missing or damaged models keep the live flat camera feed usable.
 Recent keyframes are bounded to four; tracking recovery searches that local window. Monocular
 scale is estimated, so reconstructed distances are not a measurement tool.
-[MASt3R-SLAM code](https://github.com/rmurai0610/MASt3R-SLAM/blob/main/LICENSE.md) and [MASt3R weights](https://github.com/naver/mast3r/blob/main/CHECKPOINTS_NOTICE) are non-commercial (CC BY-NC-SA 4.0; weights also carry training-dataset restrictions).
+
+## Development and releases
+
+Release assets: `uv run --python 3.12 --extra slam python -m ito.build --output dist/ito/models` (Python 3.12, CUDA Toolkit 12.4, VS 2022 C++ tools on Windows); ship that folder beside `ito.exe`, including the CC BY-NC-SA licences/notices.
 
 CUDA end-to-end check on Windows (Developer PowerShell for VS 2022, CUDA 12.4 on PATH;
 `UV_PROJECT_ENVIRONMENT` can point to the existing venv):

@@ -1,5 +1,6 @@
 """Fetch, verify and compile the offline SLAM bundle before packaging Ito."""
 
+import argparse
 import hashlib
 import json
 import os
@@ -12,7 +13,9 @@ import time
 import urllib.request
 from pathlib import Path
 
-from ito.reconstruction.mast3r_runtime import BUILD_COMMAND, BUNDLE, BUNDLE_VERSION, abi
+from ito.reconstruction.mast3r_runtime import BUNDLE_VERSION, MODEL_FILES, MODELS, abi
+
+BUILD_COMMAND = "uv run --python 3.12 --extra slam python -m ito.build"
 
 SLAM_REV = "e6f4e3d474fad0e11f561482012be864ba8c3f17"
 LIE_REV = "e7df86554156b36846008d8ddbcc4d8521a16554"
@@ -65,9 +68,9 @@ def download(url, path, report, label, sha256=None):
     return path
 
 
-def source(cache, name, url, digest, report):
+def source(cache, work, name, url, digest, report):
     root = cache / name
-    archive = download(url, cache.parent / ".slam-build" / f"{name}.tar.gz", report, name, digest)
+    archive = download(url, work / f"{name}.tar.gz", report, name, digest)
     if root.exists():
         shutil.rmtree(root)
     report(f"Preparing {name}", -1)
@@ -160,8 +163,11 @@ def compile_extensions(cache, work):
 
 
 def main():
-    cache = BUNDLE
-    work = cache.parent / ".slam-build"
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path, default=MODELS, help="release models directory")
+    args = parser.parse_args()
+    cache = args.output.resolve()
+    work = Path(__file__).resolve().parents[1] / ".slam-build"
     cache.mkdir(parents=True, exist_ok=True)
     work.mkdir(parents=True, exist_ok=True)
     # An interrupted rebuild must never appear ready to the pilot or packager.
@@ -169,6 +175,7 @@ def main():
     manifest.unlink(missing_ok=True)
     slam = source(
         cache,
+        work,
         "slam",
         f"https://codeload.github.com/rmurai0610/MASt3R-SLAM/tar.gz/{SLAM_REV}",
         "787099d1b8eeba2a4e6639746e7f561ac77bff9c7c9f8faf722c488e04a316f1",
@@ -176,6 +183,7 @@ def main():
     )
     source(
         cache,
+        work,
         "lie",
         f"https://codeload.github.com/princeton-vl/lietorch/tar.gz/{LIE_REV}",
         "856ff3792a4d4b5343ad642fd699a077a556758526d9b231616fc277b170c847",
@@ -183,6 +191,7 @@ def main():
     )
     source(
         cache,
+        work,
         "eigen",
         f"https://gitlab.com/libeigen/eigen/-/archive/{EIGEN_REV}/eigen-{EIGEN_REV}.tar.gz",
         "7a246279efcaf15464aac710ca36fde772000fa0a16082a8c03dfe78c15dce93",
@@ -205,21 +214,21 @@ def main():
         fixed = re.sub(r"\blong\b", "int64_t", original)
         if fixed != original:
             path.write_text(fixed, encoding="utf-8")
-    weights = cache / "weights"
+    weights = cache
     base = f"https://huggingface.co/{MODEL}/resolve/{MODEL_REV}"
     download(
         f"{base}/config.json",
         weights / "config.json",
         report,
         "model config",
-        "718eb93dc4f9e4332b60cc0041af962d712cbd346d7770ce35c5b22cff68eae4",
+        MODEL_FILES["config.json"],
     )
     download(
         f"{base}/model.safetensors",
         weights / "model.safetensors",
         report,
         "MASt3R weights (CC BY-NC-SA; non-commercial)",
-        "0a615eb05fa9db654050aa655945ee5696e7c6c1b7f93f1ee8c37249010f6feb",
+        MODEL_FILES["model.safetensors"],
     )
     for name in ("LICENSE", "NOTICE", "CHECKPOINTS_NOTICE"):
         shutil.copy2(slam / "thirdparty/mast3r" / name, weights / name)
@@ -231,6 +240,9 @@ def main():
         "Ito source adaptations: lazy retrieval import and fixed-width CUDA indices.\n",
         encoding="utf-8",
     )
+    # Never carry kernels from a different Python/platform through a skipped build.
+    if (cache / "native").exists():
+        shutil.rmtree(cache / "native")
     native, torch_version = compile_extensions(cache, work)
     files = {
         p.relative_to(cache).as_posix(): p.stat().st_size
