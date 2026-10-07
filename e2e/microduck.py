@@ -109,10 +109,9 @@ def main():
         media_config = state / "media.toml"
         media_config.write_text('[media]\nquality = "360p30"\n')
         os.environ["XDG_CONFIG_HOME"] = os.environ["APPDATA"] = str(state / "config")
-        # Match upstream scripts/duck-sim: the standing policy holds still between walks.
+        # Match robotd's shipped default: velstand walks and also stands still at zero command.
         policies = {
-            "walk": "alpha_walking",
-            "stand": "alpha_stand",
+            "walk": "velstand",
             "sitstand": "alpha_sitstand",
             "ground_pick": "alpha_ground_pick",
             "kick_left": "ball_kick_left",
