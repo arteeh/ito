@@ -9,7 +9,7 @@ from pathlib import Path
 
 BUNDLE = Path(__file__).resolve().parents[1] / "_slam"
 BUILD_COMMAND = "uv run --python 3.12 --extra slam python -m ito.build"
-BUNDLE_VERSION = 1
+BUNDLE_VERSION = 1  # Bump when source pins or kernel adaptations change.
 EXTENSIONS = ("lietorch_backends", "mast3r_slam_backends", "curope")
 
 
@@ -46,7 +46,7 @@ def prepare(report):
             path = BUNDLE / name
             if not path.resolve().is_relative_to(BUNDLE) or path.stat().st_size != size:
                 raise ValueError(f"incomplete {name}")
-    except (OSError, ValueError, KeyError, TypeError) as exc:
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         raise bundle_error("rebuild the shipped assets and CUDA kernels") from exc
 
     try:
