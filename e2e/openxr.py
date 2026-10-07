@@ -112,6 +112,7 @@ def main():
     observed_hands = set()
     ui_steps = []
     input_stalls = {}
+    capture_input_ages = []
 
     def drive(app, window, value):
         nonlocal stage, changed, robot, position, recentered, frozen, timer
@@ -142,6 +143,16 @@ def main():
                 changed = now
             return
         if stage == 0 and app.matched_frames > 8 and window.renderer.count > 1000 and value.active:
+            capture = window._capture_target
+
+            def checked_capture(target, name):
+                result = capture(target, name)
+                age = (time.monotonic() - app.latest_input.timestamp) * 1000
+                capture_input_ages.append(age)
+                assert age < 200, (name, age)
+                return result
+
+            window._capture_target = checked_capture
             position = np.array((telemetry["base_x"], telemetry["base_y"]))
             key(pygame.K_F12)
             stage, changed = "captured", now
@@ -332,6 +343,7 @@ def main():
     assert np.abs(first - right).mean() > 0.2, "Eyes rendered the same view"
     report = {
         **input_stalls,
+        "capture_input_age_ms_max": max(capture_input_ages),
         "display_frames": len(rows),
         "stalled_scene_display_frames": stall_frames,
         "unchanged_scene_display_frames": frozen_frames,
