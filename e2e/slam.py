@@ -5,6 +5,7 @@ uv run --python 3.12 --extra slam python e2e/slam.py --cuda
 """
 
 import argparse
+import contextlib
 import json
 import os
 import socket
@@ -127,9 +128,10 @@ def main():
     workers = set()
     suspended = None
     first_position = None
-    tracked_before_stall = 0
+    tracked_before_stall = None
     video_before_failure = 0
     error = None
+    drive_error = None
     model = MODELS / "model.safetensors"
     expected = {
         "missing": f"MASt3R model missing from {model}",
@@ -216,10 +218,15 @@ def main():
             assert 100 < window.renderer.count <= 2048, window.renderer.count
             suspended = psutil.Process(app.worker.process.pid)
             suspended.suspend()
-            tracked_before_stall = app.tracked_frames
             stage, changed = 4, now
+        elif stage == 4 and tracked_before_stall is None and now - changed > 1:
+            # A pose published just before the suspension may still be in flight.
+            tracked_before_stall = app.tracked_frames
         elif stage == 4 and now - changed > 3:
-            assert app.tracked_frames == tracked_before_stall
+            assert app.tracked_frames == tracked_before_stall, (
+                app.tracked_frames,
+                tracked_before_stall,
+            )
             assert app.state.flat_video, "Stalled tracking did not switch to flat video"
             assert app.state.status.link == "CONNECTED"
             assert now - app.state.video_time < 1
@@ -242,6 +249,15 @@ def main():
             pygame.event.post(pygame.event.Event(pygame.QUIT))
             stage = 7
 
+    def guarded(app, window, value):
+        # Pilot shutdown errors must not hide the assertion that ended the run.
+        nonlocal drive_error
+        try:
+            drive(app, window, value)
+        except BaseException as exc:
+            drive_error = exc
+            raise
+
     def run_pilot():
         result = pilot_main(
             [
@@ -262,8 +278,10 @@ def main():
                 "--metrics",
                 str(out / "metrics.jsonl"),
             ],
-            on_frame=drive,
+            on_frame=guarded,
         )
+        if drive_error is not None:
+            raise drive_error
         assert result == 0 and stage == 7, (result, stage)
         # A pilot's explicit selection must survive the next app launch.
         for override in (["--reconstruction", "video"], []):
@@ -309,7 +327,9 @@ def main():
                 run_pilot()
         finally:
             if suspended:
-                suspended.resume()
+                for end in (suspended.resume, suspended.kill):
+                    with contextlib.suppress(psutil.NoSuchProcess):
+                        end()
             driver.terminate()
             driver.wait(timeout=10)
     captures = sorted(out.glob("capture-*-left.png" if args.mode == "xr" else "capture-*.png"))
