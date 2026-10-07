@@ -159,7 +159,7 @@ class DesktopWindow:
             previous = now
             if on_input is not None:
                 on_input(pilot)
-            if pilot.quit:
+            if pilot.quit or self.overlay.leave:
                 self.overlay.draw(PilotStatus(), 0, 0, None, False, request)
                 break
             if pilot.commands:

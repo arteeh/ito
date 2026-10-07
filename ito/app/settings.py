@@ -1,6 +1,7 @@
 """Atomic preferences keyed by driver address and robot name."""
 
 import hashlib
+import json
 import logging
 from typing import Literal
 
@@ -8,6 +9,8 @@ from pydantic import Field, model_validator
 
 from ito.desktop.settings import settings_path
 from ito.protocol import Model, Name
+
+RECENT = 6
 
 
 class Settings(Model):
@@ -48,4 +51,33 @@ def save(address, name, settings):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".tmp")
     temporary.write_text(settings.model_dump_json() + "\n")
+    temporary.replace(path)
+
+
+def recent_path():
+    return settings_path().parent / "recent.json"
+
+
+def recent():
+    """Most recent first: [{"address": ..., "name": ...}]."""
+    try:
+        entries = json.loads(recent_path().read_text())
+        return [
+            {"address": str(e["address"]), "name": str(e["name"])}
+            for e in entries
+            if isinstance(e, dict)
+        ][:RECENT]
+    except FileNotFoundError:
+        return []
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        logging.getLogger(__name__).warning("Cannot load recent robots: %s", exc)
+        return []
+
+
+def remember(address, name):
+    entries = [e for e in recent() if e["address"] != address]
+    path = recent_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps([{"address": address, "name": name}, *entries][:RECENT]))
     temporary.replace(path)
