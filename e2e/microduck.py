@@ -14,6 +14,7 @@ from pathlib import Path
 
 import numpy as np
 import pygame
+from microduck_video import VideoEvidence
 
 from drivers.microduck.sim import port, simulation
 from ito.app.__main__ import main as pilot_main
@@ -31,11 +32,14 @@ def key(code, down=None):
 
 
 def main():
+    global OUT
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--microduck", type=Path, required=True)
     parser.add_argument("--rl", type=Path, required=True)
     parser.add_argument("--policies", type=Path, required=True)
+    parser.add_argument("--out", type=Path, default=OUT)
     args = parser.parse_args()
+    OUT = args.out
     OUT.mkdir(parents=True, exist_ok=True)
     for capture in OUT.glob("capture-*.png"):
         capture.unlink()
@@ -52,10 +56,11 @@ def main():
             host="127.0.0.1",
             driver_port=port(),
         ) as sim:
-            return run(sim)
+            with VideoEvidence(sim, OUT) as evidence:
+                return run(sim, evidence)
 
 
-def run(sim):
+def run(sim, evidence):
     body, children, code, driver_port = sim.body, sim.children, sim.code, sim.port
     samples = deque()
     last_sample = 0.0
@@ -77,6 +82,7 @@ def run(sim):
         if now - last_sample < 0.1:
             return
         last_sample = now
+        evidence.capture(app, stage)
         body.write('{"op":"read"}\n')
         body.flush()
         physical = json.loads(body.readline())
