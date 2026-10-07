@@ -62,12 +62,7 @@ def choose(window, *, xr=False, error=None, pairing=None):
     clock = pygame.time.Clock()
     while True:
         events = pygame.event.get()
-        typing = imgui.get_io().want_text_input  # Escape then cancels the edit instead.
-        if any(
-            e.type == pygame.QUIT
-            or (e.type == pygame.KEYDOWN and e.key == pygame.K_ESCAPE and not typing)
-            for e in events
-        ):
+        if any(e.type == pygame.QUIT for e in events):
             return None
         size = pygame.display.get_window_size()
         window.overlay.begin(events, size, False)

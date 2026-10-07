@@ -102,8 +102,7 @@ class DesktopInput:
                 self.keys.add(event.key)
                 if fresh:
                     if event.key == pygame.K_ESCAPE:
-                        quit_requested = True
-                        commands.append("stop")
+                        self.capture(False)
                     elif event.key == pygame.K_TAB:
                         self.capture(not self.captured)
                     elif event.key == pygame.K_F12:

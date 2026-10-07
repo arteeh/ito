@@ -62,9 +62,12 @@ def main():
                 )
             )
         elif ticks == 88:
-            key(pygame.K_TAB)
-            key(pygame.K_TAB, False)
+            assert window.input.captured
+            key(pygame.K_ESCAPE)
+            key(pygame.K_ESCAPE, False)
             key(pygame.K_e)
+        elif ticks == 90:
+            assert not window.input.captured and not pilot.quit
         elif ticks == 98:
             key(pygame.K_e, False)
             key(pygame.K_r)
@@ -75,6 +78,10 @@ def main():
             key(pygame.K_HOME)
         elif ticks == 135:
             key(pygame.K_ESCAPE)
+            key(pygame.K_ESCAPE, False)
+        elif ticks == 140:
+            assert not pilot.quit and not window.input.captured
+            pygame.event.post(pygame.event.Event(pygame.QUIT))
 
     with (
         metrics.open("w") as log,

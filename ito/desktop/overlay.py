@@ -104,7 +104,7 @@ class Overlay:
         else:
             imgui.text("WASD move | PgUp/PgDn rise/fall | Home recenter")
             imgui.text("Tab release mouse" if captured else "Click scene / Tab for mouse-look")
-            imgui.text("Space stop | E e-stop | R resume | F12 capture | Esc quit")
+            imgui.text("Space stop | E e-stop | R resume | F12 capture | Esc release mouse")
         selected = None
         if live:
             imgui.set_next_item_width(160)
