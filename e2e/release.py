@@ -37,6 +37,7 @@ for function, arguments, result in (
     (user32.ReleaseDC, [HANDLE, HANDLE], ctypes.c_int),
     (user32.GetClientRect, [HANDLE, ctypes.POINTER(wintypes.RECT)], wintypes.BOOL),
     (user32.PrintWindow, [HANDLE, HANDLE, wintypes.UINT], wintypes.BOOL),
+    (user32.ClientToScreen, [HANDLE, ctypes.POINTER(wintypes.POINT)], wintypes.BOOL),
     (user32.PostMessageW, [HANDLE, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM], wintypes.BOOL),
     (gdi32.CreateCompatibleDC, [HANDLE], HANDLE),
     (gdi32.CreateCompatibleBitmap, [HANDLE, ctypes.c_int, ctypes.c_int], HANDLE),
@@ -176,6 +177,11 @@ class App:
         return image.astype(float)
 
     def click(self, x, y):
+        # The real cursor has to be there too, or SDL sees the pointer leave the window.
+        point = wintypes.POINT(int(x), int(y))
+        user32.ClientToScreen(self.window, ctypes.byref(point))
+        user32.SetCursorPos(point.x, point.y)
+        time.sleep(0.2)
         position = (int(y) << 16) | int(x)
         for message, buttons in ((WM_MOUSEMOVE, 0), (WM_LBUTTONDOWN, 1), (WM_LBUTTONUP, 0)):
             user32.PostMessageW(self.window, message, buttons, position)
