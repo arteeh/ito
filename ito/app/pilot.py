@@ -86,7 +86,7 @@ class Pilot:
         self.last_tracking = 0.0
         self.settings_revision = 0
         self.last_frame = 0.0
-        self.frame_heads = deque(maxlen=256)
+        self.extrinsics = pose()
 
     @property
     def max_splats(self):
@@ -205,9 +205,13 @@ class Pilot:
         self.last_frame = clock.now()
         self.state = replace(self.state, video=rgb, video_time=captured)
         if self.backend == "rgbd" and camera is not None:
-            self._anchor(camera, pair[1].head_angles, pair[1].body_yaw)
+            self._anchor(camera)
         if self.worker is None or self.failure:
             return
+        if self.backend == "slam":
+            # SLAM places the camera itself; it needs only the driver's best guess of
+            # this exposure's world orientation to align its map with gravity and heading.
+            camera = self._prior(camera, pair[1])
         try:
             accepted = self.worker.submit(rgb, depth, camera, captured)
         except ValueError as exc:
@@ -218,7 +222,6 @@ class Pilot:
         if accepted:
             self.matched_frames += 1
             self.last_frame = clock.now()
-            self.frame_heads.append((captured, pair[1].head_angles, pair[1].body_yaw))
 
     def _retire(self, worker):
         # Never on the link loop: a suspended or wedged worker takes seconds to kill.
@@ -226,18 +229,29 @@ class Pilot:
         closer.start()
         self.retiring = [thread for thread in self.retiring if thread.is_alive()] + [closer]
 
-    def _anchor(self, camera, head_angles=None, body_yaw=0):
+    def _prior(self, camera, metadata):
+        """World-from-camera as far as the robot knows it at this exposure.
+
+        A driver that knows the camera pose says so; otherwise its body heading and
+        measured head pan and tilt turn the startup camera mount; otherwise the mount.
+        """
+        if camera is not None:
+            return camera
+        result = self.extrinsics.copy()
+        if metadata.head_angles is not None:
+            pan, tilt = metadata.head_angles
+            result[:3, :3] = pose(yaw=pan, pitch=tilt)[:3, :3] @ result[:3, :3]
+        return pose(yaw=metadata.body_yaw) @ result
+
+    def _anchor(self, camera):
+        """Only the camera's position anchors the pilot's eye.
+
+        The pilot's head is the whole view rotation, in the gravity-aligned world anchored
+        where the robot started. The robot turns its head and body to look where the pilot
+        looks, but those turns never rotate the view: the pilot is never turned by the robot.
+        """
         self.camera_pose = camera
-        anchor = camera.copy()
-        # Camera and measured joints must belong to the same exposure. Status is
-        # asynchronous: subtracting its newer joints makes a still base oscillate.
-        if head_angles is not None:
-            pan, tilt = head_angles
-            anchor[:3, :3] = camera[:3, :3] @ pose(yaw=pan, pitch=tilt)[:3, :3].T
-        # The body catches up to the pilot's startup-relative gaze while walking.
-        # Remove that heading too: the current local head must only be applied once.
-        anchor[:3, :3] = anchor[:3, :3] @ pose(yaw=-body_yaw)[:3, :3]
-        self.state = replace(self.state, robot_camera=anchor)
+        self.state = replace(self.state, robot_camera=pose(camera[:3, 3]))
 
     async def _session(self, peer):
         description = peer.description
@@ -285,7 +299,7 @@ class Pilot:
         self.restart_at = None
         restart_delay = RESTART_FIRST
         worker_started = 0.0
-        self.frame_heads.clear()
+        self.extrinsics = camera_matrix(camera.extrinsics)
         self.state = replace(self.state, flat_video=self.backend != "rgbd", video=None)
 
         def reconstruct():
@@ -296,7 +310,6 @@ class Pilot:
                     camera.intrinsics,
                     max_splats=self.max_splats,
                     backend=self.backend,
-                    origin=camera_matrix(camera.extrinsics),
                 )
 
         if self.backend != "video":
@@ -360,7 +373,7 @@ class Pilot:
                         # A stalled worker may hold the pose lock; staleness alone pauses.
                         tracked = self.worker.pose()
                         if tracked:
-                            transform, count, self.tracking, captured = tracked
+                            transform, count, self.tracking, _ = tracked
                             if count != self.tracked_frames:
                                 if now - self.last_tracking > TRACKING_GAP:
                                     self.tracking_steady_since = now
@@ -368,15 +381,7 @@ class Pilot:
                             self.tracked_frames = count
                         live = self.tracking and now - self.last_tracking < TRACKING_LOST
                         if live and tracked:
-                            angles, body_yaw = next(
-                                (
-                                    (angles, yaw)
-                                    for stamp, angles, yaw in self.frame_heads
-                                    if stamp == captured
-                                ),
-                                (None, 0),
-                            )
-                            self._anchor(transform, angles, body_yaw)
+                            self._anchor(transform)
                         elif self.tracking and not live:
                             self.reconstruction_status = (
                                 "SLAM tracking paused; showing flat camera feed"
