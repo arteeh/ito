@@ -84,7 +84,13 @@ async def serve(args) -> None:
         print(f"Ito driver listening at {address}", flush=True)
         if not args.hide_code:
             print(code, flush=True)
-        await stopped.wait()
+        failed = asyncio.create_task(driver.failed.wait())
+        signalled = asyncio.create_task(stopped.wait())
+        await asyncio.wait((failed, signalled), return_when=asyncio.FIRST_COMPLETED)
+        failed.cancel()
+        signalled.cancel()
+        if driver.failed.is_set():
+            raise RuntimeError("the safety watchdog stopped; the robot is held neutral")
     finally:
         await driver.close()
 
@@ -105,5 +111,5 @@ def main() -> None:
             asyncio.run(serve(args))
     except KeyboardInterrupt:
         pass
-    except (ValueError, ImportError, AttributeError, OSError) as exc:
+    except (ValueError, ImportError, AttributeError, OSError, RuntimeError) as exc:
         parser.exit(1, f"ito-driver: {exc}\n")

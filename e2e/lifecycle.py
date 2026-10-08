@@ -18,19 +18,38 @@ from ito.link import connect
 from ito.protocol import Command, PilotState, Status
 
 CODE = "246813"
+CLI = "from ito.driver.cli import main; main()"
+# Fault injection: the driver's watchdog task dies while a pilot is driving.
+WATCHDOG_DIES = (
+    """
+import asyncio
+import ito.driver.server as server
+watchdog = server.Driver._run
+async def dies(self):
+    task = asyncio.create_task(watchdog(self))
+    while self.state != "active":
+        await asyncio.sleep(0.01)
+    await asyncio.sleep(0.3)
+    task.cancel()
+    raise RuntimeError("injected watchdog failure")
+server.Driver._run = dies
+"""
+    + CLI
+)
 
 
 @asynccontextmanager
-async def robot(**options):
+async def robot(script=CLI, **options):
     with tempfile.TemporaryDirectory(prefix="ito-lifecycle-") as directory:
         journal = Path(directory) / "robot.jsonl"
         code_file = Path(directory) / "pairing-code"
         pairing.write(code_file, CODE)
+        log = (Path(directory) / "driver.log").open("w")
         env = os.environ | {"PYTHONPATH": str(ROOT) + os.pathsep + str(ROOT / "e2e")}
         driver = await asyncio.create_subprocess_exec(
             sys.executable,
             "-c",
-            "from ito.driver.cli import main; main()",
+            script,
             "robot:Robot",
             "--adapter-args",
             json.dumps({"journal": str(journal), **options}),
@@ -39,19 +58,22 @@ async def robot(**options):
             "--pairing-file",
             str(code_file),
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=log,
             env=env,
             cwd=ROOT,
         )
         try:
             address = (await line(driver)).rsplit(" ", 1)[1]
             yield address, journal, driver
+            log.flush()
+            driver.log = (Path(directory) / "driver.log").read_text()
         finally:
             if driver.returncode is None:
                 driver.send_signal(signal.SIGTERM)
                 async with asyncio.timeout(5):
                     await driver.wait()
-            assert driver.returncode == 0
+            log.close()
+            assert driver.returncode == 0 or script != CLI
 
 
 async def status(peer, predicate):
@@ -192,9 +214,26 @@ async def run():
                         e["event"] == "neutral" and e["time"] >= failures[0]["time"]
                         for e in entries
                     )
+    async with robot(WATCHDOG_DIES) as (address, journal, driver):
+        async with await connect(address, code=CODE) as peer:
+            assert peer.send(Command(sequence=0, action="resume"))
+            sequence = 0
+            async with asyncio.timeout(10):
+                # Keep driving as a pilot would, until the driver gives up.
+                while driver.returncode is None:
+                    sequence += 1
+                    state = PilotState(sequence=sequence, capture_time=clock.now(), deadman=True)
+                    peer.send(state)
+                    with contextlib.suppress(TimeoutError):
+                        async with asyncio.timeout(0.015):
+                            await driver.wait()
+        entries = events(journal)
+        assert any(e["event"] == "apply" for e in entries), "the injected driver never drove"
+        assert entries[-1]["event"] == "neutral", entries[-3:]
+    assert driver.returncode == 1 and "safety watchdog stopped" in driver.log, driver.log
     print(
         "PASS: idle live media, failed offers, reconnect/e-stop latch, "
-        "fresh resume, channel loss, adapter faults"
+        "fresh resume, channel loss, adapter faults, watchdog failure"
     )
 
 
