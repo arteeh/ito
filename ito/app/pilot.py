@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import logging
+import math
 import sys
 import threading
 import traceback
@@ -300,7 +301,12 @@ class Pilot:
         restart_delay = RESTART_FIRST
         worker_started = 0.0
         self.extrinsics = camera_matrix(camera.extrinsics)
-        self.state = replace(self.state, flat_video=self.backend != "rgbd", video=None)
+        self.state = replace(
+            self.state,
+            flat_video=self.backend != "rgbd",
+            video=None,
+            video_fov=2 * math.atan(camera.intrinsics.width / (2 * camera.intrinsics.fx)),
+        )
 
         def reconstruct():
             nonlocal worker_started
