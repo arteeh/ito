@@ -95,7 +95,7 @@ def main(argv=None, *, on_frame=None):
     choosing = args.address is None and not args.sim
     credential = settings.credential(args.address) if args.address else None
     choice = connect.Choice(args.address, args.mode == "xr", code, credential)
-    window = window_mode = error = pairing = None
+    window = window_mode = error = pairing = failure = None
 
     def open_window(mode):
         window_type = DesktopWindow
@@ -155,7 +155,7 @@ def main(argv=None, *, on_frame=None):
                     return 0
     except (OSError, ValueError, RuntimeError, pygame.error, moderngl.Error) as exc:
         log.error("%s", exc)
-        alert(str(exc))
+        failure = str(exc)
         return 1
     finally:
         try:
@@ -164,6 +164,10 @@ def main(argv=None, *, on_frame=None):
                     window.close()
         finally:
             diagnostics.close()
+            # A message box waits for the pilot: only once the window, which may still hold
+            # the grabbed mouse and no longer answers the system, is gone.
+            if failure:
+                alert(failure)
 
 
 def pilot_window(window, args, overrides, metrics, choice, on_frame):
