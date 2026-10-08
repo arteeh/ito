@@ -80,7 +80,7 @@ Two programs and the protocol between them.
   own process and hands Gaussians to the renderer through shared memory. Never blocks rendering.
 - `ito/render` — OpenGL Gaussian-splat renderer (GPU depth sort + instanced quads), vendor-neutral
   so NVIDIA and AMD both work. Every display frame it draws the latest scene from the pilot's
-  *current* head pose, anchored to the robot camera's latest pose. Overlays: link/latency status,
+  *current* head pose, with the eye at the robot camera's latest position. Overlays: link/latency status,
   robot state, e-stop.
 - `ito/xr` — OpenXR session (pyopenxr): stereo swapchains, head/controller/tracker poses, haptics.
   Any OpenXR runtime (SteamVR, Monado); standalone headsets via Virtual Desktop.

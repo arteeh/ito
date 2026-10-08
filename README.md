@@ -66,7 +66,8 @@ XR end-to-end check on Windows: start SteamVR or Virtual Desktop with VDXR set a
 OpenXR runtime, wear the headset, then run `uv run python e2e/openxr.py` from the checkout.
 It launches its own MuJoCo driver and saves eye captures, logs and metrics in `e2e/out/xr`.
 Add `--reference-space standing` to check room-scale space. The same script runs on Linux
-with a configured OpenXR runtime, including Monado’s simulated HMD.
+with a configured OpenXR runtime, including Monado’s simulated HMD. `e2e/openxr_flat.py`
+checks that both eyes see the flat camera feed straight ahead with the right disparity.
 
 Comfort and input preferences are saved per driver address and robot name: `--fov 75`,
 `--sensitivity 0.0025`, `--invert-y` / `--no-invert-y`, `--move-x move_x`, `--move-y move_y`.
@@ -153,5 +154,6 @@ LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/render.py
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/desktop.py
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/stream.py
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/anchor_glide.py # no eye steps at SLAM rate
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/flat_panel.py # flat feed follows the head
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/reconstruction.py  # two-minute live room
 ```
