@@ -97,7 +97,7 @@ async def run():
             assert json.loads(await line(monitor))["type"] == "robot"
             metrics = json.loads(await line(monitor))
             assert metrics["frames"]["video"] >= 5 and metrics["frames"]["audio"] >= 5
-            assert metrics["driver"]["state"] == "neutral"
+            assert metrics["driver"]["state"] == "stopped"
             monitor.send_signal(signal.SIGINT)
             async with asyncio.timeout(5):
                 await monitor.wait()
@@ -124,9 +124,10 @@ async def run():
             frame = await video.recv()
             assert float(frame.pts * frame.time_base) > 4.8
             assert not any(e["event"] == "apply" for e in events(journal))
+            assert peer.send(Command(sequence=0, action="resume"))
             await drive(peer)
             await status(peer, lambda s: s.state == "active")
-            assert peer.send(Command(sequence=0, action="e-stop"))
+            assert peer.send(Command(sequence=1, action="e-stop"))
             await status(peer, lambda s: s.state == "e-stopped")
 
         async with await fresh_peer(address) as peer:
@@ -168,10 +169,11 @@ async def run():
     for failure in ("fail_apply", "fail_telemetry", "fail_neutral_once"):
         async with robot(**{failure: True}) as (address, journal, driver):
             async with await connect(address, code=CODE) as peer:
+                assert peer.send(Command(sequence=0, action="resume"))
                 await drive(peer)
                 await status(peer, lambda s: s.state == "fault")
-                assert peer.send(Command(sequence=0, action="resume"))
-                await status(peer, lambda s: s.command_sequence == 0 and s.state == "fault")
+                assert peer.send(Command(sequence=1, action="resume"))
+                await status(peer, lambda s: s.command_sequence == 1 and s.state == "fault")
                 await drive(peer, 1000)
                 assert driver.returncode is None
                 entries = events(journal)

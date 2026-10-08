@@ -16,6 +16,7 @@ from mujoco_driver import Pilot
 from ito import clock
 from ito.driver import pairing
 from ito.link import connect
+from ito.protocol import Command
 
 OUT = Path("e2e/out/walking")
 
@@ -43,6 +44,7 @@ async def run():
                 line.decode().strip().rsplit(" ", 1)[1], receive_audio=False, code=code
             )
             pilot = Pilot(peer)
+            assert peer.send(Command(sequence=0, action="resume"))
             # Standing, a look the head can reach leaves the body where it is.
             await pilot.drive(1, yaw=1.2)
             _, status = await pilot.status("active")

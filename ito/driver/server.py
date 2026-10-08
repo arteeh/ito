@@ -62,7 +62,8 @@ class Driver:
         self.peer: Peer | None = None
         self.state = "neutral"
         self.reason = "waiting for pilot"
-        self._stopped = False
+        # Every connection starts stopped: piloting begins only when the pilot resumes.
+        self._stopped = True
         self._estop = False
         self._fault = False
         self._is_neutral = False
@@ -270,7 +271,8 @@ class Driver:
             raise web.HTTPConflict(text="this robot already has a pilot")
         description = self.adapter.description
         encode(description)
-        self._neutral("connecting")
+        self._stopped = True
+        self._neutral("connecting; the pilot resumes to begin")
         self._capture = -1.0
         self._not_before = clock.now()
         self._received = 0.0
