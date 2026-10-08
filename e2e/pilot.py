@@ -17,6 +17,8 @@ async def run(address: str, code: str):
     async with await connect(address, audio=AudioStreamTrack(), code=code) as peer:
         assert peer.control.ordered and peer.control.maxRetransmits is None
         assert not peer.pilot.ordered and peer.pilot.maxRetransmits == 0
+        clock = peer.channels["clock"]
+        assert not clock.ordered and clock.maxRetransmits == 0
         frames = {"video": 0, "audio": 0}
         luma = set()
         sequence = 0
@@ -143,6 +145,10 @@ async def run(address: str, code: str):
             peer.control.send(
                 json.dumps({"version": 2, "type": "command", "sequence": 500, "action": "resume"})
             )
+            # Clock sync and frame metadata have their own lanes; nothing else rides on them.
+            # Ahead of the oversized message: the lossy clock lane gives up on a delayed message.
+            clock.send(Command(sequence=501, action="resume").model_dump_json())
+            peer.channels["frames"].send(state().model_dump_json())
             peer.control.send("x" * 1_500_001)
             # A decompression bomb is rejected by the real driver decoder before direction checks.
             peer.control.send(
@@ -162,7 +168,7 @@ async def run(address: str, code: str):
                     }
                 )
             )
-            rejected = await status(lambda s: s.rejected_messages >= baseline + len(payloads) + 4)
+            rejected = await status(lambda s: s.rejected_messages >= baseline + len(payloads) + 6)
             assert rejected.state != "fault"
 
             # New sequence with old capture time must neither actuate nor refresh deadman.

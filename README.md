@@ -138,6 +138,7 @@ End-to-end checks (no GPU or headset needed):
 ```sh
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/audio.py # two-way tones, mute, no device
 uv run python e2e/webrtc.py
+uv run python e2e/depth_load.py                            # Status and clock under VGA depth
 uv run python e2e/lifecycle.py
 uv run python e2e/mujoco_driver.py                         # saves RGB-D samples in e2e/out/mujoco
 uv run python e2e/reconstruction_faults.py

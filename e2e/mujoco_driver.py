@@ -323,10 +323,12 @@ async def run():
         _, status = await pilot.status("neutral", after=time.monotonic() - 0.2)
         assert status.reason == "deadman released"
         pilot.healthy()
-        assert pilot.frames > 60 and pilot.unmatched == 0
+        # A busy link drops frame metadata rather than delay status and commands behind it.
+        assert pilot.frames > 60 and pilot.unmatched <= pilot.frames // 20, pilot.unmatched
         assert peer.rejected_messages == 0
         result = {
             "matched_rgb_depth_pose_frames": pilot.frames,
+            "unmatched_video_frames": pilot.unmatched,
             "timeout_status_ms": round(timeout_ms, 1),
             "stationary_drift_m": round(float(drift), 5),
             "forward_displacement_m": [round(float(v), 3) for v in displacement],
