@@ -52,10 +52,11 @@ XR uses the active OpenXR runtime (SteamVR, Virtual Desktop/VDXR, or Monado) and
 Use `--reference-space seated` (default) or `standing` after room setup. Each eye renders at
 the runtime display rate from the current predicted pose, independently of the robot stream.
 Aim a controller and press its trigger to use the world-locked ImGui panel; it appears while
-a controller points at it, while the link or e-stop needs attention, or when pinned with a left
-stick click. A trigger press on the panel never reaches the robot. The companion window has the
-same controls. Left stick drives; on Touch controllers A resumes, B e-stops,
-X stops and Y recenters. Other controllers can use the panel (right menu also e-stops).
+a controller points at its controls, while the robot is not driving (stopped, e-stopped, faulted
+or the link down) so it says why, or when pinned with a left stick click. A trigger press that
+begins on the panel never reaches the robot. The companion window has the same controls. Left
+stick drives; on Touch controllers A resumes, B e-stops, X stops and Y recenters. Other
+controllers can use the panel (right menu also e-stops).
 Home or the panel recenters position and yaw and stops motion; resume explicitly afterward.
 Tracking/focus loss disarms input. E-stop and link loss pulse the controllers.
 Role-assigned Vive trackers are sent when the runtime supports `XR_HTCX_vive_tracker_interaction`.

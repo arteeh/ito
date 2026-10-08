@@ -133,6 +133,7 @@ class Pilot:
                 latency_ms=peer.clock.rtt * 1000 if peer and peer.clock.rtt is not None else None,
                 robot=name,
                 e_stop=status.state == "e-stopped" if status else old.e_stop,
+                robot_state=status.state if status else old.robot_state if link == old.link else "",
                 detail=detail or (f"{status.state}: {status.reason}" if status else ""),
                 input_latency_ms=self.telemetry.get("pilot_input_latency_ms") if peer else None,
                 reconstruction=self.reconstruction_status,

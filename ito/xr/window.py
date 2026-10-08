@@ -35,6 +35,7 @@ class XRWindow(DesktopWindow):
             self.recenters = 0
             self.panel_until = 0.0
             self.panel_visible = True
+            self.panel_hovered = False  # ImGui hovers a control under the aim (last frame).
             pygame.display.set_caption("Ito — XR pilot controls")
         except xr.XrException as exc:
             self.close()
@@ -45,12 +46,16 @@ class XRWindow(DesktopWindow):
             self.close()
             raise
 
+    def aiming_hand(self):
+        """Right aim takes precedence; without a tracked controller nothing points."""
+        return next((hand for hand in ("right", "left") if hand in self.actions.aims), None)
+
     def _pointer(self):
         panel = pose((0, -0.15, -1.2))
-        # Right aim takes precedence; without a tracked controller nothing points.
-        aim = self.actions.aims.get("right", self.actions.aims.get("left"))
-        if aim is None:
+        hand = self.aiming_hand()
+        if hand is None:
             return (-10000, -10000, False)
+        aim = self.actions.aims[hand]
         origin, direction = aim[:3, 3] - panel[:3, 3], -aim[:3, 2]
         if direction[2] >= -1e-5:
             return (-10000, -10000, False)
@@ -59,7 +64,7 @@ class XRWindow(DesktopWindow):
         x, y = (hit[0] / 1.05 + 0.5) * 768, (0.5 - hit[1] / (1.05 * 440 / 768)) * 440
         inside = distance > 0 and 0 <= x < 768 and 0 <= y < 440
         return (
-            (float(x), float(y), any(self.actions.triggers.values()))
+            (float(x), float(y), self.actions.triggers.get(hand, False))
             if inside
             else (-10000, -10000, False)
         )
@@ -207,22 +212,23 @@ class XRWindow(DesktopWindow):
                     )
                     if mouse:
                         mouse_until = now + 2
-                    # The panel covers part of the view: show it when a controller points
-                    # at it, when the pilot pinned it, or when the link or e-stop needs them.
-                    if pointer[0] >= 0:
-                        self.panel_until = now + PANEL_LINGER
+                    aimed = now >= mouse_until
+                    io = self.overlay.begin(
+                        panel_events, self.xr.panel.size, False, pointer=pointer if aimed else None
+                    )
+                    # ImGui hovers from the previous frame's controls, not the whole quad, so
+                    # aiming roughly ahead leaves the trigger to the robot.
+                    self.panel_hovered = aimed and pointer[0] >= 0 and io.want_capture_mouse
+                    # The panel covers part of the view: show it while a controller points at
+                    # a control, while pinned, and whenever it says why the robot won't move.
                     status = current.status
+                    if self.panel_hovered or status.robot_state != "active":
+                        self.panel_until = now + PANEL_LINGER
                     self.panel_visible = (
                         self.actions.panel_pinned
                         or now < self.panel_until
                         or status.link != "CONNECTED"
                         or status.e_stop
-                    )
-                    io = self.overlay.begin(
-                        panel_events,
-                        self.xr.panel.size,
-                        False,
-                        pointer=None if now < mouse_until else pointer,
                     )
                     if pointer[0] >= 0:
                         imgui.get_foreground_draw_list().add_circle_filled(
@@ -314,6 +320,7 @@ class XRWindow(DesktopWindow):
                                 "panel_visible": self.panel_visible,
                                 "revision": revision,
                                 "link": current.status.link,
+                                "robot_state": current.status.robot_state,
                                 "e_stop": current.status.e_stop,
                                 "session": self.xr.state.name,
                                 "recenters": self.recenters,
