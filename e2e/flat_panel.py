@@ -24,6 +24,7 @@ OUT = Path("e2e/out/flat-panel")
 SIZE = (640, 480)
 FOV_Y = 70
 HEADS = [(yaw, pitch) for yaw in (0, 90, 180, -90) for pitch in (0, 35, -35)]
+FRAMES_PER_HEAD = 3
 
 
 class Empty:
@@ -61,7 +62,7 @@ def panel(pixels):
 
 def measure(fov_degrees):
     rgb = frame()
-    began = clock.now()
+    drawn = 0
     shots = {}
     with DesktopWindow(SIZE, fps=60, fov=FOV_Y, capture_dir=OUT) as window:
         draw = window.draw_view
@@ -75,7 +76,11 @@ def measure(fov_degrees):
             )
 
         def turned(current, head, projection, target, viewport, *args, **kwargs):
-            index = int((clock.now() - began) * 4)
+            # Step the head by drawn frames, not time: a slow start or a slow software
+            # renderer must not skip poses.
+            nonlocal drawn
+            index = drawn // FRAMES_PER_HEAD
+            drawn += 1
             if index >= len(HEADS):
                 window.overlay.leave = True
                 index = len(HEADS) - 1
