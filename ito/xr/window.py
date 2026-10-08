@@ -4,6 +4,7 @@ import json
 import logging
 import time
 
+import numpy as np
 import pygame
 import xr
 from imgui_bundle import imgui
@@ -160,9 +161,13 @@ class XRWindow(DesktopWindow):
                         if value.screenshot:
                             self.capture_number += 1
                         # One back-to-front order from between the eyes serves both, and
-                        # the flat feed's panel hangs in front of that point.
-                        middle = matrix(views[0].pose)
-                        middle[:3, 3] = (middle[:3, 3] + matrix(views[1].pose)[:3, 3]) / 2
+                        # the flat feed's panel hangs in front of that point. Canted
+                        # displays turn each eye outward: face halfway between them.
+                        first, second = (v.pose.orientation.as_numpy() for v in views)
+                        turn = first + (second if first @ second >= 0 else -second)
+                        turn = xr.Quaternionf(*turn / np.linalg.norm(turn))
+                        middle = matrix(xr.Posef(orientation=turn))
+                        middle[:3, 3] = sum(v.pose.position.as_numpy() for v in views) / 2
                         if not current.flat_video:
                             self.renderer.sort(current.robot_camera, middle)
                         for index, (view, swapchain) in enumerate(
