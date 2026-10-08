@@ -64,6 +64,7 @@ def main():
 
     from ito.app.__main__ import main as pilot_main
     from ito.driver import pairing
+    from ito.render import pose
 
     for path in OUT.glob("capture-*.png"):
         path.unlink()
@@ -115,6 +116,20 @@ def main():
     ui_steps = []
     input_stalls = {}
     capture_input_ages = []
+    controller = {}  # A simulated right controller: its aim pose and trigger value.
+    panel_checks = {}
+
+    def with_controller(actions):
+        poll = actions.poll
+
+        def polled(at):
+            value = poll(at)
+            if controller:
+                value.axes["right_trigger"] = controller["trigger"]
+                actions.aims["right"] = controller["aim"]
+            return value
+
+        actions.poll = polled
 
     def drive(app, window, value):
         nonlocal stage, changed, robot, position, recentered, frozen, timer
@@ -254,6 +269,29 @@ def main():
         elif stage == 4 and now - changed > 2:
             assert not app.state.status.e_stop
             assert app.max_splats == 8192
+            assert not window.panel_visible, "the panel covers the view with nothing to show"
+            # Half-pressed trigger aimed at the panel: it points, it must not reach the robot.
+            with_controller(window.actions)
+            controller.update(aim=pose((0, -0.15, 0)), trigger=0.5)
+            stage, changed = "panel aimed", now
+        elif stage == "panel aimed" and now - changed > 0.6:
+            assert window.panel_visible, "pointing at the panel did not show it"
+            assert app.latest_input.axes["right_trigger"] == 0, app.latest_input.axes
+            controller["aim"] = pose((0, -0.15, 0), yaw=1.2)
+            stage, changed = "panel left", now
+        elif stage == "panel left" and now - changed > 0.6:
+            # The press that began on the panel stays the panel's until it is released.
+            assert app.latest_input.axes["right_trigger"] == 0, app.latest_input.axes
+            assert not window.panel_visible
+            controller["trigger"] = 0.0
+            stage, changed = "trigger released", now
+        elif stage == "trigger released" and now - changed > 0.3:
+            controller["trigger"] = 0.5
+            stage, changed = "trigger away", now
+        elif stage == "trigger away" and now - changed > 0.6:
+            assert app.latest_input.axes["right_trigger"] == 0.5, app.latest_input.axes
+            panel_checks["trigger_reaches_robot_off_panel"] = True
+            controller.clear()
             key(pygame.K_F12)
             stage, changed = "captured_scene", now
         elif stage == "captured_scene" and window.capture_number >= 3 and now - changed > 0.6:
@@ -343,6 +381,11 @@ def main():
     )
     assert frozen_frames >= 5, "No display frames observed with an unchanged scene"
     assert any(r["link"] == "RECONNECTING" and r["rendered"] for r in rows)
+    # The panel shows only when it has something the pilot needs.
+    assert any(
+        not r["panel_visible"] for r in rendered if r["link"] == "CONNECTED" and not r["e_stop"]
+    )
+    assert all(r["panel_visible"] for r in rendered if r["link"] != "CONNECTED" or r["e_stop"])
     # Both eyes reuse one splat order: never more than one GPU sort per display frame.
     sorts = [b["sorts"] - a["sorts"] for a, b in zip(rows, rows[1:], strict=False)]
     assert max(sorts) == 1 and sum(sorts) > 30, sorts
@@ -369,6 +412,7 @@ def main():
         "unchanged_scene_display_frames": frozen_frames,
         "frame_ms_median": float(np.median([r["frame_ms"] for r in rendered])),
         "sorts_per_frame_max": max(sorts),
+        **panel_checks,
         "tracked_hands": sorted(observed_hands),
         "reference_space": args.reference_space,
         "recenters": rows[-1]["recenters"],

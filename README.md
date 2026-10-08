@@ -51,8 +51,10 @@ It excludes pairing codes, credentials, media and input contents; hover the togg
 XR uses the active OpenXR runtime (SteamVR, Virtual Desktop/VDXR, or Monado) and OpenGL 4.3.
 Use `--reference-space seated` (default) or `standing` after room setup. Each eye renders at
 the runtime display rate from the current predicted pose, independently of the robot stream.
-Aim a controller and press its trigger to use the world-locked ImGui panel; the companion
-window has the same controls. Left stick drives; on Touch controllers A resumes, B e-stops,
+Aim a controller and press its trigger to use the world-locked ImGui panel; it appears while
+a controller points at it, while the link or e-stop needs attention, or when pinned with a left
+stick click. A trigger press on the panel never reaches the robot. The companion window has the
+same controls. Left stick drives; on Touch controllers A resumes, B e-stops,
 X stops and Y recenters. Other controllers can use the panel (right menu also e-stops).
 Home or the panel recenters position and yaw and stops motion; resume explicitly afterward.
 Tracking/focus loss disarms input. E-stop and link loss pulse the controllers.
