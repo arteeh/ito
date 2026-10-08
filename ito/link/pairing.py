@@ -18,7 +18,7 @@ DIGITS = 6
 
 
 class PairingError(ConnectionError):
-    """The driver refused the pilot's pairing code or credential, or could not prove its own."""
+    """The driver refused the pilot's pairing code or credential (HTTP 401 or 403)."""
 
 
 def generate() -> str:

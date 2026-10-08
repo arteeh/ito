@@ -160,7 +160,7 @@ def main():
         elif stage == "correct code" and waited > 0.3:
             click(at("pair"))
             go("paired")
-        elif stage == "paired" and scene and pairing.pilots(code_file)["pilots"]:
+        elif stage == "paired" and scene and pairing.paired_pilot(code_file):
             # The typed code is spent: the robot gave this pilot its own secret instead.
             assert pilot.address == address and pilot.code is None, pilot.address
             credential = pilot.credential.model_dump(include={"pilot", "secret"})
@@ -170,11 +170,8 @@ def main():
             assert saved[0] == {"address": address, "name": saved[0]["name"]} | {
                 "credential": credential
             }, saved
-            stored = pairing.pilots(code_file)
-            assert stored == {
-                "used": codes["first"],
-                "pilots": {credential["pilot"]: credential["secret"]},
-            }, (stored, credential)
+            stored = pairing.paired_pilot(code_file)
+            assert stored == {"used": codes["first"]} | credential, (stored, credential)
             shown = subprocess.run(driver + ["--show-code"], check=True, capture_output=True)
             assert b"used by a paired pilot" in shown.stdout, shown.stdout
             codes["credential"] = credential
@@ -245,7 +242,7 @@ def main():
     assert stage == "done", stage
     saved = json.loads(recent.read_text())
     assert saved[0]["address"] == address and saved[0]["credential"], saved
-    assert saved[0]["credential"]["pilot"] in pairing.pilots(code_file)["pilots"], saved
+    assert saved[0]["credential"]["pilot"] == pairing.paired_pilot(code_file)["pilot"], saved
     assert [entry["address"] for entry in saved] == [address, "127.0.0.1:9"], saved
     assert "Wrong pairing code" in (OUT / "driver.log").read_text()
     print(

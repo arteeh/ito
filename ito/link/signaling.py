@@ -41,7 +41,8 @@ async def connect(
     A credential from an earlier pairing replaces the code. After a code, the returned
     peer holds the driver's new credential: store it, then send Paired so the driver
     retires the code. Raises PairingError when the driver refuses the code or credential
-    (or neither was given).
+    (or neither was given), and ConnectionError when whatever answered cannot prove it is
+    the robot: that is no reason to forget the credential.
     """
     if not 0 <= video_tracks <= 16:
         raise ValueError("video_tracks must be between 0 and 16")
@@ -101,7 +102,7 @@ async def connect(
                     if answer.version != VERSION or answer.type != "answer":
                         raise ConnectionError("incompatible driver answer")
             if key is None or not pairing.valid(key, nonce, "answer", answer.sdp, answer.proof):
-                raise pairing.PairingError("The robot could not prove it paired with this pilot")
+                raise ConnectionError("The robot could not prove it paired with this pilot")
             await peer.pc.setRemoteDescription(RTCSessionDescription(sdp=answer.sdp, type="answer"))
             await peer.ready.wait()
             await peer.robot_received.wait()

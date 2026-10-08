@@ -1,9 +1,9 @@
-"""The driver's pairing code and the pilots it let in, kept in private files.
+"""The driver's pairing code and the pilot it let in, kept in private files.
 
-The code file holds the six-digit code. Next to it, `<code file>.pilots` holds each paired
+The code file holds the six-digit code. Next to it, `<code file>.pilot` holds the paired
 pilot's secret and the code they used: a code that paired a pilot is never accepted again,
-so a recorded first pairing gives nothing reusable. --rotate-code arms a new code and
-forgets every pilot.
+so a recorded first pairing gives nothing reusable, and one robot has one pilot.
+--rotate-code arms a new code and forgets the pilot.
 """
 
 import json
@@ -18,7 +18,6 @@ from ito.link.pairing import generate, normalize, token, valid
 
 NONCE_SECONDS = 30
 MAX_NONCES = 32
-MAX_PILOTS = 16
 # Wrong codes per minute from one address, then from everyone, before codes are refused.
 MAX_FAILURES = 10
 MAX_FAILURES_TOTAL = 100
@@ -44,8 +43,8 @@ def default_path() -> Path:
     return (Path(root) if root else Path.home() / ".local/state") / "ito" / "pairing-code"
 
 
-def pilots_path(path: Path) -> Path:
-    return path.with_name(path.name + ".pilots")
+def pilot_path(path: Path) -> Path:
+    return path.with_name(path.name + ".pilot")
 
 
 def write(path: Path, text: str) -> None:
@@ -68,25 +67,25 @@ def read(path: Path) -> str:
     return code
 
 
-def pilots(path: Path) -> dict:
-    """{"used": code that already paired a pilot or None, "pilots": {pilot: secret}}."""
+def paired_pilot(path: Path) -> dict | None:
+    """{"used": the code they paired with, "pilot": id, "secret": secret}, or None."""
     try:
-        state = json.loads(pilots_path(path).read_text())
+        state = json.loads(pilot_path(path).read_text())
     except FileNotFoundError:
-        return {"used": None, "pilots": {}}
+        return None
     if not (
         isinstance(state, dict)
-        and (state.get("used") is None or isinstance(state["used"], str))
-        and isinstance(state.get("pilots"), dict)
-        and all(isinstance(v, str) for v in state["pilots"].values())
+        and state.keys() == {"used", "pilot", "secret"}
+        and all(isinstance(v, str) for v in state.values())
     ):
-        raise ValueError(f"{pilots_path(path)} is damaged; rotate the pairing code")
+        raise ValueError(f"{pilot_path(path)} is damaged; rotate the pairing code")
     return state
 
 
 def armed(path: Path) -> bool:
     """The code can still pair a pilot."""
-    return pilots(path)["used"] != read(path)
+    state = paired_pilot(path)
+    return state is None or state["used"] != read(path)
 
 
 def ensure(path: Path) -> tuple[str, bool]:
@@ -96,8 +95,8 @@ def ensure(path: Path) -> tuple[str, bool]:
     except FileNotFoundError:
         code = generate()
         write(path, code + "\n")
-        # A new code is a new start: pilots of a deleted code are not carried over.
-        pilots_path(path).unlink(missing_ok=True)
+        # A new code is a new start: the pilot of a deleted code is not carried over.
+        pilot_path(path).unlink(missing_ok=True)
         return code, True
 
 
@@ -110,7 +109,7 @@ def rotate(path: Path) -> str:
     while code == previous:
         code = generate()
     write(path, code + "\n")
-    pilots_path(path).unlink(missing_ok=True)
+    pilot_path(path).unlink(missing_ok=True)
     return code
 
 
@@ -147,17 +146,20 @@ class Pairing:
         if issued is None or now - issued >= NONCE_SECONDS:
             raise PairingRefused(400, "Pairing challenge expired; try again")
         try:
-            state = pilots(self.path)
+            state = paired_pilot(self.path)
             code = None if pilot else read(self.path)
         except (OSError, ValueError) as exc:
             raise PairingRefused(503, f"The robot cannot read its pairing state: {exc}") from None
         if pilot:
             # A 128-bit secret cannot be guessed, so these offers never count as failures.
-            secret = state["pilots"].get(pilot)
-            if secret is None or not valid(secret, nonce, "offer", sdp, proof):
+            if (
+                state is None
+                or state["pilot"] != pilot
+                or not valid(state["secret"], nonce, "offer", sdp, proof)
+            ):
                 raise PairingRefused(403, "This robot no longer knows this pilot")
-            return Grant(secret, None)
-        if state["used"] == code:
+            return Grant(state["secret"], None)
+        if state is not None and state["used"] == code:
             raise PairingRefused(
                 403, "This pairing code was already used; the robot's --rotate-code makes a new one"
             )
@@ -183,11 +185,7 @@ class Pairing:
 
     def paired(self, code: str, pilot: str, secret: str) -> None:
         """Remember the pilot's secret and retire the code it paired with."""
-        state = pilots(self.path)
         if read(self.path) != code:
             return  # Rotated while this pilot was connecting: it must enter the new code.
-        remembered = {p: s for p, s in state["pilots"].items() if p != pilot}
-        while len(remembered) >= MAX_PILOTS:
-            del remembered[next(iter(remembered))]
-        remembered[pilot] = secret
-        write(pilots_path(self.path), json.dumps({"used": code, "pilots": remembered}) + "\n")
+        state = {"used": code, "pilot": pilot, "secret": secret}
+        write(pilot_path(self.path), json.dumps(state) + "\n")

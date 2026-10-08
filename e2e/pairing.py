@@ -3,7 +3,8 @@
 A proxy between a real pilot link and a real CLI driver keeps every /pairing and /offer
 exchange, as a passive observer on the network would. The first pairing's six-digit code
 falls to an offline search, but the driver already retired it. The reconnect that follows
-uses no code, and its recorded proof matches none of the million codes.
+uses no code, and its recorded proof matches none of the million codes. An answer whose
+proof the observer forged keeps the pilot reconnecting with its credential intact.
 """
 
 import asyncio
@@ -18,6 +19,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
+from ito.app.pilot import Pilot
 from ito.driver import pairing
 from ito.link import PairingError, connect
 from ito.link.pairing import proof
@@ -32,6 +34,7 @@ class Observer:
     def __init__(self, target):
         self.target = target
         self.transcript = []
+        self.forge = False  # Answer offers with a proof no robot made.
 
     async def forward(self, request):
         body = await request.read()
@@ -44,6 +47,8 @@ class Observer:
             ) as answer,
         ):
             reply = await answer.read()
+            if self.forge and request.path == "/offer" and answer.status == 200:
+                reply = json.dumps(json.loads(reply) | {"proof": "0" * 64}).encode()
             self.transcript.append((request.path, body, answer.status, reply))
             return web.Response(status=answer.status, body=reply, content_type=answer.content_type)
 
@@ -126,14 +131,15 @@ async def run():
             credential = peer.credential
             assert credential is not None and peer.send(Paired(pilot=credential.pilot))
             async with asyncio.timeout(5):
-                while not pairing.pilots(code_file)["pilots"]:  # noqa: ASYNC110
+                while not pairing.paired_pilot(code_file):  # noqa: ASYNC110
                     await asyncio.sleep(0.02)
-            assert pairing.pilots(code_file) == {
+            assert pairing.paired_pilot(code_file) == {
                 "used": code,
-                "pilots": {credential.pilot: credential.secret},
+                "pilot": credential.pilot,
+                "secret": credential.secret,
             }
             await peer.close()
-            stored = (code_file.parent / "pairing-code.pilots").stat().st_mode
+            stored = (code_file.parent / "pairing-code.pilot").stat().st_mode
             assert os.name == "nt" or stored & 0o077 == 0
 
             # The observer recovers the code from that one exchange; it is already used up.
@@ -162,9 +168,35 @@ async def run():
             shown = (await shown.communicate())[0].decode()
             assert "used by a paired pilot" in shown and code not in shown.replace(" ", ""), shown
 
-            # Reconnect without the code: the pilot proves its secret through the observer.
+            # A forged answer proof is not the robot refusing: the pilot keeps its credential.
+            observer.forge = True
+            app = Pilot(
+                relay, persist=False, credential=credential, audio_source="none", audio_sink="none"
+            ).start()
+            try:
+                async with asyncio.timeout(10):
+                    while "could not prove" not in (app.state.status.detail or ""):  # noqa: ASYNC110
+                        await asyncio.sleep(0.05)
+                await asyncio.sleep(1.5)  # A later attempt, as the pilot app retries.
+                assert app.state.status.link in {"CONNECTING", "RECONNECTING"}, app.state.status
+                assert app.credential == credential and app.refusal is None
+            finally:
+                await asyncio.to_thread(app.close)
+            observer.forge = False
+
+            # Reconnect without the code: the pilot proves its secret through the observer,
+            # once the driver has dropped the offer the forged answer abandoned.
             observer.transcript.clear()
-            peer = await pilot(relay, credential=credential)
+            async with asyncio.timeout(15):
+                while True:
+                    try:
+                        peer = await pilot(relay, credential=credential)
+                        break
+                    except PairingError:
+                        raise
+                    except ConnectionError as exc:
+                        assert "already has a pilot" in str(exc), exc
+                        await asyncio.sleep(0.5)
             assert not peer.credential_received.is_set()
             await peer.close()
             nonce, offer = observer.last_pairing()
@@ -180,7 +212,7 @@ async def run():
                 status, reason = await attempt(address, offer["sdp"], key, offer["pilot"])
                 assert (status, reason) == (403, "This robot no longer knows this pilot")
 
-            # Rotating the code forgets every pilot; the new code pairs once more.
+            # Rotating the code forgets the pilot; the new code pairs once more.
             rotated = pairing.rotate(code_file)
             try:
                 await pilot(address, credential=credential)
@@ -198,7 +230,8 @@ async def run():
                         "recovered_code_refused": True,
                         "code_search_seconds": round(first_search, 2),
                         "reconnect_codes_matching": 0,
-                        "rotation_forgets_pilots": True,
+                        "forged_answer_keeps_credential": True,
+                        "rotation_forgets_pilot": True,
                     }
                 )
             )
