@@ -56,6 +56,7 @@ class SLAMBackend(RGBDBackend):
         self.tracked = 0
         self.frame_id = 0
         self.lost = False
+        self.failures = 0
         self.origin = torch.as_tensor(origin, device="cuda", dtype=torch.float32)
         self.axes = torch.tensor([1, -1, -1], device="cuda")
         report("MASt3R-SLAM ready; waiting for camera")
@@ -72,10 +73,18 @@ class SLAMBackend(RGBDBackend):
             frame = create_frame(self.frame_id, rgb.astype(np.float32) / 255, self.transform)
             frame.K = self.K
             self.frame_id += 1
+            if self.failures >= max(len(self.frames), 1) + 2:
+                # Every retained view failed: start a fresh local map where the camera
+                # last was, so the pilot gets the room back instead of a fading memory.
+                self.frames.clear()
+                self.tracker.reset_idx_f2k()
+                self.failures = 0
+                self.report("SLAM tracking restarted from the current view")
             if not self.frames:
                 points, confidence = mast3r_inference_mono(self.model, frame)
                 frame.update_pointmap(points, confidence)
                 self.frames.append(frame)
+                self.lost = False
             else:
                 # Try one retained keyframe per observation during loss. Never reset
                 # the world origin or fuse a failed pose into the live map.
@@ -86,8 +95,10 @@ class SLAMBackend(RGBDBackend):
                 new_keyframe, _, lost = self.tracker.track(frame)
                 self.lost = bool(lost)
                 if self.lost:
+                    self.failures += 1
                     self.report("SLAM tracking lost; move back toward the last view")
                     return
+                self.failures = 0
                 if new_keyframe:
                     self.frames.append(frame)
                     # Bounded graph includes adjacent edges and a local loop to the
