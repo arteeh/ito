@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 
 from ito import clock
+from ito.lifetime import follow_parent
 
 
 async def publish(adapter, path):
@@ -38,6 +39,7 @@ async def publish(adapter, path):
 
 
 def main():
+    follow_parent()
     # The driver's camera may use OSMesa; this independent process owns a GLFW window.
     os.environ["MUJOCO_GL"] = "glfw"
     import mujoco

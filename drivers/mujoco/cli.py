@@ -5,12 +5,14 @@ import logging
 import os
 
 from ito.driver.cli import driver_arguments, pairing_command, serve
+from ito.lifetime import follow_parent
 from ito.link.audio import arguments
 
 from .adapter import ROOM
 
 
 def main():
+    follow_parent()
     parser = argparse.ArgumentParser(description="Pilot an MJCF robot over Ito WebRTC")
     parser.add_argument(
         "model", nargs="?", default=str(ROOM), help="MJCF file (default: furnished room)"
