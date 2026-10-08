@@ -1,7 +1,16 @@
-"""One peer; bounded queues keep network backlog out of the pilot's input path."""
+"""One peer; bounded queues keep network backlog out of the pilot's input path.
+
+Each kind of message rides its own data channel ("lane"). aiortc sends every channel through one
+association-wide FIFO and never interleaves messages, so a lane alone does not keep a large
+message from delaying a small one. Frame metadata (it can carry ~1 MB of depth) is therefore only
+sent once earlier frames are acknowledged: a clock ping, status or safety command waits behind at
+most one frame. Frames sent without that wait piled up in flight on a CPU-starved pilot, lost
+packets and stalled Status behind SCTP's one-second retransmission timeout. Clock pings and pongs
+wait for nothing to be unsent, frames hold back meanwhile, and that wait is kept out of the
+measured round trip.
+"""
 
 import asyncio
-import contextlib
 import logging
 import time
 from collections import deque
@@ -34,7 +43,33 @@ from ito.protocol import (
 )
 
 CONTROL_BUFFER = 2_000_000
+# Unacknowledged SCTP chunks (1200 bytes each) past which frames hold back: room for a few
+# status, clock and command messages, not for a frame with depth.
+FRAME_IN_FLIGHT = 16
 log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class Lane:
+    ordered: bool
+    max_retransmits: int | None
+    backlog: int  # Bytes of this lane that may wait unsent before a new message is dropped.
+    pilot: tuple[type, ...]  # What the pilot sends on this channel.
+    driver: tuple[type, ...]  # What the driver sends on this channel.
+    bulk: bool = False  # Dropped while the association is backed up or a frame is in flight.
+
+
+LANES = {
+    "control": Lane(True, None, CONTROL_BUFFER, (Command,), (RobotDescription, Status)),
+    "frames": Lane(False, None, 0, (), (FrameMetadata,), bulk=True),
+    "clock": Lane(False, 0, 0, (Ping, Pong), (Ping, Pong)),
+    "pilot": Lane(False, 0, 0, (PilotState,), ()),
+}
+# The lane that carries each message type, by sender.
+ROUTES = {
+    role: {kind: label for label, lane in LANES.items() for kind in getattr(lane, role)}
+    for role in ("pilot", "driver")
+}
 
 
 @dataclass
@@ -77,13 +112,14 @@ class Peer:
         self.tracks: asyncio.Queue = asyncio.Queue(maxsize=32)
         self.frames: dict[str, FrameMetadata] = {}
         self._media: list[LatestTrack] = []
-        self.control: RTCDataChannel | None = None
-        self.pilot: RTCDataChannel | None = None
+        self.channels: dict[str, RTCDataChannel] = {}
         self.ready = asyncio.Event()
         self.closed = asyncio.Event()
         self.robot_received = asyncio.Event()
         self.clock_ready = asyncio.Event()
         self._clock_task: asyncio.Task | None = None
+        self._replies: set[asyncio.Task] = set()
+        self._clock_waiting = 0
         self._closing = False
         self._disconnect_notified = False
         self._close_task: asyncio.Task | None = None
@@ -119,33 +155,40 @@ class Peer:
                 await self.close()
 
         if role == "pilot":
-            self._bind(self.pc.createDataChannel("control", protocol="ito/1"))
-            self._bind(
-                self.pc.createDataChannel(
-                    "pilot", ordered=False, maxRetransmits=0, protocol="ito/1"
+            for label, lane in LANES.items():
+                self._bind(
+                    self.pc.createDataChannel(
+                        label,
+                        ordered=lane.ordered,
+                        maxRetransmits=lane.max_retransmits,
+                        protocol="ito/1",
+                    )
                 )
-            )
         else:
             self.pc.on("datachannel", self._bind)
 
+    @property
+    def control(self) -> RTCDataChannel | None:
+        return self.channels.get("control")
+
+    @property
+    def pilot(self) -> RTCDataChannel | None:
+        return self.channels.get("pilot")
+
     def _bind(self, channel: RTCDataChannel) -> None:
-        valid = channel.protocol == "ito/1"
-        if channel.label == "pilot":
-            valid = valid and not channel.ordered and channel.maxRetransmits == 0
-            valid = valid and channel.maxPacketLifeTime is None and self.pilot is None
-            if valid:
-                self.pilot = channel
-        elif channel.label == "control":
-            valid = valid and channel.ordered and channel.maxRetransmits is None
-            valid = valid and channel.maxPacketLifeTime is None and self.control is None
-            if valid:
-                self.control = channel
-        else:
-            valid = False
-        if not valid:
+        lane = LANES.get(channel.label)
+        if (
+            lane is None
+            or channel.label in self.channels
+            or channel.protocol != "ito/1"
+            or channel.ordered != lane.ordered
+            or channel.maxRetransmits != lane.max_retransmits
+            or channel.maxPacketLifeTime is not None
+        ):
             self.rejected_messages += 1
             channel.close()
             return
+        self.channels[channel.label] = channel
 
         channel.on("message", lambda data: self._receive(channel.label, data))
 
@@ -166,10 +209,12 @@ class Peer:
             not self._closing
             and not self._disconnect_notified
             and self.ready.is_set()
-            and self.control
-            and self.control.readyState == "open"
-            and self.pilot
-            and self.pilot.readyState == "open"
+            and self._open()
+        )
+
+    def _open(self) -> bool:
+        return len(self.channels) == len(LANES) and all(
+            channel.readyState == "open" for channel in self.channels.values()
         )
 
     def _notify_disconnect(self) -> None:
@@ -186,11 +231,7 @@ class Peer:
             self._close_task = asyncio.create_task(self.close())
 
     def _opened(self) -> None:
-        if not (self.control and self.pilot):
-            return
-        if self.control.readyState != "open" or self.pilot.readyState != "open":
-            return
-        if self.ready.is_set():
+        if not self._open() or self.ready.is_set():
             return
         self.ready.set()
         if self.role == "driver" and self.description:
@@ -202,32 +243,32 @@ class Peer:
             return
         try:
             message = decode(data)
-            if label == "pilot":
-                if self.role != "driver" or not isinstance(message, PilotState):
-                    raise ProtocolError("wrong message direction or channel")
+            sender = "driver" if self.role == "pilot" else "pilot"
+            if ROUTES[sender].get(type(message)) != label:
+                raise ProtocolError("wrong message direction or channel")
+            if isinstance(message, PilotState):
                 if message.sequence <= self._pilot_sequence:
                     self.dropped_messages += 1
                     return
                 self._pilot_sequence = message.sequence
             else:
-                allowed = (
-                    (Command, Ping, Pong)
-                    if self.role == "driver"
-                    else (RobotDescription, FrameMetadata, Status, Ping, Pong)
-                )
-                if not isinstance(message, allowed):
-                    raise ProtocolError("wrong message direction or channel")
                 if isinstance(message, Ping):
-                    self.last_received = time.monotonic()
-                    received = time.monotonic()
-                    self.send(
-                        Pong(
-                            sequence=message.sequence,
-                            sent=message.sent,
-                            received=received,
-                            replied=time.monotonic(),
+                    self.last_received = received = time.monotonic()
+                    if len(self._replies) >= 4:
+                        self.dropped_messages += 1
+                        return
+                    reply = asyncio.create_task(
+                        self._send_clock(
+                            lambda: Pong(
+                                sequence=message.sequence,
+                                sent=message.sent,
+                                received=received,
+                                replied=time.monotonic(),
+                            )
                         )
                     )
+                    self._replies.add(reply)
+                    reply.add_done_callback(self._replies.discard)
                     return
                 if isinstance(message, Pong):
                     self._clock_sample(message)
@@ -238,9 +279,11 @@ class Peer:
                     self.description = message
                     self.robot_received.set()
                 if isinstance(message, FrameMetadata):
-                    cameras = (
-                        {c.name: c for c in self.description.cameras} if self.description else {}
-                    )
+                    # Frames and the description travel on separate channels.
+                    if self.description is None:
+                        self.dropped_messages += 1
+                        return
+                    cameras = {c.name: c for c in self.description.cameras}
                     if message.camera not in cameras:
                         raise ProtocolError("unknown camera")
                     camera = cameras[message.camera]
@@ -270,40 +313,61 @@ class Peer:
             self._schedule_close()
 
     def send(self, message: WireMessage) -> bool:
-        if isinstance(message, PilotState):
-            if self.role != "pilot":
-                raise ValueError("only a pilot sends pilot state")
-            channel = self.pilot
-            limit = 0
-        else:
-            allowed = (
-                (Command, Ping, Pong)
-                if self.role == "pilot"
-                else (RobotDescription, FrameMetadata, Status, Ping, Pong)
-            )
-            if not isinstance(message, allowed):
-                raise ValueError("wrong message direction")
-            channel = self.control
-            limit = CONTROL_BUFFER
+        label = ROUTES[self.role].get(type(message))
+        if label is None:
+            raise ValueError("wrong message direction")
+        lane, channel = LANES[label], self.channels.get(label)
         if (
-            self._closing
+            not self.ready.is_set()
+            or self._closing
             or self._disconnect_notified
             or channel is None
             or channel.readyState != "open"
-            or channel.bufferedAmount > limit
+            or channel.bufferedAmount > lane.backlog
+            or (lane.bulk and (self._clock_waiting or not self._idle(FRAME_IN_FLIGHT)))
         ):
             self.dropped_messages += 1
             return False
         channel.send(encode(message))
         return True
 
+    def _idle(self, in_flight: int | None = None) -> bool:
+        """Nothing waits unsent and, if given, at most in_flight chunks wait for the receiver."""
+        # aiortc exposes no association-wide queue depth; aiortc is pinned below 2.
+        sctp = self.pc.sctp
+        if sctp._data_channel_queue or sctp._outbound_queue:
+            return False
+        return in_flight is None or len(sctp._sent_queue) <= in_flight
+
+    async def _send_clock(self, stamp: Callable[[], Ping | Pong]) -> Ping | Pong | None:
+        """Stamp and send a clock message into an idle association, ahead of the next frame.
+
+        Waiting before a ping is stamped, or between receiving a ping and stamping the pong,
+        is not part of the measured round trip, so queueing never biases the offset.
+        """
+        self._clock_waiting += 1
+        try:
+            deadline = time.monotonic() + 1
+            while not self._idle():
+                if self._closing or time.monotonic() > deadline:
+                    self.dropped_messages += 1
+                    return None
+                await asyncio.sleep(0.002)
+        finally:
+            self._clock_waiting -= 1
+        message = stamp()
+        return message if self.send(message) else None
+
     async def _synchronize(self) -> None:
         sequence = 0
         while not self._closing:
-            sent = time.monotonic()
-            self._pending_pings = {s: t for s, t in self._pending_pings.items() if sent - t < 5}
-            if self.send(Ping(sequence=sequence, sent=sent)):
-                self._pending_pings[sequence] = sent
+            ping = await self._send_clock(
+                lambda s=sequence: Ping(sequence=s, sent=time.monotonic())
+            )
+            if ping:
+                self._pending_pings[ping.sequence] = ping.sent
+            now = time.monotonic()
+            self._pending_pings = {s: t for s, t in self._pending_pings.items() if now - t < 5}
             sequence += 1
             await asyncio.sleep(0.5)
 
@@ -332,10 +396,10 @@ class Peer:
         self._closing = True
         self._notify_disconnect()
         try:
-            if self._clock_task:
-                self._clock_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await self._clock_task
+            tasks = [*self._replies, *([self._clock_task] if self._clock_task else [])]
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
             for track in self._media:
                 track.stop()
             await asyncio.gather(*(track._task for track in self._media), return_exceptions=True)

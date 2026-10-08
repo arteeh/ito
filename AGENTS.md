@@ -64,9 +64,10 @@ Two programs and the protocol between them.
   time, camera pose if the robot knows it, optional depth), pilot state (head/hand/tracker poses,
   buttons, axes), commands (stop, e-stop, resume). Versioned and validated on receipt.
 - `ito/link` — WebRTC (aiortc) between pilot app and driver. The driver listens; the pilot app
-  connects to its address. Media tracks for video/audio; an unreliable unordered datachannel for
-  pilot state (newest wins); a reliable one for everything else. Clock-offset estimation so capture
-  timestamps are comparable on both ends.
+  connects to its address. Media tracks for video/audio; unreliable unordered datachannels for
+  pilot state (newest wins) and clock sync; a reliable unordered one for frame metadata, which
+  only uses an idle link; a reliable ordered one for commands, status and the robot description.
+  Clock-offset estimation so capture timestamps are comparable on both ends.
 - `ito/driver` — what every robot driver builds on: link server, safety (input timeout → neutral,
   e-stop latch), rate limiting, the adapter interface a robot implements.
 - `drivers/<robot>` — one adapter per robot. `mujoco` pilots any MJCF robot in simulation and
