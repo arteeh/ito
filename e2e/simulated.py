@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import psutil
@@ -36,6 +37,35 @@ def click(position):
 def key(code):
     pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=code, mod=0, unicode=""))
     pygame.event.post(pygame.event.Event(pygame.KEYUP, key=code, mod=0))
+
+
+def killed_pilot():
+    """A pilot app killed outright must not leave its simulated robot running."""
+    with (OUT / "killed-pilot.log").open("w") as log:
+        app = subprocess.Popen(
+            [str(Path(sys.executable).with_name("ito")), "--sim", "--size", "320", "240"],
+            stdout=log,
+            stderr=log,
+        )
+    try:
+        deadline = clock.now() + 60
+        while not (
+            robots := [
+                p
+                for p in psutil.Process(app.pid).children()
+                if "drivers.mujoco.cli" in " ".join(p.cmdline())
+            ]
+        ):
+            assert app.poll() is None and clock.now() < deadline, "no simulated robot started"
+            time.sleep(0.2)
+        time.sleep(3)  # Let it serve the pilot before the pilot disappears.
+    finally:
+        app.kill()
+        app.wait()
+    killed = clock.now()
+    _, alive = psutil.wait_procs(robots, timeout=5)
+    assert not alive, f"simulated robot outlived its killed pilot: {alive}"
+    return round(clock.now() - killed, 2)
 
 
 def main():
@@ -170,11 +200,13 @@ def main():
     assert pilot_main(["--sim", "--size", "800", "600", "--fps", "30"], on_frame=drive) == 0
     assert stage == "done", stage
     assert not any(psutil.pid_exists(report[key]) for key in ("viewer_pid", "driver_pid"))
+    if sys.platform == "linux":
+        report["robot_exit_after_pilot_killed_s"] = killed_pilot()
     (OUT / "summary.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))
     print(
         "PASS: simulated robot without audio; buttons work after mouse-look; "
-        "separate viewer tracks and closes"
+        "separate viewer tracks and closes; a killed pilot takes its robot along"
     )
 
 
