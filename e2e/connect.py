@@ -160,7 +160,7 @@ def main():
         elif stage == "correct code" and waited > 0.3:
             click(at("pair"))
             go("paired")
-        elif stage == "paired" and scene:
+        elif stage == "paired" and scene and pairing.pilots(code_file)["pilots"]:
             # The typed code is spent: the robot gave this pilot its own secret instead.
             assert pilot.address == address and pilot.code is None, pilot.address
             credential = pilot.credential.model_dump(include={"pilot", "secret"})
@@ -170,10 +170,11 @@ def main():
             assert saved[0] == {"address": address, "name": saved[0]["name"]} | {
                 "credential": credential
             }, saved
-            assert pairing.pilots(code_file) == {
+            stored = pairing.pilots(code_file)
+            assert stored == {
                 "used": codes["first"],
                 "pilots": {credential["pilot"]: credential["secret"]},
-            }
+            }, (stored, credential)
             shown = subprocess.run(driver + ["--show-code"], check=True, capture_output=True)
             assert b"used by a paired pilot" in shown.stdout, shown.stdout
             codes["credential"] = credential

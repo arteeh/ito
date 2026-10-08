@@ -96,6 +96,8 @@ def ensure(path: Path) -> tuple[str, bool]:
     except FileNotFoundError:
         code = generate()
         write(path, code + "\n")
+        # A new code is a new start: pilots of a deleted code are not carried over.
+        pilots_path(path).unlink(missing_ok=True)
         return code, True
 
 
