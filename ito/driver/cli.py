@@ -28,7 +28,7 @@ def driver_arguments(parser) -> None:
     parser.add_argument(
         "--rotate-code",
         action="store_true",
-        help="make a new single-use pairing code and exit; every pilot must enter it",
+        help="make a new single-use pairing code and exit; the pilot must enter it again",
     )
 
 
