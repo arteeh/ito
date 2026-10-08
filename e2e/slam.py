@@ -237,7 +237,8 @@ def main():
             suspended.resume()
             suspended = None
             stage, changed = 5, now
-        elif stage == 5 and app.tracked_frames > tracked_before_stall + 2:
+        elif stage == 5 and app.tracked_frames > tracked_before_stall + 2 and now - changed > 3:
+            # Tracking must hold steady before the 3D view returns; by now it has.
             assert not app.state.flat_video
             # A native crash must leave the camera and safety controls usable too.
             app.worker.process.kill()

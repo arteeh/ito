@@ -22,6 +22,11 @@ from . import settings
 from .frames import FrameJoin, camera_matrix
 
 log = logging.getLogger(__name__)
+# SLAM's 3D view drops to the flat feed after this long without tracking, and returns only
+# once tracking has run this steadily, so the view does not flicker at the edge of tracking.
+TRACKING_LOST = 2.0
+TRACKING_STEADY = 1.0
+TRACKING_GAP = 0.5
 # A failed RGB-D worker restarts after this delay, doubling up to RESTART_LONGEST.
 RESTART_FIRST, RESTART_LONGEST = 1.0, 30.0
 
@@ -65,6 +70,8 @@ class Pilot:
         self.reconstruction_status = ""
         self.tracked_frames = 0
         self.tracking = False
+        self.tracking_steady_since = 0.0
+        self.slam_view = False  # SLAM's 3D view is shown rather than the flat feed.
         self.restart_at = None  # When a failed RGB-D worker starts again.
         self.stop = threading.Event()
         self.thread = None
@@ -253,7 +260,7 @@ class Pilot:
             "Flat camera feed" if self.backend == "video" else "Starting " + self.backend
         )
         self.tracked_frames = 0
-        self.tracking = False
+        self.tracking = self.slam_view = False
         self.restart_at = None
         restart_delay = RESTART_FIRST
         self.frame_heads.clear()
@@ -331,9 +338,11 @@ class Pilot:
                         if tracked:
                             transform, count, self.tracking, captured = tracked
                             if count != self.tracked_frames:
+                                if now - self.last_tracking > TRACKING_GAP:
+                                    self.tracking_steady_since = now
                                 self.last_tracking = now
                             self.tracked_frames = count
-                        live = self.tracking and now - self.last_tracking < 2
+                        live = self.tracking and now - self.last_tracking < TRACKING_LOST
                         if live and tracked:
                             angles, body_yaw = next(
                                 (
@@ -348,7 +357,13 @@ class Pilot:
                             self.reconstruction_status = (
                                 "SLAM tracking paused; showing flat camera feed"
                             )
-                        self.state = replace(self.state, flat_video=not live)
+                        steady = (
+                            live
+                            and now - self.last_tracking < TRACKING_GAP
+                            and now - self.tracking_steady_since >= TRACKING_STEADY
+                        )
+                        self.slam_view = live if self.slam_view else steady
+                        self.state = replace(self.state, flat_video=not self.slam_view)
                 if self.failure:
                     self.reconstruction_status = self.failure + "; showing flat camera feed"
                     if self.restart_at is not None:
