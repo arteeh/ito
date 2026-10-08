@@ -149,5 +149,6 @@ LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/connect.py # connect scree
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/render.py
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/desktop.py
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/stream.py
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/anchor_glide.py # no eye steps at SLAM rate
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/reconstruction.py  # two-minute live room
 ```
