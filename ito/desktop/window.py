@@ -4,7 +4,7 @@ import json
 import logging
 import math
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TextIO
 
@@ -14,6 +14,7 @@ from OpenGL import GL
 from ito import clock, diagnostics
 from ito.reconstruction import SplatUpdate, default_budget
 from ito.render import GaussianRenderer, SceneSource, current_context, perspective, pose
+from ito.render.anchor import AnchorGlide
 from ito.render.scene import FloatArray
 from ito.render.video import VideoPanel
 
@@ -56,6 +57,7 @@ class DesktopWindow:
             raise ValueError("Invalid window size, frame rate, field of view or movement speed")
         self.fps, self.fov, self.capture_dir = fps, math.radians(fov), capture_dir
         self.capture_number = 0
+        self.glide = AnchorGlide()
         pygame.display.init()
         try:
             pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MAJOR_VERSION, 4)
@@ -178,7 +180,7 @@ class DesktopWindow:
                 elif frame.revision != revision:
                     self.renderer.upload(frame.gaussians)
                 revision, captured_at = frame.revision, frame.captured_at
-            current = state()
+            current = self.glided(state(), now)
             size = pygame.display.get_window_size()
             if min(size) > 0:
                 self.size = size
@@ -263,6 +265,9 @@ class DesktopWindow:
                 metrics.flush()
                 next_metric = now + 0.5
             pacing.tick(self.fps)
+
+    def glided(self, current, now):
+        return replace(current, robot_camera=self.glide(current.robot_camera, now))
 
     def draw_view(self, current, head, projection, target, viewport, sort=True):
         if current.flat_video:

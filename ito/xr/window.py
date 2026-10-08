@@ -117,7 +117,7 @@ class XRWindow(DesktopWindow):
                 if commands:
                     request = f"{commands[-1].replace('_', '-').upper()} requested"
                     log.info("Command: %s", commands[-1])
-                current = state()
+                current = self.glided(state(), now)
                 for _ in range(4):
                     update = source.poll()
                     if update is None:
