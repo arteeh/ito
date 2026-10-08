@@ -17,6 +17,8 @@ async def run(address: str, code: str):
     async with await connect(address, audio=AudioStreamTrack(), code=code) as peer:
         assert peer.control.ordered and peer.control.maxRetransmits is None
         assert not peer.pilot.ordered and peer.pilot.maxRetransmits == 0
+        channel = peer.frame_channel
+        assert not channel.ordered and channel.maxPacketLifeTime and channel.maxRetransmits is None
         assert peer.send(Paired(pilot=peer.credential.pilot))
         frames = {"video": 0, "audio": 0}
         luma = set()
