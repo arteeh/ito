@@ -1,4 +1,4 @@
-"""Real pilot CLI + MuJoCo, SDL input, driver kill/restart and latency measurements.
+"""Real pilot CLI + MuJoCo, SDL input, arming, driver kill/restart and latency measurements.
 
 DISPLAY=:97 LIBGL_ALWAYS_SOFTWARE=1 uv run python e2e/app.py
 """
@@ -27,6 +27,18 @@ OUT = Path("e2e/out/app")
 def key(code):
     pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=code))
     pygame.event.post(pygame.event.Event(pygame.KEYUP, key=code))
+
+
+def click_scene():
+    for kind in (pygame.MOUSEMOTION, pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP):
+        fields = {"rel": (0, 0), "buttons": (0, 0, 0)} if kind == pygame.MOUSEMOTION else {}
+        pygame.event.post(pygame.event.Event(kind, pos=(600, 330), button=1, **fields))
+
+
+def focus(gained):
+    pygame.event.post(
+        pygame.event.Event(pygame.WINDOWFOCUSGAINED if gained else pygame.WINDOWFOCUSLOST)
+    )
 
 
 def main():
@@ -83,7 +95,7 @@ def main():
         nonlocal release_latency_ms, estop_latency_ms, tested_input_stall
         nonlocal steady_start, steady_end
         now = time.monotonic()
-        assert now - began < 65, (stage, app.state, app.telemetry)
+        assert now - began < 80, (stage, app.state, app.telemetry)
         samples.append((now, now - previous, app.state.status.link))
         previous = now
         statuses.append((now, app.state.status.link, app.state.status.e_stop))
@@ -91,6 +103,19 @@ def main():
         if t:
             positions.append(t.copy())
         counts.append(window.renderer.count)
+
+        def stopped():
+            held = app.state.status.detail.startswith(("stopped", "e-stopped"))
+            return held and t["left_command"] == t["right_command"] == 0
+
+        def moving():
+            return app.state.status.armed and t["left_command"] > 0
+
+        def settled(condition, limit=4):
+            """Driver status lags input by a few hundred ms on a loaded software GPU."""
+            assert now - changed < limit, (stage, app.state.status, t)
+            return condition()
+
         if stage == 0 and app.matched_frames > 12 and window.renderer.count > 1000:
             steady_start = now
             stage, changed = "steady", now
@@ -102,9 +127,68 @@ def main():
             key(pygame.K_F12)
             stage, changed = "captured", now
         elif stage == "captured" and now - changed > 0.5:
-            key(pygame.K_r)
+            assert not app.state.status.armed and t["left_command"] == t["right_command"] == 0
+            key(pygame.K_e)
+            stage, changed = "estop", now
+        elif stage == "estop" and settled(lambda: app.state.status.e_stop and stopped()):
+            # Focus loss and a click back in must never release an e-stop.
+            focus(False)
+            stage, changed = "estop_refocus", now
+        elif stage == "estop_refocus" and now - changed > 0.3:
+            focus(True)
+            click_scene()
+            stage, changed = "estop_drive", now
+        elif stage == "estop_drive" and now - changed > 0.3:
             pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_w))
-            key(pygame.K_TAB)
+            stage, changed = "estop_held", now
+        elif stage == "estop_held" and now - changed > 1.5:
+            assert value.movement[2] > 0 and window.input.captured
+            assert app.state.status.e_stop and not app.state.status.armed, app.state.status
+            assert stopped(), app.state.status
+            key(pygame.K_r)
+            stage, changed = "resumed", now
+        elif stage == "resumed" and settled(moving):
+            key(pygame.K_SPACE)
+            stage, changed = "space", now
+        elif stage == "space" and settled(stopped):
+            assert not app.state.status.armed and not app.state.status.focus_hold
+            focus(False)
+            stage, changed = "space_refocus", now
+        elif stage == "space_refocus" and now - changed > 0.3:
+            # A deliberate Space stop is never undone by clicking back in.
+            assert not app.state.status.focus_hold, app.state.status
+            focus(True)
+            click_scene()
+            stage, changed = "space_drive", now
+        elif stage == "space_drive" and now - changed > 0.3:
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_w))
+            stage, changed = "space_held", now
+        elif stage == "space_held" and now - changed > 1.5:
+            assert value.movement[2] > 0 and window.input.captured
+            assert not app.state.status.armed and stopped(), app.state.status
+            key(pygame.K_r)
+            stage, changed = "driving", now
+        elif stage == "driving" and settled(moving):
+            focus(False)
+            stage, changed = "focus_lost", now
+        elif stage == "focus_lost" and settled(lambda: stopped() and app.state.status.focus_hold):
+            assert not app.state.status.armed and not app.state.status.e_stop
+            focus(True)
+            stage, changed = "refocused", now
+        elif stage == "refocused" and now - changed > 0.3:
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_w))
+            stage, changed = "ignored", now
+        elif stage == "ignored" and now - changed > 1:
+            # Refocused but not clicked: WASD is ignored and the prompt says why.
+            assert value.movement[2] > 0 and not app.state.status.armed and stopped()
+            key(pygame.K_F12)
+            stage, changed = "click", now
+        elif stage == "click" and now - changed > 0.3:
+            click_scene()
+            stage, changed = "rearmed", now
+        elif stage == "rearmed" and settled(moving):
+            assert not app.state.status.focus_hold
+            # Driving with W held and the mouse captured, as stage 1 expects.
             stage, changed = 1, now
         elif stage == 1 and not tested_input_stall and t.get("active"):
             # Block the display for longer than both watchdogs. Held input must
@@ -312,7 +396,11 @@ def main():
     assert len(latency) > 5 and len(visible) > 5
     assert np.median(latency) < 150 and np.median(visible) < 1000
     captures = sorted(OUT.glob("capture-*.png"))
-    assert len(captures) == 5
+    assert len(captures) == 6
+    prompt = captures.pop(1)  # Taken while focus loss held the robot and W was pressed.
+    banner = np.transpose(pygame.surfarray.array3d(pygame.image.load(prompt)), (1, 0, 2))
+    banner = banner[520:580, 250:550].astype(float)
+    assert (banner[..., 0] - banner[..., 2]).mean() > 50, "Stopped-robot prompt not visible"
     images = [
         pygame.surfarray.array3d(pygame.image.load(p))[:, 280:].astype(float) for p in captures
     ]
@@ -335,10 +423,14 @@ def main():
         "stalled_display_key_release_ms": release_latency_ms,
         "stalled_display_estop_ms": estop_latency_ms,
         "captures": list(map(str, captures)),
+        "stopped_prompt": str(prompt),
     }
     (OUT / "summary.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))
-    print("PASS: live room, physical drive/head motion, e-stop, worker stall, reconnect, settings")
+    print(
+        "PASS: live room, physical drive/head motion, e-stop, worker stall, reconnect, settings, "
+        "stopped prompt, focus-loss resume, no auto-resume after stop/e-stop"
+    )
 
 
 if __name__ == "__main__":

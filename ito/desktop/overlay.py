@@ -1,5 +1,7 @@
 """The same ImGui panel can render into the desktop or a headset framebuffer."""
 
+import math
+import time
 from dataclasses import dataclass
 
 import moderngl
@@ -25,6 +27,8 @@ class PilotStatus:
     speaker_muted: bool = False
     robot_microphone: bool = False
     robot_speaker: bool = False
+    armed: bool = False  # Movement reaches the robot only after an explicit resume.
+    focus_hold: bool = False  # Stopped only because the window lost focus.
 
 
 class Overlay:
@@ -43,6 +47,7 @@ class Overlay:
         self.simulation = None
         self.captured = False
         self.layout = {}  # Where the last frame drew each control, so e2e clicks what pilots see.
+        self.nudged = -math.inf  # When the pilot last tried to move a robot that is stopped.
 
     def begin(self, events, size, captured, *, pointer=None):
         io = self.backend.io
@@ -85,6 +90,7 @@ class Overlay:
         capture_latency_ms: float | None = None,
         target: moderngl.Framebuffer | None = None,
         xr_mode: bool = False,
+        driving: bool = False,
     ) -> int | None:
         if target is not None:
             target.use()
@@ -169,8 +175,58 @@ class Overlay:
         if self.error:
             imgui.text_colored((1, 0.45, 0.4, 1), self.error)
         imgui.end()
+        self._stopped_prompt(status, driving, xr_mode)
         self.render()
         return selected
+
+    def _stopped_prompt(self, status, driving, xr_mode):
+        """Movement is ignored until resume; the pilot must never have to guess why."""
+        fault = status.detail.startswith("fault")
+        if status.link != "CONNECTED" or (status.armed and not status.e_stop and not fault):
+            return
+        now = time.monotonic()
+        if driving:
+            self.nudged = now
+        resume = "Press A" if xr_mode else "Press R (or gamepad A)"
+        if fault:
+            title = "Robot fault: " + status.detail.removeprefix("fault: ")
+            action = "Resume cannot clear a fault; restart the robot driver"
+        elif status.e_stop:
+            title, action = "E-STOP LATCHED", f"{resume} to resume"
+        elif status.focus_hold and not xr_mode:
+            title = "Robot stopped: window lost focus"
+            action = "Click the scene or press R (or gamepad A) to drive"
+        else:
+            title, action = "Robot stopped", f"{resume} to drive"
+        nudged = now - self.nudged < 1.5
+        # 2 Hz stays below photosensitivity limits; the headset gets a steady highlight,
+        # since flashing in the pilot's view costs comfort.
+        bright = nudged and (xr_mode or math.sin((now - self.nudged) * 4 * math.pi) > -0.3)
+        if status.e_stop or fault:
+            background = (0.85, 0.12, 0.08, 0.97) if bright else (0.55, 0.08, 0.06, 0.92)
+        else:
+            background = (0.95, 0.55, 0.05, 0.97) if bright else (0.32, 0.22, 0.02, 0.92)
+        width, height = imgui.get_io().display_size
+        imgui.set_next_window_pos((width / 2, height - 24), imgui.Cond_.always, (0.5, 1))
+        imgui.push_style_color(imgui.Col_.window_bg, background)
+        imgui.push_style_color(imgui.Col_.border, (1, 0.8, 0.3, 1) if nudged else (0, 0, 0, 0))
+        imgui.push_style_var(imgui.StyleVar_.window_border_size, 3)
+        imgui.begin(
+            "Robot stopped",
+            flags=imgui.WindowFlags_.no_decoration
+            | imgui.WindowFlags_.always_auto_resize
+            | imgui.WindowFlags_.no_inputs
+            | imgui.WindowFlags_.no_focus_on_appearing
+            | imgui.WindowFlags_.no_nav,
+        )
+        imgui.push_font(None, imgui.get_font_size() * 1.6)
+        imgui.text(title)
+        imgui.text(action)
+        imgui.pop_font()
+        imgui.text("Movement is ignored until you resume.")
+        imgui.end()
+        imgui.pop_style_var()
+        imgui.pop_style_color(2)
 
     def diagnostic_controls(self):
         debug = diagnostics.current()

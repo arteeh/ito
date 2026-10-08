@@ -53,6 +53,9 @@ class Pilot:
         self.telemetry = {}
         self.latest_input = None
         self.commands = deque()
+        self.armed = False  # Resume sent and input fresh since; only then is deadman held.
+        self.resumed = False  # The last safety command this pilot gave was resume.
+        self.focus_hold = False  # The robot is stopped only because the window lost focus.
         self.budget_change = None
         self.worker = None
         self.worker_lock = threading.Lock()
@@ -82,7 +85,6 @@ class Pilot:
         self.budget_change = value
 
     def input(self, value):
-        self.latest_input = value
         for command in value.commands:
             if command in {"mute_mic", "mute_speaker"}:
                 name = "mic_muted" if command == "mute_mic" else "speaker_muted"
@@ -90,11 +92,26 @@ class Pilot:
                 if self.audio:
                     setattr(self.audio, name, getattr(self, name))
                 continue
+            if command == "focus_stop":
+                # Commands precede this sample's inactive input, so armed is still current.
+                self.focus_hold = self.resumed and self.armed
+                command = "stop"
+            else:
+                if command == "rearm":
+                    # Only a stop that focus loss alone caused is undone by clicking back in;
+                    # the driver still waits for fresh deadman input after the resume.
+                    if not self.focus_hold or self.state.status.e_stop:
+                        continue
+                    command = "resume"
+                self.focus_hold = False
+            if command in {"stop", "e_stop", "resume"}:
+                self.resumed = command == "resume"
             if len(self.commands) >= 32:
                 self.commands.clear()
                 self.commands.append("e_stop")
                 break
             self.commands.append(command)
+        self.latest_input = value
 
     def poll(self):
         if not self.worker_lock.acquire(False):
@@ -134,6 +151,8 @@ class Pilot:
                 robot_speaker=bool(peer) and "speaker" in peer.description.capabilities,
                 mic_muted=self.mic_muted,
                 speaker_muted=self.speaker_muted,
+                armed=self.armed,
+                focus_hold=self.focus_hold,
             ),
         )
 
@@ -265,7 +284,7 @@ class Pilot:
         self._status("CONNECTED", "Resume to begin piloting", peer=peer)
         joined = FrameJoin()
         tasks = []
-        armed = False
+        self.armed = self.focus_hold = False
         previous_fresh = None
         sequence = command_sequence = 0
         pending = None
@@ -359,7 +378,7 @@ class Pilot:
                 while pending or self.commands:
                     if pending is None:
                         action = self.commands.popleft().replace("_", "-")
-                        armed = action == "resume"
+                        self.armed = action == "resume"
                         pending = Command(sequence=command_sequence, action=action)
                         command_sequence += 1
                     if peer.send(pending):
@@ -373,19 +392,19 @@ class Pilot:
                         diagnostics.event("input_freshness_transition", fresh=fresh)
                         previous_fresh = fresh
                     if not fresh:
-                        if armed:
+                        if self.armed:
                             log.warning(
                                 "Pilot input disarmed: active=%s sample_age_ms=%.1f",
                                 value.active,
                                 (now - value.timestamp) * 1000,
                             )
-                        armed = False
+                        self.armed = False
                     diagnostics.event(
                         "input_freshness",
                         interval=1,
                         fresh=fresh,
                         active=value.active,
-                        armed=armed,
+                        armed=self.armed,
                         age_ms=(now - value.timestamp) * 1000,
                         sequence=sequence,
                     )
@@ -404,7 +423,7 @@ class Pilot:
                         PilotState(
                             sequence=sequence,
                             capture_time=value.timestamp,
-                            deadman=armed and fresh,
+                            deadman=self.armed and fresh,
                             head=Pose(
                                 position=tuple(map(float, matrix[:3, 3])),
                                 orientation=quaternion(matrix),
@@ -420,9 +439,16 @@ class Pilot:
                         )
                     )
                     sequence += 1
+                shown = self.state.status
+                if (shown.armed, shown.focus_hold) != (self.armed, self.focus_hold):
+                    self.state = replace(
+                        self.state,
+                        status=replace(shown, armed=self.armed, focus_hold=self.focus_hold),
+                    )
                 deadline = max(deadline + 1 / 60, now)
                 await asyncio.sleep(max(0, deadline - time.monotonic()))
         finally:
+            self.armed = False
             peer.send(Command(sequence=command_sequence, action="stop"))
             for task in tasks:
                 task.cancel()

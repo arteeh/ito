@@ -196,6 +196,7 @@ class DesktopWindow:
                 request,
                 live=live,
                 capture_latency_ms=capture_to_visible_ms,
+                driving=any(pilot.movement),
             )
             dispatch.ui(io, self.overlay.commands)
             self.overlay.commands.clear()

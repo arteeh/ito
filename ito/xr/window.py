@@ -220,6 +220,7 @@ class XRWindow(DesktopWindow):
                             live=True,
                             target=target,
                             xr_mode=True,
+                            driving=any(value.movement),
                         )
                         if budget is not None:
                             if budget <= self.splat_limit:

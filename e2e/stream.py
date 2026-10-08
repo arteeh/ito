@@ -165,7 +165,7 @@ def main():
         assert source.revisions == [0, 1], source.revisions
         commands = [command for pilot in history for command in pilot.commands]
         assert commands.count("e_stop") == 1 and commands.count("resume") == 1, commands
-        assert commands.count("stop") >= 2, commands
+        assert commands.count("focus_stop") == 1 and commands.count("stop") >= 1, commands
         assert history[50].head[2, 3] < -0.1 and history[50].head[1, 3] > 0.1
         assert abs(history[50].head[0, 2]) > 0.1
         assert all(pilot.movement == (0, 0, 0) and not pilot.active for pilot in history[86:99])
