@@ -21,7 +21,8 @@ class PilotInput:
     movement: tuple[float, float, float]  # right, up, forward; normalized [-1, 1]
     look: tuple[float, float]  # right/up stick
     buttons: frozenset[str]
-    commands: tuple[str, ...]  # stop, e_stop, resume; edge triggered
+    # stop, e_stop, resume, focus_stop, rearm (scene click after focus_stop); edge triggered
+    commands: tuple[str, ...]
     active: bool
     quit: bool = False
     screenshot: bool = False
@@ -37,6 +38,7 @@ class DesktopInput:
         self.yaw = self.pitch = 0.0
         self.captured = False
         self.active = True
+        self.refocus = False  # Focus loss stopped the robot and no safety key followed.
         self.translate = True
         self.sensitivity = 0.0025
         self.invert_y = False
@@ -97,7 +99,8 @@ class DesktopInput:
                 self.keys.clear()
                 self.pad_buttons.clear()
                 self.capture(False)
-                commands.append("stop")
+                self.refocus = True
+                commands.append("focus_stop")
             elif event.type == pygame.WINDOWFOCUSGAINED:
                 self.active = True
             elif event.type == pygame.KEYDOWN and self.active:
@@ -111,6 +114,7 @@ class DesktopInput:
                     elif event.key == pygame.K_F12:
                         screenshot = True
                     elif event.key in (pygame.K_SPACE, pygame.K_e, pygame.K_r):
+                        self.refocus = False
                         commands.append(
                             {pygame.K_SPACE: "stop", pygame.K_e: "e_stop", pygame.K_r: "resume"}[
                                 event.key
@@ -168,6 +172,7 @@ class DesktopInput:
                         buttons.add(name)
                 for button, command in (("a", "resume"), ("b", "e_stop"), ("x", "stop")):
                     if button in buttons - self.pad_buttons:
+                        self.refocus = False
                         commands.append(command)
             self.pad_buttons = buttons.copy()
         movement /= max(1, float(np.linalg.norm(movement)))

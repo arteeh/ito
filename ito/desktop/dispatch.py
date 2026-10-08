@@ -47,6 +47,10 @@ class DisplayDispatch:
             commands, self.ui_commands = self.ui_commands, []
         if capture and self.window.input.active:
             self.window.input.capture(True)
+            if self.window.input.refocus:
+                # Clicking back into the scene asks to undo a stop that only focus loss caused.
+                self.window.input.refocus = False
+                commands.append("rearm")
         value = self.poll(dt, events, keyboard_ui, commands)
         if on_sample:
             on_sample(value)
