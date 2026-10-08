@@ -132,7 +132,7 @@ Audio uses the system default microphone and speakers (select the headset as the
 output in VR). The shared desktop/VR panel mutes the microphone and speakers independently.
 Linux device audio needs PortAudio (`libportaudio2` on Debian/Ubuntu); missing devices leave
 piloting available with an audio status line. Both CLIs accept `--audio-source device|none|tone:440`
-and `--audio-sink device|none|capture.wav`. MuJoCo defaults to a 440 Hz source.
+and `--audio-sink device|none|capture.wav`. MuJoCo has no microphone unless given a source.
 
 End-to-end checks (no GPU or headset needed):
 

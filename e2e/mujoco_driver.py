@@ -217,7 +217,6 @@ async def run():
             "camera-pose",
             "head-pan-tilt",
             "differential-drive",
-            "microphone",
             "speaker",
         )
         await pilot.drive(0.8)
