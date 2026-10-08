@@ -1,5 +1,4 @@
 import asyncio
-import contextlib
 import logging
 import math
 from collections.abc import Sequence
@@ -83,6 +82,7 @@ class Driver:
         self._negotiating = False
         self._closing = False
         self.address: str | None = None
+        self.failed = asyncio.Event()  # The watchdog died; serve() exits instead of idling.
 
     def _neutral(self, reason: str) -> None:
         self._latest = None
@@ -250,6 +250,16 @@ class Driver:
                         self.peer = None
             await asyncio.sleep(interval)
 
+    def _watchdog_ended(self, task: asyncio.Task) -> None:
+        """Without the watchdog nothing enforces the input timeout: stop the robot for good."""
+        if task.cancelled() or self._closing:
+            return
+        log.critical("Driver watchdog stopped", exc_info=task.exception())
+        self._fault = True
+        self._is_neutral = False
+        self._neutral("driver watchdog stopped")
+        self.failed.set()
+
     async def _challenge(self, request: web.Request) -> web.Response:
         return web.json_response({"nonce": self.pairing.nonce()})
 
@@ -390,6 +400,7 @@ class Driver:
             url_host = f"[{host}]" if ":" in host else host
             self.address = f"http://{url_host}:{actual_port}"
             self._task = asyncio.create_task(self._run())
+            self._task.add_done_callback(self._watchdog_ended)
             return self.address
         except BaseException:
             await self.close()
@@ -404,8 +415,8 @@ class Driver:
         try:
             if self._task:
                 self._task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await self._task
+                # A watchdog that died has been reported by _watchdog_ended already.
+                await asyncio.gather(self._task, return_exceptions=True)
             if self._runner:
                 await self._runner.cleanup()
             if self.peer:
