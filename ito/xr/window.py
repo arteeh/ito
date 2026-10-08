@@ -159,10 +159,11 @@ class XRWindow(DesktopWindow):
                         projection_views = []
                         if value.screenshot:
                             self.capture_number += 1
+                        # One back-to-front order from between the eyes serves both, and
+                        # the flat feed's panel hangs in front of that point.
+                        middle = matrix(views[0].pose)
+                        middle[:3, 3] = (middle[:3, 3] + matrix(views[1].pose)[:3, 3]) / 2
                         if not current.flat_video:
-                            # One back-to-front order from between the eyes serves both.
-                            middle = matrix(views[0].pose)
-                            middle[:3, 3] = (middle[:3, 3] + matrix(views[1].pose)[:3, 3]) / 2
                             self.renderer.sort(current.robot_camera, middle)
                         for index, (view, swapchain) in enumerate(
                             zip(views, self.xr.eyes, strict=True)
@@ -181,6 +182,7 @@ class XRWindow(DesktopWindow):
                                     target,
                                     viewport=(0, 0, *swapchain.size),
                                     sort=False,
+                                    center=middle,
                                 )
                                 if value.screenshot:
                                     captures.append(

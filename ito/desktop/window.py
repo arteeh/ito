@@ -32,6 +32,7 @@ class DesktopState:
     status: PilotStatus = field(default_factory=PilotStatus)
     video: object | None = field(default=None, repr=False, compare=False)
     video_time: float = 0
+    video_fov: float | None = None  # The camera's horizontal field of view in radians.
     flat_video: bool = False
 
 
@@ -270,10 +271,18 @@ class DesktopWindow:
     def glided(self, current, now):
         return replace(current, robot_camera=self.glide(current.robot_camera, now))
 
-    def draw_view(self, current, head, projection, target, viewport, sort=True):
+    def draw_view(self, current, head, projection, target, viewport, sort=True, center=None):
+        """Draw one eye; center is the pose between both eyes, for a stereo panel."""
         if current.flat_video:
             self.video_panel.draw(
-                current.video, current.video_time, head, projection, target, viewport
+                current.video,
+                current.video_time,
+                head,
+                projection,
+                target,
+                viewport,
+                center=center,
+                fov=current.video_fov,
             )
         else:
             self.renderer.draw(
