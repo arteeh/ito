@@ -6,7 +6,7 @@
   </default>
   <asset>
     <texture name="room_oak" type="2d" file="oak.png" />
-    <texture name="room_linen" type="cube" fileback="linen.png" filedown="linen.png" filefront="linen.png" fileleft="linen.png" fileright="linen.png" fileup="linen.png" />
+    <texture name="room_linen" type="2d" file="linen.png" />
     <texture name="room_botanical" type="2d" file="botanical.png" />
     <material name="room_oak" texture="room_oak" texuniform="true" texrepeat="2.5 2.5" reflectance="0.02" />
     <material name="room_wood" texture="room_oak" texuniform="true" texrepeat="1 1" rgba=".72 .60 .44 1" />
