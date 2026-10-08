@@ -149,6 +149,11 @@ class XRWindow(DesktopWindow):
                         projection_views = []
                         if value.screenshot:
                             self.capture_number += 1
+                        if not current.flat_video:
+                            # One back-to-front order from between the eyes serves both.
+                            middle = matrix(views[0].pose)
+                            middle[:3, 3] = (middle[:3, 3] + matrix(views[1].pose)[:3, 3]) / 2
+                            self.renderer.sort(current.robot_camera, middle)
                         for index, (view, swapchain) in enumerate(
                             zip(views, self.xr.eyes, strict=True)
                         ):
@@ -165,6 +170,7 @@ class XRWindow(DesktopWindow):
                                     projection,
                                     target,
                                     viewport=(0, 0, *swapchain.size),
+                                    sort=False,
                                 )
                                 if value.screenshot:
                                     captures.append(
@@ -287,6 +293,7 @@ class XRWindow(DesktopWindow):
                                 "commands": commands,
                                 "active": value.active,
                                 "gaussians": self.renderer.count,
+                                "sorts": self.renderer.sorts,
                                 "revision": revision,
                                 "link": current.status.link,
                                 "e_stop": current.status.e_stop,
