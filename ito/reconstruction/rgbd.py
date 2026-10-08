@@ -123,13 +123,15 @@ class RGBDBackend:
         xp = self.xp
         valid = xp.all(xp.isfinite(points), axis=1)
         points, colors = points[valid], colors[valid]
+        # Cell edges stay float64: a float32 4 cm voxel is not 4 cm, and surfaces on
+        # exact voxel multiples would then flip between cells every frame.
         if sizes is None:
             levels = xp.zeros(len(points), xp.int64)
-            cell = xp.full(len(points), self.voxel_size, xp.float32)
+            cell = xp.full(len(points), self.voxel_size)
         else:
             levels = xp.clip(xp.ceil(xp.log2(sizes[valid])), -LEVELS // 2, LEVELS // 2 - 1)
             levels = levels.astype(xp.int64)
-            cell = (2.0**levels).astype(xp.float32)
+            cell = 2.0**levels
             levels += LEVELS // 2
         cells = xp.floor(points / cell[:, None]).astype(xp.int64)
         bounded = xp.all((cells >= -(1 << 18)) & (cells < (1 << 18)), axis=1)
