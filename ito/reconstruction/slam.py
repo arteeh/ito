@@ -17,7 +17,7 @@ class Keyframes(list):
 
 
 class SLAMBackend(RGBDBackend):
-    def __init__(self, capacity, intrinsics, *, report, origin, **options):
+    def __init__(self, capacity, intrinsics, *, report, **options):
         from .mast3r_runtime import load_model, prepare
 
         source, weights = prepare(report)
@@ -57,7 +57,7 @@ class SLAMBackend(RGBDBackend):
         self.frame_id = 0
         self.lost = False
         self.failures = 0
-        self.origin = torch.as_tensor(origin, device="cuda", dtype=torch.float32)
+        self.world = None  # world_from_map, fixed when the map starts.
         self.axes = torch.tensor([1, -1, -1], device="cuda")
         report("MASt3R-SLAM ready; waiting for camera")
 
@@ -124,11 +124,18 @@ class SLAMBackend(RGBDBackend):
             rigid[:3, :3] = u @ vh
             rigid[:3, :3] *= self.axes[:, None] * self.axes[None, :]
             rigid[:3, 3] *= self.axes
-            rigid = self.origin.double() @ rigid
+            if self.world is None:
+                # The map's own frame is wherever the camera first looked. Turn it once to
+                # where the robot says that camera was, so the map has gravity down and the
+                # startup heading ahead, like the pilot's world. Later frames keep it.
+                prior = torch.as_tensor(camera, device="cuda", dtype=torch.float64)
+                self.world = prior @ torch.linalg.inv(rigid)
+            rigid = self.world @ rigid
             self.camera_pose = rigid.cpu().numpy().astype(np.float32)
             local = constrain_points_to_ray(frame.img.shape[-2:], frame.X_canon[None], self.K)[0]
             points = self.transform.act(local) * self.axes
-            points = points @ self.origin[:3, :3].T + self.origin[:3, 3]
+            world = self.world.float()
+            points = points @ world[:3, :3].T + world[:3, 3]
             # No confidence cut: MASt3R is least confident on plain walls and floors,
             # which it still places well, and a room without its walls is no room.
             valid = torch.isfinite(points).all(dim=1) & (local[:, 2] > 0)

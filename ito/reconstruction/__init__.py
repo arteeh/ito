@@ -33,7 +33,6 @@ def _run(recon):
                 recon.budget.value,
                 recon.intrinsics,
                 report=recon.report,
-                origin=recon.origin,
                 **recon.options,
             )
         else:
@@ -114,7 +113,6 @@ class Reconstruction:
         fade_seconds=0.5,
         device="auto",
         backend="rgbd",
-        origin=None,
     ):
         if not 1 <= max_splats <= 4_194_304:
             raise ValueError("Max splats must be between 1 and 4,194,304")
@@ -123,7 +121,6 @@ class Reconstruction:
         if backend not in ("rgbd", "slam"):
             raise ValueError("Reconstruction backend must be rgbd or slam")
         self.backend = backend
-        self.origin = np.eye(4, dtype=np.float32) if origin is None else validate_pose(origin)
         self.intrinsics = intrinsics
         self.shape = (intrinsics.height, intrinsics.width)
         self.options = dict(
@@ -206,6 +203,8 @@ class Reconstruction:
     def submit(self, rgb, depth=None, camera=None, captured_at=None):
         """Depth is axial metres; pose is world-from-camera (+Y up, -Z forward).
 
+        SLAM needs no depth, and takes the pose only as the robot's own estimate: its
+        orientation aligns the map to gravity and the startup heading.
         RGB and depth must be synchronized and registered to these intrinsics.
         Capture time must already be corrected to the pilot monotonic clock.
         A busy mailbox drops the incoming frame; the caller never waits.
@@ -215,9 +214,14 @@ class Reconstruction:
         if rgb.shape != self.shape + (3,) or rgb.dtype != np.uint8:
             raise ValueError("RGB must be uint8 HxWx3 matching the camera intrinsics")
         if self.backend == "rgbd":
-            if depth is None or depth.shape != self.shape or depth.dtype != np.float32:
+            if (
+                camera is None
+                or depth is None
+                or depth.shape != self.shape
+                or depth.dtype != np.float32
+            ):
                 raise ValueError("RGB-D needs float32 HxW depth and camera pose from the driver")
-            camera = validate_pose(camera)
+        camera = np.eye(4, dtype=np.float32) if camera is None else validate_pose(camera)
         captured_at = clock.now() if captured_at is None else captured_at
         if not np.isfinite(captured_at):
             raise ValueError("Capture time must be finite")
@@ -227,9 +231,9 @@ class Reconstruction:
             if self.sequence.value and captured_at <= self.captured.value:
                 return False
             np.frombuffer(self.rgb, np.uint8)[:] = rgb.ravel()
+            np.frombuffer(self.camera, np.float32)[:] = camera.ravel()
             if self.backend == "rgbd":
                 np.frombuffer(self.depth, np.float32)[:] = depth.ravel()
-                np.frombuffer(self.camera, np.float32)[:] = camera.ravel()
             self.captured.value = captured_at
             self.sequence.value += 1
             return True
