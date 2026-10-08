@@ -6,9 +6,17 @@ import socket
 import sys
 from pathlib import Path
 
+import psutil
+
 log = os.environ.get("ITO_E2E_NETWORK_LOG")
-local = {"127.0.0.1", "::1", "localhost", socket.gethostname()}
-local.update(info[4][0] for info in socket.getaddrinfo(socket.gethostname(), None))
+# Every address this machine owns, whether or not its hostname resolves to it.
+local = {"localhost", socket.gethostname()}
+local.update(
+    address.address.split("%")[0]
+    for addresses in psutil.net_if_addrs().values()
+    for address in addresses
+    if address.family in (socket.AF_INET, socket.AF_INET6)
+)
 
 
 def audit(event, args):
