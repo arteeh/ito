@@ -141,7 +141,10 @@ class Reconstruction:
         self.tracked = context.RawValue("Q", 0)
         self.tracking = context.RawValue("b", False)
         self.report("Starting MASt3R-SLAM" if backend == "slam" else "Posed RGB-D")
-        self.ring = UpdateRing(context, self.epoch, fade_seconds)
+        # The worker publishes only between integrations, which take ~100 ms with
+        # SLAM; a whole frame's refreshed slots must fit in one turn or they queue
+        # behind the next frame. The display still drains a bounded few per frame.
+        self.ring = UpdateRing(context, self.epoch, fade_seconds, slots=16)
         pixels = intrinsics.width * intrinsics.height
         self.rgb = context.RawArray("B", pixels * 3)
         self.depth = context.RawArray("f", pixels)

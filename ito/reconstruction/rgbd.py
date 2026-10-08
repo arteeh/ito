@@ -1,6 +1,8 @@
-"""Vectorized RGB-D fusion into stable voxel slots; all distances are metres."""
+"""Vectorized fusion into stable voxel slots; RGB-D distances are metres, SLAM's its own units."""
 
 import numpy as np
+
+LEVELS = 32  # Power-of-two cell sizes from 2^-16 to 2^15 world units.
 
 
 class RGBDBackend:
@@ -73,7 +75,13 @@ class RGBDBackend:
         excess = max(0, self.count - budget - int(self.retiring.sum()))
         candidates = np.flatnonzero((self.keys >= 0) & ~self.retiring)
         if excess:
-            self.retire(candidates[np.argsort(self.seen[candidates])[:excess]])
+            self.retire(self.oldest(candidates, excess))
+
+    def oldest(self, candidates, n):
+        # A partial selection: a full budget is too many slots to sort every frame.
+        if n >= len(candidates):
+            return candidates
+        return candidates[np.argpartition(self.seen[candidates], n - 1)[:n]]
 
     def retire(self, indices):
         # Preserve the natural deadline so delayed eviction packets cannot revive stale geometry.
@@ -105,26 +113,46 @@ class RGBDBackend:
         points = points @ transform[:3, :3].T + transform[:3, 3]
         self.integrate_points(points, xp.asarray(rgb)[valid], now)
 
-    def integrate_points(self, points, colors, now):
-        """Fuse world-space dense points through the same budget, fade and eviction policy."""
+    def integrate_points(self, points, colors, now, sizes=None):
+        """Fuse world-space dense points through the same budget, fade and eviction policy.
+
+        Sizes are optional per-point cell edges in world units. They snap to power-of-two
+        levels, so near and far surfaces each get splats about one pixel footprint wide
+        instead of one fixed voxel that is either huge or needlessly fine.
+        """
         xp = self.xp
         valid = xp.all(xp.isfinite(points), axis=1)
         points, colors = points[valid], colors[valid]
-        cells = xp.floor(points / self.voxel_size).astype(xp.int64)
-        bounded = xp.all((cells >= -(1 << 20)) & (cells < (1 << 20)), axis=1)
-        cells, points = cells[bounded] + (1 << 20), points[bounded]
-        colors = colors[bounded]
-        keys = (cells[:, 0] << 42) | (cells[:, 1] << 21) | cells[:, 2]
+        # Cell edges stay float64: a float32 4 cm voxel is not 4 cm, and surfaces on
+        # exact voxel multiples would then flip between cells every frame.
+        if sizes is None:
+            levels = xp.zeros(len(points), xp.int64)
+            cell = xp.full(len(points), self.voxel_size)
+        else:
+            levels = xp.clip(xp.ceil(xp.log2(sizes[valid])), -LEVELS // 2, LEVELS // 2 - 1)
+            levels = levels.astype(xp.int64)
+            cell = 2.0**levels
+            levels += LEVELS // 2
+        cells = xp.floor(points / cell[:, None]).astype(xp.int64)
+        bounded = xp.all((cells >= -(1 << 18)) & (cells < (1 << 18)), axis=1)
+        cells, points, cell = cells[bounded] + (1 << 18), points[bounded], cell[bounded]
+        colors, levels = colors[bounded], levels[bounded]
+        keys = (levels << 57) | (cells[:, 0] << 38) | (cells[:, 1] << 19) | cells[:, 2]
         keys, unique = xp.unique(keys, return_index=True)
-        points, colors = points[unique], colors[unique]
-        if xp is not np:
-            keys, points, colors = map(xp.asnumpy, (keys, points, colors))
+        points, colors, cell = points[unique], colors[unique], cell[unique]
+        # Match against the live slots where the keys are: sorting a full budget of
+        # keys on the CPU costs more than a dense frame's whole GPU pass.
         occupied = np.flatnonzero(self.keys >= 0)
-        order = occupied[np.argsort(self.keys[occupied])]
-        locations = np.searchsorted(self.keys[order], keys)
-        matched = locations < len(order)
-        matched[matched] &= self.keys[order[locations[matched]]] == keys[matched]
-        slots = order[locations[matched]]
+        stored = xp.asarray(self.keys[occupied])
+        order = xp.argsort(stored)
+        stored = stored[order]
+        locations = xp.minimum(xp.searchsorted(stored, keys), max(len(stored) - 1, 0))
+        matched = stored[locations] == keys if len(stored) else xp.zeros(len(keys), bool)
+        if xp is not np:
+            keys, points, colors, cell, locations, matched, order = map(
+                xp.asnumpy, (keys, points, colors, cell, locations, matched, order)
+            )
+        slots = occupied[order[locations[matched]]]
         # A new observation rescues a pressure victim unless the pilot is shrinking the budget.
         refresh = ~self.retiring[slots] | (self.count <= self.budget)
         slots = slots[refresh]
@@ -146,7 +174,7 @@ class RGBDBackend:
         self.seen[slots] = now
         self.records[slots, 0, :3] = points[observed]
         self.records[slots, 0, 3] = 0.85
-        self.records[slots, 1, :3] = self.voxel_size * 0.65
+        self.records[slots, 1, :3] = cell[observed, None] * 0.65
         self.records[slots, 1, 3] = now + self.window + self.fade
         self.records[slots, 2, 0] = 1
         self.records[slots, 3, :3] = (colors[observed] / 255 - 0.5) / 0.2820947918
@@ -155,4 +183,4 @@ class RGBDBackend:
         pressure = max(0, pressure - int(self.retiring.sum()))
         candidates = np.flatnonzero((self.keys >= 0) & ~self.retiring & (self.seen < now))
         if pressure:
-            self.retire(candidates[np.argsort(self.seen[candidates])[:pressure]])
+            self.retire(self.oldest(candidates, pressure))
