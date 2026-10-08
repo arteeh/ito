@@ -27,8 +27,9 @@ log = logging.getLogger(__name__)
 TRACKING_LOST = 2.0
 TRACKING_STEADY = 1.0
 TRACKING_GAP = 0.5
-# A failed RGB-D worker restarts after this delay, doubling up to RESTART_LONGEST.
-RESTART_FIRST, RESTART_LONGEST = 1.0, 30.0
+# A failed RGB-D worker restarts after this delay, doubling up to RESTART_LONGEST; one that ran
+# RESTART_HEALTHY seconds before failing starts the count again.
+RESTART_FIRST, RESTART_LONGEST, RESTART_HEALTHY = 1.0, 30.0, 60.0
 
 
 class Pilot:
@@ -264,10 +265,13 @@ class Pilot:
         self.tracking = self.slam_view = False
         self.restart_at = None
         restart_delay = RESTART_FIRST
+        worker_started = 0.0
         self.frame_heads.clear()
         self.state = replace(self.state, flat_video=self.backend != "rgbd", video=None)
 
         def reconstruct():
+            nonlocal worker_started
+            worker_started = clock.now()
             with self.worker_lock:
                 self.worker = Reconstruction(
                     camera.intrinsics,
@@ -378,6 +382,8 @@ class Pilot:
                     self._retire(failed)
                     if self.backend == "rgbd":
                         # Posed RGB-D has no missing model or device to wait for: try again.
+                        if now - worker_started >= RESTART_HEALTHY:
+                            restart_delay = RESTART_FIRST
                         self.restart_at = now + restart_delay
                         restart_delay = min(RESTART_LONGEST, restart_delay * 2)
                 if self.restart_at is not None and now >= self.restart_at:
