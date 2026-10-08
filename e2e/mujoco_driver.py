@@ -7,13 +7,13 @@ import math
 import os
 import signal
 import sys
-import time
 from collections import deque
 from pathlib import Path
 
 import av
 import numpy as np
 
+from ito import clock
 from ito.driver import pairing
 from ito.link import connect
 from ito.protocol import Command, FrameMetadata, PilotState, Pose, Status
@@ -91,7 +91,7 @@ class Pilot:
                 if len(self.metadata) > 300:
                     del self.metadata[next(iter(self.metadata))]
             elif isinstance(message, Status):
-                self.statuses.append((time.monotonic(), message))
+                self.statuses.append((clock.now(), message))
 
     async def video(self):
         track = await self.peer.tracks.get()
@@ -110,9 +110,9 @@ class Pilot:
                 continue
             self.frames += 1
             self.latencies.append(
-                time.monotonic() - self.peer.clock.remote_to_local(metadata.capture_time)
+                clock.now() - self.peer.clock.remote_to_local(metadata.capture_time)
             )
-            self.observations.append((time.monotonic(), frame, metadata))
+            self.observations.append((clock.now(), frame, metadata))
 
     def healthy(self):
         for task in self.tasks:
@@ -121,10 +121,10 @@ class Pilot:
                 raise AssertionError("pilot media consumer stopped")
 
     async def drive(self, duration, *, yaw=0.0, pitch=0.0, forward=0.0, turn=0.0, deadman=True):
-        deadline = time.monotonic() + duration
-        while time.monotonic() < deadline:
+        deadline = clock.now() + duration
+        while clock.now() < deadline:
             self.healthy()
-            self.last_sent = time.monotonic()
+            self.last_sent = clock.now()
             self.peer.send(
                 PilotState(
                     sequence=self.sequence,
@@ -138,7 +138,7 @@ class Pilot:
             await asyncio.sleep(1 / 60)
 
     async def latest(self, name):
-        requested = time.monotonic()
+        requested = clock.now()
         async with asyncio.timeout(5):
             while not self.observations or self.observations[-1][2].capture_time < requested:
                 self.healthy()
@@ -217,9 +217,13 @@ async def run():
             "camera-pose",
             "head-pan-tilt",
             "differential-drive",
-            "microphone",
             "speaker",
         )
+        # A connection starts stopped: deadman input alone must not move the robot.
+        await pilot.drive(0.3)
+        _, status = await pilot.status("stopped")
+        assert status.telemetry["left_command"] == status.telemetry["right_command"] == 0
+        assert peer.send(Command(sequence=0, action="resume"))
         await pilot.drive(0.8)
         initial_rgb, initial = await pilot.latest("initial")
         intrinsics = peer.description.cameras[0].intrinsics
@@ -300,8 +304,8 @@ async def run():
         forward = -rotation(turned_base.camera_pose)[:, 2]
         assert abs(forward[0]) < 0.15, forward
         await pilot.drive(0.3, forward=0.8)
-        sent = time.monotonic()
-        assert peer.send(Command(sequence=0, action="e-stop"))
+        sent = clock.now()
+        assert peer.send(Command(sequence=1, action="e-stop"))
         await pilot.drive(0.7, forward=1.0, yaw=-0.7)
         _, estop = await pilot.status("e-stopped", after=sent + 0.3)
         assert estop.telemetry["left_command"] == estop.telemetry["right_command"] == 0
@@ -315,12 +319,12 @@ async def run():
         assert (
             abs(np.dot(held.camera_pose.orientation, held_again.camera_pose.orientation)) > 0.9999
         )
-        assert peer.send(Command(sequence=1, action="resume"))
+        assert peer.send(Command(sequence=2, action="resume"))
         await pilot.drive(0.4, forward=-0.5)
-        _, status = await pilot.status("active", after=time.monotonic() - 0.2)
+        _, status = await pilot.status("active", after=clock.now() - 0.2)
         assert status.telemetry["left_command"] < 0
         await pilot.drive(0.3, deadman=False)
-        _, status = await pilot.status("neutral", after=time.monotonic() - 0.2)
+        _, status = await pilot.status("neutral", after=clock.now() - 0.2)
         assert status.reason == "deadman released"
         pilot.healthy()
         # A busy link drops frame metadata rather than delay status and commands behind it.
@@ -342,6 +346,7 @@ async def run():
         pilot = Pilot(await connect(address, receive_audio=False, code=code))
         await pilot.drive(0.5)
         await pilot.latest("reconnected")
+        await pilot.status("stopped")
         assert pilot.frames > 2 and pilot.unmatched == 0
         result["reconnected_frames"] = pilot.frames
         (OUT / "result.json").write_text(json.dumps(result, indent=2) + "\n")

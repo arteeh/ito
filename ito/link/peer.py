@@ -12,7 +12,6 @@ measured round trip.
 
 import asyncio
 import logging
-import time
 from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -26,11 +25,13 @@ from aiortc import (
     RTCPeerConnection,
 )
 
-from ito import diagnostics
+from ito import clock, diagnostics
 from ito.link.media import LatestTrack
 from ito.protocol import (
     Command,
+    Credential,
     FrameMetadata,
+    Paired,
     PilotState,
     Ping,
     Pong,
@@ -60,7 +61,9 @@ class Lane:
 
 
 LANES = {
-    "control": Lane(True, None, CONTROL_BUFFER, (Command,), (RobotDescription, Status)),
+    "control": Lane(
+        True, None, CONTROL_BUFFER, (Command, Paired), (RobotDescription, Credential, Status)
+    ),
     "frames": Lane(False, None, 0, (), (FrameMetadata,), bulk=True),
     "clock": Lane(False, 0, 0, (Ping, Pong), (Ping, Pong)),
     "pilot": Lane(False, 0, 0, (PilotState,), ()),
@@ -95,6 +98,7 @@ class Peer:
         on_disconnect: Callable[[], None] | None = None,
         on_track: Callable[[MediaStreamTrack], None] | None = None,
         description: RobotDescription | None = None,
+        credential: Credential | None = None,
         audio=None,
     ):
         self.audio = audio
@@ -104,8 +108,10 @@ class Peer:
         self.on_disconnect = on_disconnect
         self.on_track = on_track
         self.description = description
+        # The driver sends a new pilot its credential; the pilot keeps the one it received.
+        self.credential = credential
         self.clock = Clock()
-        self.last_received = time.monotonic()
+        self.last_received = clock.now()
         self.rejected_messages = 0
         self.dropped_messages = 0
         self.messages: asyncio.Queue[WireMessage] = asyncio.Queue(maxsize=128)
@@ -117,6 +123,7 @@ class Peer:
         self.closed = asyncio.Event()
         self.robot_received = asyncio.Event()
         self.clock_ready = asyncio.Event()
+        self.credential_received = asyncio.Event()
         self._clock_task: asyncio.Task | None = None
         self._replies: set[asyncio.Task] = set()
         self._clock_waiting = 0
@@ -236,6 +243,8 @@ class Peer:
         self.ready.set()
         if self.role == "driver" and self.description:
             self.send(self.description)
+        if self.role == "driver" and self.credential:
+            self.send(self.credential)
         self._clock_task = asyncio.create_task(self._synchronize())
 
     def _receive(self, label: str, data: str | bytes) -> None:
@@ -252,8 +261,14 @@ class Peer:
                     return
                 self._pilot_sequence = message.sequence
             else:
+                if isinstance(message, Credential):
+                    if self.credential_received.is_set():
+                        raise ProtocolError("one credential per connection")
+                    self.credential = message
+                    self.credential_received.set()
+                    return
                 if isinstance(message, Ping):
-                    self.last_received = received = time.monotonic()
+                    self.last_received = received = clock.now()
                     if len(self._replies) >= 4:
                         self.dropped_messages += 1
                         return
@@ -263,7 +278,7 @@ class Peer:
                                 sequence=message.sequence,
                                 sent=message.sent,
                                 received=received,
-                                replied=time.monotonic(),
+                                replied=clock.now(),
                             )
                         )
                     )
@@ -297,7 +312,7 @@ class Peer:
                         self.dropped_messages += 1
                         return
                     self.frames[message.camera] = message
-            self.last_received = time.monotonic()
+            self.last_received = clock.now()
             if self.on_message:
                 self.on_message(message)
             elif not isinstance(message, PilotState):
@@ -347,9 +362,9 @@ class Peer:
         """
         self._clock_waiting += 1
         try:
-            deadline = time.monotonic() + 1
+            deadline = clock.now() + 1
             while not self._idle():
-                if self._closing or time.monotonic() > deadline:
+                if self._closing or clock.now() > deadline:
                     self.dropped_messages += 1
                     return None
                 await asyncio.sleep(0.002)
@@ -361,26 +376,23 @@ class Peer:
     async def _synchronize(self) -> None:
         sequence = 0
         while not self._closing:
-            ping = await self._send_clock(
-                lambda s=sequence: Ping(sequence=s, sent=time.monotonic())
-            )
+            ping = await self._send_clock(lambda s=sequence: Ping(sequence=s, sent=clock.now()))
             if ping:
                 self._pending_pings[ping.sequence] = ping.sent
-            now = time.monotonic()
+            now = clock.now()
             self._pending_pings = {s: t for s, t in self._pending_pings.items() if now - t < 5}
             sequence += 1
             await asyncio.sleep(0.5)
 
     def _clock_sample(self, message: Pong) -> None:
         sent = self._pending_pings.pop(message.sequence, None)
-        now = time.monotonic()
+        now = clock.now()
         if sent is None or sent != message.sent:
             self.rejected_messages += 1
             return
         rtt = (now - sent) - (message.replied - message.received)
-        # Windows Python 3.12 uses 15.6 ms ticks: a LAN reply can arrive in the same tick.
-        # Its remote processing time then makes the measured RTT slightly negative.
-        if rtt < -time.get_clock_info("monotonic").resolution or rtt > 5:
+        # Clock granularity on either end can make a LAN round trip read slightly negative.
+        if rtt < -0.001 or rtt > 5:
             self.rejected_messages += 1
             return
         offset = ((message.received - sent) + (message.replied - now)) / 2

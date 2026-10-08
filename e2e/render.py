@@ -1,13 +1,13 @@
 """Drive the real GL renderer with randomized scenes: xvfb-run -a uv run python e2e/render.py."""
 
 import math
-import time
 from pathlib import Path
 
 import numpy as np
 import pygame
 from sample_scene import write_scene
 
+from ito import clock
 from ito.reconstruction.ring import SplatUpdate
 from ito.render import (
     GaussianBuffer,
@@ -69,7 +69,7 @@ def main():
             assert pixels[120, 160, channel] > pixels[120, 160, 2 - channel] * 3
 
         # Stream sparse append/evict packets, growing GPU capacity without losing old slots.
-        epoch = time.monotonic()
+        epoch = clock.now()
         live = records.copy()
         live[:, 1, 3] = 60
         before_bytes = renderer.uploaded_bytes

@@ -5,6 +5,7 @@ import time
 
 import numpy as np
 
+from ito import clock
 from ito.protocol import Intrinsics
 from ito.reconstruction import Reconstruction
 from ito.render import pose
@@ -15,8 +16,8 @@ DEPTH = np.ones((24, 32), np.float32)
 
 
 def receive(source, *, timeout=5):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    deadline = clock.now() + timeout
+    while clock.now() < deadline:
         packet = source.poll()
         if packet is not None:
             if packet.acknowledge is not None:
@@ -31,9 +32,9 @@ def main():
         # Simulate concurrent ownership of the latest-frame mailbox.
         source.input_lock.acquire()
         try:
-            began = time.monotonic()
+            began = clock.now()
             assert not source.submit(RGB, DEPTH, pose())
-            assert time.monotonic() - began < 0.05, "Input waited on reconstruction"
+            assert clock.now() - began < 0.05, "Input waited on reconstruction"
         finally:
             source.input_lock.release()
         source.submit(RGB, DEPTH, pose())

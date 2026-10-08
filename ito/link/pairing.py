@@ -1,8 +1,12 @@
-"""Pairing proofs: both ends show they know the robot's code without sending it.
+"""Pairing proofs: both ends show they share a key without sending it.
 
-Each proof is an HMAC keyed by the code over a single-use driver nonce and the session
-description it accompanies, so a captured proof cannot be replayed or moved to another
-offer, and the answer's proof tells the pilot it reached the robot it paired with.
+Each proof is an HMAC over a single-use driver nonce and the session description it
+accompanies, so a captured proof cannot be replayed or moved to another offer, and the
+answer's proof tells the pilot it reached the robot it paired with.
+
+The six-digit code is the key once: anyone who records that exchange can search all codes
+offline, so the driver retires the code as soon as the pilot holds a 128-bit secret of its
+own, sent over the encrypted data channel. Every later proof uses that secret.
 """
 
 import hashlib
@@ -14,11 +18,16 @@ DIGITS = 6
 
 
 class PairingError(ConnectionError):
-    """The driver refused the pilot's pairing code, or could not prove it knows it."""
+    """The driver refused the pilot's pairing code or credential (HTTP 401 or 403)."""
 
 
 def generate() -> str:
     return f"{secrets.randbelow(10**DIGITS):0{DIGITS}d}"
+
+
+def token() -> str:
+    """128 random bits: a pilot identity or secret."""
+    return secrets.token_hex(16)
 
 
 def normalize(code: str) -> str | None:
@@ -31,10 +40,10 @@ def display(code: str) -> str:
     return f"{code[:3]} {code[3:]}"
 
 
-def proof(code: str, nonce: str, kind: str, sdp: str) -> str:
+def proof(key: str, nonce: str, kind: str, sdp: str) -> str:
     message = "\n".join(("ito-pairing-1", kind, nonce, sdp)).encode()
-    return hmac.new(code.encode(), message, hashlib.sha256).hexdigest()
+    return hmac.new(key.encode(), message, hashlib.sha256).hexdigest()
 
 
-def valid(code: str, nonce: str, kind: str, sdp: str, value: str | None) -> bool:
-    return value is not None and hmac.compare_digest(proof(code, nonce, kind, sdp), value)
+def valid(key: str, nonce: str, kind: str, sdp: str, value: str | None) -> bool:
+    return value is not None and hmac.compare_digest(proof(key, nonce, kind, sdp), value)

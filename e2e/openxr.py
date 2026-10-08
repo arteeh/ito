@@ -22,6 +22,8 @@ from pathlib import Path
 
 import psutil
 
+from ito import clock
+
 OUT = Path("e2e/out/xr")
 
 
@@ -62,6 +64,7 @@ def main():
 
     from ito.app.__main__ import main as pilot_main
     from ito.driver import pairing
+    from ito.render import pose
 
     for path in OUT.glob("capture-*.png"):
         path.unlink()
@@ -102,7 +105,7 @@ def main():
             )
 
     robot = start_driver()
-    began = changed = time.monotonic()
+    began = changed = clock.now()
     stage = 0
     position = None
     recentered = 0
@@ -113,11 +116,29 @@ def main():
     ui_steps = []
     input_stalls = {}
     capture_input_ages = []
+    controller = {}  # A simulated right controller: its aim pose and trigger value.
+    panel_checks = {}
+
+    def with_controller(actions):
+        poll = actions.poll
+
+        def polled(at):
+            value = poll(at)
+            if controller:
+                value.axes["right_trigger"] = controller["trigger"]
+                actions.aims["right"] = controller["aim"]
+            return value
+
+        actions.poll = polled
+
+    def aim_at(x, y):
+        """A right aim, 1.2 m in front of the panel, hitting panel pixel (x, y)."""
+        return pose(((x / 768 - 0.5) * 1.05, -0.15 + (0.5 - y / 440) * 1.05 * 440 / 768, 0))
 
     def drive(app, window, value):
         nonlocal stage, changed, robot, position, recentered, frozen, timer
         nonlocal stall_frames
-        now = time.monotonic()
+        now = clock.now()
         assert now - began < 110, (stage, app.state, app.telemetry)
         observed_hands.update(value.hands)
         telemetry = app.telemetry
@@ -147,7 +168,7 @@ def main():
 
             def checked_capture(target, name):
                 result = capture(target, name)
-                age = (time.monotonic() - app.latest_input.timestamp) * 1000
+                age = (clock.now() - app.latest_input.timestamp) * 1000
                 capture_input_ages.append(age)
                 assert age < 200, (name, age)
                 return result
@@ -163,29 +184,29 @@ def main():
             stage, changed = 1, now
         elif stage == 1 and not input_stalls and telemetry.get("active"):
             ages = []
-            until = time.monotonic() + 0.65
-            while time.monotonic() < until:
-                ages.append((time.monotonic() - app.latest_input.timestamp) * 1000)
+            until = clock.now() + 0.65
+            while clock.now() < until:
+                ages.append((clock.now() - app.latest_input.timestamp) * 1000)
                 assert ages[-1] < 200, ages[-1]
                 assert app.telemetry["active"], app.telemetry
                 time.sleep(0.01)
-            released = time.monotonic()
+            released = clock.now()
             key(pygame.K_w, False)
             while app.telemetry["left_command"] or app.telemetry["right_command"]:
-                assert time.monotonic() - released < 0.5, app.telemetry
+                assert clock.now() - released < 0.5, app.telemetry
                 time.sleep(0.01)
             assert app.telemetry["active"], app.telemetry
             input_stalls["render_stall_input_age_ms_max"] = max(ages)
-            input_stalls["render_stall_key_release_ms"] = (time.monotonic() - released) * 1000
-            stopped = time.monotonic()
+            input_stalls["render_stall_key_release_ms"] = (clock.now() - released) * 1000
+            stopped = clock.now()
             key(pygame.K_e)
             while not app.state.status.e_stop:
-                assert time.monotonic() - stopped < 0.5, app.telemetry
+                assert clock.now() - stopped < 0.5, app.telemetry
                 time.sleep(0.01)
-            input_stalls["render_stall_estop_ms"] = (time.monotonic() - stopped) * 1000
+            input_stalls["render_stall_estop_ms"] = (clock.now() - stopped) * 1000
             key(pygame.K_r)
             key(pygame.K_w, True)
-            stage, changed = "resume_estop", time.monotonic()
+            stage, changed = "resume_estop", clock.now()
         elif stage in ("resume_estop", "resume_sampler"):
             assert now - changed < 3, (stage, app.state.status, telemetry)
             if telemetry.get("active") and not app.state.status.e_stop:
@@ -211,14 +232,14 @@ def main():
                 assert entered.wait(1), "XR sampler waited for rendering"
                 stale = app.latest_input.timestamp
                 released = None
-                while app.telemetry["active"] or time.monotonic() - stale < 0.3:
-                    assert time.monotonic() - stale < 0.5, app.telemetry
+                while app.telemetry["active"] or clock.now() - stale < 0.3:
+                    assert clock.now() - stale < 0.5, app.telemetry
                     if not app.telemetry["active"] and released is None:
-                        released = time.monotonic()
+                        released = clock.now()
                     time.sleep(0.01)
                 assert app.telemetry["left_command"] == app.telemetry["right_command"] == 0
                 input_stalls["sampler_stall_deadman_release_ms"] = (
-                    (released or time.monotonic()) - stale
+                    (released or clock.now()) - stale
                 ) * 1000
             finally:
                 window.actions.poll = poll
@@ -227,7 +248,7 @@ def main():
             time.sleep(0.3)
             assert not app.telemetry["active"], app.telemetry
             key(pygame.K_r)
-            stage, changed = "resume_sampler", time.monotonic()
+            stage, changed = "resume_sampler", clock.now()
         elif stage == 1 and now - changed > 2:
             assert (
                 np.linalg.norm(np.array((telemetry["base_x"], telemetry["base_y"])) - position)
@@ -252,6 +273,39 @@ def main():
         elif stage == 4 and now - changed > 2:
             assert not app.state.status.e_stop
             assert app.max_splats == 8192
+            assert not window.panel_visible, "the panel covers the view with nothing to show"
+            # Aimed roughly ahead, at the quad but no control: the trigger is the robot's.
+            with_controller(window.actions)
+            controller.update(aim=aim_at(700, 400), trigger=0.5)
+            stage, changed = "quad aimed", now
+        elif stage == "quad aimed" and now - changed > 0.6:
+            assert not window.panel_hovered and not window.panel_visible
+            assert app.latest_input.axes["right_trigger"] == 0.5, app.latest_input.axes
+            panel_checks["trigger_reaches_robot_aimed_ahead"] = True
+            # Aim at the panel's title bar, then half-press: it points, not the robot's input.
+            controller.update(aim=aim_at(60, 20), trigger=0.0)
+            stage, changed = "control aimed", now
+        elif stage == "control aimed" and now - changed > 0.3:
+            assert window.panel_hovered and window.panel_visible, "pointing did not show it"
+            controller["trigger"] = 0.5
+            stage, changed = "panel pressed", now
+        elif stage == "panel pressed" and now - changed > 0.6:
+            assert app.latest_input.axes["right_trigger"] == 0, app.latest_input.axes
+            controller["aim"] = pose((0, -0.15, 0), yaw=1.2)
+            stage, changed = "panel left", now
+        elif stage == "panel left" and now - changed > 0.6:
+            # The press that began on the panel stays the panel's until it is released.
+            assert app.latest_input.axes["right_trigger"] == 0, app.latest_input.axes
+            assert not window.panel_visible
+            controller["trigger"] = 0.0
+            stage, changed = "trigger released", now
+        elif stage == "trigger released" and now - changed > 0.3:
+            controller["trigger"] = 0.5
+            stage, changed = "trigger away", now
+        elif stage == "trigger away" and now - changed > 0.6:
+            assert app.latest_input.axes["right_trigger"] == 0.5, app.latest_input.axes
+            panel_checks["trigger_reaches_robot_off_panel"] = True
+            controller.clear()
             key(pygame.K_F12)
             stage, changed = "captured_scene", now
         elif stage == "captured_scene" and window.capture_number >= 3 and now - changed > 0.6:
@@ -341,6 +395,17 @@ def main():
     )
     assert frozen_frames >= 5, "No display frames observed with an unchanged scene"
     assert any(r["link"] == "RECONNECTING" and r["rendered"] for r in rows)
+    # The panel shows only when it has something the pilot needs.
+    assert any(
+        not r["panel_visible"] for r in rendered if r["link"] == "CONNECTED" and not r["e_stop"]
+    )
+    assert all(r["panel_visible"] for r in rendered if r["link"] != "CONNECTED" or r["e_stop"])
+    # It also says why the robot won't move: stopped, neutral or faulted.
+    assert all(r["panel_visible"] for r in rendered if r["robot_state"] != "active")
+    assert any(r["robot_state"] == "stopped" for r in rendered)
+    # Both eyes reuse one splat order: never more than one GPU sort per display frame.
+    sorts = [b["sorts"] - a["sorts"] for a, b in zip(rows, rows[1:], strict=False)]
+    assert max(sorts) == 1 and sum(sorts) > 30, sorts
     for row in rendered:
         assert len(row["eyes"]) == 2
         separation = np.linalg.norm(
@@ -363,6 +428,8 @@ def main():
         "stalled_scene_display_frames": stall_frames,
         "unchanged_scene_display_frames": frozen_frames,
         "frame_ms_median": float(np.median([r["frame_ms"] for r in rendered])),
+        "sorts_per_frame_max": max(sorts),
+        **panel_checks,
         "tracked_hands": sorted(observed_hands),
         "reference_space": args.reference_space,
         "recenters": rows[-1]["recenters"],

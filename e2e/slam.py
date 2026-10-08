@@ -11,7 +11,6 @@ import os
 import socket
 import subprocess
 import sys
-import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -19,6 +18,7 @@ import numpy as np
 import psutil
 import pygame
 
+from ito import clock
 from ito.app.__main__ import main as pilot_main
 from ito.driver import pairing
 from ito.reconstruction.mast3r_runtime import MODELS
@@ -119,7 +119,7 @@ def main():
     env = os.environ.copy()
     if sys.platform == "linux":
         env.update(MUJOCO_GL="osmesa", LD_LIBRARY_PATH="/opt/data/lib/osmesa")
-    began = changed = time.monotonic()
+    began = changed = clock.now()
     stage = 0
     previous = began
     display_times = []
@@ -149,7 +149,7 @@ def main():
     def drive(app, window, value):
         nonlocal stage, changed, previous, suspended, first_position, tracked_before_stall
         nonlocal video_before_failure, error
-        now = time.monotonic()
+        now = clock.now()
         limit = args.startup_timeout if args.cuda and stage == 0 else 60
         assert now - changed < limit, (stage, app.reconstruction_status, app.failure)
         display_times.append(now - previous)
@@ -237,7 +237,8 @@ def main():
             suspended.resume()
             suspended = None
             stage, changed = 5, now
-        elif stage == 5 and app.tracked_frames > tracked_before_stall + 2:
+        elif stage == 5 and app.tracked_frames > tracked_before_stall + 2 and now - changed > 3:
+            # Tracking must hold steady before the 3D view returns; by now it has.
             assert not app.state.flat_video
             # A native crash must leave the camera and safety controls usable too.
             app.worker.process.kill()

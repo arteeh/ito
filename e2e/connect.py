@@ -1,8 +1,8 @@
 """Start ito with no address, try the simulated robot, then pair with a robot on the network.
 
 The robot is ito-driver-mujoco listening on 0.0.0.0, reached through this machine's network
-address. Pairing runs unpaired, wrong-code, correct-code, remembered-code and rotated-code
-connections through the connect screen, the way a pilot would.
+address. Pairing runs unpaired, wrong-code, correct-code, remembered and rotated-code connections
+through the connect screen, the way a pilot would.
 
 DISPLAY=:97 LIBGL_ALWAYS_SOFTWARE=1 uv run python e2e/connect.py
 """
@@ -12,13 +12,13 @@ import os
 import socket
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import psutil
 import pygame
 from OpenGL import GL
 
+from ito import clock
 from ito.app import connect
 from ito.app.__main__ import main as pilot_main
 from ito.driver import pairing
@@ -84,7 +84,7 @@ def main():
     robot = subprocess.Popen(
         driver + ["--port", str(port)], env=os.environ | gl, stdout=log, stderr=log
     )
-    stage, changed, began = "simulated", time.monotonic(), time.monotonic()
+    stage, changed, began = "simulated", clock.now(), clock.now()
     live = {}
     seen = []  # Every Pilot the app made, to read why the robot refused it.
     sims = []
@@ -96,11 +96,11 @@ def main():
 
     def go(name):
         nonlocal stage, changed
-        stage, changed = name, time.monotonic()
+        stage, changed = name, clock.now()
         connect.layout.clear()  # Only a redrawn connect screen counts as being back there.
 
     def frame():
-        now = time.monotonic()
+        now = clock.now()
         waited = now - changed
         if now - began >= 240:
             screenshot("timeout")
@@ -153,21 +153,28 @@ def main():
             go("wrong code refused")
         elif stage == "wrong code refused" and len(seen) == 3 and at("code") and waited > 0.5:
             assert seen[-1].refusal == "Wrong pairing code", seen[-1].refusal
-            assert not any(e.get("code") for e in json.loads(recent.read_text()))
+            assert not any(e.get("credential") for e in json.loads(recent.read_text()))
             screenshot("wrong-code")
             type_text(codes["first"][:3] + "-" + codes["first"][3:])
             go("correct code")
         elif stage == "correct code" and waited > 0.3:
             click(at("pair"))
             go("paired")
-        elif stage == "paired" and scene:
-            assert pilot.address == address and pilot.code == codes["first"], pilot.address
+        elif stage == "paired" and scene and pairing.paired_pilot(code_file):
+            # The typed code is spent: the robot gave this pilot its own secret instead.
+            assert pilot.address == address and pilot.code is None, pilot.address
+            credential = pilot.credential.model_dump(include={"pilot", "secret"})
             saved = json.loads(recent.read_text())
             if os.name != "nt":
                 assert recent.stat().st_mode & 0o077 == 0
             assert saved[0] == {"address": address, "name": saved[0]["name"]} | {
-                "code": codes["first"]
+                "credential": credential
             }, saved
+            stored = pairing.paired_pilot(code_file)
+            assert stored == {"used": codes["first"]} | credential, (stored, credential)
+            shown = subprocess.run(driver + ["--show-code"], check=True, capture_output=True)
+            assert b"used by a paired pilot" in shown.stdout, shown.stdout
+            codes["credential"] = credential
             screenshot("paired")
             click(DISCONNECT)
             live.clear()
@@ -177,7 +184,9 @@ def main():
             click(at("recent 0"))
             go("remembered piloting")
         elif stage == "remembered piloting" and scene:
-            assert pilot.code == codes["first"] and len(seen) == 5, "remembered code not used"
+            remembered = pilot.credential.model_dump(include={"pilot", "secret"})
+            assert pilot.code is None and len(seen) == 5, "remembered pairing not used"
+            assert remembered == codes["credential"], "remembered pairing not used"
             click(DISCONNECT)
             live.clear()
             subprocess.run(
@@ -190,8 +199,8 @@ def main():
             click(at("recent 0"))
             go("rotated refused")
         elif stage == "rotated refused" and waited > 0.5 and len(seen) == 6 and at("code"):
-            assert seen[-1].code == codes["first"] and seen[-1].refusal == "Wrong pairing code"
-            assert json.loads(recent.read_text())[0]["code"] is None, "refused code kept"
+            assert seen[-1].refusal == "This robot no longer knows this pilot", seen[-1].refusal
+            assert json.loads(recent.read_text())[0]["credential"] is None, "refused secret kept"
             screenshot("rotated")
             type_text(codes["rotated"])
             go("rotated code")
@@ -199,7 +208,7 @@ def main():
             key(pygame.K_RETURN)
             go("rotated piloting")
         elif stage == "rotated piloting" and scene:
-            assert pilot.code == codes["rotated"]
+            assert pilot.code is None and pilot.credential.pilot != codes["credential"]["pilot"]
             screenshot("rotated-paired")
             key(pygame.K_ESCAPE)
             go("escape piloting")
@@ -232,7 +241,8 @@ def main():
         log.close()
     assert stage == "done", stage
     saved = json.loads(recent.read_text())
-    assert saved[0]["address"] == address and saved[0]["code"] == codes["rotated"], saved
+    assert saved[0]["address"] == address and saved[0]["credential"], saved
+    assert saved[0]["credential"]["pilot"] == pairing.paired_pilot(code_file)["pilot"], saved
     assert [entry["address"] for entry in saved] == [address, "127.0.0.1:9"], saved
     assert "Wrong pairing code" in (OUT / "driver.log").read_text()
     print(

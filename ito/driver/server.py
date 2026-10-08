@@ -1,8 +1,6 @@
 import asyncio
-import contextlib
 import logging
 import math
-import time
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -10,13 +8,24 @@ from aiohttp import web
 from aiortc import RTCIceServer, RTCSessionDescription
 from aiortc.sdp import SessionDescription
 
+from ito import clock
 from ito.driver.adapter import Adapter
 from ito.driver.pairing import Pairing, PairingRefused, default_path
 from ito.link import Peer
 from ito.link.audio import Audio, opus
-from ito.link.pairing import proof
+from ito.link.pairing import proof, token
 from ito.link.signaling import parse_offer
-from ito.protocol import Command, FrameMetadata, PilotState, Status, WireMessage, encode
+from ito.protocol import (
+    VERSION,
+    Command,
+    Credential,
+    FrameMetadata,
+    Paired,
+    PilotState,
+    Status,
+    WireMessage,
+    encode,
+)
 
 log = logging.getLogger(__name__)
 
@@ -48,10 +57,12 @@ class Driver:
         self.command_rate = command_rate
         self.ice_servers = ice_servers
         self.pairing = Pairing(pairing_file or default_path())
+        self._pairing_code: str | None = None  # The code the current pilot paired with.
         self.peer: Peer | None = None
         self.state = "neutral"
         self.reason = "waiting for pilot"
-        self._stopped = False
+        # Every connection starts stopped: piloting begins only when the pilot resumes.
+        self._stopped = True
         self._estop = False
         self._fault = False
         self._is_neutral = False
@@ -71,6 +82,7 @@ class Driver:
         self._negotiating = False
         self._closing = False
         self.address: str | None = None
+        self.failed = asyncio.Event()  # The watchdog died; serve() exits instead of idling.
 
     def _neutral(self, reason: str) -> None:
         self._latest = None
@@ -85,9 +97,9 @@ class Driver:
         log.info(
             "Robot neutral: %s; input_age_ms=%.1f",
             reason,
-            (time.monotonic() - self._capture) * 1000 if self._capture >= 0 else -1,
+            (clock.now() - self._capture) * 1000 if self._capture >= 0 else -1,
         )
-        self._last_neutral_attempt = time.monotonic()
+        self._last_neutral_attempt = clock.now()
         try:
             self.adapter.neutral()
             self._is_neutral = True
@@ -106,7 +118,7 @@ class Driver:
         if isinstance(message, PilotState):
             if self.peer is None or self.peer.clock.offset is None:
                 return
-            now = time.monotonic()
+            now = clock.now()
             capture = self.peer.clock.remote_to_local(message.capture_time)
             if (
                 capture <= self._capture
@@ -121,6 +133,17 @@ class Driver:
                 self._neutral("deadman released")
             elif not (self._estop or self._stopped or self._fault):
                 self._latest = message
+        elif isinstance(message, Paired):
+            credential = peer.credential
+            if self._pairing_code and credential and message.pilot == credential.pilot:
+                code, self._pairing_code = self._pairing_code, None
+                try:
+                    self.pairing.paired(code, credential.pilot, credential.secret)
+                    log.info("Pilot paired; the pairing code is used up")
+                except (OSError, ValueError):
+                    log.exception("Cannot store the pilot's credential; the code stays valid")
+            else:
+                peer.rejected_messages += 1
         elif isinstance(message, Command):
             if message.sequence <= self._command_sequence:
                 if self.peer:
@@ -135,7 +158,7 @@ class Driver:
                 self._neutral("stop")
             elif not self._fault:
                 self._stopped = self._estop = False
-                self._not_before = time.monotonic()
+                self._not_before = clock.now()
                 self._neutral("resumed; waiting for fresh deadman input")
             self._status()
 
@@ -191,7 +214,7 @@ class Driver:
     async def _run(self) -> None:
         interval = min(0.01, self.input_timeout / 4, 1 / self.command_rate)
         while True:
-            now = time.monotonic()
+            now = clock.now()
             if self._fault and not self._is_neutral:
                 if now - self._last_neutral_attempt >= 1 / self.command_rate:
                     self._neutral(self.reason)
@@ -206,7 +229,7 @@ class Driver:
                     try:
                         self._is_neutral = False
                         self.adapter.apply(self._latest)
-                        self._input_latency_ms = max(0, (time.monotonic() - self._capture) * 1000)
+                        self._input_latency_ms = max(0, (clock.now() - self._capture) * 1000)
                         self._applied_sequence = self._latest.sequence
                         self._last_apply = now
                         self.state, self.reason = "active", "pilot input"
@@ -227,6 +250,16 @@ class Driver:
                         self.peer = None
             await asyncio.sleep(interval)
 
+    def _watchdog_ended(self, task: asyncio.Task) -> None:
+        """Without the watchdog nothing enforces the input timeout: stop the robot for good."""
+        if task.cancelled() or self._closing:
+            return
+        log.critical("Driver watchdog stopped", exc_info=task.exception())
+        self._fault = True
+        self._is_neutral = False
+        self._neutral("driver watchdog stopped")
+        self.failed.set()
+
     async def _challenge(self, request: web.Request) -> web.Response:
         return web.json_response({"nonce": self.pairing.nonce()})
 
@@ -238,7 +271,9 @@ class Driver:
         if self._closing:
             raise web.HTTPServiceUnavailable()
         try:
-            code = self.pairing.check(offer.nonce, offer.proof, offer.sdp)
+            grant = self.pairing.check(
+                offer.nonce, offer.proof, offer.sdp, offer.pilot, request.remote or ""
+            )
         except PairingRefused as refused:
             log.warning("Refused pilot at %s: %s", request.remote, refused)
             return web.Response(status=refused.status, text=str(refused))
@@ -246,14 +281,16 @@ class Driver:
             raise web.HTTPConflict(text="this robot already has a pilot")
         description = self.adapter.description
         encode(description)
-        self._neutral("connecting")
+        self._stopped = True
+        self._neutral("connecting; the pilot resumes to begin")
         self._capture = -1.0
-        self._not_before = time.monotonic()
+        self._not_before = clock.now()
         self._received = 0.0
         self._command_sequence = self._applied_sequence = -1
         peer = Peer(
             "driver",
             description=description,
+            credential=Credential(pilot=token(), secret=token()) if grant.code else None,
             audio=Audio(self.audio_source, self.audio_sink) if self.audio_source else None,
             ice_servers=self.ice_servers,
             on_message=lambda message: self._message(peer, message),
@@ -261,7 +298,8 @@ class Driver:
             on_track=lambda track: audio_received(track),
         )
         self.peer = peer
-        self._connected_at = time.monotonic()
+        self._pairing_code = grant.code
+        self._connected_at = clock.now()
         self._negotiating = True
 
         def audio_received(track):
@@ -323,10 +361,10 @@ class Driver:
             sdp = peer.pc.localDescription.sdp
             return web.json_response(
                 {
-                    "version": 1,
+                    "version": VERSION,
                     "type": "answer",
                     "sdp": sdp,
-                    "proof": proof(code, offer.nonce, "answer", sdp),
+                    "proof": proof(grant.key, offer.nonce, "answer", sdp),
                 }
             )
         except asyncio.CancelledError:
@@ -362,6 +400,7 @@ class Driver:
             url_host = f"[{host}]" if ":" in host else host
             self.address = f"http://{url_host}:{actual_port}"
             self._task = asyncio.create_task(self._run())
+            self._task.add_done_callback(self._watchdog_ended)
             return self.address
         except BaseException:
             await self.close()
@@ -376,8 +415,8 @@ class Driver:
         try:
             if self._task:
                 self._task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await self._task
+                # A watchdog that died has been reported by _watchdog_ended already.
+                await asyncio.gather(self._task, return_exceptions=True)
             if self._runner:
                 await self._runner.cleanup()
             if self.peer:

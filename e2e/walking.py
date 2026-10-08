@@ -8,14 +8,15 @@ import json
 import math
 import os
 import sys
-import time
 from pathlib import Path
 
 import numpy as np
 from mujoco_driver import Pilot
 
+from ito import clock
 from ito.driver import pairing
 from ito.link import connect
+from ito.protocol import Command
 
 OUT = Path("e2e/out/walking")
 
@@ -43,6 +44,7 @@ async def run():
                 line.decode().strip().rsplit(" ", 1)[1], receive_audio=False, code=code
             )
             pilot = Pilot(peer)
+            assert peer.send(Command(sequence=0, action="resume"))
             # Standing, a look the head can reach leaves the body where it is.
             await pilot.drive(1, yaw=1.2)
             _, status = await pilot.status("active")
@@ -78,7 +80,7 @@ async def run():
             )
             beyond = math.radians(30)
             gaze = facing + limit + beyond
-            following = time.monotonic()
+            following = clock.now()
             await pilot.drive(4, yaw=gaze)
             _, status = await pilot.status("active")
             reached = status.telemetry

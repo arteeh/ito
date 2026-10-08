@@ -13,9 +13,9 @@ import os
 import signal
 import sys
 import tempfile
-import time
 from pathlib import Path
 
+from ito import clock
 from ito.driver import pairing
 from ito.link import connect
 from ito.protocol import FrameMetadata, Status
@@ -52,15 +52,15 @@ async def run():
                 address = (await driver.stdout.readline()).decode().split()[-1]
             async with await connect(address, code=code) as peer:
                 statuses, frames, rtts = [], set(), []
-                ended = time.monotonic() + SECONDS
-                while (now := time.monotonic()) < ended:
+                ended = clock.now() + SECONDS
+                while (now := clock.now()) < ended:
                     try:
                         async with asyncio.timeout(ended - now):
                             message = await peer.messages.get()
                     except TimeoutError:
                         break
                     if isinstance(message, Status):
-                        statuses.append(time.monotonic())
+                        statuses.append(clock.now())
                         if peer.clock.rtt is not None:
                             rtts.append(peer.clock.rtt)
                     elif isinstance(message, FrameMetadata):

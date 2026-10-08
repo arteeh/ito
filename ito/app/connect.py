@@ -1,6 +1,6 @@
 """Shown when ito starts without an address: a recent robot, a typed address, or the simulator.
 
-A robot that refuses the pairing code brings the pilot back here to type it, once per robot.
+A robot that does not know this pilot brings them back here to type its pairing code, once.
 """
 
 import os
@@ -11,6 +11,7 @@ import pygame
 from imgui_bundle import imgui
 
 from ito.link.pairing import DIGITS, normalize
+from ito.protocol import Credential
 
 from . import settings
 
@@ -22,7 +23,8 @@ layout = {}
 class Choice:
     address: str | None  # None pilots the bundled simulated robot.
     xr: bool = False
-    code: str | None = None  # The robot's pairing code, when known.
+    code: str | None = None  # The robot's pairing code, when the pilot just typed it.
+    credential: Credential | None = None  # What the robot gave this pilot when it paired.
 
 
 def placed(name):
@@ -107,13 +109,13 @@ def choose(window, *, xr=False, error=None, pairing=None):
             imgui.same_line()
             if (imgui.button("Connect") or entered) and address.strip():
                 typed = address.strip()
-                choice = Choice(typed, xr, settings.code(typed))
+                choice = Choice(typed, xr, credential=settings.credential(typed))
             placed("connect")
             if recent:
                 imgui.separator_text("Recent robots")
                 for index, entry in enumerate(recent):
                     if imgui.button(f"{entry['name']}  {entry['address']}##{index}", (380, 0)):
-                        choice = Choice(entry["address"], xr, entry["code"])
+                        choice = Choice(entry["address"], xr, credential=entry["credential"])
                     placed(f"recent {index}")
             imgui.separator()
             if imgui.button("Try simulated robot", (380, 0)):

@@ -28,6 +28,8 @@ import numpy as np
 import psutil
 import pygame
 
+from ito import clock
+
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "e2e/out/release"
 user32, gdi32, kernel32 = ctypes.windll.user32, ctypes.windll.gdi32, ctypes.windll.kernel32
@@ -110,10 +112,10 @@ class App:
         )
         App.running.append(self.process)
         self.window = None
-        deadline = time.monotonic() + 120
+        deadline = clock.now() + 120
         while self.window is None:
             self.alive()
-            assert time.monotonic() < deadline, f"{name}: no Ito window"
+            assert clock.now() < deadline, f"{name}: no Ito window"
             found = windows({p.pid for p in self.tree()})
             self.window = found[0] if found else None
             time.sleep(0.5)
@@ -140,7 +142,7 @@ class App:
         return [json.loads(line) for line in text.splitlines() if line.endswith("}")]
 
     def wait(self, label, condition, timeout, *, failed=lambda row: False):
-        deadline = time.monotonic() + timeout
+        deadline = clock.now() + timeout
         while True:
             self.alive()
             rows = self.rows()
@@ -148,7 +150,7 @@ class App:
             if rows and condition(rows):
                 log(f"{self.name}: {label}")
                 return rows
-            if time.monotonic() > deadline:
+            if clock.now() > deadline:
                 last = rows[-1] if rows else None
                 raise AssertionError(f"{self.name}: timed out waiting for {label}; last {last}")
             time.sleep(1)
@@ -234,7 +236,15 @@ def main():
     with zipfile.ZipFile(args.zip) as archive:
         archive.extractall(args.target)
     folder = args.target / "ito"
-    assert {p.name for p in folder.iterdir()} == {"ito.exe", "runtime", "models"}
+    assert {p.name for p in folder.iterdir()} == {
+        "ito.exe",
+        "runtime",
+        "models",
+        "THIRD_PARTY_NOTICES.txt",
+    }
+    notices = (folder / "THIRD_PARTY_NOTICES.txt").read_text(encoding="utf-8")
+    for shipped in ("\nav ", "\ntorch ", "pygame/docs/generated/LGPL.txt", "MASt3R"):
+        assert shipped in notices, f"THIRD_PARTY_NOTICES.txt lacks {shipped.strip()}"
     env = clean_environment(args.target)
     try:
         pilot(folder, args, env)

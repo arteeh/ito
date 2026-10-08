@@ -1,8 +1,8 @@
 """MASt3R-SLAM's tracker and local graph, with a bounded live keyframe window."""
 
-import time
-
 import numpy as np
+
+from ito import clock
 
 from .rgbd import RGBDBackend
 
@@ -68,7 +68,7 @@ class SLAMBackend(RGBDBackend):
         from mast3r_slam.global_opt import FactorGraph
         from mast3r_slam.mast3r_utils import mast3r_inference_mono
 
-        started = time.monotonic()
+        started = clock.now()
         with torch.inference_mode():
             frame = create_frame(self.frame_id, rgb.astype(np.float32) / 255, self.transform)
             frame.K = self.K
@@ -144,7 +144,7 @@ class SLAMBackend(RGBDBackend):
             self.integrate_points(
                 self.xp.from_dlpack(points[valid].contiguous()),
                 self.xp.from_dlpack(colors[valid].contiguous()),
-                now + time.monotonic() - started,
+                now + clock.now() - started,
                 self.xp.from_dlpack(footprint[valid].contiguous()),
             )
             self.tracked += 1

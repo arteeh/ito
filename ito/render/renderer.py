@@ -1,11 +1,12 @@
 """OpenGL 4.3 renderer. No CUDA, CPU sorting, or GPU readback in the draw path."""
 
-import time
 from importlib.resources import files
 
 import moderngl
 import numpy as np
 from OpenGL import GL
+
+from ito import clock
 
 from .pose import validate_pose
 from .scene import FloatArray, GaussianBuffer
@@ -18,7 +19,7 @@ class GaussianRenderer:
         self.context = context
         shaders = files("ito.render").joinpath("shaders")
         self.keys = context.compute_shader(shaders.joinpath("keys.glsl").read_text())
-        self.sort = context.compute_shader(shaders.joinpath("sort.glsl").read_text())
+        self.sort_program = context.compute_shader(shaders.joinpath("sort.glsl").read_text())
         self.program = context.program(
             vertex_shader=shaders.joinpath("splat.vert").read_text(),
             fragment_shader=shaders.joinpath("splat.frag").read_text(),
@@ -31,6 +32,7 @@ class GaussianRenderer:
         self.fade_seconds = 0.0
         self.uploaded_bytes = 0
         self.draw_count = 0
+        self.sorts = 0
         self.scene_buffer = None
         self.order = None
         self.count = 0
@@ -94,7 +96,7 @@ class GaussianRenderer:
         records = update.records.copy()
         retiring = records[:, 3, 3] == 1
         records[retiring, 1, 3] = np.minimum(
-            records[retiring, 1, 3], time.monotonic() - self.epoch + self.fade_seconds
+            records[retiring, 1, 3], clock.now() - self.epoch + self.fade_seconds
         )
         self.changes.write(records)
         self.slots.write(update.indices)
@@ -108,6 +110,48 @@ class GaussianRenderer:
         if update.acknowledge is not None:
             update.acknowledge()
 
+    def sort(self, robot_camera: FloatArray, head: FloatArray) -> None:
+        """Order splats back to front for this viewpoint on the GPU.
+
+        Stereo draws sort once from the mid-eye pose and pass sort=False for both eyes:
+        the eyes are centimetres apart, and a full sort per eye doubles the GPU work.
+        """
+        if not self.draw_count:
+            return
+        view = self._view(validate_pose(robot_camera) @ validate_pose(head))
+        self.scene_buffer.bind_to_storage_buffer(1)
+        self.order.bind_to_storage_buffer(0)
+        self.keys["view"].write(view.T.copy())
+        self.keys["count"] = self.draw_count
+        self.keys["capacity"] = self.capacity
+        self.keys["stride"] = self.stride
+        self.keys.run(group_x=self.capacity // 256)
+        # A software GPU can block inside a barrier. ctypes releases the GIL so
+        # tracking and the deadman sender keep running while the GPU catches up.
+        GL.glMemoryBarrier(GL.GL_SHADER_STORAGE_BARRIER_BIT)
+        self.sort_program["capacity"] = self.capacity
+        stage = 2
+        while stage <= self.capacity:
+            self.sort_program["stage"] = stage
+            distance = stage // 2
+            while distance:
+                local = distance < 256
+                self.sort_program["distance"] = distance
+                self.sort_program["local_merge"] = local
+                self.sort_program.run(group_x=self.capacity // 256)
+                GL.glMemoryBarrier(GL.GL_SHADER_STORAGE_BARRIER_BIT)
+                distance = 0 if local else distance // 2
+            stage *= 2
+        self.sorts += 1
+
+    @staticmethod
+    def _view(world_from_eye: FloatArray) -> FloatArray:
+        rotation = world_from_eye[:3, :3]
+        view = np.eye(4, dtype=np.float32)
+        view[:3, :3] = rotation.T
+        view[:3, 3] = -rotation.T @ world_from_eye[:3, 3]
+        return view
+
     def draw(
         self,
         robot_camera: FloatArray,
@@ -117,12 +161,14 @@ class GaussianRenderer:
         *,
         clear: tuple[float, float, float, float] | None = (0.025, 0.035, 0.055, 1.0),
         viewport: tuple[int, int, int, int] | None = None,
+        sort: bool = True,
     ) -> None:
         """Draw world-space splats from world_from_camera @ camera_from_head.
 
         Call once per eye with its current pose, projection and framebuffer. Scene
         updates and anchor updates are independent; a stalled producer never stalls
         tracking. Projection uses OpenGL's [-1, 1] clip depth. Owns GL draw state.
+        With sort=False the order from the last sort() is reused.
         """
         world_from_eye = validate_pose(robot_camera) @ validate_pose(head)
         projection = np.asarray(projection, dtype=np.float32)
@@ -144,38 +190,16 @@ class GaussianRenderer:
             target.clear(*clear, viewport=viewport)
         if not self.draw_count:
             return
-        rotation = world_from_eye[:3, :3]
-        view = np.eye(4, dtype=np.float32)
-        view[:3, :3] = rotation.T
-        view[:3, 3] = -rotation.T @ world_from_eye[:3, 3]
+        if sort:
+            self.sort(robot_camera, head)
+        view = self._view(world_from_eye)
         self.scene_buffer.bind_to_storage_buffer(1)
         self.order.bind_to_storage_buffer(0)
-        self.keys["view"].write(view.T.copy())
-        self.keys["count"] = self.draw_count
-        self.keys["capacity"] = self.capacity
-        self.keys["stride"] = self.stride
-        self.keys.run(group_x=self.capacity // 256)
-        # A software GPU can block inside a barrier. ctypes releases the GIL so
-        # tracking and the deadman sender keep running while the GPU catches up.
-        GL.glMemoryBarrier(GL.GL_SHADER_STORAGE_BARRIER_BIT)
-        self.sort["capacity"] = self.capacity
-        stage = 2
-        while stage <= self.capacity:
-            self.sort["stage"] = stage
-            distance = stage // 2
-            while distance:
-                local = distance < 256
-                self.sort["distance"] = distance
-                self.sort["local_merge"] = local
-                self.sort.run(group_x=self.capacity // 256)
-                GL.glMemoryBarrier(GL.GL_SHADER_STORAGE_BARRIER_BIT)
-                distance = 0 if local else distance // 2
-            stage *= 2
         self.program["view"].write(view.T.copy())
         self.program["projection"].write(projection.T.copy())
         self.program["eye"] = tuple(world_from_eye[:3, 3])
         self.program["viewport"] = viewport[2:]
-        self.program["scene_time"] = time.monotonic() - self.epoch if self.fade_seconds else 0
+        self.program["scene_time"] = clock.now() - self.epoch if self.fade_seconds else 0
         self.program["fade_seconds"] = self.fade_seconds
         self.program["stride"] = self.stride
         self.program["sh_degree"] = self.degree
@@ -185,7 +209,7 @@ class GaussianRenderer:
         for resource in (
             self.vao,
             self.program,
-            self.sort,
+            self.sort_program,
             self.keys,
             self.scene_buffer,
             self.order,

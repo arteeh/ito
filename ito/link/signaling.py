@@ -8,7 +8,7 @@ from pydantic import Field, ValidationError
 from ito.link import pairing
 from ito.link.audio import opus
 from ito.link.peer import Peer
-from ito.protocol import VERSION, Model
+from ito.protocol import VERSION, Credential, Model, Token
 
 
 class Offer(Model):
@@ -17,6 +17,7 @@ class Offer(Model):
     sdp: str = Field(min_length=1, max_length=200_000)
     nonce: str | None = Field(default=None, pattern="^[0-9a-f]{32}$")
     proof: str | None = Field(default=None, pattern="^[0-9a-f]{64}$")
+    pilot: Token | None = None  # Proves this pilot's secret instead of the pairing code.
 
 
 class Challenge(Model):
@@ -33,10 +34,15 @@ async def connect(
     ice_servers: Sequence[RTCIceServer] = (),
     connect_timeout: float = 15,
     code: str | None = None,
+    credential: Credential | None = None,
 ) -> Peer:
     """Connect directly to a driver; caller consumes tracks without blocking input.
 
-    Raises PairingError when the driver refuses the pairing code (or none was given).
+    A credential from an earlier pairing replaces the code. After a code, the returned
+    peer holds the driver's new credential: store it, then send Paired so the driver
+    retires the code. Raises PairingError when the driver refuses the code or credential
+    (or neither was given), and ConnectionError when whatever answered cannot prove it is
+    the robot: that is no reason to forget the credential.
     """
     if not 0 <= video_tracks <= 16:
         raise ValueError("video_tracks must be between 0 and 16")
@@ -65,15 +71,23 @@ async def connect(
             base = address.rstrip("/")
             async with aiohttp.ClientSession() as session:
                 nonce = proof = None
-                if code is not None:
+                key = credential.secret if credential else code
+                if key is not None:
                     async with session.post(base + "/pairing") as response:
                         if response.status != 200:
                             raise ConnectionError(
                                 f"driver refused pairing (HTTP {response.status})"
                             )
                         nonce = Challenge.model_validate_json(await response.read()).nonce
-                    proof = pairing.proof(code, nonce, "offer", sdp)
-                offer = Offer(version=VERSION, type="offer", sdp=sdp, nonce=nonce, proof=proof)
+                    proof = pairing.proof(key, nonce, "offer", sdp)
+                offer = Offer(
+                    version=VERSION,
+                    type="offer",
+                    sdp=sdp,
+                    nonce=nonce,
+                    proof=proof,
+                    pilot=credential.pilot if credential else None,
+                )
                 async with session.post(
                     base + "/offer", json=offer.model_dump(exclude_none=True)
                 ) as response:
@@ -87,12 +101,14 @@ async def connect(
                     answer = Offer.model_validate_json(await response.read())
                     if answer.version != VERSION or answer.type != "answer":
                         raise ConnectionError("incompatible driver answer")
-            if code is None or not pairing.valid(code, nonce, "answer", answer.sdp, answer.proof):
-                raise pairing.PairingError("The robot could not prove it knows the pairing code")
+            if key is None or not pairing.valid(key, nonce, "answer", answer.sdp, answer.proof):
+                raise ConnectionError("The robot could not prove it paired with this pilot")
             await peer.pc.setRemoteDescription(RTCSessionDescription(sdp=answer.sdp, type="answer"))
             await peer.ready.wait()
             await peer.robot_received.wait()
             await peer.clock_ready.wait()
+            if credential is None:
+                await peer.credential_received.wait()
         return peer
     except BaseException:
         await peer.close()

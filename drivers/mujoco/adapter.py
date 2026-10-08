@@ -5,12 +5,12 @@ import math
 import os
 import sys
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
 
+from ito import clock
 from ito.driver import Adapter
 from ito.driver.walking import Walker
 from ito.protocol import Camera, DegreeOfFreedom, Intrinsics, PilotState, Pose, RobotDescription
@@ -109,7 +109,7 @@ class MujocoAdapter(Adapter):
         self._fault: BaseException | None = None
         self._telemetry: dict = {}
         self._tracks: list[CameraTrack] = []
-        self._captured = time.monotonic()
+        self._captured = clock.now()
         mujoco.mj_forward(self.model, self.data)
         self._origin = self.data.xpos[self.base_id].copy()
         self._world_rotation = ITO_FROM_MJ @ self.data.xmat[self.base_id].reshape(3, 3).T
@@ -207,7 +207,7 @@ class MujocoAdapter(Adapter):
 
     def apply(self, state):
         self._check_fault()
-        self._command = (time.monotonic(), state) if state.deadman else None
+        self._command = (clock.now(), state) if state.deadman else None
 
     def neutral(self):
         self._command = None
@@ -220,7 +220,7 @@ class MujocoAdapter(Adapter):
         self._check_fault()
         values = self._telemetry.copy()
         command = self._command
-        if command is None or time.monotonic() - command[0] >= self.input_timeout:
+        if command is None or clock.now() - command[0] >= self.input_timeout:
             # Neutral is enqueued immediately; measured velocity follows on the physics tick.
             values.update(left_command=0.0, right_command=0.0)
         return values
@@ -255,16 +255,16 @@ class MujocoAdapter(Adapter):
 
     def _simulate(self):
         active = True
-        deadline = time.monotonic()
+        deadline = clock.now()
         try:
             while not self._stop.is_set():
-                now = time.monotonic()
+                now = clock.now()
                 command = self._command
                 state = command[1] if command and now - command[0] < self.input_timeout else None
                 with self._lock:
                     self._controls(state, active)
                     self.mj.mj_step(self.model, self.data)
-                    self._captured = time.monotonic()
+                    self._captured = clock.now()
                     if not np.isfinite(self.data.qpos).all() or any(self.data.warning.number):
                         raise RuntimeError("unstable MJCF simulation; check model dynamics")
                     self._telemetry = {
@@ -288,7 +288,7 @@ class MujocoAdapter(Adapter):
                 active = state is not None
                 # Bound catch-up after scheduling stalls instead of teleporting the robot.
                 deadline = max(deadline + self.model.opt.timestep, now - 0.02)
-                self._stop.wait(max(0, deadline - time.monotonic()))
+                self._stop.wait(max(0, deadline - clock.now()))
         except BaseException as exc:
             self._fault = exc
             self._command = None
