@@ -264,13 +264,15 @@ class DesktopWindow:
                 next_metric = now + 0.5
             pacing.tick(self.fps)
 
-    def draw_view(self, current, head, projection, target, viewport):
+    def draw_view(self, current, head, projection, target, viewport, sort=True):
         if current.flat_video:
             self.video_panel.draw(
                 current.video, current.video_time, head, projection, target, viewport
             )
         else:
-            self.renderer.draw(current.robot_camera, head, projection, target, viewport=viewport)
+            self.renderer.draw(
+                current.robot_camera, head, projection, target, viewport=viewport, sort=sort
+            )
 
     def close(self) -> None:
         for resource in (self.input, self.overlay, self.video_panel, self.renderer):

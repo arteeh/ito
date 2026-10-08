@@ -343,6 +343,9 @@ def main():
     )
     assert frozen_frames >= 5, "No display frames observed with an unchanged scene"
     assert any(r["link"] == "RECONNECTING" and r["rendered"] for r in rows)
+    # Both eyes reuse one splat order: never more than one GPU sort per display frame.
+    sorts = [b["sorts"] - a["sorts"] for a, b in zip(rows, rows[1:], strict=False)]
+    assert max(sorts) == 1 and sum(sorts) > 30, sorts
     for row in rendered:
         assert len(row["eyes"]) == 2
         separation = np.linalg.norm(
@@ -365,6 +368,7 @@ def main():
         "stalled_scene_display_frames": stall_frames,
         "unchanged_scene_display_frames": frozen_frames,
         "frame_ms_median": float(np.median([r["frame_ms"] for r in rendered])),
+        "sorts_per_frame_max": max(sorts),
         "tracked_hands": sorted(observed_hands),
         "reference_space": args.reference_space,
         "recenters": rows[-1]["recenters"],
