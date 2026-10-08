@@ -22,6 +22,8 @@ from . import settings
 from .frames import FrameJoin, camera_matrix
 
 log = logging.getLogger(__name__)
+# A failed RGB-D worker restarts after this delay, doubling up to RESTART_LONGEST.
+RESTART_FIRST, RESTART_LONGEST = 1.0, 30.0
 
 
 class Pilot:
@@ -63,6 +65,7 @@ class Pilot:
         self.reconstruction_status = ""
         self.tracked_frames = 0
         self.tracking = False
+        self.restart_at = None  # When a failed RGB-D worker starts again.
         self.stop = threading.Event()
         self.thread = None
         self.loop = self.task = None
@@ -105,12 +108,9 @@ class Pilot:
                 try:
                     return self.worker.poll()
                 except RuntimeError as exc:
-                    if self.backend == "slam":
-                        self.failure = str(exc)
-                        self.reconstruction_status = str(exc) + "; showing flat camera feed"
-                        self.state = replace(self.state, flat_video=True)
-                    else:
-                        self.failure = str(exc)
+                    self.failure = str(exc)
+                    self.reconstruction_status = str(exc) + "; showing flat camera feed"
+                    self.state = replace(self.state, flat_video=True)
             return None
         finally:
             self.worker_lock.release()
@@ -254,16 +254,22 @@ class Pilot:
         )
         self.tracked_frames = 0
         self.tracking = False
+        self.restart_at = None
+        restart_delay = RESTART_FIRST
         self.frame_heads.clear()
         self.state = replace(self.state, flat_video=self.backend != "rgbd", video=None)
-        with self.worker_lock:
-            if self.backend != "video":
+
+        def reconstruct():
+            with self.worker_lock:
                 self.worker = Reconstruction(
                     camera.intrinsics,
                     max_splats=self.max_splats,
                     backend=self.backend,
                     origin=camera_matrix(camera.extrinsics),
                 )
+
+        if self.backend != "video":
+            reconstruct()
         # Talking to a robot without a speaker, or listening to one without a microphone,
         # would only hold the pilot's devices open.
         self.audio.start(
@@ -343,16 +349,26 @@ class Pilot:
                                 "SLAM tracking paused; showing flat camera feed"
                             )
                         self.state = replace(self.state, flat_video=not live)
-                if self.failure and self.backend == "slam":
+                if self.failure:
                     self.reconstruction_status = self.failure + "; showing flat camera feed"
+                    if self.restart_at is not None:
+                        wait = max(0, self.restart_at - now)
+                        self.reconstruction_status += f"; restarting in {wait:.0f} s"
                     self.state = replace(self.state, flat_video=True)
                 if self.failure and self.worker:
-                    # Failed SLAM must not tear down the robot link or stop video/input.
-                    if self.backend == "rgbd":
-                        raise RuntimeError(self.failure)
+                    # A failed worker must not tear down the robot link or stop video/input.
                     with self.worker_lock:
                         failed, self.worker = self.worker, None
                     self._retire(failed)
+                    if self.backend == "rgbd":
+                        # Posed RGB-D has no missing model or device to wait for: try again.
+                        self.restart_at = now + restart_delay
+                        restart_delay = min(RESTART_LONGEST, restart_delay * 2)
+                if self.restart_at is not None and now >= self.restart_at:
+                    self.restart_at = self.failure = None
+                    self.reconstruction_status = "Restarting rgbd"
+                    reconstruct()
+                    self.state = replace(self.state, flat_video=False)
                 if now - self.last_frame > 5:
                     raise ConnectionError("No synchronized camera frames for five seconds")
                 for task in tasks:

@@ -76,15 +76,16 @@ def main():
     estop_latency_ms = None
     tested_input_stall = False
     steady_start = steady_end = None
+    worker_restart_s = resume = None
 
     def drive(app, window, value):
         nonlocal stage, changed, previous, robot, killed, restarted, first_position
-        nonlocal reached_stop, stall, last_revisions, worker
+        nonlocal reached_stop, stall, last_revisions, worker, resume
         nonlocal first_camera, new_surfaces
         nonlocal release_latency_ms, estop_latency_ms, tested_input_stall
-        nonlocal steady_start, steady_end
+        nonlocal steady_start, steady_end, worker_restart_s
         now = clock.now()
-        assert now - began < 65, (stage, app.state, app.telemetry)
+        assert now - began < 75, (stage, app.state, app.telemetry)
         samples.append((now, now - previous, app.state.status.link))
         previous = now
         statuses.append((now, app.state.status.link, app.state.status.e_stop))
@@ -166,14 +167,35 @@ def main():
             # Freeze the real reconstruction process while input and display continue.
             worker = psutil.Process(app.worker.process.pid)
             worker.suspend()
-            threading.Timer(2, worker.resume).start()
+            resume = threading.Timer(2, worker.resume)
+            resume.start()
             last_revisions = app.matched_frames
             stall = True
             stage, changed = 4, now
         elif stage == 4 and now - changed > 1.5:
+            resume.cancel()
             worker.resume()
             stall = False
             assert app.matched_frames > last_revisions
+            # A crashed RGB-D worker leaves the link up, shows flat video and starts again.
+            worker.kill()
+            stage, changed = "worker killed", now
+        elif stage == "worker killed" and "restarting" in app.reconstruction_status:
+            assert app.state.flat_video, "a failed worker left the 3D view up"
+            assert app.state.status.link == "CONNECTED", app.state.status
+            assert app.connections == 1, app.connections
+            stage, changed = "worker restarting", now
+        elif (
+            stage == "worker restarting"
+            and app.worker
+            and app.worker.process.pid != worker.pid
+            and not app.state.flat_video
+            and window.renderer.epoch == app.worker.epoch
+            and window.renderer.count > 1000
+        ):
+            assert app.state.status.link == "CONNECTED", app.state.status
+            assert app.connections == 1, app.connections
+            worker_restart_s = now - changed
             pygame.event.post(pygame.event.Event(pygame.KEYUP, key=pygame.K_w))
             robot.kill()
             robot.wait()
@@ -332,6 +354,7 @@ def main():
         "steady_exposures": len(visible),
         "connected_frame_ms_p95": float(np.percentile(connected, 95) * 1000),
         "driver_dead_frame_ms_p95": float(np.percentile(offline, 95) * 1000),
+        "rgbd_worker_restart_s": round(worker_restart_s, 2),
         "max_splats": max(counts),
         "splats_beyond_initial_view": new_surfaces,
         "display_frames": len(samples),
