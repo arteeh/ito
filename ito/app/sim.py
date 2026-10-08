@@ -7,7 +7,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from ito import diagnostics
+from ito import diagnostics, lifetime
 from ito.desktop.settings import settings_path
 from ito.driver import pairing
 
@@ -39,6 +39,7 @@ class SimulatedRobot:
                 stdin=subprocess.DEVNULL,
                 stdout=log,
                 stderr=subprocess.STDOUT,
+                env=lifetime.child_environment(),
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
 
@@ -65,6 +66,7 @@ class SimulatedRobot:
                     stdin=subprocess.DEVNULL,
                     stdout=log,
                     stderr=subprocess.STDOUT,
+                    env=lifetime.child_environment(),
                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
                 )
         else:

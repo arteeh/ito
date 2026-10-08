@@ -2,12 +2,12 @@
 
 import json
 import os
-import time
 from fractions import Fraction
 
 from aiortc import AudioStreamTrack, VideoStreamTrack
 from av import VideoFrame
 
+from ito import clock
 from ito.driver import Adapter
 from ito.protocol import Camera, Depth, FrameMetadata, Intrinsics, Pose, RobotDescription
 
@@ -31,7 +31,7 @@ class CameraTrack(VideoStreamTrack):
         metadata = FrameMetadata(
             camera="front",
             sequence=self.sequence,
-            capture_time=time.monotonic(),
+            capture_time=clock.now(),
             camera_pose=Pose(position=(1.0, 2.0, 3.0)),
             depth=self.robot.depth[self.sequence % len(self.robot.depth)],
         )
@@ -91,7 +91,7 @@ class Robot(Adapter):
         return [CameraTrack(self), AudioStreamTrack()]
 
     def record(self, event, **fields):
-        self.journal.write(json.dumps({"event": event, "time": time.monotonic(), **fields}) + "\n")
+        self.journal.write(json.dumps({"event": event, "time": clock.now(), **fields}) + "\n")
 
     def apply(self, state):
         if self.fail_apply:

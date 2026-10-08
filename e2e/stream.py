@@ -12,6 +12,7 @@ import numpy as np
 import pygame
 from sample_scene import write_scene
 
+from ito import clock
 from ito.desktop import DesktopState, DesktopWindow, PilotStatus
 from ito.render import GaussianBuffer, GaussianFrame, load_ply, pose
 
@@ -25,7 +26,7 @@ def produce(name, shape, path, connection):
         for revision in range(2):
             shared[:] = original
             shared[:, 0, 0] += revision * 0.3
-            connection.send((revision, time.monotonic()))
+            connection.send((revision, clock.now()))
             assert connection.poll(20), "Display did not acknowledge scene upload"
             connection.recv()
             time.sleep(1.5)  # Deliberately slower than the display and pilot input.
@@ -66,8 +67,16 @@ class VirtualPad:
         for name, args, result in (
             ("SDL_JoystickAttachVirtual", [ctypes.c_int] * 4, ctypes.c_int),
             ("SDL_JoystickOpen", [ctypes.c_int], ctypes.c_void_p),
-            ("SDL_JoystickSetVirtualAxis", [ctypes.c_void_p, ctypes.c_int, ctypes.c_int16], ctypes.c_int),
-            ("SDL_JoystickSetVirtualButton", [ctypes.c_void_p, ctypes.c_int, ctypes.c_uint8], ctypes.c_int),
+            (
+                "SDL_JoystickSetVirtualAxis",
+                [ctypes.c_void_p, ctypes.c_int, ctypes.c_int16],
+                ctypes.c_int,
+            ),
+            (
+                "SDL_JoystickSetVirtualButton",
+                [ctypes.c_void_p, ctypes.c_int, ctypes.c_uint8],
+                ctypes.c_int,
+            ),
             ("SDL_JoystickClose", [ctypes.c_void_p], None),
             ("SDL_JoystickDetachVirtual", [ctypes.c_int], ctypes.c_int),
         ):
@@ -149,12 +158,16 @@ def main():
             pygame.event.post(pygame.event.Event(pygame.KEYUP, key=pygame.K_F12))
 
     def state():
-        return DesktopState(pose((0.15 * np.sin(ticks / 40), 0, 0)),
-                            PilotStatus("CONNECTED", 18, "E2E driver", estop))
+        return DesktopState(
+            pose((0.15 * np.sin(ticks / 40), 0, 0)),
+            PilotStatus("CONNECTED", 18, "E2E driver", estop),
+        )
 
     try:
-        with (OUTPUT / "metrics.jsonl").open("w") as metrics, \
-                DesktopWindow((800, 600), fps=60, capture_dir=OUTPUT) as window:
+        with (
+            (OUTPUT / "metrics.jsonl").open("w") as metrics,
+            DesktopWindow((800, 600), fps=60, capture_dir=OUTPUT) as window,
+        ):
             try:
                 window.run(source, state=state, on_input=receive, max_frames=210, metrics=metrics)
             finally:
@@ -171,9 +184,14 @@ def main():
         assert all(pilot.movement == (0, 0, 0) and not pilot.active for pilot in history[86:99])
         assert all(pilot.movement == (0, 0, 0) for pilot in history[122:])
         rows = [json.loads(line) for line in (OUTPUT / "metrics.jsonl").read_text().splitlines()]
-        assert sum(row["revision"] == 0 for row in rows) >= 2, "Did not render during producer stall"
+        assert sum(row["revision"] == 0 for row in rows) >= 2, (
+            "Did not render during producer stall"
+        )
         assert any(row["revision"] == 1 for row in rows)
-        print("PASS: shared-memory producer stalls/updates, fresh anchor, virtual gamepad axes/buttons, focus loss, hot unplug")
+        print(
+            "PASS: shared-memory producer stalls/updates, fresh anchor, "
+            "virtual gamepad axes/buttons, focus loss, hot unplug"
+        )
     finally:
         if process.is_alive():
             process.terminate()

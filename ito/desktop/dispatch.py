@@ -3,12 +3,13 @@
 import ctypes
 import sys
 import threading
-import time
 from dataclasses import replace
 from pathlib import Path
 
 import pygame
 from imgui_bundle import imgui
+
+from ito import clock
 
 
 class DisplayDispatch:
@@ -115,11 +116,11 @@ class DisplayDispatch:
                     self.done.set()
 
         thread = threading.Thread(target=render, name="ito-display")
-        previous = time.monotonic()
+        previous = clock.now()
         thread.start()
         try:
             while not self.done.wait(1 / 90):
-                now = time.monotonic()
+                now = clock.now()
                 self.sample(now - previous, on_sample)
                 previous = now
         finally:

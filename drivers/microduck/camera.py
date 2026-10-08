@@ -1,7 +1,6 @@
 """Rectify mediad's calibrated sensor image before exposing a pinhole camera to Ito."""
 
 import asyncio
-import time
 from fractions import Fraction
 
 import av
@@ -9,6 +8,7 @@ import numpy as np
 from aiortc import VideoStreamTrack
 from aiortc.mediastreams import MediaStreamError
 
+from ito import clock
 from ito.protocol import FrameMetadata, Intrinsics
 
 
@@ -76,7 +76,7 @@ class Camera:
                 raise RuntimeError("Microduck camera stalled for two seconds") from exc
             # mediad's WebRTC API exposes no per-frame capture timestamp. This is receive time,
             # not sensor exposure time; keep that distinction visible in telemetry.
-            received = time.monotonic()
+            received = clock.now()
             rgb = await asyncio.to_thread(self.rectify, frame)
             self.latest = (rgb, received)
             self.revision += 1

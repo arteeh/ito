@@ -1,9 +1,9 @@
 """A world-locked flat video panel; late camera frames never steer the pilot's view."""
 
-import time
-
 import moderngl
 import numpy as np
+
+from ito import clock
 
 
 class VideoPanel:
@@ -37,7 +37,7 @@ class VideoPanel:
         target.use()
         self.context.viewport = viewport
         target.clear(0.015, 0.02, 0.03, 1)
-        if rgb is None or time.monotonic() - stamp > 2:
+        if rgb is None or clock.now() - stamp > 2:
             return
         size = (rgb.shape[1], rgb.shape[0])
         if self.texture is None or self.texture.size != size:

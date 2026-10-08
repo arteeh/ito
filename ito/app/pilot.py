@@ -5,16 +5,15 @@ import contextlib
 import logging
 import sys
 import threading
-import time
 import traceback
 from collections import deque
 from dataclasses import replace
 
-from ito import diagnostics
+from ito import clock, diagnostics
 from ito.desktop import DesktopState, PilotStatus
 from ito.link import PairingError, connect
 from ito.link.audio import Audio
-from ito.protocol import Command, FrameMetadata, PilotState, Pose, Status
+from ito.protocol import Command, FrameMetadata, Paired, PilotState, Pose, Status
 from ito.reconstruction import Reconstruction
 from ito.render import pose
 from ito.render.pose import quaternion
@@ -23,6 +22,14 @@ from . import settings
 from .frames import FrameJoin, camera_matrix
 
 log = logging.getLogger(__name__)
+# SLAM's 3D view drops to the flat feed after this long without tracking, and returns only
+# once tracking has run this steadily, so the view does not flicker at the edge of tracking.
+TRACKING_LOST = 2.0
+TRACKING_STEADY = 1.0
+TRACKING_GAP = 0.5
+# A failed RGB-D worker restarts after this delay, doubling up to RESTART_LONGEST; one that ran
+# RESTART_HEALTHY seconds before failing starts the count again.
+RESTART_FIRST, RESTART_LONGEST, RESTART_HEALTHY = 1.0, 30.0, 60.0
 
 
 class Pilot:
@@ -38,14 +45,16 @@ class Pilot:
         audio_sink="device",
         persist=True,
         code=None,
+        credential=None,
     ):
         self.audio_options = (audio_source, audio_sink)
         self.audio = None
         self.mic_muted = self.speaker_muted = False
         self.address, self.camera_name, self.cameras = address, camera, cameras
         self.persist = persist  # The simulated robot's address changes every run.
-        self.code = code
-        self.refusal = None  # Why the robot refused the pairing code; the pilot must act.
+        self.code = code  # Used once, when the robot does not know this pilot yet.
+        self.credential = credential
+        self.refusal = None  # Why the robot refused to pair; the pilot must act.
         self.settings = defaults or settings.Settings()
         self.defaults = self.settings
         self.overrides = overrides or {}
@@ -65,6 +74,9 @@ class Pilot:
         self.reconstruction_status = ""
         self.tracked_frames = 0
         self.tracking = False
+        self.tracking_steady_since = 0.0
+        self.slam_view = False  # SLAM's 3D view is shown rather than the flat feed.
+        self.restart_at = None  # When a failed RGB-D worker starts again.
         self.stop = threading.Event()
         self.thread = None
         self.loop = self.task = None
@@ -121,12 +133,9 @@ class Pilot:
                 try:
                     return self.worker.poll()
                 except RuntimeError as exc:
-                    if self.backend == "slam":
-                        self.failure = str(exc)
-                        self.reconstruction_status = str(exc) + "; showing flat camera feed"
-                        self.state = replace(self.state, flat_video=True)
-                    else:
-                        self.failure = str(exc)
+                    self.failure = str(exc)
+                    self.reconstruction_status = str(exc) + "; showing flat camera feed"
+                    self.state = replace(self.state, flat_video=True)
             return None
         finally:
             self.worker_lock.release()
@@ -142,6 +151,7 @@ class Pilot:
                 latency_ms=peer.clock.rtt * 1000 if peer and peer.clock.rtt is not None else None,
                 robot=name,
                 e_stop=status.state == "e-stopped" if status else old.e_stop,
+                robot_state=status.state if status else old.robot_state if link == old.link else "",
                 detail=detail or (f"{status.state}: {status.reason}" if status else ""),
                 input_latency_ms=self.telemetry.get("pilot_input_latency_ms") if peer else None,
                 reconstruction=self.reconstruction_status,
@@ -168,29 +178,31 @@ class Pilot:
 
     def _save(self, name):
         if not self.persist:
-            return
+            return False
         try:
             settings.save(self.address, name, self.settings)
-            settings.remember(self.address, name, self.code)
+            settings.remember(self.address, name, self.credential)
+            return True
         except OSError as exc:
             log.warning("Cannot save pilot settings: %s", exc)
             self._status("CONNECTED", f"Could not save settings: {exc}")
+            return False
 
     def _submit(self, pair, peer):
         if pair is None:
             return
         captured = peer.clock.remote_to_local(pair[1].capture_time)
-        if captured <= self.state.video_time or not -0.1 <= time.monotonic() - captured <= 2:
+        if captured <= self.state.video_time or not -0.1 <= clock.now() - captured <= 2:
             diagnostics.event(
                 "frame_rejected",
                 interval=1,
                 sequence=pair[1].sequence,
                 out_of_order=captured <= self.state.video_time,
-                age_ms=(time.monotonic() - captured) * 1000,
+                age_ms=(clock.now() - captured) * 1000,
             )
             return
         rgb, depth, camera, _ = FrameJoin.arrays(pair, peer.clock)
-        self.last_frame = time.monotonic()
+        self.last_frame = clock.now()
         self.state = replace(self.state, video=rgb, video_time=captured)
         if self.backend == "rgbd" and camera is not None:
             self._anchor(camera, pair[1].head_angles, pair[1].body_yaw)
@@ -205,7 +217,7 @@ class Pilot:
             return
         if accepted:
             self.matched_frames += 1
-            self.last_frame = time.monotonic()
+            self.last_frame = clock.now()
             self.frame_heads.append((captured, pair[1].head_angles, pair[1].body_yaw))
 
     def _retire(self, worker):
@@ -243,7 +255,13 @@ class Pilot:
         self.settings = settings.Settings.model_validate(selected.model_dump() | self.overrides)
         self.overrides = {}
         self.settings_revision += 1
-        self._save(description.name)
+        paired = peer.credential_received.is_set()
+        if paired:
+            self.credential = peer.credential
+        # The robot retires its code once this pilot can come back without it.
+        if self._save(description.name) or (paired and not self.persist):
+            if paired and peer.send(Paired(pilot=self.credential.pilot)):
+                self.code = None
         self.telemetry = {}
         self.failure = None
         # Resume is never replayed across a connection; safety requests survive it.
@@ -263,17 +281,26 @@ class Pilot:
             "Flat camera feed" if self.backend == "video" else "Starting " + self.backend
         )
         self.tracked_frames = 0
-        self.tracking = False
+        self.tracking = self.slam_view = False
+        self.restart_at = None
+        restart_delay = RESTART_FIRST
+        worker_started = 0.0
         self.frame_heads.clear()
         self.state = replace(self.state, flat_video=self.backend != "rgbd", video=None)
-        with self.worker_lock:
-            if self.backend != "video":
+
+        def reconstruct():
+            nonlocal worker_started
+            worker_started = clock.now()
+            with self.worker_lock:
                 self.worker = Reconstruction(
                     camera.intrinsics,
                     max_splats=self.max_splats,
                     backend=self.backend,
                     origin=camera_matrix(camera.extrinsics),
                 )
+
+        if self.backend != "video":
+            reconstruct()
         # Talking to a robot without a speaker, or listening to one without a microphone,
         # would only hold the pilot's devices open.
         self.audio.start(
@@ -288,7 +315,7 @@ class Pilot:
         previous_fresh = None
         sequence = command_sequence = 0
         pending = None
-        last_status = time.monotonic()
+        last_status = clock.now()
         self.last_frame = last_status
 
         async def messages():
@@ -298,7 +325,7 @@ class Pilot:
                 if isinstance(message, FrameMetadata) and message.camera == camera.name:
                     self._submit(joined.described(message), peer)
                 elif isinstance(message, Status):
-                    last_status = time.monotonic()
+                    last_status = clock.now()
                     self.telemetry = message.telemetry
                     if pending and message.command_sequence == pending.sequence:
                         pending = None
@@ -319,10 +346,10 @@ class Pilot:
                     track.stop()
 
         tasks.extend([asyncio.create_task(messages()), asyncio.create_task(tracks())])
-        deadline = time.monotonic()
+        deadline = clock.now()
         try:
             while not self.stop.is_set():
-                now = time.monotonic()
+                now = clock.now()
                 if not peer.connected or now - last_status > 2:
                     raise ConnectionError("Driver status lost; input disarmed")
                 if self.worker and not self.failure:
@@ -335,9 +362,11 @@ class Pilot:
                         if tracked:
                             transform, count, self.tracking, captured = tracked
                             if count != self.tracked_frames:
+                                if now - self.last_tracking > TRACKING_GAP:
+                                    self.tracking_steady_since = now
                                 self.last_tracking = now
                             self.tracked_frames = count
-                        live = self.tracking and now - self.last_tracking < 2
+                        live = self.tracking and now - self.last_tracking < TRACKING_LOST
                         if live and tracked:
                             angles, body_yaw = next(
                                 (
@@ -352,17 +381,35 @@ class Pilot:
                             self.reconstruction_status = (
                                 "SLAM tracking paused; showing flat camera feed"
                             )
-                        self.state = replace(self.state, flat_video=not live)
-                if self.failure and self.backend == "slam":
+                        steady = (
+                            live
+                            and now - self.last_tracking < TRACKING_GAP
+                            and now - self.tracking_steady_since >= TRACKING_STEADY
+                        )
+                        self.slam_view = live if self.slam_view else steady
+                        self.state = replace(self.state, flat_video=not self.slam_view)
+                if self.failure:
                     self.reconstruction_status = self.failure + "; showing flat camera feed"
+                    if self.restart_at is not None:
+                        wait = max(0, self.restart_at - now)
+                        self.reconstruction_status += f"; restarting in {wait:.0f} s"
                     self.state = replace(self.state, flat_video=True)
                 if self.failure and self.worker:
-                    # Failed SLAM must not tear down the robot link or stop video/input.
-                    if self.backend == "rgbd":
-                        raise RuntimeError(self.failure)
+                    # A failed worker must not tear down the robot link or stop video/input.
                     with self.worker_lock:
                         failed, self.worker = self.worker, None
                     self._retire(failed)
+                    if self.backend == "rgbd":
+                        # Posed RGB-D has no missing model or device to wait for: try again.
+                        if now - worker_started >= RESTART_HEALTHY:
+                            restart_delay = RESTART_FIRST
+                        self.restart_at = now + restart_delay
+                        restart_delay = min(RESTART_LONGEST, restart_delay * 2)
+                if self.restart_at is not None and now >= self.restart_at:
+                    self.restart_at = self.failure = None
+                    self.reconstruction_status = "Restarting rgbd"
+                    reconstruct()
+                    self.state = replace(self.state, flat_video=False)
                 if now - self.last_frame > 5:
                     raise ConnectionError("No synchronized camera frames for five seconds")
                 for task in tasks:
@@ -446,7 +493,7 @@ class Pilot:
                         status=replace(shown, armed=self.armed, focus_hold=self.focus_hold),
                     )
                 deadline = max(deadline + 1 / 60, now)
-                await asyncio.sleep(max(0, deadline - time.monotonic()))
+                await asyncio.sleep(max(0, deadline - clock.now()))
         finally:
             self.armed = False
             peer.send(Command(sequence=command_sequence, action="stop"))
@@ -479,14 +526,22 @@ class Pilot:
                     connect_timeout=8,
                     audio_io=self.audio,
                     code=self.code,
+                    credential=self.credential,
                 ) as peer:
                     delay = 0.5
                     await self._session(peer)
             except asyncio.CancelledError:
                 break
             except PairingError as exc:
-                # Retrying the same code cannot succeed and counts against the robot's limit.
                 log.warning("Pilot connection: %s", exc)
+                if self.credential is not None:
+                    # The robot's code was rotated, so it forgot this pilot.
+                    self.credential = None
+                    if self.persist:
+                        settings.forget_credential(self.address)
+                    if self.code is not None:
+                        continue
+                # Retrying the same code cannot succeed and counts against the robot's limit.
                 self.refusal = str(exc)
                 self._status("REFUSED", self.refusal)
                 break
@@ -524,10 +579,10 @@ class Pilot:
             worker, self.worker = self.worker, None
         if worker is not None:
             self._retire(worker)
-        deadline = time.monotonic() + 8
+        deadline = clock.now() + 8
         for closer in self.retiring:
             with diagnostics.stage("reconstruction"):
-                closer.join(timeout=max(0, deadline - time.monotonic()))
+                closer.join(timeout=max(0, deadline - clock.now()))
             if closer.is_alive():
                 raise RuntimeError("Reconstruction worker did not shut down")
 

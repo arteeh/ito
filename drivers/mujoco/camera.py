@@ -1,7 +1,6 @@
 """RGB, optical-axis depth and camera pose come from the same immutable physics snapshot."""
 
 import asyncio
-import time
 from fractions import Fraction
 
 import numpy as np
@@ -9,6 +8,7 @@ from aiortc import VideoStreamTrack
 from aiortc.mediastreams import MediaStreamError
 from av import VideoFrame
 
+from ito import clock
 from ito.protocol import Depth, FrameMetadata
 
 
@@ -57,8 +57,8 @@ class CameraTrack(VideoStreamTrack):
     async def recv(self):
         if self.readyState != "live" or self.adapter._stop.is_set():
             raise MediaStreamError
-        await asyncio.sleep(max(0, self._deadline - time.monotonic()))
-        self._deadline = time.monotonic() + 1 / self.adapter.fps
+        await asyncio.sleep(max(0, self._deadline - clock.now()))
+        self._deadline = clock.now() + 1 / self.adapter.fps
         try:
             (
                 frame,

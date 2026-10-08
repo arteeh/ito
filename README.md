@@ -23,9 +23,10 @@ uv run ito-desktop scene.ply                              # explore a splat scen
 ```
 
 Drivers listen on all interfaces for LAN or tailnet connections and print their persisted
-pairing code at startup. Enter it once on the connect screen; Ito remembers it with the robot.
-`ito-driver-mujoco --show-code` shows it again; `--rotate-code` replaces it, including while
-the driver is running. Use the same `--pairing-file PATH` on each command if you override it.
+pairing code at startup. Enter it once on the connect screen: the robot then gives Ito a secret
+of its own over the encrypted link and the code is used up. `ito-driver-mujoco --show-code`
+shows it again; `--rotate-code` makes a new code and forgets every paired pilot, including
+while the driver is running. Use the same `--pairing-file PATH` on each command if you override it.
 The bundled simulated robot pairs automatically and has no microphone or speaker.
 **Show simulation** opens a separate MuJoCo viewer; closing it leaves piloting connected.
 
@@ -50,9 +51,12 @@ It excludes pairing codes, credentials, media and input contents; hover the togg
 XR uses the active OpenXR runtime (SteamVR, Virtual Desktop/VDXR, or Monado) and OpenGL 4.3.
 Use `--reference-space seated` (default) or `standing` after room setup. Each eye renders at
 the runtime display rate from the current predicted pose, independently of the robot stream.
-Aim a controller and press its trigger to use the world-locked ImGui panel; the companion
-window has the same controls. Left stick drives; on Touch controllers A resumes, B e-stops,
-X stops and Y recenters. Other controllers can use the panel (right menu also e-stops).
+Aim a controller and press its trigger to use the world-locked ImGui panel; it appears while
+a controller points at its controls, while the robot is not driving (stopped, e-stopped, faulted
+or the link down) so it says why, or when pinned with a left stick click. A trigger press that
+begins on the panel never reaches the robot. The companion window has the same controls. Left
+stick drives; on Touch controllers A resumes, B e-stops, X stops and Y recenters. Other
+controllers can use the panel (right menu also e-stops).
 Home or the panel recenters position and yaw and stops motion; resume explicitly afterward.
 Tracking/focus loss disarms input. E-stop and link loss pulse the controllers.
 Role-assigned Vive trackers are sent when the runtime supports `XR_HTCX_vive_tracker_interaction`.
@@ -73,7 +77,7 @@ Defaults are 16K for software rendering, 256K for hardware, or 1M with at least 
 
 `ito.reconstruction.Reconstruction(intrinsics, max_splats=window.max_splats)` accepts synchronized
 `submit(rgb_uint8, depth_float32_metres, world_from_camera, capture_time)` frames and is a live
-source for `DesktopWindow.run()`. Capture times use the pilot monotonic clock; poses use +Y up,
+source for `DesktopWindow.run()`. Capture times use the pilot clock (`ito.clock.now`); poses use +Y up,
 -Z forward. Use it as a context manager to own its worker process. Input drops when busy;
 changed slots coalesce in a bounded shared-memory ring. `uv sync --extra cuda` enables CUDA
 projection/voxelization on NVIDIA; the default automatically falls back to NumPy on CPU.
@@ -131,7 +135,7 @@ Audio uses the system default microphone and speakers (select the headset as the
 output in VR). The shared desktop/VR panel mutes the microphone and speakers independently.
 Linux device audio needs PortAudio (`libportaudio2` on Debian/Ubuntu); missing devices leave
 piloting available with an audio status line. Both CLIs accept `--audio-source device|none|tone:440`
-and `--audio-sink device|none|capture.wav`. MuJoCo defaults to a 440 Hz source.
+and `--audio-sink device|none|capture.wav`. MuJoCo has no microphone unless given a source.
 
 End-to-end checks (no GPU or headset needed):
 
@@ -139,6 +143,7 @@ End-to-end checks (no GPU or headset needed):
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/audio.py # two-way tones, mute, no device
 uv run python e2e/webrtc.py
 uv run python e2e/depth_load.py                            # Status and clock under VGA depth
+uv run python e2e/pairing.py                               # recorded signaling yields nothing reusable
 uv run python e2e/lifecycle.py
 uv run python e2e/mujoco_driver.py                         # saves RGB-D samples in e2e/out/mujoco
 uv run python e2e/reconstruction_faults.py
@@ -147,5 +152,6 @@ LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/connect.py # connect scree
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/render.py
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/desktop.py
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/stream.py
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/anchor_glide.py # no eye steps at SLAM rate
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/reconstruction.py  # two-minute live room
 ```

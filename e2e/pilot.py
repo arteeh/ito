@@ -3,22 +3,23 @@ import asyncio
 import base64
 import json
 import random
-import time
 import zlib
 
 from aiortc import AudioStreamTrack
 from aiortc.mediastreams import MediaStreamError
 
+from ito import clock
 from ito.link import connect
-from ito.protocol import Command, PilotState, Pose, Status
+from ito.protocol import VERSION, Command, Paired, PilotState, Pose, Status
 
 
 async def run(address: str, code: str):
     async with await connect(address, audio=AudioStreamTrack(), code=code) as peer:
         assert peer.control.ordered and peer.control.maxRetransmits is None
         assert not peer.pilot.ordered and peer.pilot.maxRetransmits == 0
-        clock = peer.channels["clock"]
-        assert not clock.ordered and clock.maxRetransmits == 0
+        clock_lane = peer.channels["clock"]
+        assert not clock_lane.ordered and clock_lane.maxRetransmits == 0
+        assert peer.send(Paired(pilot=peer.credential.pilot))
         frames = {"video": 0, "audio": 0}
         luma = set()
         sequence = 0
@@ -46,7 +47,7 @@ async def run(address: str, code: str):
             sequence += 1
             return PilotState(
                 sequence=sequence,
-                capture_time=time.monotonic() if capture is None else capture,
+                capture_time=clock.now() if capture is None else capture,
                 deadman=deadman,
                 head=Pose(position=(0.1, 0.2, 0.3)),
                 hands={"left": Pose()},
@@ -56,8 +57,8 @@ async def run(address: str, code: str):
             )
 
         async def drive(duration=0.5, deadman=True):
-            deadline = time.monotonic() + duration
-            while time.monotonic() < deadline:
+            deadline = clock.now() + duration
+            while clock.now() < deadline:
                 peer.send(state(deadman))
                 await asyncio.sleep(0.01)
 
@@ -75,6 +76,10 @@ async def run(address: str, code: str):
             return await status(lambda s: s.command_sequence == command_sequence)
 
         try:
+            # Deadman input moves nothing until the pilot resumes the new connection.
+            await drive(0.3)
+            await status(lambda s: s.state == "stopped")
+            assert (await command("resume")).state == "neutral"
             await drive()
             active = await status(lambda s: s.state == "active")
             assert active.telemetry["applied"] > 0
@@ -87,7 +92,7 @@ async def run(address: str, code: str):
             assert metadata.depth.to_bytes() == b"\xe8\x03" * (160 * 120)
             assert peer.description.cameras[0].track_id == "front-video"
             assert peer.clock.rtt is not None and peer.clock.rtt < 0.2
-            assert abs(time.monotonic() - peer.clock.remote_to_local(metadata.capture_time)) < 2
+            assert abs(clock.now() - peer.clock.remote_to_local(metadata.capture_time)) < 2
 
             released = state(False)
             peer.send(released)
@@ -121,7 +126,7 @@ async def run(address: str, code: str):
                 json.dumps({k: v for k, v in valid.items() if k != "version"}),
             ]
             changes = {
-                "version": [0, 2, True, "1", None],
+                "version": [0, 1, VERSION + 1, True, "2", None],
                 "type": ["robot", "unknown", 42],
                 "deadman": [1, "true", None],
                 "sequence": [-1, 1.5, "4"],
@@ -143,22 +148,24 @@ async def run(address: str, code: str):
                 await asyncio.sleep(0.002)
             peer.control.send(state().model_dump_json())
             peer.control.send(
-                json.dumps({"version": 2, "type": "command", "sequence": 500, "action": "resume"})
+                json.dumps(
+                    {"version": VERSION + 1, "type": "command", "sequence": 500, "action": "resume"}
+                )
             )
             # Clock sync and frame metadata have their own lanes; nothing else rides on them.
             # Ahead of the oversized message: the lossy clock lane gives up on a delayed message.
-            clock.send(Command(sequence=501, action="resume").model_dump_json())
+            clock_lane.send(Command(sequence=501, action="resume").model_dump_json())
             peer.channels["frames"].send(state().model_dump_json())
             peer.control.send("x" * 1_500_001)
             # A decompression bomb is rejected by the real driver decoder before direction checks.
             peer.control.send(
                 json.dumps(
                     {
-                        "version": 1,
+                        "version": VERSION,
                         "type": "frame",
                         "camera": "front",
                         "sequence": 1,
-                        "capture_time": time.monotonic(),
+                        "capture_time": clock.now(),
                         "depth": {
                             "width": 1,
                             "height": 1,
@@ -174,7 +181,7 @@ async def run(address: str, code: str):
             # New sequence with old capture time must neither actuate nor refresh deadman.
             await drive(0.3)
             await status(lambda s: s.state == "active")
-            peer.send(state(capture=time.monotonic() - 10))
+            peer.send(state(capture=clock.now() - 10))
             await status(lambda s: s.state == "neutral" and s.reason == "input timeout")
             await drive(0.4)
             await status(lambda s: s.state == "active")
@@ -187,6 +194,7 @@ async def run(address: str, code: str):
                         "rejected": rejected.rejected_messages,
                         "rtt": peer.clock.rtt,
                         "offset": peer.clock.offset,
+                        "credential": peer.credential.model_dump(include={"pilot", "secret"}),
                     }
                 ),
                 flush=True,

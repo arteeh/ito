@@ -17,6 +17,7 @@ import psutil
 import pygame
 from pygame._sdl2 import Window
 
+from ito import clock
 from ito.app.__main__ import main as pilot_main
 from ito.driver import pairing
 from ito.link.pairing import display
@@ -66,7 +67,7 @@ def main():
         )
 
     robot = driver()
-    began = time.monotonic()
+    began = clock.now()
     stage = 0
     changed = began
     previous = began
@@ -87,14 +88,15 @@ def main():
     estop_latency_ms = None
     tested_input_stall = False
     steady_start = steady_end = None
+    worker_restart_s = resume = None
 
     def drive(app, window, value):
         nonlocal stage, changed, previous, robot, killed, restarted, first_position
-        nonlocal reached_stop, stall, last_revisions, worker
+        nonlocal reached_stop, stall, last_revisions, worker, resume
         nonlocal first_camera, new_surfaces
         nonlocal release_latency_ms, estop_latency_ms, tested_input_stall
-        nonlocal steady_start, steady_end
-        now = time.monotonic()
+        nonlocal steady_start, steady_end, worker_restart_s
+        now = clock.now()
         assert now - began < 80, (stage, app.state, app.telemetry)
         samples.append((now, now - previous, app.state.status.link))
         previous = now
@@ -193,26 +195,26 @@ def main():
         elif stage == 1 and not tested_input_stall and t.get("active"):
             # Block the display for longer than both watchdogs. Held input must
             # stay live, and releasing W must reach the robot before we draw again.
-            until = time.monotonic() + 0.65
-            while time.monotonic() < until:
-                age = time.monotonic() - app.latest_input.timestamp
+            until = clock.now() + 0.65
+            while clock.now() < until:
+                age = clock.now() - app.latest_input.timestamp
                 stalled_input_ages.append(age * 1000)
                 assert age < 0.2, age
                 assert app.telemetry["active"], app.state.status
                 time.sleep(0.01)
-            released = time.monotonic()
+            released = clock.now()
             pygame.event.post(pygame.event.Event(pygame.KEYUP, key=pygame.K_w))
             while app.telemetry["left_command"] or app.telemetry["right_command"]:
-                assert time.monotonic() - released < 0.5, app.telemetry
+                assert clock.now() - released < 0.5, app.telemetry
                 time.sleep(0.01)
             assert app.telemetry["active"], app.state.status
-            release_latency_ms = (time.monotonic() - released) * 1000
-            stopped = time.monotonic()
+            release_latency_ms = (clock.now() - released) * 1000
+            stopped = clock.now()
             key(pygame.K_e)
             while not app.state.status.e_stop:
-                assert time.monotonic() - stopped < 0.5, app.state.status
+                assert clock.now() - stopped < 0.5, app.state.status
                 time.sleep(0.01)
-            estop_latency_ms = (time.monotonic() - stopped) * 1000
+            estop_latency_ms = (clock.now() - stopped) * 1000
             assert app.telemetry["left_command"] == app.telemetry["right_command"] == 0
             key(pygame.K_r)
             pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_w))
@@ -249,14 +251,35 @@ def main():
             # Freeze the real reconstruction process while input and display continue.
             worker = psutil.Process(app.worker.process.pid)
             worker.suspend()
-            threading.Timer(2, worker.resume).start()
+            resume = threading.Timer(2, worker.resume)
+            resume.start()
             last_revisions = app.matched_frames
             stall = True
             stage, changed = 4, now
         elif stage == 4 and now - changed > 1.5:
+            resume.cancel()
             worker.resume()
             stall = False
             assert app.matched_frames > last_revisions
+            # A crashed RGB-D worker leaves the link up, shows flat video and starts again.
+            worker.kill()
+            stage, changed = "worker killed", now
+        elif stage == "worker killed" and "restarting" in app.reconstruction_status:
+            assert app.state.flat_video, "a failed worker left the 3D view up"
+            assert app.state.status.link == "CONNECTED", app.state.status
+            assert app.connections == 1, app.connections
+            stage, changed = "worker restarting", now
+        elif (
+            stage == "worker restarting"
+            and app.worker
+            and app.worker.process.pid != worker.pid
+            and not app.state.flat_video
+            and window.renderer.epoch == app.worker.epoch
+            and window.renderer.count > 1000
+        ):
+            assert app.state.status.link == "CONNECTED", app.state.status
+            assert app.connections == 1, app.connections
+            worker_restart_s = now - changed
             pygame.event.post(pygame.event.Event(pygame.KEYUP, key=pygame.K_w))
             robot.kill()
             robot.wait()
@@ -337,7 +360,7 @@ def main():
             )
             == 0
         )
-        assert reloaded, "Per-robot comfort settings or pairing code did not survive restart"
+        assert reloaded, "Per-robot comfort settings or pairing did not survive restart"
         # Exercise the installed console entry point as well as SDL injection above.
         with (OUT / "cli.log").open("w") as cli_log:
             subprocess.run(
@@ -370,7 +393,10 @@ def main():
             robot.terminate()
             robot.wait(timeout=8)
         log.close()
-    assert (OUT / "driver.log").read_text().count(f"Pairing code: {display(code)}") == 2
+    # The restarted driver knows the pilot and keeps its spent code to itself.
+    driver_log = (OUT / "driver.log").read_text()
+    assert driver_log.count(f"Pairing code: {display(code)}") == 1, driver_log
+    assert driver_log.count("Pairing code used by a paired pilot") == 1, driver_log
     rows = [json.loads(line) for line in (OUT / "metrics.jsonl").read_text().splitlines()]
     latency = [
         r["pilot_input_to_robot_ms"] for r in rows if r["pilot_input_to_robot_ms"] is not None
@@ -416,6 +442,7 @@ def main():
         "steady_exposures": len(visible),
         "connected_frame_ms_p95": float(np.percentile(connected, 95) * 1000),
         "driver_dead_frame_ms_p95": float(np.percentile(offline, 95) * 1000),
+        "rgbd_worker_restart_s": round(worker_restart_s, 2),
         "max_splats": max(counts),
         "splats_beyond_initial_view": new_surfaces,
         "display_frames": len(samples),

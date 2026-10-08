@@ -5,12 +5,14 @@ import logging
 import os
 
 from ito.driver.cli import driver_arguments, pairing_command, serve
+from ito.lifetime import follow_parent
 from ito.link.audio import arguments
 
 from .adapter import ROOM
 
 
 def main():
+    follow_parent()
     parser = argparse.ArgumentParser(description="Pilot an MJCF robot over Ito WebRTC")
     parser.add_argument(
         "model", nargs="?", default=str(ROOM), help="MJCF file (default: furnished room)"
@@ -34,7 +36,8 @@ def main():
     parser.add_argument("--turn-speed", type=float, default=1.2, help="maximum yaw speed in rad/s")
     parser.add_argument("--viewer-state", help=argparse.SUPPRESS)
     driver_arguments(parser)
-    arguments(parser, source="tone:440")
+    # A simulated room has nothing to hear; tone:440 is there for testing the audio path.
+    arguments(parser, source="none")
     args = parser.parse_args()
     args.prog = parser.prog
     args.adapter = "drivers.mujoco.adapter:MujocoAdapter"

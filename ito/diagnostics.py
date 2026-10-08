@@ -6,13 +6,14 @@ import logging
 import os
 import queue
 import threading
-import time
 import uuid
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from importlib.metadata import version
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+
+from ito import clock
 
 MAX_BYTES, BACKUPS = 2 * 1024 * 1024, 3
 
@@ -72,7 +73,7 @@ class Diagnostics:
         with self.lock:
             if not self.enabled:
                 return
-            now = time.monotonic()
+            now = clock.now()
             if interval and now - self.last.get(event, 0) < interval:
                 return
             self.last[event] = now
@@ -151,7 +152,7 @@ def event(name, **fields):
 
 @contextmanager
 def stage(name):
-    started = time.monotonic()
+    started = clock.now()
     event("shutdown_stage", stage=name, state="begin")
     try:
         yield
@@ -160,7 +161,7 @@ def stage(name):
             "shutdown_stage",
             stage=name,
             state="end",
-            elapsed_ms=(time.monotonic() - started) * 1000,
+            elapsed_ms=(clock.now() - started) * 1000,
         )
 
 

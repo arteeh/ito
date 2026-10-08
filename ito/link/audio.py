@@ -7,7 +7,6 @@ import logging
 import queue
 import sys
 import threading
-import time
 import wave
 from collections import deque
 from fractions import Fraction
@@ -17,7 +16,7 @@ from aiortc import MediaStreamTrack, RTCRtpSender
 from aiortc.mediastreams import MediaStreamError
 from av import AudioFrame, AudioResampler
 
-from ito import diagnostics
+from ito import clock, diagnostics
 
 RATE, SAMPLES = 48000, 960
 CLOSE_TIMEOUT = 2.0  # A device that takes longer is left to close on its own thread.
@@ -49,7 +48,7 @@ class Microphone(MediaStreamTrack):
     async def recv(self):
         if self.readyState != "live":
             raise MediaStreamError
-        now = time.monotonic()
+        now = clock.now()
         self.deadline = max(self.deadline or now, now - 0.02)
         await asyncio.sleep(max(0, self.deadline - now))
         self.deadline += 0.02

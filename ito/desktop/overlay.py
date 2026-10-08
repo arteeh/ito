@@ -1,7 +1,6 @@
 """The same ImGui panel can render into the desktop or a headset framebuffer."""
 
 import math
-import time
 from dataclasses import dataclass
 
 import moderngl
@@ -9,7 +8,7 @@ import pygame
 from imgui_bundle import imgui
 from imgui_bundle.python_backends.pygame_backend import PygameRenderer
 
-from ito import diagnostics
+from ito import clock, diagnostics
 
 
 @dataclass(frozen=True)
@@ -18,6 +17,7 @@ class PilotStatus:
     latency_ms: float | None = None
     robot: str = "No robot connected"
     e_stop: bool = False  # Reported by the driver, never inferred from a button press.
+    robot_state: str = ""  # The driver's last reported state; "active" means it obeys input.
     detail: str = ""
     input_latency_ms: float | None = None
     reconstruction: str = ""
@@ -184,7 +184,7 @@ class Overlay:
         fault = status.detail.startswith("fault")
         if status.link != "CONNECTED" or (status.armed and not status.e_stop and not fault):
             return
-        now = time.monotonic()
+        now = clock.now()
         if driving:
             self.nudged = now
         resume = "Press A" if xr_mode else "Press R (or gamepad A)"

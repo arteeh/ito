@@ -10,7 +10,7 @@ from imgui_bundle import imgui
 from OpenGL import GL
 from xr.utils import GraphicsAPI, Matrix4x4f
 
-from ito import diagnostics
+from ito import clock, diagnostics
 from ito.desktop import DesktopWindow
 from ito.reconstruction import SplatUpdate
 from ito.render import pose
@@ -20,6 +20,7 @@ from .input import Actions
 from .session import Session
 
 log = logging.getLogger(__name__)
+PANEL_LINGER = 0.5  # The panel stays this long after the controller stops pointing at it.
 
 
 class XRWindow(DesktopWindow):
@@ -32,6 +33,9 @@ class XRWindow(DesktopWindow):
             self.input.translate = False
             self.centered = False
             self.recenters = 0
+            self.panel_until = 0.0
+            self.panel_visible = True
+            self.panel_hovered = False  # ImGui hovers a control under the aim (last frame).
             pygame.display.set_caption("Ito — XR pilot controls")
         except xr.XrException as exc:
             self.close()
@@ -42,10 +46,16 @@ class XRWindow(DesktopWindow):
             self.close()
             raise
 
-    def _pointer(self, head):
+    def aiming_hand(self):
+        """Right aim takes precedence; without a tracked controller nothing points."""
+        return next((hand for hand in ("right", "left") if hand in self.actions.aims), None)
+
+    def _pointer(self):
         panel = pose((0, -0.15, -1.2))
-        # Right aim takes precedence; gaze plus either trigger also supports simple controllers.
-        aim = self.actions.aims.get("right", self.actions.aims.get("left", head))
+        hand = self.aiming_hand()
+        if hand is None:
+            return (-10000, -10000, False)
+        aim = self.actions.aims[hand]
         origin, direction = aim[:3, 3] - panel[:3, 3], -aim[:3, 2]
         if direction[2] >= -1e-5:
             return (-10000, -10000, False)
@@ -54,7 +64,7 @@ class XRWindow(DesktopWindow):
         x, y = (hit[0] / 1.05 + 0.5) * 768, (0.5 - hit[1] / (1.05 * 440 / 768)) * 440
         inside = distance > 0 and 0 <= x < 768 and 0 <= y < 440
         return (
-            (float(x), float(y), any(self.actions.triggers.values()))
+            (float(x), float(y), self.actions.triggers.get(hand, False))
             if inside
             else (-10000, -10000, False)
         )
@@ -94,7 +104,7 @@ class XRWindow(DesktopWindow):
         revision = captured_at = None
         frames = 0
         request = None
-        previous = time.monotonic()
+        previous = clock.now()
         mouse_until = 0.0
         while not max_frames or frames < max_frames:
             self.xr.poll()
@@ -107,7 +117,7 @@ class XRWindow(DesktopWindow):
                 time.sleep(0.01)
                 continue
             with self.xr.frame() as (frame, layers, space):
-                now = time.monotonic()
+                now = clock.now()
                 dt = now - previous
                 previous = now
                 at = frame.predicted_display_time
@@ -117,7 +127,7 @@ class XRWindow(DesktopWindow):
                 if commands:
                     request = f"{commands[-1].replace('_', '-').upper()} requested"
                     log.info("Command: %s", commands[-1])
-                current = state()
+                current = self.glided(state(), now)
                 for _ in range(4):
                     update = source.poll()
                     if update is None:
@@ -149,6 +159,11 @@ class XRWindow(DesktopWindow):
                         projection_views = []
                         if value.screenshot:
                             self.capture_number += 1
+                        if not current.flat_video:
+                            # One back-to-front order from between the eyes serves both.
+                            middle = matrix(views[0].pose)
+                            middle[:3, 3] = (middle[:3, 3] + matrix(views[1].pose)[:3, 3]) / 2
+                            self.renderer.sort(current.robot_camera, middle)
                         for index, (view, swapchain) in enumerate(
                             zip(views, self.xr.eyes, strict=True)
                         ):
@@ -165,6 +180,7 @@ class XRWindow(DesktopWindow):
                                     projection,
                                     target,
                                     viewport=(0, 0, *swapchain.size),
+                                    sort=False,
                                 )
                                 if value.screenshot:
                                     captures.append(
@@ -196,11 +212,23 @@ class XRWindow(DesktopWindow):
                     )
                     if mouse:
                         mouse_until = now + 2
+                    aimed = now >= mouse_until
                     io = self.overlay.begin(
-                        panel_events,
-                        self.xr.panel.size,
-                        False,
-                        pointer=None if now < mouse_until else pointer,
+                        panel_events, self.xr.panel.size, False, pointer=pointer if aimed else None
+                    )
+                    # ImGui hovers from the previous frame's controls, not the whole quad, so
+                    # aiming roughly ahead leaves the trigger to the robot.
+                    self.panel_hovered = aimed and pointer[0] >= 0 and io.want_capture_mouse
+                    # The panel covers part of the view: show it while a controller points at
+                    # a control, while pinned, and whenever it says why the robot won't move.
+                    status = current.status
+                    if self.panel_hovered or status.robot_state != "active":
+                        self.panel_until = now + PANEL_LINGER
+                    self.panel_visible = (
+                        self.actions.panel_pinned
+                        or now < self.panel_until
+                        or status.link != "CONNECTED"
+                        or status.e_stop
                     )
                     if pointer[0] >= 0:
                         imgui.get_foreground_draw_list().add_circle_filled(
@@ -247,16 +275,17 @@ class XRWindow(DesktopWindow):
                             GL.GL_LINEAR,
                         )
                         pygame.display.flip()
-                    layers.append(
-                        xr.CompositionLayerQuad(
-                            layer_flags=xr.CompositionLayerFlags.BLEND_TEXTURE_SOURCE_ALPHA_BIT,
-                            space=space,
-                            eye_visibility=xr.EyeVisibility.BOTH,
-                            sub_image=self.xr.panel.sub_image,
-                            pose=xr.Posef(position=xr.Vector3f(0, -0.15, -1.2)),
-                            size=xr.Extent2Df(1.05, 1.05 * 440 / 768),
+                    if self.panel_visible:
+                        layers.append(
+                            xr.CompositionLayerQuad(
+                                layer_flags=xr.CompositionLayerFlags.BLEND_TEXTURE_SOURCE_ALPHA_BIT,
+                                space=space,
+                                eye_visibility=xr.EyeVisibility.BOTH,
+                                sub_image=self.xr.panel.sub_image,
+                                pose=xr.Posef(position=xr.Vector3f(0, -0.15, -1.2)),
+                                size=xr.Extent2Df(1.05, 1.05 * 440 / 768),
+                            )
                         )
-                    )
                 frames += 1
                 diagnostics.event(
                     "display_frame",
@@ -288,8 +317,11 @@ class XRWindow(DesktopWindow):
                                 "commands": commands,
                                 "active": value.active,
                                 "gaussians": self.renderer.count,
+                                "sorts": self.renderer.sorts,
+                                "panel_visible": self.panel_visible,
                                 "revision": revision,
                                 "link": current.status.link,
+                                "robot_state": current.status.robot_state,
                                 "e_stop": current.status.e_stop,
                                 "session": self.xr.state.name,
                                 "recenters": self.recenters,

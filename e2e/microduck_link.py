@@ -6,9 +6,9 @@ import contextlib
 import json
 import math
 import statistics
-import time
 from pathlib import Path
 
+from ito import clock
 from ito.link.pairing import PairingError
 from ito.link.signaling import connect
 from ito.protocol import Command, PilotState, Pose, Status
@@ -57,12 +57,12 @@ async def run(args):
                 if "pilot_input_latency_ms" in t:
                     latencies.append(t["pilot_input_latency_ms"])
                 if first_move and response_ms is None and t.get("applied_vx", 0) > 0.02:
-                    response_ms = (time.monotonic() - first_move) * 1000
+                    response_ms = (clock.now() - first_move) * 1000
 
     async def input_loop():
         nonlocal sequence, first_move
         while True:
-            now = time.monotonic()
+            now = clock.now()
             if moving and first_move is None:
                 first_move = now
             assert peer.send(
