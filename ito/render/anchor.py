@@ -3,7 +3,7 @@
 Anchors arrive at the camera or SLAM rate (2-30 Hz) while the display runs at 90-120 Hz.
 Each display frame moves the position from where it was drawn last toward the newest
 anchor over one update interval: about one interval of delay, and no steps. Rotation
-stays the newest: it is anchored to the current camera, and the pilot's head turns on top.
+stays the newest; the pilot app's anchors carry none, as the pilot's head is the view's turn.
 """
 
 import numpy as np

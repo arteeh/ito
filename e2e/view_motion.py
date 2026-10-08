@@ -1,5 +1,8 @@
 """Real bundled driver, RGB-D and SDL mouse motion; measure every displayed view.
 
+The pilot turns past the head's pan range, so the body turns too. The view must turn
+exactly with the pilot's mouse, never with the robot's own head or body.
+
 DISPLAY=:97 LIBGL_ALWAYS_SOFTWARE=1 uv run python e2e/view_motion.py
 """
 
@@ -74,6 +77,7 @@ def run(measure=False):
                             "video_time": current.video_time,
                             "scene_time": updates[-1] if updates else 0,
                             "physical_pan": app.telemetry.get("head_pan", 0),
+                            "body_yaw": app.telemetry.get("base_yaw", 0),
                         }
                     )
 
@@ -92,12 +96,13 @@ def run(measure=False):
         elif stage == 1 and now - changed > 1:
             stage, changed = 2, now
         elif stage == 2:
-            # Physical mouse events, at a steady 0.18 radians/second, for six seconds.
+            # Physical mouse events, at a steady 0.4 radians/second, for six seconds: 137
+            # degrees, past the head's 80 degree pan range.
             pygame.event.post(
                 pygame.event.Event(
                     pygame.MOUSEMOTION,
                     pos=(400, 300),
-                    rel=(-0.18 * (now - previous) / window.input.sensitivity, 0),
+                    rel=(-0.4 * (now - previous) / window.input.sensitivity, 0),
                     buttons=(0, 0, 0),
                 )
             )
@@ -136,6 +141,9 @@ def run(measure=False):
         "physical_pan_sweep_deg": math.degrees(
             max(s["physical_pan"] for s in samples) - min(s["physical_pan"] for s in samples)
         ),
+        "body_turn_deg": math.degrees(
+            max(s["body_yaw"] for s in samples) - min(s["body_yaw"] for s in samples)
+        ),
         "reversals_over_0.1_deg": int(np.count_nonzero(delta < -math.radians(0.1))),
         "worst_reversal_deg": float(max(0, -np.min(delta)) * 180 / math.pi),
         "anchor_error_p95_deg": float(np.percentile(np.abs(yaw - head), 95) * 180 / math.pi),
@@ -158,7 +166,8 @@ def run(measure=False):
         assert report["reversals_over_0.1_deg"] == 0, report
         assert report["anchor_error_p95_deg"] < 0.2, report
         assert report["older_scene_frames"] == report["older_video_frames"] == 0, report
-        assert yaw[-1] - yaw[0] > 0.9, "View did not follow local mouse motion"
+        assert report["body_turn_deg"] > 20, report
+        assert yaw[-1] - yaw[0] > 2, "View did not follow local mouse motion"
         print("PASS: sustained mouse-look remains monotonic while the physical head follows")
 
 
