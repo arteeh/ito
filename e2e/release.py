@@ -236,7 +236,15 @@ def main():
     with zipfile.ZipFile(args.zip) as archive:
         archive.extractall(args.target)
     folder = args.target / "ito"
-    assert {p.name for p in folder.iterdir()} == {"ito.exe", "runtime", "models"}
+    assert {p.name for p in folder.iterdir()} == {
+        "ito.exe",
+        "runtime",
+        "models",
+        "THIRD_PARTY_NOTICES.txt",
+    }
+    notices = (folder / "THIRD_PARTY_NOTICES.txt").read_text(encoding="utf-8")
+    for shipped in ("\nav ", "\ntorch ", "pygame/docs/generated/LGPL.txt", "MASt3R"):
+        assert shipped in notices, f"THIRD_PARTY_NOTICES.txt lacks {shipped.strip()}"
     env = clean_environment(args.target)
     try:
         pilot(folder, args, env)
