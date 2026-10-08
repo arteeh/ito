@@ -35,10 +35,6 @@ from ito.protocol import (
 )
 
 CONTROL_BUFFER = 2_000_000
-FRAME_BUFFER = 4_000_000
-# Frame metadata (with depth, up to ~1 MB) travels unordered and gives up after this long,
-# so it never holds up Status, commands or clock samples on the reliable control channel.
-FRAME_LIFETIME_MS = 500
 log = logging.getLogger(__name__)
 
 
@@ -87,7 +83,6 @@ class Peer:
         self._media: list[LatestTrack] = []
         self.control: RTCDataChannel | None = None
         self.pilot: RTCDataChannel | None = None
-        self.frame_channel: RTCDataChannel | None = None
         self.ready = asyncio.Event()
         self.closed = asyncio.Event()
         self.robot_received = asyncio.Event()
@@ -135,14 +130,6 @@ class Peer:
                     "pilot", ordered=False, maxRetransmits=0, protocol="ito/1"
                 )
             )
-            self._bind(
-                self.pc.createDataChannel(
-                    "frames",
-                    ordered=False,
-                    maxPacketLifeTime=FRAME_LIFETIME_MS,
-                    protocol="ito/1",
-                )
-            )
         else:
             self.pc.on("datachannel", self._bind)
 
@@ -158,12 +145,6 @@ class Peer:
             valid = valid and channel.maxPacketLifeTime is None and self.control is None
             if valid:
                 self.control = channel
-        elif channel.label == "frames":
-            valid = valid and not channel.ordered and channel.maxRetransmits is None
-            valid = valid and channel.maxPacketLifeTime == FRAME_LIFETIME_MS
-            valid = valid and self.frame_channel is None
-            if valid:
-                self.frame_channel = channel
         else:
             valid = False
         if not valid:
@@ -185,16 +166,15 @@ class Peer:
         self._opened()
 
     @property
-    def channels(self) -> tuple[RTCDataChannel | None, ...]:
-        return self.control, self.pilot, self.frame_channel
-
-    @property
     def connected(self) -> bool:
         return bool(
             not self._closing
             and not self._disconnect_notified
             and self.ready.is_set()
-            and all(c and c.readyState == "open" for c in self.channels)
+            and self.control
+            and self.control.readyState == "open"
+            and self.pilot
+            and self.pilot.readyState == "open"
         )
 
     def _notify_disconnect(self) -> None:
@@ -211,7 +191,9 @@ class Peer:
             self._close_task = asyncio.create_task(self.close())
 
     def _opened(self) -> None:
-        if not all(c and c.readyState == "open" for c in self.channels):
+        if not (self.control and self.pilot):
+            return
+        if self.control.readyState != "open" or self.pilot.readyState != "open":
             return
         if self.ready.is_set():
             return
@@ -234,31 +216,11 @@ class Peer:
                     self.dropped_messages += 1
                     return
                 self._pilot_sequence = message.sequence
-            elif label == "frames":
-                if self.role != "pilot" or not isinstance(message, FrameMetadata):
-                    raise ProtocolError("wrong message direction or channel")
-                if self.description is None:
-                    self.dropped_messages += 1  # Overtook the description on its own channel.
-                    return
-                cameras = {c.name: c for c in self.description.cameras}
-                if message.camera not in cameras:
-                    raise ProtocolError("unknown camera")
-                camera = cameras[message.camera]
-                if message.depth and (
-                    message.depth.width != camera.intrinsics.width
-                    or message.depth.height != camera.intrinsics.height
-                ):
-                    raise ProtocolError("depth does not match camera")
-                previous = self.frames.get(message.camera)
-                if previous and message.sequence <= previous.sequence:
-                    self.dropped_messages += 1
-                    return
-                self.frames[message.camera] = message
             else:
                 allowed = (
                     (Command, Paired, Ping, Pong)
                     if self.role == "driver"
-                    else (RobotDescription, Credential, Status, Ping, Pong)
+                    else (RobotDescription, FrameMetadata, Credential, Status, Ping, Pong)
                 )
                 if not isinstance(message, allowed):
                     raise ProtocolError("wrong message direction or channel")
@@ -288,6 +250,23 @@ class Peer:
                         raise ProtocolError("robot description may not change during a connection")
                     self.description = message
                     self.robot_received.set()
+                if isinstance(message, FrameMetadata):
+                    cameras = (
+                        {c.name: c for c in self.description.cameras} if self.description else {}
+                    )
+                    if message.camera not in cameras:
+                        raise ProtocolError("unknown camera")
+                    camera = cameras[message.camera]
+                    if message.depth and (
+                        message.depth.width != camera.intrinsics.width
+                        or message.depth.height != camera.intrinsics.height
+                    ):
+                        raise ProtocolError("depth does not match camera")
+                    previous = self.frames.get(message.camera)
+                    if previous and message.sequence <= previous.sequence:
+                        self.dropped_messages += 1
+                        return
+                    self.frames[message.camera] = message
             self.last_received = clock.now()
             if self.on_message:
                 self.on_message(message)
@@ -309,16 +288,11 @@ class Peer:
                 raise ValueError("only a pilot sends pilot state")
             channel = self.pilot
             limit = 0
-        elif isinstance(message, FrameMetadata):
-            if self.role != "driver":
-                raise ValueError("only a driver sends frame metadata")
-            channel = self.frame_channel
-            limit = FRAME_BUFFER
         else:
             allowed = (
                 (Command, Paired, Ping, Pong)
                 if self.role == "pilot"
-                else (RobotDescription, Credential, Status, Ping, Pong)
+                else (RobotDescription, FrameMetadata, Credential, Status, Ping, Pong)
             )
             if not isinstance(message, allowed):
                 raise ValueError("wrong message direction")

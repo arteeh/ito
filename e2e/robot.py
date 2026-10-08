@@ -1,7 +1,6 @@
 """Instrumented robot for real process/network runs; no product adapter uses this."""
 
 import json
-import os
 from fractions import Fraction
 
 from aiortc import AudioStreamTrack, VideoStreamTrack
@@ -21,8 +20,7 @@ class CameraTrack(VideoStreamTrack):
 
     async def recv(self):
         pts, time_base = await self.next_timestamp()
-        width, height = self.robot.resolution
-        frame = VideoFrame(width, height, "yuv420p")
+        frame = VideoFrame(160, 120, "yuv420p")
         for index, plane in enumerate(frame.planes):
             plane.update(
                 bytes([32 + self.sequence % 160 if index == 0 else 128]) * plane.buffer_size
@@ -33,7 +31,7 @@ class CameraTrack(VideoStreamTrack):
             sequence=self.sequence,
             capture_time=clock.now(),
             camera_pose=Pose(position=(1.0, 2.0, 3.0)),
-            depth=self.robot.depth[self.sequence % len(self.robot.depth)],
+            depth=Depth.from_bytes(160, 120, b"\xe8\x03" * (160 * 120)),
         )
         self.robot.publish_frame(metadata)
         self.sequence += 1
@@ -47,8 +45,6 @@ class Robot(Adapter):
         fail_apply: bool = False,
         fail_telemetry: bool = False,
         fail_neutral_once: bool = False,
-        resolution: tuple[int, int] = (160, 120),
-        noisy_depth: bool = False,
     ):
         self.journal = open(journal, "a", buffering=1)
         self.active = False
@@ -58,13 +54,6 @@ class Robot(Adapter):
         self.fail_telemetry = fail_telemetry
         self.fail_neutral_once = fail_neutral_once
         self.audio_tasks = []
-        self.resolution = width, height = tuple(resolution)
-        # Noisy depth does not compress: the size a real depth camera puts on the link.
-        # Prepared once, so the instrument spends its time sending, not generating.
-        self.depth = [
-            Depth.from_bytes(width, height, os.urandom(width * height * 2))
-            for _ in range(4 if noisy_depth else 0)
-        ] or [Depth.from_bytes(width, height, b"\xe8\x03" * (width * height))]
 
     @property
     def description(self):
@@ -76,12 +65,7 @@ class Robot(Adapter):
                     name="front",
                     track_id="front-video",
                     intrinsics=Intrinsics(
-                        width=self.resolution[0],
-                        height=self.resolution[1],
-                        fx=0.75 * self.resolution[0],
-                        fy=0.75 * self.resolution[0],
-                        cx=self.resolution[0] / 2,
-                        cy=self.resolution[1] / 2,
+                        width=160, height=120, fx=120.0, fy=120.0, cx=80.0, cy=60.0
                     ),
                 ),
             ),
