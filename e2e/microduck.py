@@ -8,7 +8,6 @@ import argparse
 import json
 import os
 import tempfile
-import time
 from collections import deque
 from pathlib import Path
 
@@ -17,6 +16,7 @@ import pygame
 from microduck_video import VideoEvidence
 
 from drivers.microduck.sim import port, simulation
+from ito import clock
 from ito.app.__main__ import main as pilot_main
 from ito.link.pairing import display
 
@@ -66,7 +66,7 @@ def run(sim, evidence):
     last_sample = 0.0
     physical = None
     stage = 0
-    changed = time.monotonic()
+    changed = clock.now()
     initial = None
     stopped = None
     report = {}
@@ -75,7 +75,7 @@ def run(sim, evidence):
 
     def drive(app, window, value):
         nonlocal stage, changed, initial, stopped, last_sample, physical
-        now = time.monotonic()
+        now = clock.now()
         for name, child in children:
             assert child.poll() is None, f"{name} exited: see {OUT / (name + '.log')}"
         assert now - changed < 45, (stage, app.state.status, app.telemetry)

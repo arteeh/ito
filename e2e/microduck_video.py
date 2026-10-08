@@ -4,12 +4,13 @@ import json
 import socket
 import struct
 import threading
-import time
 
 import cv2
 import numpy as np
 import pygame
 from PIL import Image
+
+from ito import clock
 
 
 class VideoEvidence:
@@ -61,7 +62,7 @@ class VideoEvidence:
                         rgb = cv2.cvtColor(frame, cv2.COLOR_YUV2RGB_UYVY)
                         rgb = np.ascontiguousarray(np.rot90(rgb, -1))
                         self.write("sensor", rgb)
-                        captured = time.monotonic()
+                        captured = clock.now()
                         self.sensor_times.append(captured)
                         self.latest = (captured, rgb, packed)
         except Exception as exc:
@@ -76,7 +77,7 @@ class VideoEvidence:
             return
         self.last_video = app.state.video_time
         self.write("received", rgb)
-        now = time.monotonic()
+        now = clock.now()
         captured, raw, packed = self.latest
         row = dict(
             time=now,

@@ -3,8 +3,8 @@
 import asyncio
 import contextlib
 import math
-import time
 
+from ito import clock
 from ito.driver import Adapter
 from ito.driver.walking import Walker
 from ito.protocol import Camera as CameraDescription
@@ -122,12 +122,12 @@ class MicroduckAdapter(Adapter):
 
     def apply(self, state):
         self._check()
-        if time.monotonic() - self._state_at > 1:
+        if clock.now() - self._state_at > 1:
             raise RuntimeError("Microduck telemetry stalled")
         if not state.deadman:
             self.neutral()
             return
-        self._latest = (time.monotonic(), state)
+        self._latest = (clock.now(), state)
         self._generation += 1
         self._neutral_done.clear()
         self._wake.set()
@@ -148,7 +148,7 @@ class MicroduckAdapter(Adapter):
                 self._latest = None
             self._wake.clear()
             generation, latest = self._generation, self._latest
-            if not latest or time.monotonic() - latest[0] >= self.input_timeout:
+            if not latest or clock.now() - latest[0] >= self.input_timeout:
                 await self.remote.call("robot.stop")
                 await self.remote.call("robot.pose", {"active": False})
                 # Hold head and beak: releasing a carried object is not a safe neutral.
@@ -203,7 +203,7 @@ class MicroduckAdapter(Adapter):
                 # Newest wins, including a stop arriving during an outstanding RPC.
                 if generation != self._generation:
                     break
-                if time.monotonic() - latest[0] >= self.input_timeout:
+                if clock.now() - latest[0] >= self.input_timeout:
                     self.neutral()
                     break
                 await self.remote.call(method, params, deadline=self.input_timeout)
@@ -219,7 +219,7 @@ class MicroduckAdapter(Adapter):
                     if type(value) in (float, int, bool):
                         self._telemetry[f"{name}_{key}"] = value
             await asyncio.sleep(1)
-            if self._state_at and time.monotonic() - self._state_at > 1:
+            if self._state_at and clock.now() - self._state_at > 1:
                 raise RuntimeError("Microduck telemetry stalled")
 
     def _notification(self, method, data):
@@ -258,7 +258,7 @@ class MicroduckAdapter(Adapter):
             for index, value in enumerate(vector):
                 values[f"imu_{key}_{index}"] = value
         self._telemetry.update(values)
-        self._state_at = time.monotonic()
+        self._state_at = clock.now()
 
     def telemetry(self):
         self._check()
