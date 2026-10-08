@@ -219,6 +219,11 @@ async def run():
             "differential-drive",
             "speaker",
         )
+        # A connection starts stopped: deadman input alone must not move the robot.
+        await pilot.drive(0.3)
+        _, status = await pilot.status("stopped")
+        assert status.telemetry["left_command"] == status.telemetry["right_command"] == 0
+        assert peer.send(Command(sequence=0, action="resume"))
         await pilot.drive(0.8)
         initial_rgb, initial = await pilot.latest("initial")
         intrinsics = peer.description.cameras[0].intrinsics
@@ -300,7 +305,7 @@ async def run():
         assert abs(forward[0]) < 0.15, forward
         await pilot.drive(0.3, forward=0.8)
         sent = clock.now()
-        assert peer.send(Command(sequence=0, action="e-stop"))
+        assert peer.send(Command(sequence=1, action="e-stop"))
         await pilot.drive(0.7, forward=1.0, yaw=-0.7)
         _, estop = await pilot.status("e-stopped", after=sent + 0.3)
         assert estop.telemetry["left_command"] == estop.telemetry["right_command"] == 0
@@ -314,7 +319,7 @@ async def run():
         assert (
             abs(np.dot(held.camera_pose.orientation, held_again.camera_pose.orientation)) > 0.9999
         )
-        assert peer.send(Command(sequence=1, action="resume"))
+        assert peer.send(Command(sequence=2, action="resume"))
         await pilot.drive(0.4, forward=-0.5)
         _, status = await pilot.status("active", after=clock.now() - 0.2)
         assert status.telemetry["left_command"] < 0
@@ -339,6 +344,7 @@ async def run():
         pilot = Pilot(await connect(address, receive_audio=False, code=code))
         await pilot.drive(0.5)
         await pilot.latest("reconnected")
+        await pilot.status("stopped")
         assert pilot.frames > 2 and pilot.unmatched == 0
         result["reconnected_frames"] = pilot.frames
         (OUT / "result.json").write_text(json.dumps(result, indent=2) + "\n")

@@ -76,6 +76,10 @@ async def run(address: str, code: str):
             return await status(lambda s: s.command_sequence == command_sequence)
 
         try:
+            # Deadman input moves nothing until the pilot resumes the new connection.
+            await drive(0.3)
+            await status(lambda s: s.state == "stopped")
+            assert (await command("resume")).state == "neutral"
             await drive()
             active = await status(lambda s: s.state == "active")
             assert active.telemetry["applied"] > 0
