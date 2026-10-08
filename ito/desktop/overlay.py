@@ -16,6 +16,7 @@ class PilotStatus:
     latency_ms: float | None = None
     robot: str = "No robot connected"
     e_stop: bool = False  # Reported by the driver, never inferred from a button press.
+    robot_state: str = ""  # The driver's last reported state; "active" means it obeys input.
     detail: str = ""
     input_latency_ms: float | None = None
     reconstruction: str = ""

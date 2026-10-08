@@ -17,7 +17,8 @@ class XRDispatch(DisplayDispatch):
         self.was_active = False
         self.recenter = False
         self.pointer = (-10000, -10000, False)
-        self.panel_triggers = set()  # Hands whose trigger press began on the panel.
+        self.panel_triggers = set()  # Hands whose trigger press began on a panel control.
+        self.robot_triggers = set()  # Hands whose trigger press began off the panel.
 
     def poll(self, dt, events, keyboard_ui, commands):
         desktop = super().poll(dt, events, keyboard_ui, commands)
@@ -57,19 +58,25 @@ class XRDispatch(DisplayDispatch):
             window.actions.pulse()
         self.last_status = status
         self.pointer = window._pointer() if value.active else (-10000, -10000, False)
-        # A trigger that clicks the panel is not a robot input (the Microduck's beak), and
-        # neither is the rest of that press after the pointer leaves the panel.
-        on_panel = self.pointer[0] >= 0
+        # The pointing hand's trigger clicks the panel, and a press that began on a control is
+        # not a robot input (the Microduck's beak) until released. The other hand, and a press
+        # that began off the panel, stay the robot's.
+        pointing = window.aiming_hand() if window.panel_hovered else None
         axes, buttons = dict(value.axes), set(value.buttons)
         for hand in ("left", "right"):
             name = f"{hand}_trigger"
-            if axes.get(name, 0.0) <= 0:
+            pressed = axes.get(name, 0.0) > 0
+            if not pressed:
                 self.panel_triggers.discard(hand)
-            elif on_panel:
+            elif hand == pointing and hand not in self.robot_triggers:
                 self.panel_triggers.add(hand)
-            if hand in self.panel_triggers or on_panel:
+            if hand in self.panel_triggers:
                 axes[name] = 0.0
                 buttons.discard(name)
+            elif pressed:
+                self.robot_triggers.add(hand)
+            else:
+                self.robot_triggers.discard(hand)
         return replace(
             value,
             axes=axes,

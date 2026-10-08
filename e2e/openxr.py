@@ -131,6 +131,10 @@ def main():
 
         actions.poll = polled
 
+    def aim_at(x, y):
+        """A right aim, 1.2 m in front of the panel, hitting panel pixel (x, y)."""
+        return pose(((x / 768 - 0.5) * 1.05, -0.15 + (0.5 - y / 440) * 1.05 * 440 / 768, 0))
+
     def drive(app, window, value):
         nonlocal stage, changed, robot, position, recentered, frozen, timer
         nonlocal stall_frames
@@ -270,12 +274,22 @@ def main():
             assert not app.state.status.e_stop
             assert app.max_splats == 8192
             assert not window.panel_visible, "the panel covers the view with nothing to show"
-            # Half-pressed trigger aimed at the panel: it points, it must not reach the robot.
+            # Aimed roughly ahead, at the quad but no control: the trigger is the robot's.
             with_controller(window.actions)
-            controller.update(aim=pose((0, -0.15, 0)), trigger=0.5)
-            stage, changed = "panel aimed", now
-        elif stage == "panel aimed" and now - changed > 0.6:
-            assert window.panel_visible, "pointing at the panel did not show it"
+            controller.update(aim=aim_at(700, 400), trigger=0.5)
+            stage, changed = "quad aimed", now
+        elif stage == "quad aimed" and now - changed > 0.6:
+            assert not window.panel_hovered and not window.panel_visible
+            assert app.latest_input.axes["right_trigger"] == 0.5, app.latest_input.axes
+            panel_checks["trigger_reaches_robot_aimed_ahead"] = True
+            # Aim at the panel's title bar, then half-press: it points, not the robot's input.
+            controller.update(aim=aim_at(60, 20), trigger=0.0)
+            stage, changed = "control aimed", now
+        elif stage == "control aimed" and now - changed > 0.3:
+            assert window.panel_hovered and window.panel_visible, "pointing did not show it"
+            controller["trigger"] = 0.5
+            stage, changed = "panel pressed", now
+        elif stage == "panel pressed" and now - changed > 0.6:
             assert app.latest_input.axes["right_trigger"] == 0, app.latest_input.axes
             controller["aim"] = pose((0, -0.15, 0), yaw=1.2)
             stage, changed = "panel left", now
@@ -386,6 +400,9 @@ def main():
         not r["panel_visible"] for r in rendered if r["link"] == "CONNECTED" and not r["e_stop"]
     )
     assert all(r["panel_visible"] for r in rendered if r["link"] != "CONNECTED" or r["e_stop"])
+    # It also says why the robot won't move: stopped, neutral or faulted.
+    assert all(r["panel_visible"] for r in rendered if r["robot_state"] != "active")
+    assert any(r["robot_state"] == "stopped" for r in rendered)
     # Both eyes reuse one splat order: never more than one GPU sort per display frame.
     sorts = [b["sorts"] - a["sorts"] for a, b in zip(rows, rows[1:], strict=False)]
     assert max(sorts) == 1 and sum(sorts) > 30, sorts
