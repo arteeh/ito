@@ -1,10 +1,8 @@
 """Bounded exact joins: never paint one exposure with another exposure's depth."""
 
-import time
-
 import numpy as np
 
-from ito import diagnostics
+from ito import clock, diagnostics
 from ito.render import pose
 
 
@@ -26,7 +24,7 @@ class FrameJoin:
         self.last_capture = -1.0
 
     def add(self, table, key, value):
-        now = time.monotonic()
+        now = clock.now()
         table[key] = (now, value)
         for pending in (self.video, self.metadata):
             for stamp, (received, _) in list(pending.items()):
