@@ -20,6 +20,7 @@ from .input import Actions
 from .session import Session
 
 log = logging.getLogger(__name__)
+PANEL_LINGER = 0.5  # The panel stays this long after the controller stops pointing at it.
 
 
 class XRWindow(DesktopWindow):
@@ -32,6 +33,8 @@ class XRWindow(DesktopWindow):
             self.input.translate = False
             self.centered = False
             self.recenters = 0
+            self.panel_until = 0.0
+            self.panel_visible = True
             pygame.display.set_caption("Ito — XR pilot controls")
         except xr.XrException as exc:
             self.close()
@@ -42,10 +45,12 @@ class XRWindow(DesktopWindow):
             self.close()
             raise
 
-    def _pointer(self, head):
+    def _pointer(self):
         panel = pose((0, -0.15, -1.2))
-        # Right aim takes precedence; gaze plus either trigger also supports simple controllers.
-        aim = self.actions.aims.get("right", self.actions.aims.get("left", head))
+        # Right aim takes precedence; without a tracked controller nothing points.
+        aim = self.actions.aims.get("right", self.actions.aims.get("left"))
+        if aim is None:
+            return (-10000, -10000, False)
         origin, direction = aim[:3, 3] - panel[:3, 3], -aim[:3, 2]
         if direction[2] >= -1e-5:
             return (-10000, -10000, False)
@@ -202,6 +207,17 @@ class XRWindow(DesktopWindow):
                     )
                     if mouse:
                         mouse_until = now + 2
+                    # The panel covers part of the view: show it when a controller points
+                    # at it, when the pilot pinned it, or when the link or e-stop needs them.
+                    if pointer[0] >= 0:
+                        self.panel_until = now + PANEL_LINGER
+                    status = current.status
+                    self.panel_visible = (
+                        self.actions.panel_pinned
+                        or now < self.panel_until
+                        or status.link != "CONNECTED"
+                        or status.e_stop
+                    )
                     io = self.overlay.begin(
                         panel_events,
                         self.xr.panel.size,
@@ -252,16 +268,17 @@ class XRWindow(DesktopWindow):
                             GL.GL_LINEAR,
                         )
                         pygame.display.flip()
-                    layers.append(
-                        xr.CompositionLayerQuad(
-                            layer_flags=xr.CompositionLayerFlags.BLEND_TEXTURE_SOURCE_ALPHA_BIT,
-                            space=space,
-                            eye_visibility=xr.EyeVisibility.BOTH,
-                            sub_image=self.xr.panel.sub_image,
-                            pose=xr.Posef(position=xr.Vector3f(0, -0.15, -1.2)),
-                            size=xr.Extent2Df(1.05, 1.05 * 440 / 768),
+                    if self.panel_visible:
+                        layers.append(
+                            xr.CompositionLayerQuad(
+                                layer_flags=xr.CompositionLayerFlags.BLEND_TEXTURE_SOURCE_ALPHA_BIT,
+                                space=space,
+                                eye_visibility=xr.EyeVisibility.BOTH,
+                                sub_image=self.xr.panel.sub_image,
+                                pose=xr.Posef(position=xr.Vector3f(0, -0.15, -1.2)),
+                                size=xr.Extent2Df(1.05, 1.05 * 440 / 768),
+                            )
                         )
-                    )
                 frames += 1
                 diagnostics.event(
                     "display_frame",
@@ -294,6 +311,7 @@ class XRWindow(DesktopWindow):
                                 "active": value.active,
                                 "gaussians": self.renderer.count,
                                 "sorts": self.renderer.sorts,
+                                "panel_visible": self.panel_visible,
                                 "revision": revision,
                                 "link": current.status.link,
                                 "e_stop": current.status.e_stop,

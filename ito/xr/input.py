@@ -50,6 +50,7 @@ class Actions:
             ("e_stop", xr.ActionType.BOOLEAN_INPUT),
             ("stop", xr.ActionType.BOOLEAN_INPUT),
             ("recenter", xr.ActionType.BOOLEAN_INPUT),
+            ("panel", xr.ActionType.BOOLEAN_INPUT),
             ("haptic", xr.ActionType.VIBRATION_OUTPUT),
         ):
             self.actions[name] = self.create(name, kind, list(self.paths.values()))
@@ -70,6 +71,7 @@ class Actions:
             ("left", "recenter"): "input/y/click",
             ("right", "resume"): "input/a/click",
             ("right", "e_stop"): "input/b/click",
+            ("left", "panel"): "input/thumbstick/click",
         }
         self.suggest("/interaction_profiles/oculus/touch_controller", touch, face)
         self.suggest(
@@ -80,6 +82,7 @@ class Actions:
                 ("left", "recenter"): "input/b/click",
                 ("right", "resume"): "input/a/click",
                 ("right", "e_stop"): "input/b/click",
+                ("left", "panel"): "input/thumbstick/click",
             },
         )
         self.suggest(
@@ -100,7 +103,11 @@ class Actions:
                 "trigger": "input/trigger/value",
                 "squeeze": "input/squeeze/click",
             },
-            {("left", "recenter"): "input/menu/click", ("right", "e_stop"): "input/menu/click"},
+            {
+                ("left", "recenter"): "input/menu/click",
+                ("right", "e_stop"): "input/menu/click",
+                ("left", "panel"): "input/thumbstick/click",
+            },
         )
         self.suggest(
             "/interaction_profiles/khr/simple_controller",
@@ -155,6 +162,8 @@ class Actions:
         self.focused = False
         self.aims = {}
         self.triggers = {}
+        self.panel_held = False
+        self.panel_pinned = False  # The left stick click keeps the panel in view.
         self.haptic_pulses = 0
         self.haptic_pending = False
 
@@ -231,6 +240,7 @@ class Actions:
                 )
             except xr.SessionNotFocused:
                 focused = False  # Focus can change between polling events and syncing actions.
+        panel = False
         if focused:
             if self.haptic_pending:
                 self.pulse()
@@ -244,7 +254,10 @@ class Actions:
                             self.aims[hand] = matrix(value)
                 for name, action in self.actions.items():
                     info = xr.ActionStateGetInfo(action=action, subaction_path=path)
-                    if name in ("resume", "e_stop", "stop", "recenter"):
+                    if name == "panel":
+                        state = xr.get_action_state_boolean(self.session, info)
+                        panel |= bool(state.is_active and state.current_state)
+                    elif name in ("resume", "e_stop", "stop", "recenter"):
                         state = xr.get_action_state_boolean(self.session, info)
                         if state.is_active and state.current_state:
                             buttons.add(f"{hand}_{name}")
@@ -279,6 +292,9 @@ class Actions:
         )
         self.previous = buttons
         self.focused = focused
+        if panel and not self.panel_held:
+            self.panel_pinned = not self.panel_pinned
+        self.panel_held = panel
         return PilotInput(
             sampled_at,
             head,

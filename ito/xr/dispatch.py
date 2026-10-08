@@ -17,6 +17,7 @@ class XRDispatch(DisplayDispatch):
         self.was_active = False
         self.recenter = False
         self.pointer = (-10000, -10000, False)
+        self.panel_triggers = set()  # Hands whose trigger press began on the panel.
 
     def poll(self, dt, events, keyboard_ui, commands):
         desktop = super().poll(dt, events, keyboard_ui, commands)
@@ -55,9 +56,24 @@ class XRDispatch(DisplayDispatch):
         ):
             window.actions.pulse()
         self.last_status = status
-        self.pointer = window._pointer(value.head) if value.active else (-10000, -10000, False)
+        self.pointer = window._pointer() if value.active else (-10000, -10000, False)
+        # A trigger that clicks the panel is not a robot input (the Microduck's beak), and
+        # neither is the rest of that press after the pointer leaves the panel.
+        on_panel = self.pointer[0] >= 0
+        axes, buttons = dict(value.axes), set(value.buttons)
+        for hand in ("left", "right"):
+            name = f"{hand}_trigger"
+            if axes.get(name, 0.0) <= 0:
+                self.panel_triggers.discard(hand)
+            elif on_panel:
+                self.panel_triggers.add(hand)
+            if hand in self.panel_triggers or on_panel:
+                axes[name] = 0.0
+                buttons.discard(name)
         return replace(
             value,
+            axes=axes,
+            buttons=frozenset(buttons),
             commands=commands,
             movement=tuple(
                 float(np.clip(a + b, -1, 1))
