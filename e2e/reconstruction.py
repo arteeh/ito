@@ -153,20 +153,25 @@ def verify_setting(window, source, room, anchor):
     print("PASS: ImGui budget editing, persistence, input capture and graceful budget reduction")
 
 
-def verify_fade(window, anchor):
-    # Freeze uploads, not the display: the GPU clock must finish every fade on its own.
+def verify_fade(window, source, anchor):
+    """A stalled camera keeps its room; a smaller budget fades the excess out together."""
     target = window.context.simple_framebuffer((160, 120))
     energies = []
     projection = perspective(math.radians(70), 4 / 3)
     try:
-        for _ in range(16):
+        for step in range(20):
+            if step == 5:
+                source.set_max_splats(1)
+            while (packet := source.poll()) is not None:
+                window.renderer.apply(packet)
             window.renderer.draw(anchor, pose(), projection, target, clear=(0, 0, 0, 1))
             pixels = np.frombuffer(target.read(components=3), np.uint8)
             energies.append(int(pixels.sum()))
             time.sleep(0.2)
         assert energies[0] > 10000
-        assert energies[-1] < energies[0] * 0.01, "Stalled scene did not fade away"
-        assert any(0.1 < value / energies[0] < 0.9 for value in energies[1:-1]), (
+        assert min(energies[:5]) > energies[0] * 0.9, "Stalled scene faded without pressure"
+        assert energies[-1] < energies[0] * 0.01, "Budget pressure did not evict the scene"
+        assert any(0.1 < value / energies[0] < 0.9 for value in energies[5:-1]), (
             "Eviction popped instead of fading through intermediate opacity"
         )
         assert window.context.error == "GL_NO_ERROR"
@@ -191,7 +196,7 @@ def main():
     snapshots = []
     began = clock.now()
     with Reconstruction(
-        CAMERA, max_splats=BUDGET, voxel_size=0.12, window_seconds=2, fade_seconds=0.4
+        CAMERA, max_splats=BUDGET, voxel_size=0.12, fade_seconds=0.4
     ) as reconstruction:
         source = Observe(reconstruction)
 
@@ -263,7 +268,7 @@ def main():
                 stop.set()
                 producer.join(timeout=5)
                 verify_setting(window, source, room, anchor)
-                energies = verify_fade(window, anchor)
+                energies = verify_fade(window, source, anchor)
         finally:
             stop.set()
             producer.join(timeout=5)

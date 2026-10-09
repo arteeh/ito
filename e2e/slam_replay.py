@@ -127,7 +127,6 @@ def main():
         intrinsics,
         report=messages.append,
         voxel_size=0.04,
-        window_seconds=4.0,
         fade_seconds=0.5,
     )
     import torch

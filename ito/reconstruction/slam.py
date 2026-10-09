@@ -334,8 +334,8 @@ class SLAMBackend(RGBDBackend):
             # Size splats by the pixel footprint in the world's own (arbitrary) Sim3 units.
             # Per-frame pose and depth jitter moves every point a little: at 1.5 pixels
             # almost every cell is new each frame, the budget starves and views arrive
-            # as scattered dots. Three pixels refresh in place and hold the temporal
-            # window in about 400k splats; smaller budgets get proportionally coarser.
+            # as scattered dots. Three pixels refresh in place, so a room looked around
+            # once fits in about 400k splats; smaller budgets get proportionally coarser.
             pixels = 3 * max(1, (400_000 / self.budget) ** 0.5)
             footprint = local[:, 2] * float(scale) * pixels / self.K[0, 0]
             # DLPack shares CUDA memory; only the fused slot records cross to the ring.

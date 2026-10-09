@@ -1,8 +1,13 @@
-"""Vectorized fusion into stable voxel slots; RGB-D distances are metres, SLAM's its own units."""
+"""Vectorized fusion into stable voxel slots; RGB-D distances are metres, SLAM's its own units.
+
+Splats stay until the budget needs their slots: the scene builds up into one room the pilot
+can look back at, and only the longest-unseen surfaces fade out, together, under pressure.
+"""
 
 import numpy as np
 
 LEVELS = 32  # Power-of-two cell sizes from 2^-16 to 2^15 world units.
+KEEP = 1e30  # Fade deadline of a splat nothing has evicted: never.
 
 
 class RGBDBackend:
@@ -12,7 +17,6 @@ class RGBDBackend:
         intrinsics,
         *,
         voxel_size=0.04,
-        window_seconds=4.0,
         fade_seconds=0.5,
         device="auto",
     ):
@@ -36,7 +40,7 @@ class RGBDBackend:
             if device == "cuda" and self.xp is np:
                 raise RuntimeError("CUDA reconstruction needs an NVIDIA CUDA device")
         self.intrinsics = intrinsics
-        self.voxel_size, self.window, self.fade = voxel_size, window_seconds, fade_seconds
+        self.voxel_size, self.fade = voxel_size, fade_seconds
         self.records = np.zeros((capacity, 4, 4), np.float32)
         self.keys = np.full(capacity, -1, np.int64)
         self.seen = np.full(capacity, -np.inf)
@@ -94,9 +98,7 @@ class RGBDBackend:
         self.release_after[accepted] = np.minimum(
             self.release_after[accepted], now + self.fade + 0.05
         )
-        expired = (self.keys >= 0) & np.where(
-            self.retiring, self.release_after <= now, self.records[:, 1, 3] <= now
-        )
+        expired = (self.keys >= 0) & self.retiring & (self.release_after <= now)
         self.keys[expired] = -1
         self.records[expired] = 0
         self.retiring[expired] = False
@@ -175,7 +177,7 @@ class RGBDBackend:
         self.records[slots, 0, :3] = points[observed]
         self.records[slots, 0, 3] = 0.85
         self.records[slots, 1, :3] = cell[observed, None] * 0.65
-        self.records[slots, 1, 3] = now + self.window + self.fade
+        self.records[slots, 1, 3] = KEEP
         self.records[slots, 2, 0] = 1
         self.records[slots, 3, :3] = (colors[observed] / 255 - 0.5) / 0.2820947918
         self.dirty[slots] = True
