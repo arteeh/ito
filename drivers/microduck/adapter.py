@@ -21,6 +21,21 @@ HEAD_LIMITS = {
     "head_yaw": (-math.radians(170), math.radians(170)),
     "head_roll": (-math.radians(25), math.radians(25)),
 }
+# How far the gaze pans before the body turns. The walking policy was trained with head yaw
+# commands within +-1.40 rad (microduck_rl velocity recipe), and robot.look's IK flips the
+# neck through a singular pose at +-90 degrees: past that the head flails and rolls 30 degrees.
+GAZE_PAN = (-1.40, 1.40)
+
+
+def yaw_command(rate):
+    """The robot.move yaw command that turns the body at about this rate, rad/s.
+
+    Pollen's velstand stands still for yaw commands below about 1 rad/s (dead zone documented
+    in microduck_rl docs/velstand_policy.md); their runtime remap makes it track 0.5-1 rad/s.
+    """
+    if abs(rate) <= 0.05:
+        return 0.0
+    return math.copysign(0.33 + abs(rate) / 0.6, rate)
 
 
 class MicroduckAdapter(Adapter):
@@ -31,7 +46,10 @@ class MicroduckAdapter(Adapter):
             raise ValueError("Microduck input timeout must be between 0.02 and 0.5 seconds")
         self.remote = Remote(robot, self._notification)
         self.input_timeout = input_timeout
-        self.walker = Walker(HEAD_LIMITS["head_yaw"], speed=0.3, lateral_speed=0.10, turn_speed=0.6)
+        # The policy's trained forward/backward range is +-0.4 m/s and it stands still below
+        # about 0.35. It has no usable sideways step (none up to its trained 0.3 m/s), so
+        # sideways input steers the body into that direction instead.
+        self.walker = Walker(GAZE_PAN, speed=0.4, lateral_speed=0.0, turn_speed=0.8)
         self.camera = None
         self._description = None
         self._tasks = []
@@ -167,7 +185,7 @@ class MicroduckAdapter(Adapter):
                     {
                         "vx": move.forward,
                         "vy": move.left,
-                        "vyaw": move.turn,
+                        "vyaw": yaw_command(move.turn),
                     },
                 )
             ]

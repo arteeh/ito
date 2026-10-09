@@ -75,8 +75,8 @@ class Walker:
         vx, vy = forward * c + right * s, forward * s - right * c
         error = pan
         if self.lateral_speed == 0:
-            # Wheels cannot translate sideways: steer into the requested travel direction,
-            # allowing reverse, and suppress translation until that direction is reachable.
+            # Wheels, or a gait with no usable sideways step: steer into the requested travel
+            # direction, allowing reverse, and suppress translation until it is reachable.
             direction = -1 if forward < 0 else 1
             error = math.atan2(direction * vy, direction * vx)
             vx = direction * math.hypot(vx, vy) * max(0, math.cos(error)) ** 4
