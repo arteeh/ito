@@ -121,6 +121,11 @@ class SLAMBackend(RGBDBackend):
         """Where the robot's turns since the map started say the camera now looks."""
         start, robot = self.anchor
         rotation = prior[:3, :3] @ robot[:3, :3].T @ start[:3, :3]
+        # Composed onto a map tilted unlike the robot's estimate (a measured camera rolls
+        # 30 degrees at a wide look), that turn also swings the heading, and each realignment
+        # would carry the error on. The world shares the robot's startup heading, so the
+        # robot's measured heading is the camera's.
+        rotation = turn(heading(prior[:3, :3]) - heading(rotation)) @ rotation
         result = fallback.copy()
         result[:3, :3] = rotation
         return result
@@ -164,6 +169,14 @@ class SLAMBackend(RGBDBackend):
                     # and the startup heading ahead, like the pilot's world.
                     self.world = prior @ np.linalg.inv(pose)
                     pose = prior.copy()
+                elif measured and pose is not None:
+                    # A map restarted from the last pose faces where the camera looked then;
+                    # the robot says where it looks now.
+                    pose = pose.copy()
+                    pose[:3, :3] = (
+                        turn(heading(prior[:3, :3]) - heading(pose[:3, :3])) @ pose[:3, :3]
+                    )
+                    frame.T_WC = self.unplaced(pose, scale)
                 self.start_map(frame, pose, prior)
             else:
                 # Without the robot's heading, try one retained keyframe per observation
