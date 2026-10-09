@@ -22,6 +22,8 @@ HEADING_TOLERANCE = math.radians(12)
 # pose. A walking robot's gait sway or a brief blank view costs MASt3R a frame or two; a
 # fresh map for each throws away the room seen a moment ago.
 MEASURED_MISSES = 2
+RESTART_CAUSES = ("unmatched", "heading", "failure")
+REASONS = dict(unmatched="tracking lost", heading="heading lost", failure="solve failed")
 AXES = np.array([1.0, -1.0, -1.0])  # OpenCV camera/world axes (+Y down, +Z forward) to Ito.
 
 
@@ -84,7 +86,7 @@ class SLAMBackend(RGBDBackend):
         self.transform = lietorch.Sim3.Identity(1, device="cuda")
         self.camera_pose = np.eye(4, dtype=np.float32)
         self.tracked = 0
-        self.realigned = 0
+        self.restarts = dict.fromkeys(RESTART_CAUSES, 0)
         self.frame_id = 0
         self.lost = False
         self.failures = 0
@@ -138,6 +140,13 @@ class SLAMBackend(RGBDBackend):
         self.lost = False
         self.anchor = (pose, prior)
 
+    def restart(self, cause):
+        self.restarts[cause] += 1
+        self.report(
+            f"SLAM map restarted: {REASONS[cause]} | "
+            + ", ".join(f"{name} {count}" for name, count in self.restarts.items())
+        )
+
     def integrate(self, rgb, depth, camera, now, measured=False):
         """Camera is the robot's world-from-camera estimate; measured when it tracks the gaze."""
         import torch
@@ -148,7 +157,7 @@ class SLAMBackend(RGBDBackend):
 
         started = clock.now()
         prior = np.asarray(camera, dtype=np.float64)
-        realigned = False
+        restarted = None
         with torch.inference_mode():
             frame = create_frame(self.frame_id, rgb.astype(np.float32) / 255, self.transform)
             frame.K = self.K
@@ -158,7 +167,7 @@ class SLAMBackend(RGBDBackend):
                 # last was, so the pilot gets the room back instead of a fading memory.
                 self.frames.clear()
                 self.failures = 0
-                self.report("SLAM tracking restarted from the current view")
+                restarted = "unmatched"
             if not self.frames:
                 points, confidence = mast3r_inference_mono(self.model, frame)
                 frame.update_pointmap(points, confidence)
@@ -201,6 +210,7 @@ class SLAMBackend(RGBDBackend):
                         else math.inf
                     )
                     if abs(stray) > HEADING_TOLERANCE:
+                        restarted = "unmatched" if pose is None else "heading"
                         # Keep SLAM's own tilt and position when it has them; the robot's
                         # heading is the one thing a featureless view cannot tell.
                         if pose is None:
@@ -211,8 +221,6 @@ class SLAMBackend(RGBDBackend):
                         frame.T_WC = self.unplaced(pose, scale)
                         self.start_map(frame, pose, prior)
                         new_keyframe = False
-                        realigned = True
-                        self.realigned += 1
                 elif pose is None:
                     self.lost = True
                     self.failures += 1
@@ -236,7 +244,7 @@ class SLAMBackend(RGBDBackend):
                     if pose is None:
                         # The local solve diverged: drop the window, keep the world.
                         self.frames.clear()
-                        self.report("SLAM tracking restarted from the current view")
+                        self.restart("failure")
                         return
             self.transform = frame.T_WC
             self.camera_pose = pose.astype(np.float32)
@@ -263,7 +271,7 @@ class SLAMBackend(RGBDBackend):
                 self.xp.from_dlpack(footprint[valid].contiguous()),
             )
             self.tracked += 1
-            if realigned:
-                self.report(f"SLAM realigned to the robot's heading | {self.realigned} times")
+            if restarted:
+                self.restart(restarted)
             else:
                 self.report(f"MASt3R-SLAM tracking | {self.tracked} frames")
