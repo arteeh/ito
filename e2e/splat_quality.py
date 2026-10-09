@@ -7,7 +7,8 @@ its camera. Afterwards the splat scene is rendered from robot poses (current vie
 start and middle of the drive, a wall) next to MuJoCo's own image from the same pose.
 Coverage says whether the room is still there; grain compares high-frequency energy with
 the ground truth, so visible individual splats read as grain above 1. Passes when the room
-seen a lap ago is still there and the scene only grew until the budget was full.
+seen a lap ago is still there, the scene only grew until the budget was full, and a view
+through a briefly misplaced camera leaves no ghost room once the right pose returns.
 """
 
 import argparse
@@ -163,20 +164,23 @@ def main():
                     renderer.apply(packet)
                     counts.append((round(elapsed, 2), packet.count))
                 pygame.time.wait(5)
-            # Let the last frames land, the way a pilot keeps looking after the robot stops.
-            settle = clock.now() + 2
-            while clock.now() < settle:
-                while (packet := reconstruction.poll()) is not None:
-                    renderer.apply(packet)
-                    counts.append((round(clock.now() - began, 2), packet.count))
-                pygame.time.wait(5)
-            views = dict(
-                current=drive(args.seconds, args.seconds),
-                start=drive(0, args.seconds),
-                halfway=drive(args.seconds / 2, args.seconds),
-                wall=(0.5, 0.0, math.pi / 2, 0.6, 0.0),
-            )
-            for name, place in views.items():
+
+            def hold(seconds, camera_turn=0.0):
+                # Keep looking from the last pose, optionally through a misplaced camera.
+                place = drive(args.seconds, args.seconds)
+                until = clock.now() + seconds
+                while clock.now() < until:
+                    rgb, depth, camera = room.place(*place)
+                    turned = camera.copy()
+                    c, s_ = math.cos(camera_turn), math.sin(camera_turn)
+                    turned[:3, :3] = np.array(((c, 0, s_), (0, 1, 0), (-s_, 0, c))) @ camera[:3, :3]
+                    reconstruction.submit(rgb, depth, turned)
+                    while (packet := reconstruction.poll()) is not None:
+                        renderer.apply(packet)
+                        counts.append((round(clock.now() - began, 2), packet.count))
+                    pygame.time.wait(int(1000 / args.rate))
+
+            def view(name, place):
                 truth, _, camera = room.place(*place)
                 renderer.draw(camera, pose(), projection, target, clear=(0, 0, 0, 0))
                 pixels = np.frombuffer(target.read(components=4), np.uint8)
@@ -186,6 +190,23 @@ def main():
                 background = np.array((0.025, 0.035, 0.055)) * 255
                 shown = pixels[..., :3] + background * (1 - alpha[..., None])
                 report[name] = grade(name, np.uint8(np.clip(shown, 0, 255)), truth, alpha)
+
+            # Let the last frames land, the way a pilot keeps looking after the robot stops.
+            hold(2)
+            views = dict(
+                current=drive(args.seconds, args.seconds),
+                start=drive(0, args.seconds),
+                halfway=drive(args.seconds / 2, args.seconds),
+                wall=(0.5, 0.0, math.pi / 2, 0.6, 0.0),
+            )
+            for name, place in views.items():
+                view(name, place)
+            # A map misplaced by a few degrees for a moment (SLAM realigning) leaves a
+            # second, turned room; looking on from the right place must clear it again.
+            hold(1.5, math.radians(10))
+            view("ghost", views["current"])
+            hold(3)
+            view("cleared", views["current"])
             assert context.error == "GL_NO_ERROR"
     finally:
         room.close()
@@ -199,10 +220,17 @@ def main():
     print(json.dumps(report, indent=2))
     for name in ("start", "halfway", "wall"):
         assert report[name]["coverage"] > 0.75, f"The room seen at {name} faded away"
-    full = 0.95 * args.budget
-    shrunk = [(t, a, b) for (_, a), (t, b) in zip(counts, counts[1:]) if a < full and b < a * 0.98]
-    assert not shrunk, f"The scene shrank below its budget: {shrunk[:3]}"
-    print("PASS: the scene builds up to its budget and keeps the room it has seen")
+    assert report["cleared"]["error"] < report["current"]["error"] * 1.2 + 0.5, (
+        "A misplaced view left a ghost room in front of the real one"
+    )
+    # A lap of the room shows four times what its first sixth does; a kept room grows.
+    lap = [count for t, count in counts if t <= args.seconds]
+    early = max(count for t, count in counts if t <= args.seconds / 6)
+    full = lap[-1] >= 0.95 * args.budget
+    assert full or (lap[-1] > 0.9 * max(lap) and lap[-1] > 2 * early), (
+        f"The scene did not build up: {early} after a sixth of the lap, {lap[-1]} at its end"
+    )
+    print("PASS: the scene builds up, keeps the room it has seen and clears a ghost room")
 
 
 if __name__ == "__main__":
