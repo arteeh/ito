@@ -2,9 +2,13 @@
 
 A robot that measures where its camera looks (body heading plus head pan) keeps the map
 honest. On a plain wall or a cupboard door MASt3R matches almost anything to anything and
-reports a camera standing still while the robot turns half a room. A tracked heading
-that strays from the robot's, a few lost frames in a row or an unusable pose start a fresh
-local map at the robot's heading, so the pilot keeps a 3D scene that faces the right way.
+reports a camera standing still while the robot turns half a room. Every fresh local map
+leaves the old one's splats to fade beside it, doubled and tilted walls a pilot notices,
+so a measured map restarts only when nothing else works: a tracked heading that strays
+from the robot's turns the map's world back onto it over a few frames, and frames
+MASt3R cannot match are skipped while the robot's own pose carries the view. A loss that
+outlasts that, or a solve that diverges, starts a fresh map at the robot's heading; each
+restart is counted by cause.
 """
 
 import math
@@ -15,13 +19,20 @@ from ito import clock
 
 from .rgbd import RGBDBackend
 
-# Larger than the robot's own error (joint/IMU latency during a brisk turn), smaller than
-# the misplaced room a pilot notices when they look back.
+# A stray larger than the robot's own error (joint/IMU latency during a brisk turn) starts
+# turning the world back onto the robot's heading, a third of the stray per frame, until
+# it is within HEADING_SETTLED. Old splats stay put and fade; small steps keep the seam
+# between them and new ones small.
 HEADING_TOLERANCE = math.radians(12)
-# Unmatched frames in a row a measured map rides out before it restarts at the robot's
-# pose. A walking robot's gait sway or a brief blank view costs MASt3R a frame or two; a
-# fresh map for each throws away the room seen a moment ago.
-MEASURED_MISSES = 2
+HEADING_SETTLED = math.radians(2)
+HEADING_EASE = 1 / 3
+# Further off than this MASt3R tracked the wrong room, not a drifting one.
+HEADING_LOST = math.radians(60)
+# How long a measured map skips unusable frames on the robot's own pose before it restarts.
+# A gait sway, a step or a blank patch costs MASt3R a few frames; the pilot's view drops
+# to the flat feed after TRACKING_LOST (2 s), so a lasting loss restarts well before that.
+LOSS_SECONDS = 1.0
+WINDOW = 4  # Recent keyframes in the local graph.
 RESTART_CAUSES = ("unmatched", "heading", "failure")
 REASONS = dict(unmatched="tracking lost", heading="heading lost", failure="solve failed")
 AXES = np.array([1.0, -1.0, -1.0])  # OpenCV camera/world axes (+Y down, +Z forward) to Ito.
@@ -87,9 +98,13 @@ class SLAMBackend(RGBDBackend):
         self.camera_pose = np.eye(4, dtype=np.float32)
         self.tracked = 0
         self.restarts = dict.fromkeys(RESTART_CAUSES, 0)
+        self.corrections = 0  # Heading corrections started; each eases over a few frames.
+        self.correcting = False
         self.frame_id = 0
         self.lost = False
         self.failures = 0
+        # When a measured map last stopped matching; None while it tracks.
+        self.unmatched_since = None
         self.world = None  # Ito world from the (axis-flipped) map, fixed when the map starts.
         # Where the current local map started: its camera in the world, and the robot's
         # own idea of that camera. The robot's turns since then predict the heading.
@@ -124,7 +139,7 @@ class SLAMBackend(RGBDBackend):
         start, robot = self.anchor
         rotation = prior[:3, :3] @ robot[:3, :3].T @ start[:3, :3]
         # Composed onto a map tilted unlike the robot's estimate (a measured camera rolls
-        # 30 degrees at a wide look), that turn also swings the heading, and each realignment
+        # 30 degrees at a wide look), that turn also swings the heading, and each correction
         # would carry the error on. The world shares the robot's startup heading, so the
         # robot's measured heading is the camera's.
         rotation = turn(heading(prior[:3, :3]) - heading(rotation)) @ rotation
@@ -138,6 +153,8 @@ class SLAMBackend(RGBDBackend):
         self.tracker.reset_idx_f2k()
         self.failures = 0
         self.lost = False
+        self.correcting = False
+        self.unmatched_since = None
         self.anchor = (pose, prior)
 
     def restart(self, cause):
@@ -146,6 +163,24 @@ class SLAMBackend(RGBDBackend):
             f"SLAM map restarted: {REASONS[cause]} | "
             + ", ".join(f"{name} {count}" for name, count in self.restarts.items())
         )
+
+    def steer(self, pose, stray):
+        """Turn the world about the camera toward the robot's heading, a part per frame."""
+        if not self.correcting and abs(stray) <= HEADING_TOLERANCE:
+            return pose
+        if abs(stray) <= HEADING_SETTLED:
+            self.correcting = False
+            return pose
+        if not self.correcting:
+            self.correcting = True
+            self.corrections += 1
+        step = np.eye(4)
+        step[:3, :3] = turn(-stray * HEADING_EASE)
+        step[:3, 3] = pose[:3, 3] - step[:3, :3] @ pose[:3, 3]
+        self.world = step @ self.world
+        start, robot = self.anchor
+        self.anchor = (step @ start, robot)
+        return step @ pose
 
     def integrate(self, rgb, depth, camera, now, measured=False):
         """Camera is the robot's world-from-camera estimate; measured when it tracks the gaze."""
@@ -194,33 +229,44 @@ class SLAMBackend(RGBDBackend):
                     self.tracker.reset_idx_f2k()
                     self.frames.insert(0, self.frames.pop())
                     frame.T_WC = self.frames[-1].T_WC
+                previous, previous_scale = self.placed(self.transform) if measured else (None, 0)
+                if measured and self.unmatched_since is not None:
+                    # Start the solve where the robot says the camera now looks.
+                    frame.T_WC = self.unplaced(self.predicted(prior, previous), previous_scale)
                 new_keyframe, _, lost = self.tracker.track(frame)
                 pose, scale = (None, 0) if lost else self.placed(frame.T_WC)
-                if measured and pose is None and self.failures < MEASURED_MISSES:
-                    # Keep the map and the last pose; the next frame tries the same keyframe.
-                    self.failures += 1
-                    self.tracker.reset_idx_f2k()
-                    return
                 if measured:
-                    last, last_scale = self.placed(self.transform)
-                    expected = self.predicted(prior, pose if pose is not None else last)
-                    stray = (
-                        math.remainder(heading(pose[:3, :3]) - heading(expected[:3, :3]), math.tau)
-                        if pose is not None
-                        else math.inf
-                    )
-                    if abs(stray) > HEADING_TOLERANCE:
-                        restarted = "unmatched" if pose is None else "heading"
+                    cause = "unmatched" if lost else "failure" if pose is None else None
+                    stray = 0.0
+                    if pose is not None:
+                        expected = self.predicted(prior, pose)
+                        stray = math.remainder(
+                            heading(pose[:3, :3]) - heading(expected[:3, :3]), math.tau
+                        )
+                        if abs(stray) > HEADING_LOST:
+                            cause = "heading"
+                    if cause and self.unmatched_since is None:
+                        self.unmatched_since = now
+                    if cause and now - self.unmatched_since < LOSS_SECONDS:
+                        # Keep the map and the last pose; the robot's own pose carries
+                        # the pilot's view until a frame matches again.
+                        self.tracker.reset_idx_f2k()
+                        return
+                    if cause:
                         # Keep SLAM's own tilt and position when it has them; the robot's
                         # heading is the one thing a featureless view cannot tell.
                         if pose is None:
-                            pose, scale = expected, last_scale
+                            pose, scale = self.predicted(prior, previous), previous_scale
                         else:
                             pose = pose.copy()
                             pose[:3, :3] = turn(-stray) @ pose[:3, :3]
                         frame.T_WC = self.unplaced(pose, scale)
                         self.start_map(frame, pose, prior)
                         new_keyframe = False
+                        restarted = cause
+                    else:
+                        pose = self.steer(pose, stray)
+                    self.unmatched_since = None
                 elif pose is None:
                     self.lost = True
                     self.failures += 1
@@ -232,7 +278,7 @@ class SLAMBackend(RGBDBackend):
                     self.frames.append(frame)
                     # Bounded graph includes adjacent edges and a local loop to the
                     # oldest retained view. Upstream rejects non-overlapping edges.
-                    del self.frames[:-4]
+                    del self.frames[:-WINDOW]
                     graph = FactorGraph(self.model, self.frames, self.K, device="cuda")
                     last = len(self.frames) - 1
                     graph.add_factors(list(range(last)), list(range(1, last + 1)), 0.1)
