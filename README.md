@@ -145,11 +145,11 @@ LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/audio.py # two-way tones, 
 uv run python e2e/webrtc.py
 uv run python e2e/depth_load.py                            # Status and clock under VGA depth
 uv run python e2e/pairing.py                               # recorded signaling yields nothing reusable
-uv run python e2e/lifecycle.py
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/lifecycle.py # app closes in 2 s under faults
 uv run python e2e/mujoco_driver.py                         # saves RGB-D samples in e2e/out/mujoco
 uv run python e2e/reconstruction_faults.py
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/app.py # live MuJoCo, SDL input, reconnect
-LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/stall.py # input stalls, re-arm, focus
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/stall.py # input stalls, re-arm, focus, close
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/connect.py # connect screen, simulated robot
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/render.py
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/desktop.py

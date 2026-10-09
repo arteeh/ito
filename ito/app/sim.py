@@ -84,14 +84,15 @@ class SimulatedRobot:
             self.show(False)
             for viewer in self.retired_viewers:
                 try:
-                    viewer.wait(3)
+                    viewer.wait(0.5)
                 except subprocess.TimeoutExpired:
                     viewer.kill()
                     viewer.wait(3)
             self.retired_viewers.clear()
+        # Nothing real moves: a simulation slow to stop is not worth keeping the app open.
         self.process.terminate()
         try:
-            self.process.wait(5)
+            self.process.wait(0.5)
         except subprocess.TimeoutExpired:
             self.process.kill()
             self.process.wait(5)

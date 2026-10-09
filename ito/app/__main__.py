@@ -16,7 +16,7 @@ from ito.link.audio import Audio, arguments
 from ito.link.pairing import DIGITS, normalize
 
 from . import connect, settings
-from .pilot import Pilot
+from .pilot import Pilot, ShutdownStuck
 from .settings import Settings
 from .sim import SimulatedRobot
 
@@ -96,6 +96,7 @@ def main(argv=None, *, on_frame=None):
     credential = settings.credential(args.address) if args.address else None
     choice = connect.Choice(args.address, args.mode == "xr", code, credential)
     window = window_mode = error = pairing = failure = None
+    stuck = False
 
     def open_window(mode):
         window_type = DesktopWindow
@@ -156,6 +157,7 @@ def main(argv=None, *, on_frame=None):
     except (OSError, ValueError, RuntimeError, pygame.error, moderngl.Error) as exc:
         log.error("%s", exc)
         failure = str(exc)
+        stuck = isinstance(exc, ShutdownStuck)
         return 1
     finally:
         try:
@@ -168,6 +170,13 @@ def main(argv=None, *, on_frame=None):
             # the grabbed mouse and no longer answers the system, is gone.
             if failure:
                 alert(failure)
+            if stuck:
+                # Python joins every live non-daemon thread and worker process before it
+                # exits, with no timeout: aiortc's decoder threads in a stuck link, or a
+                # worker that would not die, would keep the closed app running for good.
+                log.error("Ito exits without waiting for what did not shut down")
+                logging.shutdown()
+                os._exit(1)
 
 
 def pilot_window(window, args, overrides, metrics, choice, on_frame):

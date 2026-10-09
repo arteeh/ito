@@ -34,6 +34,13 @@ RESTART_FIRST, RESTART_LONGEST, RESTART_HEALTHY = 1.0, 30.0, 60.0
 # Input older than INPUT_FRESH releases the deadman. A pilot who never let go is re-armed when
 # input returns within SHORT_STALL; a longer gap may have changed the scene, so they resume.
 INPUT_FRESH, SHORT_STALL = 0.2, 1.0
+# A closing app waits this long for the link to tear down, then this long more for each
+# reconstruction worker; anything still running is abandoned so the app can exit.
+LINK_WAIT, WORKER_WAIT = 1.0, 0.8
+
+
+class ShutdownStuck(RuntimeError):
+    """Part of the pilot did not stop; only ending the process releases it."""
 
 
 class Pilot:
@@ -231,10 +238,11 @@ class Pilot:
             self.last_frame = clock.now()
 
     def _retire(self, worker):
-        # Never on the link loop: a suspended or wedged worker takes seconds to kill.
+        # Never on the link loop: a busy or wedged worker takes a while to stop or kill.
         closer = threading.Thread(target=worker.close, name="ito-reconstruction-close")
         closer.start()
-        self.retiring = [thread for thread in self.retiring if thread.is_alive()] + [closer]
+        retiring = [(c, w) for c, w in self.retiring if c.is_alive() or w.process.is_alive()]
+        self.retiring = retiring + [(closer, worker)]
 
     def _prior(self, camera, metadata):
         """World-from-camera as far as the robot knows it at this exposure.
@@ -619,17 +627,26 @@ class Pilot:
         return self
 
     def close(self):
+        """Bounded: the pilot closed the app, and nothing on the link may keep it open.
+
+        The robot never depends on this: every exit path sends stop first, and a driver
+        that hears nothing more neutralizes within its input timeout.
+        """
         self.stop.set()
+        if self.audio:
+            # A device still closing is left for the operating system to release.
+            self.audio.close_timeout = 0.3
         if self.loop and self.task:
             with contextlib.suppress(RuntimeError):
                 self.loop.call_soon_threadsafe(self.task.cancel)
-        stuck = False
+        stuck = []
         if self.thread:
             with diagnostics.stage("link_thread"):
-                self.thread.join(timeout=12)
-            if stuck := self.thread.is_alive():
+                self.thread.join(timeout=LINK_WAIT)
+            if self.thread.is_alive():
                 stack = sys._current_frames().get(self.thread.ident)
                 log.error("Pilot link stuck at:\n%s", "".join(traceback.format_stack(stack)))
+                stuck.append("the pilot link")
         # Cancellation during connection setup, or a link stuck in teardown, can precede the
         # session's cleanup block. A worker left running would keep the app from exiting:
         # multiprocessing joins live worker processes at interpreter exit, without a timeout.
@@ -637,14 +654,14 @@ class Pilot:
             worker, self.worker = self.worker, None
         if worker is not None:
             self._retire(worker)
-        deadline = clock.now() + 8
-        for closer in self.retiring:
+        deadline = clock.now() + WORKER_WAIT
+        for closer, worker in self.retiring:
             with diagnostics.stage("reconstruction"):
                 closer.join(timeout=max(0, deadline - clock.now()))
-            if closer.is_alive():
-                raise RuntimeError("Reconstruction worker did not shut down")
+            if closer.is_alive() or worker.process.is_alive():
+                stuck.append(f"reconstruction process {worker.process.pid}")
         if stuck:
-            raise RuntimeError("Pilot link did not shut down")
+            raise ShutdownStuck(" and ".join(stuck) + " did not shut down")
 
     def __enter__(self):
         return self.start()
