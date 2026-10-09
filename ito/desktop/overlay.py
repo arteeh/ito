@@ -67,6 +67,10 @@ class Overlay:
             # captured, and a button ImGui believes held swallows every later click.
             if captured and event.type in (pygame.MOUSEMOTION, pygame.MOUSEBUTTONDOWN):
                 continue
+            # The backend hands any button to ImGui, whose assert on a slot it lacks kills
+            # the display: the legacy wheel buttons (4, 5) and side buttons (6, 7) go no further.
+            if event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP) and event.button > 3:
+                continue
             self.backend.process_event(event)
         self.backend.io.display_size = size
         self.backend.process_inputs()
