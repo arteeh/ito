@@ -63,6 +63,7 @@ def main():
     from pygame._sdl2 import Window
 
     from ito.app.__main__ import main as pilot_main
+    from ito.app.pilot import SHORT_STALL
     from ito.driver import pairing
     from ito.render import pose
 
@@ -232,8 +233,10 @@ def main():
                 assert entered.wait(1), "XR sampler waited for rendering"
                 stale = app.latest_input.timestamp
                 released = None
-                while app.telemetry["active"] or clock.now() - stale < 0.3:
-                    assert clock.now() - stale < 0.5, app.telemetry
+                # Past SHORT_STALL: a short stall re-arms by itself (e2e/stall.py), this
+                # one timed out and must wait for an explicit resume.
+                while app.telemetry["active"] or clock.now() - stale < SHORT_STALL + 0.1:
+                    assert not app.telemetry["active"] or clock.now() - stale < 0.5, app.telemetry
                     if not app.telemetry["active"] and released is None:
                         released = clock.now()
                     time.sleep(0.01)
