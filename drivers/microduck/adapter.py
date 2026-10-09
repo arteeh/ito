@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import math
+from collections import deque
 
 from ito import clock
 from ito.driver import Adapter
@@ -25,6 +26,11 @@ HEAD_LIMITS = {
 # commands within +-1.40 rad (microduck_rl velocity recipe), and robot.look's IK flips the
 # neck through a singular pose at +-90 degrees: past that the head flails and rolls 30 degrees.
 GAZE_PAN = (-1.40, 1.40)
+# mediad's frames reach the driver about 90 ms after robotd reports the head pose they were
+# taken at (encoding, WebRTC, decoding). Measured on the simulated twin by matching
+# MASt3R-SLAM's turns to the robot's: taking the pose from receive time instead puts a
+# brisk turn's frames 5-10 degrees off and makes SLAM restart its map against the robot.
+FRAME_DELAY = 0.09
 
 
 def yaw_command(rate):
@@ -61,7 +67,8 @@ class MicroduckAdapter(Adapter):
         self._state_at = 0.0
         self._yaw_origin = None
         self._origin = None  # Trunk x, y and yaw at startup, in robotd's odometry world.
-        self._camera_pose = None
+        # Recent measured camera poses: (time, position, orientation, body yaw).
+        self._poses = deque(maxlen=40)
         self._neutral_done = asyncio.Event()
 
     @property
@@ -282,30 +289,26 @@ class MicroduckAdapter(Adapter):
         if camera and data.get("imu") and position is not None:
             if self._origin is None:
                 self._origin = (position[0], position[1], self._yaw_origin)
-            self._camera_pose = frames.camera_in_world(
+            pose = frames.camera_in_world(
                 data["imu"]["quat"], position, (camera["pos"], camera["quat"]), self._origin
             )
-            for name, angle in zip(
-                ("yaw", "pitch", "roll"), frames.angles(self._camera_pose[1]), strict=True
-            ):
+            self._poses.append((clock.now(), *pose, values["base_yaw"]))
+            for name, angle in zip(("yaw", "pitch", "roll"), frames.angles(pose[1]), strict=True):
                 values[f"camera_{name}"] = angle
         self._telemetry.update(values)
         self._state_at = clock.now()
 
     def _frame_metadata(self):
-        """What the robot measured about its camera as a frame arrives.
+        """What the robot measured about its camera when the frame arriving now was taken.
 
         The camera pose is robotd's forward kinematics at the measured head joints on the IMU's
         trunk orientation: the heading SLAM cannot see on a plain wall, and the roll and pitch
         that level its map.
         """
-        if self._camera_pose is None:
+        if not self._poses:
             return {}
-        position, orientation = self._camera_pose
-        return dict(
-            camera_pose=Pose(position=position, orientation=orientation),
-            body_yaw=self._telemetry["base_yaw"],
-        )
+        position, orientation, body_yaw = frames.at(self._poses, clock.now() - FRAME_DELAY)
+        return dict(camera_pose=Pose(position=position, orientation=orientation), body_yaw=body_yaw)
 
     def telemetry(self):
         self._check()
