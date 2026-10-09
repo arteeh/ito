@@ -257,6 +257,7 @@ def main():
         restarts_per_100s={k: round(v * per_100s, 1) for k, v in restarts.items()},
         restarts_inferred=not hasattr(backend, "restarts"),
         heading_corrections=getattr(backend, "corrections", None),
+        blurred_skipped=getattr(backend, "blurred", None),
         flat_fraction=round(flat / float(stamps[-1]), 3),
         gaze_range_deg=round(math.degrees(np.ptp([p[7] for p in processed])), 1),
         heading_error_deg_median=round(float(np.median(stray)), 1),
