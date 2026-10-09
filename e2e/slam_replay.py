@@ -65,6 +65,9 @@ def main():
     parser.add_argument("--gaze-prior", action="store_true")
     parser.add_argument("--unmeasured", action="store_true", help="hide the robot's heading")
     parser.add_argument("--measured", action="store_true", help="trust the recorded prior")
+    parser.add_argument(
+        "--set", action="append", default=[], help="override MASt3R-SLAM config: tracking.Q_conf=2"
+    )
     args = parser.parse_args()
     out = args.out or Path("e2e/out/slam-replay") / args.recording.name
     out.mkdir(parents=True, exist_ok=True)
@@ -82,7 +85,12 @@ def main():
         fade_seconds=0.5,
     )
     import torch
+    from mast3r_slam.config import config
 
+    for override in args.set:
+        name, value = override.split("=", 1)
+        section, key = name.split(".")
+        config[section][key] = type(config[section][key])(value)
     start = times[0]
     now = start
     index = -1
@@ -169,6 +177,7 @@ def main():
     report = dict(
         recording=str(args.recording),
         measured=not args.unmeasured,
+        overrides=args.set,
         seconds=round(float(stamps[-1]), 1),
         frames_available=len(rows),
         frames_processed=len(processed),
