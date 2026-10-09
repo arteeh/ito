@@ -31,6 +31,9 @@ TRACKING_GAP = 0.5
 # A failed worker restarts after this delay, doubling up to RESTART_LONGEST; one that ran
 # RESTART_HEALTHY seconds before failing starts the count again.
 RESTART_FIRST, RESTART_LONGEST, RESTART_HEALTHY = 1.0, 30.0, 60.0
+# Input older than INPUT_FRESH releases the deadman. A pilot who never let go is re-armed when
+# input returns within SHORT_STALL; a longer gap may have changed the scene, so they resume.
+INPUT_FRESH, SHORT_STALL = 0.2, 1.0
 
 
 class Pilot:
@@ -63,7 +66,8 @@ class Pilot:
         self.telemetry = {}
         self.latest_input = None
         self.commands = deque()
-        self.armed = False  # Resume sent and input fresh since; only then is deadman held.
+        self.armed = False  # Resume sent and input fresh since, or back within SHORT_STALL.
+        self.stalled = False  # Disarmed by an input stall alone; fresh input soon re-arms.
         self.resumed = False  # The last safety command this pilot gave was resume.
         self.focus_hold = False  # The robot is stopped only because the window lost focus.
         self.budget_change = None
@@ -107,8 +111,7 @@ class Pilot:
                 continue
             if command == "focus_stop":
                 # Commands precede this sample's inactive input, so armed is still current.
-                self.focus_hold = self.resumed and self.armed
-                command = "stop"
+                self.focus_hold = self.resumed and (self.armed or self.stalled)
             else:
                 if command == "rearm":
                     # Only a stop that focus loss alone caused is undone by clicking back in;
@@ -117,7 +120,7 @@ class Pilot:
                         continue
                     command = "resume"
                 self.focus_hold = False
-            if command in {"stop", "e_stop", "resume"}:
+            if command in {"stop", "focus_stop", "e_stop", "resume"}:
                 self.resumed = command == "resume"
             if len(self.commands) >= 32:
                 self.commands.clear()
@@ -333,8 +336,16 @@ class Pilot:
         self._status("CONNECTED", "Resume to begin piloting", peer=peer)
         joined = FrameJoin()
         tasks = []
-        self.armed = self.focus_hold = False
+        self.armed = self.focus_hold = self.stalled = False
         previous_fresh = None
+        last_fresh = None  # Capture time of the newest sample that held the deadman.
+
+        def disarm(reason):
+            if self.armed or self.stalled:
+                log.warning("Pilot input disarmed: %s; resume to pilot again", reason)
+                diagnostics.event("input_disarmed", reason=reason)
+            self.armed = self.stalled = False
+
         sequence = command_sequence = 0
         pending = None
         last_status = clock.now()
@@ -441,8 +452,11 @@ class Pilot:
                     self._save(description.name)
                 while pending or self.commands:
                     if pending is None:
-                        action = self.commands.popleft().replace("_", "-")
-                        self.armed = action == "resume"
+                        given = self.commands.popleft()
+                        action = ("stop" if given == "focus_stop" else given).replace("_", "-")
+                        if action != "resume":
+                            disarm("focus lost" if given == "focus_stop" else action)
+                        self.armed, self.stalled = action == "resume", False
                         pending = Command(sequence=command_sequence, action=action)
                         command_sequence += 1
                     if peer.send(pending):
@@ -451,18 +465,28 @@ class Pilot:
                         break  # Retry backpressure; accepted commands use reliable SCTP.
                 value = self.latest_input
                 if value is not None:
-                    fresh = value.active and now - value.timestamp < 0.2
+                    fresh = value.active and now - value.timestamp < INPUT_FRESH
                     if fresh != previous_fresh:
                         diagnostics.event("input_freshness_transition", fresh=fresh)
                         previous_fresh = fresh
-                    if not fresh:
-                        if self.armed:
-                            log.warning(
-                                "Pilot input disarmed: active=%s sample_age_ms=%.1f",
-                                value.active,
-                                (now - value.timestamp) * 1000,
-                            )
-                        self.armed = False
+                    if not value.active:
+                        disarm("window inactive")
+                    elif not fresh and self.armed:
+                        log.warning(
+                            "Pilot input stalled, deadman released: sample_age_ms=%.1f",
+                            (now - value.timestamp) * 1000,
+                        )
+                        self.armed, self.stalled = False, last_fresh is not None
+                    elif self.stalled:
+                        gap = (value.timestamp if fresh else now) - last_fresh
+                        if gap > SHORT_STALL:
+                            disarm(f"input stalled over {SHORT_STALL * 1000:.0f} ms")
+                        elif fresh:
+                            log.info("Pilot re-armed after a %.0f ms input stall", gap * 1000)
+                            diagnostics.event("input_rearmed", stall_ms=gap * 1000)
+                            self.armed, self.stalled = True, False
+                    if fresh and self.armed:
+                        last_fresh = value.timestamp
                     diagnostics.event(
                         "input_freshness",
                         interval=1,
