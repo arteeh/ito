@@ -31,6 +31,33 @@ GAZE_PAN = (-1.40, 1.40)
 # MASt3R-SLAM's turns to the robot's: taking the pose from receive time instead puts a
 # brisk turn's frames 5-10 degrees off and makes SLAM restart its map against the robot.
 FRAME_DELAY = 0.09
+# The trunk sways about 1.5 degrees at the gait's ~2.4 Hz. Aiming the head from the
+# instantaneous heading feeds that sway into the pan command, which the head reaches 0.1-0.3 s
+# late, so it adds to the camera's swing instead of cancelling it. The head is aimed from the
+# heading averaged over one gait period, moved on by the turn rate over two.
+GAIT_PERIOD = 0.42
+
+
+def steady_heading(samples):
+    """Body heading now without the gait's sway, from (time, yaw) samples over two periods.
+
+    The mean over the last period cancels the sway but lags a turning body by half a period;
+    the turn rate fitted over both periods brings it up to date.
+    """
+    t0, yaw0 = samples[-1]
+    times = [t - t0 for t, _ in samples]
+    yaws = [math.remainder(yaw - yaw0, math.tau) for _, yaw in samples]
+    count = len(samples)
+    mean_t, mean_yaw = sum(times) / count, sum(yaws) / count
+    spread = sum((t - mean_t) ** 2 for t in times)
+    rate = (
+        sum((t - mean_t) * (y - mean_yaw) for t, y in zip(times, yaws, strict=True)) / spread
+        if spread > 1e-9
+        else 0.0
+    )
+    recent = [(t, y) for t, y in zip(times, yaws, strict=True) if t >= -GAIT_PERIOD]
+    late = sum(t for t, _ in recent) / len(recent)
+    return math.remainder(yaw0 + sum(y for _, y in recent) / len(recent) - rate * late, math.tau)
 
 
 def yaw_command(rate):
@@ -69,6 +96,7 @@ class MicroduckAdapter(Adapter):
         self._origin = None  # Trunk x, y and yaw at startup, in robotd's odometry world.
         # Recent measured camera poses: (time, position, orientation, body yaw).
         self._poses = deque(maxlen=40)
+        self._headings = deque()  # (time, body yaw) over the last two gait periods.
         self._neutral_done = asyncio.Event()
 
     @property
@@ -184,7 +212,7 @@ class MicroduckAdapter(Adapter):
                 continue
             state = latest[1]
             axes, buttons = state.axes, state.buttons
-            move = self.walker(state, self._telemetry["base_yaw"])
+            move = self.walker(state, steady_heading(self._headings))
             # The walking policy needs enough command range to enter its stepping gait.
             commands = [
                 (
@@ -282,6 +310,10 @@ class MicroduckAdapter(Adapter):
         if self._yaw_origin is None:
             self._yaw_origin = yaw
         values["base_yaw"] = math.remainder(yaw - self._yaw_origin, 2 * math.pi)
+        now = clock.now()
+        self._headings.append((now, values["base_yaw"]))
+        while now - self._headings[0][0] > 2 * GAIT_PERIOD:
+            self._headings.popleft()
         for key, vector in (data.get("imu") or {}).items():
             for index, value in enumerate(vector):
                 values[f"imu_{key}_{index}"] = value
@@ -292,7 +324,7 @@ class MicroduckAdapter(Adapter):
             pose = frames.camera_in_world(
                 data["imu"]["quat"], position, (camera["pos"], camera["quat"]), self._origin
             )
-            self._poses.append((clock.now(), *pose, values["base_yaw"]))
+            self._poses.append((now, *pose, values["base_yaw"]))
             for name, angle in zip(("yaw", "pitch", "roll"), frames.angles(pose[1]), strict=True):
                 values[f"camera_{name}"] = angle
         self._telemetry.update(values)
