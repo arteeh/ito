@@ -78,6 +78,7 @@ class Pilot:
         self.backend = "rgbd"
         self.reconstruction_status = ""
         self.tracked_frames = 0
+        self.slam_restarts = {}  # The worker's map restarts by cause, as last logged.
         self.tracking = False
         self.tracking_steady_since = 0.0
         self.slam_view = False  # SLAM's 3D view is shown rather than the flat feed.
@@ -169,6 +170,20 @@ class Pilot:
                 focus_hold=self.focus_hold,
             ),
         )
+
+    def _log_restarts(self, restarts):
+        """One diagnostic event per cause whose count of SLAM map restarts went up."""
+        if not restarts:
+            return
+        for cause, count in restarts.items():
+            if count > self.slam_restarts.get(cause, 0):
+                diagnostics.event(
+                    "slam_restart",
+                    cause=cause,
+                    count=count - self.slam_restarts.get(cause, 0),
+                    totals=restarts,
+                )
+        self.slam_restarts = restarts
 
     def _audio_status(self, peer):
         """The pilot's devices that have a counterpart on the robot."""
@@ -317,6 +332,7 @@ class Pilot:
         def reconstruct():
             nonlocal worker_started
             worker_started = clock.now()
+            self.slam_restarts = {}
             with self.worker_lock:
                 self.worker = Reconstruction(
                     camera.intrinsics,
@@ -399,6 +415,7 @@ class Pilot:
                                     self.tracking_steady_since = now
                                 self.last_tracking = now
                             self.tracked_frames = count
+                        self._log_restarts(self.worker.restarts())
                         live = self.tracking and now - self.last_tracking < TRACKING_LOST
                         if live and tracked:
                             self._anchor(transform)
