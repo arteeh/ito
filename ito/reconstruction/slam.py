@@ -117,7 +117,7 @@ class SLAMBackend(RGBDBackend):
         self.sharpness = None
         self.blurred_since = None
         self.blurred = 0  # Smeared frames skipped.
-        self.seen = None  # When the last frame arrived.
+        self.arrived = None  # When the last frame arrived.
         # The newest keyframe per heading sector of the current map, for turning back.
         self.spread = {}
         self.world = None  # Ito world from the (axis-flipped) map, fixed when the map starts.
@@ -231,7 +231,7 @@ class SLAMBackend(RGBDBackend):
         started = clock.now()
         gray = rgb[..., 1].astype(np.float32)
         sharp = float(np.abs(np.diff(gray, axis=0)).mean() + np.abs(np.diff(gray, axis=1)).mean())
-        since, self.seen = self.seen, now
+        since, self.arrived = self.arrived, now
         prior = np.asarray(camera, dtype=np.float64)
         restarted = None
         with torch.inference_mode():
