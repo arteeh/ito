@@ -220,11 +220,13 @@ def main():
             pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_w))
             tested_input_stall = True
         elif stage == 1 and tested_input_stall and now - changed > 2:
-            pygame.event.post(
-                pygame.event.Event(
-                    pygame.MOUSEMOTION, pos=(600, 400), rel=(-260, -25), buttons=(0, 0, 0)
+            # A grab's first pointer report is its baseline; the turn follows it.
+            for rel in ((0, 0), (-260, -25)):
+                pygame.event.post(
+                    pygame.event.Event(
+                        pygame.MOUSEMOTION, pos=(600, 400), rel=rel, buttons=(0, 0, 0)
+                    )
                 )
-            )
             stage, changed = 2, now
         elif stage == 2 and now - changed > 2:
             assert np.linalg.norm(np.array((t["base_x"], t["base_y"])) - first_position) > 0.4, (

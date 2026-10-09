@@ -36,6 +36,7 @@ class DesktopInput:
         self.position = np.zeros(3, dtype=np.float32)
         self.yaw = self.pitch = 0.0
         self.captured = False
+        self.grabbing: str | None = None  # "batch", then "baseline": motion not to look with
         self.active = True
         self.refocus = False  # Focus loss stopped the robot and no safety key followed.
         self.translate = True
@@ -61,6 +62,10 @@ class DesktopInput:
     def capture(self, enabled: bool) -> None:
         if enabled != self.captured:
             diagnostics.event("input_capture", captured=enabled)
+            # Motion already fetched happened before the switch. After a grab, SDL measures
+            # an absolute pointer's first relative report (remote desktop, VM, tablet) from
+            # a stale origin, so that report is the baseline, never a turn.
+            self.grabbing = "batch" if enabled else None
         self.captured = enabled
         pygame.event.set_grab(enabled)
         pygame.mouse.set_visible(not enabled)
@@ -127,6 +132,10 @@ class DesktopInput:
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and self.active:
                 self.capture(True)
             elif event.type == pygame.MOUSEMOTION and self.captured and self.active:
+                if self.grabbing:
+                    if self.grabbing == "baseline":
+                        self.grabbing = None
+                    continue
                 self.yaw -= event.rel[0] * self.sensitivity
                 self.pitch -= event.rel[1] * self.sensitivity * (-1 if self.invert_y else 1)
             elif event.type in (pygame.CONTROLLERDEVICEADDED, pygame.CONTROLLERDEVICEREMOVED):
@@ -134,6 +143,8 @@ class DesktopInput:
                     commands.append("stop")
                     self.pad_buttons.clear()
                 self._connect_pad()
+        if self.grabbing == "batch":
+            self.grabbing = "baseline"
 
         movement = np.zeros(3, dtype=float)
         look = (0.0, 0.0)

@@ -123,11 +123,13 @@ def run(sim, evidence):
             stage, changed = 1, now
         elif stage == 1 and now - changed > 1:
             report["initial_head_yaw"] = t["head_yaw"]
-            pygame.event.post(
-                pygame.event.Event(
-                    pygame.MOUSEMOTION, pos=(600, 400), rel=(-280, -30), buttons=(0, 0, 0)
+            # A grab's first pointer report is its baseline; the turn follows it.
+            for rel in ((0, 0), (-280, -30)):
+                pygame.event.post(
+                    pygame.event.Event(
+                        pygame.MOUSEMOTION, pos=(600, 400), rel=rel, buttons=(0, 0, 0)
+                    )
                 )
-            )
             stage, changed = 2, now
         elif stage == 2 and now - changed > 4:
             distance = float(np.linalg.norm(position - initial))

@@ -71,6 +71,15 @@ class Overlay:
             # the display: the legacy wheel buttons (4, 5) and side buttons (6, 7) go no further.
             if event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP) and event.button > 3:
                 continue
+            # Tab toggles mouse-look. Outside a text field, ImGui would take it for keyboard
+            # navigation and from then on claim the keyboard, so Tab could no longer grab.
+            # Its release still arrives, like mouse releases above.
+            if (
+                event.type == pygame.KEYDOWN
+                and event.key == pygame.K_TAB
+                and not io.want_text_input
+            ):
+                continue
             self.backend.process_event(event)
         self.backend.io.display_size = size
         self.backend.process_inputs()
