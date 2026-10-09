@@ -77,3 +77,20 @@ def angles(orientation):
     pitch = math.asin(max(-1.0, min(1.0, -back[1])))
     roll = math.atan2(right[1], up[1])
     return yaw, pitch, roll
+
+
+def at(history, when):
+    """(position, xyzw orientation, body yaw) at `when`, interpolated in a time-ordered
+    history of (time, position, orientation, body yaw) samples; held at either end."""
+    later = next((i for i, sample in enumerate(history) if sample[0] > when), len(history))
+    if later == 0 or later == len(history):
+        return history[min(later, len(history) - 1)][1:]
+    (t0, p0, q0, yaw0), (t1, p1, q1, yaw1) = history[later - 1], history[later]
+    f = (when - t0) / (t1 - t0)
+    if sum(a * b for a, b in zip(q0, q1, strict=True)) < 0:
+        q1 = tuple(-v for v in q1)
+    return (
+        tuple(a + (b - a) * f for a, b in zip(p0, p1, strict=True)),
+        normalized(tuple(a + (b - a) * f for a, b in zip(q0, q1, strict=True))),
+        math.remainder(yaw0 + math.remainder(yaw1 - yaw0, math.tau) * f, math.tau),
+    )
