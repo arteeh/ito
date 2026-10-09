@@ -92,7 +92,7 @@ On Microduck, from this checkout: `uv run --project drivers/microduck ito-driver
 Microduck must have robotd/mediad running and be enabled with `robotctl robot enable`; G/right trigger opens the beak, C crouches.
 
 Virtual Microduck on Ubuntu: `drivers/microduck/setup-sim.sh /path/to/prefix`, then `/path/to/prefix/microduck-sim --viewer`.
-From built checkouts: `uv run --extra microduck python -m drivers.microduck.sim --microduck /path/to/microduck --rl /path/to/microduck_rl --policies /path/to/policies/current [--viewer]`.
+From built checkouts: `uv run --extra microduck python -m drivers.microduck.sim --microduck /path/to/microduck --rl /path/to/microduck_rl --policies /path/to/policies/current [--viewer] [--camera-height 360|720|1080]` (head camera size; the lens is the real 62 degrees at all of them).
 Enter the printed address and pairing code in Ito; Ctrl+C or closing the viewer stops the complete robot.
 
 ## Development and releases

@@ -1,13 +1,27 @@
 """Keep the CAD body visible in Pollen's viewer without occluding its head camera."""
 
+import os
 import sys
 
 import mujoco
 from mjlab_microduck.sim import body_server
 from mjlab_microduck.sim.camera import Camera, to_uyvy
 
+from drivers.microduck import lens
+
 
 class HeadCamera(Camera):
+    def __init__(self, model, name):
+        height = int(os.environ.get("ITO_MICRODUCK_CAMERA_HEIGHT", 360))
+        width = lens.width_for(height)
+        # MuJoCo renders no larger than the offscreen buffer, which the scene sizes at 640x480.
+        model.vis.global_.offwidth = max(model.vis.global_.offwidth, width)
+        model.vis.global_.offheight = max(model.vis.global_.offheight, height)
+        model.cam_fovy[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, name)] = (
+            lens.vertical_fov_deg(width, height)
+        )
+        super().__init__(model, name, width, height)
+
     def render(self, world):
         option = mujoco.MjvOption()
         option.geomgroup[2] = 0

@@ -8,6 +8,7 @@ import numpy as np
 from aiortc import VideoStreamTrack
 from aiortc.mediastreams import MediaStreamError
 
+from drivers.microduck import lens
 from ito import clock
 from ito.protocol import FrameMetadata, Intrinsics
 
@@ -28,6 +29,11 @@ class Camera:
             height=self.height,
             **{key: geometry[key] for key in ("fx", "fy", "cx", "cy")},
         )
+        if geometry["source"] == "sim":
+            # mediad describes the twin as MuJoCo's default 45 degrees; sim_body renders the lens.
+            k = k.model_copy(
+                update={"fx": lens.focal_px(self.width), "fy": lens.focal_px(self.width)}
+            )
         self.rotation = info["rotate"]
         if self.rotation not in {0, 90, 180, 270}:
             raise ValueError("Microduck camera mount must be a quarter turn")

@@ -14,6 +14,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
 
+from drivers.microduck import lens
 from drivers.microduck.scene import furnish
 from ito.driver import pairing
 from ito.link.pairing import display
@@ -65,6 +66,7 @@ def simulation(
     driver_port=8081,
     viewer=False,
     gl=None,
+    camera_height=360,
 ):
     upstream, rl, policies_dir = (p.resolve() for p in (upstream, rl, policies_dir))
     logs.mkdir(parents=True, exist_ok=True)
@@ -75,6 +77,7 @@ def simulation(
         "MUJOCO_GL": gl or ("glfw" if viewer else "osmesa"),
         "OPENBLAS_NUM_THREADS": "1",
         "OMP_NUM_THREADS": "1",
+        "ITO_MICRODUCK_CAMERA_HEIGHT": str(camera_height),
     }
     if Path("/dev/dxg").exists() and "GALLIUM_DRIVER" not in os.environ:
         # WSL's Mesa defaults to llvmpipe; d3d12 renders the viewer and head camera on the GPU.
@@ -111,7 +114,7 @@ def simulation(
         code = pairing.read(pairing_file)
         robot_socket = state / "robot.sock"
         media_config = state / "media.toml"
-        media_config.write_text('[media]\nquality = "360p30"\n')
+        media_config.write_text(f'[media]\nquality = "{lens.RESOLUTIONS[camera_height]}"\n')
         # Match robotd's shipped default: velstand walks and also stands still at zero command.
         policies = {
             "walk": "velstand",
@@ -287,6 +290,13 @@ def main():
     arguments(parser)
     parser.add_argument("--viewer", action="store_true", help="open Pollen's MuJoCo viewer")
     parser.add_argument("--gl", choices=("osmesa", "egl", "glfw"))
+    parser.add_argument(
+        "--camera-height",
+        type=int,
+        choices=sorted(lens.RESOLUTIONS),
+        default=360,
+        help="head camera frame height in pixels (16:9); larger costs render time",
+    )
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8081)
     parser.add_argument("--logs", type=Path, default=Path.home() / ".local/state/ito/microduck-sim")
@@ -313,6 +323,7 @@ def main():
             driver_port=args.port,
             viewer=args.viewer,
             gl=args.gl,
+            camera_height=args.camera_height,
         ) as sim:
             addresses = [args.host]
             if args.host == "0.0.0.0":
