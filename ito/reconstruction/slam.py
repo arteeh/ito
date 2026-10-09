@@ -5,10 +5,11 @@ honest. On a plain wall or a cupboard door MASt3R matches almost anything to any
 reports a camera standing still while the robot turns half a room. Every fresh local map
 leaves the old one's splats to fade beside it, doubled and tilted walls a pilot notices,
 so a measured map restarts only when nothing else works: a tracked heading that strays
-from the robot's turns the map's world back onto it over a few frames, and frames
-MASt3R cannot match are skipped while the robot's own pose carries the view. A loss that
-outlasts that, or a solve that diverges, starts a fresh map at the robot's heading; each
-restart is counted by cause.
+from the robot's turns the map's world back onto it over a few frames, frames MASt3R
+cannot match are skipped while the robot's own pose carries the view, and after a turn
+the tracker tries the keyframe that last faced the robot's way. A loss that outlasts
+that, or a solve that diverges, starts a fresh map at the robot's heading; each restart
+is counted by cause.
 """
 
 import math
@@ -32,6 +33,8 @@ HEADING_LOST = math.radians(60)
 # A gait sway, a step or a blank patch costs MASt3R a few frames; the pilot's view drops
 # to the flat feed after TRACKING_LOST (2 s), so a lasting loss restarts well before that.
 LOSS_SECONDS = 1.0
+# Keyframes kept per heading sector, beyond the live window, for turning back.
+SPREAD = math.radians(30)
 WINDOW = 4  # Recent keyframes in the local graph.
 RESTART_CAUSES = ("unmatched", "heading", "failure")
 REASONS = dict(unmatched="tracking lost", heading="heading lost", failure="solve failed")
@@ -105,6 +108,8 @@ class SLAMBackend(RGBDBackend):
         self.failures = 0
         # When a measured map last stopped matching; None while it tracks.
         self.unmatched_since = None
+        # The newest keyframe per heading sector of the current map, for turning back.
+        self.spread = {}
         self.world = None  # Ito world from the (axis-flipped) map, fixed when the map starts.
         # Where the current local map started: its camera in the world, and the robot's
         # own idea of that camera. The robot's turns since then predict the heading.
@@ -150,6 +155,8 @@ class SLAMBackend(RGBDBackend):
     def start_map(self, frame, pose, prior):
         self.frames.clear()
         self.frames.append(frame)
+        self.spread.clear()
+        self.remember(frame, pose)
         self.tracker.reset_idx_f2k()
         self.failures = 0
         self.lost = False
@@ -163,6 +170,27 @@ class SLAMBackend(RGBDBackend):
             f"SLAM map restarted: {REASONS[cause]} | "
             + ", ".join(f"{name} {count}" for name, count in self.restarts.items())
         )
+
+    def remember(self, frame, pose):
+        sectors = round(math.tau / SPREAD)
+        self.spread[round(heading(pose[:3, :3]) / SPREAD) % sectors] = frame
+
+    def relocalize(self, prior):
+        """Track the next frame against the keyframe that faced where the robot now looks."""
+        self.tracker.reset_idx_f2k()
+        looking = heading(prior[:3, :3])
+
+        def away(keyframe):
+            pose, _ = self.placed(keyframe.T_WC)
+            if pose is None:
+                return math.inf
+            return abs(math.remainder(heading(pose[:3, :3]) - looking, math.tau))
+
+        best = min(self.spread.values(), key=away, default=None)
+        if best is not None and away(best) + SPREAD / 2 < away(self.frames[-1]):
+            # The local graph always joins neighbouring keyframes; one that faced
+            # elsewhere starts its own chain rather than a bogus edge to the last.
+            self.frames[:] = [best]
 
     def steer(self, pose, stray):
         """Turn the world about the camera toward the robot's heading, a part per frame."""
@@ -250,7 +278,7 @@ class SLAMBackend(RGBDBackend):
                     if cause and now - self.unmatched_since < LOSS_SECONDS:
                         # Keep the map and the last pose; the robot's own pose carries
                         # the pilot's view until a frame matches again.
-                        self.tracker.reset_idx_f2k()
+                        self.relocalize(prior)
                         return
                     if cause:
                         # Keep SLAM's own tilt and position when it has them; the robot's
@@ -292,6 +320,7 @@ class SLAMBackend(RGBDBackend):
                         self.frames.clear()
                         self.restart("failure")
                         return
+                    self.remember(frame, pose)
             self.transform = frame.T_WC
             self.camera_pose = pose.astype(np.float32)
             local = constrain_points_to_ray(frame.img.shape[-2:], frame.X_canon[None], self.K)[0]
