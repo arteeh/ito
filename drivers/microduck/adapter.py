@@ -8,8 +8,9 @@ from ito import clock
 from ito.driver import Adapter
 from ito.driver.walking import Walker
 from ito.protocol import Camera as CameraDescription
-from ito.protocol import DegreeOfFreedom, RobotDescription
+from ito.protocol import DegreeOfFreedom, Pose, RobotDescription
 
+from . import frames
 from .camera import Camera, Track
 from .remote import Remote
 
@@ -41,7 +42,8 @@ class MicroduckAdapter(Adapter):
         self._telemetry = {}
         self._state_at = 0.0
         self._yaw_origin = None
-        self._tilt = 0.0  # The gaze tilt last sent to robot.look; its IK holds it.
+        self._origin = None  # Trunk x, y and yaw at startup, in robotd's odometry world.
+        self._camera_pose = None
         self._neutral_done = asyncio.Event()
 
     @property
@@ -59,7 +61,7 @@ class MicroduckAdapter(Adapter):
             if model.get("asset") != "alpha":
                 raise RuntimeError("Microduck driver requires the alpha head model")
             self.joint_names = model["joint_names"]
-            self.camera = Camera(await self.remote.call("media.video"), self._gaze)
+            self.camera = Camera(await self.remote.call("media.video"), self._frame_metadata)
             self._description = RobotDescription(
                 name="Microduck",
                 cameras=(
@@ -181,7 +183,6 @@ class MicroduckAdapter(Adapter):
                         },
                     )
                 )
-                self._tilt = move.tilt
             commands.extend(
                 [
                     (
@@ -259,18 +260,34 @@ class MicroduckAdapter(Adapter):
         for key, vector in (data.get("imu") or {}).items():
             for index, value in enumerate(vector):
                 values[f"imu_{key}_{index}"] = value
+        camera = (data.get("frames") or {}).get("camera")
+        if camera and data.get("imu") and position is not None:
+            if self._origin is None:
+                self._origin = (position[0], position[1], self._yaw_origin)
+            self._camera_pose = frames.camera_in_world(
+                data["imu"]["quat"], position, (camera["pos"], camera["quat"]), self._origin
+            )
+            for name, angle in zip(
+                ("yaw", "pitch", "roll"), frames.angles(self._camera_pose[1]), strict=True
+            ):
+                values[f"camera_{name}"] = angle
         self._telemetry.update(values)
         self._state_at = clock.now()
 
-    def _gaze(self):
-        """Body heading and head pan as measured with the camera frame, and the gaze tilt.
+    def _frame_metadata(self):
+        """What the robot measured about its camera as a frame arrives.
 
-        Pan and heading are what SLAM cannot see on a plain wall. Tilt is the IK's target:
-        the head pitch joints carry the neck's offsets, and MASt3R sees tilt for itself.
+        The camera pose is robotd's forward kinematics at the measured head joints on the IMU's
+        trunk orientation: the heading SLAM cannot see on a plain wall, and the roll and pitch
+        that level its map.
         """
-        if "base_yaw" not in self._telemetry or "head_yaw" not in self._telemetry:
-            return None
-        return self._telemetry["base_yaw"], (self._telemetry["head_yaw"], self._tilt)
+        if self._camera_pose is None:
+            return {}
+        position, orientation = self._camera_pose
+        return dict(
+            camera_pose=Pose(position=position, orientation=orientation),
+            body_yaw=self._telemetry["base_yaw"],
+        )
 
     def telemetry(self):
         self._check()
