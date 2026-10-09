@@ -584,14 +584,16 @@ class Pilot:
         if self.loop and self.task:
             with contextlib.suppress(RuntimeError):
                 self.loop.call_soon_threadsafe(self.task.cancel)
+        stuck = False
         if self.thread:
             with diagnostics.stage("link_thread"):
                 self.thread.join(timeout=12)
-            if self.thread.is_alive():
+            if stuck := self.thread.is_alive():
                 stack = sys._current_frames().get(self.thread.ident)
                 log.error("Pilot link stuck at:\n%s", "".join(traceback.format_stack(stack)))
-                raise RuntimeError("Pilot link did not shut down")
-        # Cancellation during connection setup can precede the session's cleanup block.
+        # Cancellation during connection setup, or a link stuck in teardown, can precede the
+        # session's cleanup block. A worker left running would keep the app from exiting:
+        # multiprocessing joins live worker processes at interpreter exit, without a timeout.
         with self.worker_lock:
             worker, self.worker = self.worker, None
         if worker is not None:
@@ -602,6 +604,8 @@ class Pilot:
                 closer.join(timeout=max(0, deadline - clock.now()))
             if closer.is_alive():
                 raise RuntimeError("Reconstruction worker did not shut down")
+        if stuck:
+            raise RuntimeError("Pilot link did not shut down")
 
     def __enter__(self):
         return self.start()
