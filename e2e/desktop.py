@@ -42,6 +42,13 @@ def main():
         key(pygame.K_F12)
         key(pygame.K_F12, False)
 
+    def other_buttons():
+        """The wheel and a gaming mouse's side buttons, which ImGui has no slot for."""
+        pygame.event.post(pygame.event.Event(pygame.MOUSEWHEEL, x=0, y=1, flipped=False))
+        for button in (2, 3, 4, 5, 6, 7):
+            for kind in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP):
+                pygame.event.post(pygame.event.Event(kind, pos=(480, 400), button=button))
+
     def sample(pilot):
         # Input now advances at its own rate: slow drawing must not walk past
         # the sculptures just because the next screenshot takes more frames.
@@ -67,6 +74,7 @@ def main():
                     pygame.MOUSEMOTION, pos=(480, 400), rel=(95, -25), buttons=(0, 0, 0)
                 )
             )
+            other_buttons()
         elif ticks == 88:
             assert window.input.captured
             key(pygame.K_ESCAPE)
@@ -74,6 +82,7 @@ def main():
             key(pygame.K_e)
         elif ticks == 90:
             assert not window.input.captured and not pilot.quit
+            other_buttons()
         elif ticks == 98:
             key(pygame.K_e, False)
             key(pygame.K_r)
