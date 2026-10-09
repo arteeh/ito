@@ -341,10 +341,12 @@ class Pilot:
         last_fresh = None  # Capture time of the newest sample that held the deadman.
 
         def disarm(reason):
+            nonlocal last_fresh
             if self.armed or self.stalled:
                 log.warning("Pilot input disarmed: %s; resume to pilot again", reason)
                 diagnostics.event("input_disarmed", reason=reason)
             self.armed = self.stalled = False
+            last_fresh = None
 
         sequence = command_sequence = 0
         pending = None
@@ -454,9 +456,11 @@ class Pilot:
                     if pending is None:
                         given = self.commands.popleft()
                         action = ("stop" if given == "focus_stop" else given).replace("_", "-")
-                        if action != "resume":
+                        if action == "resume":
+                            # Held input counts from here; a stall before resume is not one.
+                            self.armed, self.stalled, last_fresh = True, False, None
+                        else:
                             disarm("focus lost" if given == "focus_stop" else action)
-                        self.armed, self.stalled = action == "resume", False
                         pending = Command(sequence=command_sequence, action=action)
                         command_sequence += 1
                     if peer.send(pending):
@@ -469,22 +473,26 @@ class Pilot:
                     if fresh != previous_fresh:
                         diagnostics.event("input_freshness_transition", fresh=fresh)
                         previous_fresh = fresh
+                    # The gap since the last sample that held the deadman, whichever thread
+                    # stalled: a link loop that was blocked never saw the input go stale.
+                    gap = None
+                    if last_fresh is not None:
+                        gap = (value.timestamp if fresh else now) - last_fresh
                     if not value.active:
                         disarm("window inactive")
+                    elif gap is not None and gap > SHORT_STALL:
+                        disarm(f"input stalled over {SHORT_STALL * 1000:.0f} ms")
                     elif not fresh and self.armed:
+                        age_ms = (now - value.timestamp) * 1000
                         log.warning(
-                            "Pilot input stalled, deadman released: sample_age_ms=%.1f",
-                            (now - value.timestamp) * 1000,
+                            "Pilot input stalled, deadman released: sample_age_ms=%.1f", age_ms
                         )
+                        diagnostics.event("input_stalled", age_ms=age_ms)
                         self.armed, self.stalled = False, last_fresh is not None
-                    elif self.stalled:
-                        gap = (value.timestamp if fresh else now) - last_fresh
-                        if gap > SHORT_STALL:
-                            disarm(f"input stalled over {SHORT_STALL * 1000:.0f} ms")
-                        elif fresh:
-                            log.info("Pilot re-armed after a %.0f ms input stall", gap * 1000)
-                            diagnostics.event("input_rearmed", stall_ms=gap * 1000)
-                            self.armed, self.stalled = True, False
+                    elif fresh and self.stalled:
+                        log.info("Pilot re-armed after a %.0f ms input stall", gap * 1000)
+                        diagnostics.event("input_rearmed", stall_ms=gap * 1000)
+                        self.armed, self.stalled = True, False
                     if fresh and self.armed:
                         last_fresh = value.timestamp
                     diagnostics.event(
@@ -507,17 +515,18 @@ class Pilot:
                             **self.audio.counters,
                         )
                     matrix = value.head
-                    peer.send(
-                        PilotState(
+                    head = Pose(
+                        position=tuple(map(float, matrix[:3, 3])),
+                        orientation=quaternion(matrix),
+                    )
+                    if fresh:
+                        state = PilotState(
                             sequence=sequence,
                             capture_time=value.timestamp,
-                            deadman=self.armed and fresh,
-                            head=Pose(
-                                position=tuple(map(float, matrix[:3, 3])),
-                                orientation=quaternion(matrix),
-                            ),
-                            hands=value.hands if fresh else {},
-                            trackers=value.trackers if fresh else {},
+                            deadman=self.armed,
+                            head=head,
+                            hands=value.hands,
+                            trackers=value.trackers,
                             buttons={name: True for name in value.buttons},
                             axes={
                                 **value.axes,
@@ -525,7 +534,13 @@ class Pilot:
                                 self.settings.move_y: value.movement[2],
                             },
                         )
-                    )
+                    else:
+                        # The release is news as of now; resent with the stale sample's time,
+                        # the driver drops it as old and waits out its own input timeout.
+                        state = PilotState(
+                            sequence=sequence, capture_time=now, deadman=False, head=head
+                        )
+                    peer.send(state)
                     sequence += 1
                 shown = self.state.status
                 if (shown.armed, shown.focus_hold) != (self.armed, self.focus_hold):
