@@ -29,6 +29,7 @@ dev-mode-dirs = ["../.."]
 "__init__.py" = "drivers/microduck/__init__.py"
 "adapter.py" = "drivers/microduck/adapter.py"
 "camera.py" = "drivers/microduck/camera.py"
+"frames.py" = "drivers/microduck/frames.py"
 "remote.py" = "drivers/microduck/remote.py"
 "cli.py" = "drivers/microduck/cli.py"
 "sim.py" = "drivers/microduck/sim.py"

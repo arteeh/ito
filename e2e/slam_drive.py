@@ -69,6 +69,9 @@ def heading(matrix):
 
 
 def gaze(telemetry):
+    """The robot camera's heading: its head FK when it reports one, else body yaw plus pan."""
+    if "camera_yaw" in telemetry:
+        return telemetry["camera_yaw"]
     if "base_yaw" not in telemetry:
         return None
     return math.remainder(telemetry["base_yaw"] + telemetry.get("head_yaw", 0.0), 2 * math.pi)
