@@ -338,12 +338,25 @@ class SLAMBackend(RGBDBackend):
             # once fits in about 400k splats; smaller budgets get proportionally coarser.
             pixels = 3 * max(1, (400_000 / self.budget) ** 0.5)
             footprint = local[:, 2] * float(scale) * pixels / self.K[0, 0]
+            when = now + clock.now() - started
             # DLPack shares CUDA memory; only the fused slot records cross to the ring.
             self.integrate_points(
                 self.xp.from_dlpack(points[valid].contiguous()),
                 self.xp.from_dlpack(colors[valid].contiguous()),
-                now + clock.now() - started,
+                when,
                 self.xp.from_dlpack(footprint[valid].contiguous()),
+            )
+            height, width = frame.img.shape[-2:]
+            depth = torch.where(valid, local[:, 2] * float(scale), 0).reshape(height, width)
+            fx, fy, cx, cy = (float(self.K[i, j]) for i, j in ((0, 0), (1, 1), (0, 2), (1, 2)))
+            self.carve(
+                self.camera_pose,
+                fx,
+                fy,
+                cx,
+                cy,
+                self.xp.from_dlpack(depth.float().contiguous()),
+                when,
             )
             self.tracked += 1
             if restarted:

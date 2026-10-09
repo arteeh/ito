@@ -106,6 +106,40 @@ class RGBDBackend:
         self.release_after[expired] = np.inf
         self.dirty[expired] = True
 
+    def carve(self, camera, fx, fy, cx, cy, depth, now):
+        """Retire older splats this view sees through or replaces with its own.
+
+        A surface in view is what the camera sees now: earlier splats on it that this
+        frame did not refresh, or in front of it, fade out together, while surfaces out
+        of view or behind it stay. Otherwise kept splats pile up wherever the scene moved
+        or the map was misplaced, as a second ghost room. Run it after integrating the
+        frame. Depth is axial along the camera's -Z, in world units, at pixels of these
+        intrinsics; zero marks no measurement.
+        """
+        xp = self.xp
+        live = np.flatnonzero((self.keys >= 0) & ~self.retiring & (self.seen < now))
+        if not len(live):
+            return
+        centers = xp.asarray(self.records[live, 0, :3])
+        size = xp.asarray(self.records[live, 1, 0])
+        camera = xp.asarray(camera, dtype=xp.float32)
+        local = (centers - camera[:3, 3]) @ camera[:3, :3]
+        z = -local[:, 2]
+        ahead = z > 1e-6
+        safe = xp.where(ahead, z, 1)
+        u = xp.rint(cx + fx * local[:, 0] / safe).astype(xp.int64)
+        v = xp.rint(cy - fy * local[:, 1] / safe).astype(xp.int64)
+        height, width = depth.shape
+        seen = ahead & (u >= 0) & (u < width) & (v >= 0) & (v < height)
+        observed = xp.zeros(len(live), xp.float32)
+        observed[seen] = depth[v[seen], u[seen]]
+        # On or in front of the seen surface, within depth noise and the splat's size.
+        stale = (observed > 0) & (z < observed * 1.1 + 2 * size)
+        if xp is not np:
+            stale = xp.asnumpy(stale)
+        if stale.any():
+            self.retire(live[stale])
+
     def integrate(self, rgb, depth, camera, now):
         xp = self.xp
         z = xp.asarray(depth)
@@ -114,6 +148,8 @@ class RGBDBackend:
         transform = xp.asarray(camera)
         points = points @ transform[:3, :3].T + transform[:3, 3]
         self.integrate_points(points, xp.asarray(rgb)[valid], now)
+        i = self.intrinsics
+        self.carve(camera, i.fx, i.fy, i.cx, i.cy, xp.where(valid, z, 0).astype(xp.float32), now)
 
     def integrate_points(self, points, colors, now, sizes=None):
         """Fuse world-space dense points through the same budget, fade and eviction policy.
