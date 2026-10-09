@@ -1,5 +1,8 @@
 """Real pilot CLI + MuJoCo: input stalls release the deadman, and only a short one re-arms.
 
+The release reaches the robot at once, a blocked link loop counts as a stall too, and the
+app closed mid-drive is gone within two seconds with the robot neutral.
+
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/stall.py
 
 Drawing has its own thread (e2e/app.py holds the display for 650 ms with input still live),
@@ -8,10 +11,12 @@ so the stall is injected where a GC pause or a GIL-holding save would hit: the i
 
 import json
 import logging
+import multiprocessing
 import os
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -79,6 +84,7 @@ def main():
     stage, changed = "connecting", began
     seen = []  # (robot state, pilot armed, left command) from a stall until it settles.
     results = {}
+    closed_at = None
 
     def drive(app, window, value):
         nonlocal stage, changed
@@ -136,7 +142,18 @@ def main():
             assert sum("input stalled over" in line for line in lines.lines) == 1, lines.lines
             key(pygame.K_r)
             stage, changed = "long_resumed", now
-        elif stage == "long_resumed" and settled(moving):
+        elif stage == "long_resumed" and settled(moving) and now - changed > 1:
+            # Input stays live while the link's own loop is blocked longer than a short stall,
+            # as by a synchronous decoder join: the loop never sees the input go stale.
+            app.loop.call_soon_threadsafe(time.sleep, 1.5)
+            stage, changed = "link", now
+        elif stage == "link" and now - changed > 3.5:
+            assert value.movement[2] > 0 and value.active, value
+            assert still(), (status, t)
+            assert sum("input stalled over" in line for line in lines.lines) == 2, lines.lines
+            key(pygame.K_r)
+            stage, changed = "link_resumed", now
+        elif stage == "link_resumed" and settled(moving):
             stage, changed = "focus", now
         elif stage == "focus" and now - changed > 1:
             pygame.event.post(pygame.event.Event(pygame.WINDOWFOCUSLOST))
@@ -158,6 +175,13 @@ def main():
         elif stage == "done" and settled(still):
             assert sum("re-armed after a" in line for line in lines.lines) == 1, lines.lines
             results["pilot_log"] = [line for line in lines.lines if "armed" in line]
+            key(pygame.K_r)
+            key(pygame.K_w, pygame.KEYDOWN)
+            stage, changed = "driving", now
+        elif stage == "driving" and settled(moving) and now - changed > 1:
+            # Closed mid-drive, splats streaming and the reconstruction worker busy.
+            nonlocal closed_at
+            closed_at = clock.now()
             pygame.event.post(pygame.event.Event(pygame.QUIT))
             stage = "quit"
 
@@ -166,7 +190,17 @@ def main():
             [address, "--code", code, "--size", "480", "360", "--fps", "60"],
             on_frame=drive,
         )
+        closing = clock.now() - closed_at
         assert result == 0 and stage == "quit", (result, stage)
+        assert closing < 2, f"closing took {closing:.2f} s"
+        results["close_s"] = round(closing, 2)
+        # Nothing the app started may outlive it: Python would wait on them at exit.
+        left = [t.name for t in threading.enumerate() if not t.daemon and t.name != "MainThread"]
+        assert not left and not multiprocessing.active_children(), left
+        time.sleep(0.3)
+        # The close sent stop, and the robot heard it before the link went down.
+        neutral = (OUT / "driver.log").read_text().split("Robot neutral: ")[-1].split(";")[0]
+        assert neutral in ("stop", "pilot disconnected"), neutral
     finally:
         robot.terminate()
         robot.wait(timeout=8)
@@ -175,6 +209,9 @@ def main():
     results["driver_neutral"] = [
         line.split("Robot neutral: ")[1] for line in driver_lines if "Robot neutral: " in line
     ]
+    # A sampler stall's release is news to the robot at once, not after its input timeout.
+    released = [line for line in results["driver_neutral"] if line.startswith("deadman released")]
+    assert len(released) >= 2, results["driver_neutral"]
     print(
         "PASS stall:",
         json.dumps(results | {"short_stall_bound_ms": SHORT_STALL * 1000}),
