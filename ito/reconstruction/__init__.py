@@ -57,10 +57,14 @@ def _run(recon):
                             np.frombuffer(recon.camera, np.float32).reshape(4, 4).copy(),
                         )
                         captured = recon.captured.value
+                        measured = bool(recon.measured.value)
                 finally:
                     recon.input_lock.release()
             if frame is not None:
-                backend.integrate(*frame, now)
+                if recon.backend == "slam":
+                    backend.integrate(*frame, now, measured=measured)
+                else:
+                    backend.integrate(*frame, now)
                 if recon.backend == "slam" and recon.output_lock.acquire(False):
                     try:
                         np.frombuffer(recon.output_camera, np.float32)[:] = (
@@ -148,6 +152,7 @@ class Reconstruction:
         self.depth = context.RawArray("f", pixels)
         self.camera = context.RawArray("f", 16)
         self.captured = context.RawValue("d", 0)
+        self.measured = context.RawValue("b", False)
         self.sequence = context.RawValue("Q", 0)
         self.budget = context.RawValue("I", max_splats)
         self.input_lock = context.Lock()
@@ -200,11 +205,12 @@ class Reconstruction:
         finally:
             self.output_lock.release()
 
-    def submit(self, rgb, depth=None, camera=None, captured_at=None):
+    def submit(self, rgb, depth=None, camera=None, captured_at=None, *, measured=False):
         """Depth is axial metres; pose is world-from-camera (+Y up, -Z forward).
 
         SLAM needs no depth, and takes the pose only as the robot's own estimate: its
-        orientation aligns the map to gravity and the startup heading.
+        orientation aligns the map to gravity and the startup heading, and, when measured
+        (the robot reports its body heading and head pan), keeps the map's heading honest.
         RGB and depth must be synchronized and registered to these intrinsics.
         Capture time must already be corrected to the pilot monotonic clock.
         A busy mailbox drops the incoming frame; the caller never waits.
@@ -235,6 +241,7 @@ class Reconstruction:
             if self.backend == "rgbd":
                 np.frombuffer(self.depth, np.float32)[:] = depth.ravel()
             self.captured.value = captured_at
+            self.measured.value = measured
             self.sequence.value += 1
             return True
         finally:

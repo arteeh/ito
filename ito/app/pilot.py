@@ -209,12 +209,15 @@ class Pilot:
             self._anchor(camera)
         if self.worker is None or self.failure:
             return
+        measured = False
         if self.backend == "slam":
             # SLAM places the camera itself; it needs only the driver's best guess of
             # this exposure's world orientation to align its map with gravity and heading.
+            # A driver that measures its camera pose or gaze also holds SLAM to its heading.
+            measured = camera is not None or pair[1].head_angles is not None
             camera = self._prior(camera, pair[1])
         try:
-            accepted = self.worker.submit(rgb, depth, camera, captured)
+            accepted = self.worker.submit(rgb, depth, camera, captured, measured=measured)
         except ValueError as exc:
             self.failure = str(exc)
             self.reconstruction_status = str(exc) + "; showing flat camera feed"
