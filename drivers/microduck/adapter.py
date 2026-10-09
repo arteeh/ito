@@ -41,6 +41,7 @@ class MicroduckAdapter(Adapter):
         self._telemetry = {}
         self._state_at = 0.0
         self._yaw_origin = None
+        self._tilt = 0.0  # The gaze tilt last sent to robot.look; its IK holds it.
         self._neutral_done = asyncio.Event()
 
     @property
@@ -58,7 +59,7 @@ class MicroduckAdapter(Adapter):
             if model.get("asset") != "alpha":
                 raise RuntimeError("Microduck driver requires the alpha head model")
             self.joint_names = model["joint_names"]
-            self.camera = Camera(await self.remote.call("media.video"))
+            self.camera = Camera(await self.remote.call("media.video"), self._gaze)
             self._description = RobotDescription(
                 name="Microduck",
                 cameras=(
@@ -180,6 +181,7 @@ class MicroduckAdapter(Adapter):
                         },
                     )
                 )
+                self._tilt = move.tilt
             commands.extend(
                 [
                     (
@@ -259,6 +261,16 @@ class MicroduckAdapter(Adapter):
                 values[f"imu_{key}_{index}"] = value
         self._telemetry.update(values)
         self._state_at = clock.now()
+
+    def _gaze(self):
+        """Body heading and head pan as measured with the camera frame, and the gaze tilt.
+
+        Pan and heading are what SLAM cannot see on a plain wall. Tilt is the IK's target:
+        the head pitch joints carry the neck's offsets, and MASt3R sees tilt for itself.
+        """
+        if "base_yaw" not in self._telemetry or "head_yaw" not in self._telemetry:
+            return None
+        return self._telemetry["base_yaw"], (self._telemetry["head_yaw"], self._tilt)
 
     def telemetry(self):
         self._check()
