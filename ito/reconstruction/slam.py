@@ -3,8 +3,8 @@
 A robot that measures where its camera looks (body heading plus head pan) keeps the map
 honest. On a plain wall or a cupboard door MASt3R matches almost anything to anything and
 reports a camera standing still while the robot turns half a room. A tracked heading
-that strays from the robot's, a lost frame or an unusable pose starts a fresh local map
-at the robot's heading, so the pilot keeps a 3D scene that faces the right way.
+that strays from the robot's, a few lost frames in a row or an unusable pose start a fresh
+local map at the robot's heading, so the pilot keeps a 3D scene that faces the right way.
 """
 
 import math
@@ -18,6 +18,10 @@ from .rgbd import RGBDBackend
 # Larger than the robot's own error (joint/IMU latency during a brisk turn), smaller than
 # the misplaced room a pilot notices when they look back.
 HEADING_TOLERANCE = math.radians(12)
+# Unmatched frames in a row a measured map rides out before it restarts at the robot's
+# pose. A walking robot's gait sway or a brief blank view costs MASt3R a frame or two; a
+# fresh map for each throws away the room seen a moment ago.
+MEASURED_MISSES = 2
 AXES = np.array([1.0, -1.0, -1.0])  # OpenCV camera/world axes (+Y down, +Z forward) to Ito.
 
 
@@ -170,6 +174,11 @@ class SLAMBackend(RGBDBackend):
                     frame.T_WC = self.frames[-1].T_WC
                 new_keyframe, _, lost = self.tracker.track(frame)
                 pose, scale = (None, 0) if lost else self.placed(frame.T_WC)
+                if measured and pose is None and self.failures < MEASURED_MISSES:
+                    # Keep the map and the last pose; the next frame tries the same keyframe.
+                    self.failures += 1
+                    self.tracker.reset_idx_f2k()
+                    return
                 if measured:
                     last, last_scale = self.placed(self.transform)
                     expected = self.predicted(prior, pose if pose is not None else last)
