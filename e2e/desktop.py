@@ -62,11 +62,13 @@ def main():
         elif ticks == 66:
             key(pygame.K_TAB, False)
         elif ticks == 70:
-            pygame.event.post(
-                pygame.event.Event(
-                    pygame.MOUSEMOTION, pos=(480, 400), rel=(95, -25), buttons=(0, 0, 0)
+            # A grab's first pointer report is its baseline; the turn follows it.
+            for rel in ((0, 0), (95, -25)):
+                pygame.event.post(
+                    pygame.event.Event(
+                        pygame.MOUSEMOTION, pos=(480, 400), rel=rel, buttons=(0, 0, 0)
+                    )
                 )
-            )
         elif ticks == 88:
             assert window.input.captured
             key(pygame.K_ESCAPE)
