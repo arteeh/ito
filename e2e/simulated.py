@@ -98,9 +98,11 @@ def main():
             go("captured")
         elif stage == "captured" and waited > 0.5:
             assert window.input.captured, "Clicking the scene did not start mouse-look"
-            pygame.event.post(
-                pygame.event.Event(pygame.MOUSEMOTION, pos=SCENE, rel=(-120, 0), buttons=(0, 0, 0))
-            )
+            # A grab's first pointer report is its baseline; the turn follows it.
+            for rel in ((0, 0), (-120, 0)):
+                pygame.event.post(
+                    pygame.event.Event(pygame.MOUSEMOTION, pos=SCENE, rel=rel, buttons=(0, 0, 0))
+                )
             go("looked")
         elif stage == "looked" and waited > 0.5:
             assert window.input.yaw > report["yaw_before_look"] + 0.2, window.input.yaw

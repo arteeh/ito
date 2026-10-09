@@ -153,6 +153,7 @@ LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/stall.py # input stalls, r
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/connect.py # connect screen, simulated robot
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/render.py
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/desktop.py
+uv run python e2e/tab_look.py   # Tab never turns the view; own Xvfb + Xvnc, needs xdotool, tigervnc
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/stream.py
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/anchor_glide.py # no eye steps at SLAM rate
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/flat_panel.py # flat feed follows the head
