@@ -16,6 +16,8 @@ from .ring import SplatUpdate, UpdateRing
 __all__ = ["Reconstruction", "SplatUpdate", "default_budget"]
 
 log = logging.getLogger(__name__)
+# A worker gets this long to see the stop flag; one busy in a step that never ends is killed.
+STOP_WAIT = 0.5
 
 
 def default_budget(renderer: str = "", video_memory_mb: int = 0) -> int:
@@ -41,7 +43,9 @@ def _run(recon):
         cursor = 0
         revision = 0
         captured = recon.epoch
-        while not recon.stopped.value:
+        # A pilot app that died without closing it would otherwise leave it holding the GPU.
+        parent = mp.parent_process()
+        while not recon.stopped.value and parent.is_alive():
             now = clock.now() - recon.epoch
             backend.expire(now, recon.ring.last_acknowledged())
             if backend.budget != recon.budget.value:
@@ -267,9 +271,14 @@ class Reconstruction:
             self.closed = True
             # A killed worker may leave an Event's internal condition locked forever.
             self.stopped.value = True
-            self.process.join(timeout=3)
+            self.process.join(timeout=STOP_WAIT)
             if self.process.is_alive():
                 # SIGTERM stays pending on a stopped process; SIGKILL does not.
+                log.warning(
+                    "Reconstruction process %d killed: still busy %.1f s after stop",
+                    self.process.pid,
+                    STOP_WAIT,
+                )
                 self.process.kill()
                 self.process.join(timeout=3)
                 if self.process.is_alive():
