@@ -1,15 +1,20 @@
-"""Run with: uv run python e2e/lifecycle.py. Reconnects, idle media and robot faults."""
+"""Reconnects, idle media, robot faults, and the pilot app closing cleanly under faults.
+
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/lifecycle.py
+"""
 
 import asyncio
 import contextlib
 import json
 import os
 import signal
+import socket
 import sys
 import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import psutil
 from webrtc import ROOT, events, line
 
 from ito import clock
@@ -18,6 +23,8 @@ from ito.link import connect
 from ito.protocol import Command, PilotState, Status
 
 CODE = "246813"
+# From the pilot closing the window to the app's process and all its children being gone.
+CLOSE_BUDGET = 2.0
 CLI = "from ito.driver.cli import main; main()"
 # Fault injection: the driver's watchdog task dies while a pilot is driving.
 WATCHDOG_DIES = (
@@ -231,10 +238,126 @@ async def run():
         assert any(e["event"] == "apply" for e in entries), "the injected driver never drove"
         assert entries[-1]["event"] == "neutral", entries[-3:]
     assert driver.returncode == 1 and "safety watchdog stopped" in driver.log, driver.log
+    closes = {}
+    for scenario in ("streaming", "connecting", "stuck_link", "reconstruction", "sim"):
+        closes[scenario] = await closing(scenario)
     print(
         "PASS: idle live media, failed offers, reconnect/e-stop latch, "
-        "fresh resume, channel loss, adapter faults, watchdog failure"
+        "fresh resume, channel loss, adapter faults, watchdog failure, "
+        "app close (seconds to exit):",
+        json.dumps(closes),
     )
+
+
+@asynccontextmanager
+async def mujoco(directory):
+    """The simulated robot a pilot would drive, on a port of its own."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    code_file = directory / "pairing-code"
+    pairing.write(code_file, CODE)
+    with (directory / "driver.log").open("w") as log:
+        driver = await asyncio.create_subprocess_exec(
+            sys.executable,
+            *("-m", "drivers.mujoco.cli", "--port", str(port), "--pairing-file", str(code_file)),
+            stdout=log,
+            stderr=log,
+            env=os.environ | {"MUJOCO_GL": "osmesa", "LP_NUM_THREADS": "2"},
+            cwd=ROOT,
+        )
+    try:
+        yield f"127.0.0.1:{port}"
+    finally:
+        driver.send_signal(signal.SIGTERM)
+        async with asyncio.timeout(8):
+            await driver.wait()
+
+
+@asynccontextmanager
+async def silent_robot():
+    """Accepts the pilot's connection and never answers it."""
+    held = []
+    server = await asyncio.start_server(lambda r, w: held.append(w), "127.0.0.1", 0)
+    try:
+        yield f"127.0.0.1:{server.sockets[0].getsockname()[1]}"
+    finally:
+        for writer in held:
+            writer.close()
+        server.close()
+
+
+def zombie(process):
+    try:
+        return process.status() == psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return True
+
+
+async def closing(scenario):
+    """Close the real app's window with a fault in place; it must be gone within budget."""
+    with tempfile.TemporaryDirectory(prefix=f"ito-close-{scenario}-") as name:
+        directory = Path(name)
+        robot_context = (
+            silent_robot()
+            if scenario == "connecting"
+            else contextlib.nullcontext(None)
+            if scenario == "sim"
+            else mujoco(directory)
+        )
+        async with robot_context as address:
+            target = ["--sim"] if address is None else [address, "--code", CODE]
+            env = os.environ | {
+                "ITO_E2E_CLOSE": scenario,
+                "ITO_E2E_MARK": str(directory / "mark"),
+                "XDG_CONFIG_HOME": str(directory / "config"),
+                "MUJOCO_GL": "osmesa",
+                "PYTHONPATH": str(ROOT),
+            }
+            with (directory / "app.log").open("w") as log:
+                app = await asyncio.create_subprocess_exec(
+                    sys.executable,
+                    str(ROOT / "e2e" / "closing_app.py"),
+                    *target,
+                    *("--size", "480", "360", "--fps", "60"),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=log,
+                    env=env,
+                    cwd=directory,
+                )
+            try:
+                while not (said := await line(app, 90)).startswith("closed "):
+                    pass  # pygame's greeting
+                closed = float(said.split()[1])
+                family = psutil.Process(app.pid).children(recursive=True)
+                with contextlib.suppress(TimeoutError):
+                    async with asyncio.timeout(max(0, closed + CLOSE_BUDGET - clock.now())):
+                        await app.wait()
+                took = clock.now() - closed
+                _, alive = psutil.wait_procs(family, timeout=0.2)
+                alive = [p for p in alive if not zombie(p)]  # Exited; init has yet to reap it.
+                text = (directory / "app.log").read_text()
+                assert app.returncode is not None, f"{scenario}: still running after {took:.1f} s"
+                assert not alive, (scenario, [p.cmdline() for p in alive])
+                expected = 1 if scenario == "stuck_link" else 0
+                assert app.returncode == expected, (scenario, app.returncode, text[-3000:])
+                assert "Traceback" not in text, (scenario, text[-3000:])
+                if scenario == "stuck_link":
+                    assert "Pilot link stuck at" in text, text[-3000:]
+                if scenario == "reconstruction":
+                    assert "Reconstruction process" in text and "killed" in text, text[-3000:]
+            finally:
+                if app.returncode is None:
+                    for process in psutil.Process(app.pid).children(recursive=True):
+                        process.kill()
+                    app.kill()
+                    await app.wait()
+        if address is not None and scenario != "connecting":
+            # The robot is left neutral and keeps serving: it never depends on a clean close.
+            neutral = (directory / "driver.log").read_text().split("Robot neutral: ")[-1]
+            reason = neutral.split(";")[0]
+            assert reason in ("pilot disconnected", "stop", "input timeout"), (scenario, reason)
+        return round(took, 2)
 
 
 if __name__ == "__main__":

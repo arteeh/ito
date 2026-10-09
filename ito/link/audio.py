@@ -95,6 +95,7 @@ class Audio:
         self.writer = None
         self.task = None
         self.jobs = None
+        self.close_timeout = CLOSE_TIMEOUT
         self.track = Microphone(self)
 
     @property
@@ -247,12 +248,12 @@ class Audio:
         self.jobs.put(None)
         self.jobs = None
         try:
-            async with asyncio.timeout(CLOSE_TIMEOUT):
+            async with asyncio.timeout(self.close_timeout):
                 with diagnostics.stage("audio_devices"):
                     await asyncio.shield(closed)
         except TimeoutError:
-            diagnostics.event("audio_close_timeout", timeout_s=CLOSE_TIMEOUT)
-            log.warning("Audio devices still closing after %.0f s; continuing", CLOSE_TIMEOUT)
+            diagnostics.event("audio_close_timeout", timeout_s=self.close_timeout)
+            log.warning("Audio devices still closing after %.1f s; continuing", self.close_timeout)
             # sounddevice's exit handler would wait on the same device and keep a closed
             # Ito running; the operating system releases the device with the process.
             if sd := sys.modules.get("sounddevice"):
