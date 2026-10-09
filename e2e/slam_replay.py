@@ -23,6 +23,7 @@ from ito.app.pilot import TRACKING_LOST
 from ito.protocol import Intrinsics
 from ito.reconstruction.slam import SLAMBackend, heading
 from ito.render import pose
+from ito.render.pose import quaternion
 
 AHEAD = 1.0  # Seconds between a scene snapshot and the frame it has to predict.
 
@@ -56,6 +57,32 @@ def render(records, live, camera, intrinsics, size):
     return image.reshape(height, width, 3), covered.reshape(height, width)
 
 
+def rotation(q):
+    x, y, z, w = q
+    return np.array(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+        ]
+    )
+
+
+def prior_at(priors, times, when):
+    """The recorded prior at `when`, interpolated between the frames around it."""
+    after = int(np.clip(np.searchsorted(times, when), 1, len(times) - 1))
+    a, b = priors[after - 1], priors[after]
+    f = float(np.clip((when - times[after - 1]) / max(times[after] - times[after - 1], 1e-9), 0, 1))
+    qa, qb = np.array(quaternion(a)), np.array(quaternion(b))
+    if qa @ qb < 0:
+        qb = -qb
+    q = qa * (1 - f) + qb * f
+    result = a.copy()
+    result[:3, :3] = rotation(q / np.linalg.norm(q))
+    result[:3, 3] = a[:3, 3] * (1 - f) + b[:3, 3] * f
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("recording", type=Path)
@@ -66,6 +93,12 @@ def main():
     parser.add_argument("--unmeasured", action="store_true", help="hide the robot's heading")
     parser.add_argument("--measured", action="store_true", help="trust the recorded prior")
     parser.add_argument(
+        "--prior-delay",
+        type=float,
+        default=0,
+        help="seconds by which the recorded prior led its frame: use the prior recorded then",
+    )
+    parser.add_argument(
         "--set", action="append", default=[], help="override MASt3R-SLAM config: tracking.Q_conf=2"
     )
     args = parser.parse_args()
@@ -75,6 +108,10 @@ def main():
     rows = [json.loads(line) for line in (args.recording / "frames.jsonl").read_text().splitlines()]
     rows = [row for row in rows if row["gaze"] is not None]
     times = np.array([row["captured"] for row in rows])
+    gazes = np.unwrap([row["gaze"] for row in rows])
+    priors = [
+        None if row["camera"] is None else np.array(row["camera"]).reshape(4, 4) for row in rows
+    ]
     messages = []
     backend = SLAMBackend(
         args.budget,
@@ -109,12 +146,18 @@ def main():
         index = int(newer[-1])
         if args.limit and now - start > args.limit:
             break
-        row = rows[index]
+        row = dict(rows[index])
+        if args.prior_delay:
+            row["gaze"] = float(np.interp(times[index] - args.prior_delay, times, gazes))
         rgb = np.asarray(Image.open(args.recording / row["name"]).convert("RGB"))
         if args.gaze_prior:
             prior, measured = pose(yaw=row["gaze"]), True
         else:
-            prior = np.array(row["camera"], dtype=np.float32).reshape(4, 4)
+            prior = (
+                prior_at(priors, times, times[index] - args.prior_delay)
+                if args.prior_delay
+                else priors[index]
+            ).astype(np.float32)
             measured = row.get("measured", False) or args.measured
         tracked_before = backend.tracked
         before = len(messages)
@@ -177,6 +220,7 @@ def main():
     report = dict(
         recording=str(args.recording),
         measured=not args.unmeasured,
+        prior_delay=args.prior_delay,
         overrides=args.set,
         seconds=round(float(stamps[-1]), 1),
         frames_available=len(rows),
