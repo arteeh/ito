@@ -33,6 +33,11 @@ HEADING_LOST = math.radians(60)
 # A gait sway, a step or a blank patch costs MASt3R a few frames; the pilot's view drops
 # to the flat feed after TRACKING_LOST (2 s), so a lasting loss restarts well before that.
 LOSS_SECONDS = 1.0
+# A turn or a step smears the frame; MASt3R matches a smeared frame to nothing, and those
+# misses used to run out the loss clock. A measured map skips a frame less than this
+# fraction as sharp as the frames it recently tracked, its clock held, for up to BLUR_SKIP.
+BLUR_FRACTION = 0.6
+BLUR_SKIP = 0.5
 # Keyframes kept per heading sector, beyond the live window, for turning back.
 SPREAD = math.radians(30)
 WINDOW = 4  # Recent keyframes in the local graph.
@@ -108,6 +113,11 @@ class SLAMBackend(RGBDBackend):
         self.failures = 0
         # When a measured map last stopped matching; None while it tracks.
         self.unmatched_since = None
+        # Mean image gradient of recently tracked frames, and when smeared frames began.
+        self.sharpness = None
+        self.blurred_since = None
+        self.blurred = 0  # Smeared frames skipped.
+        self.seen = None  # When the last frame arrived.
         # The newest keyframe per heading sector of the current map, for turning back.
         self.spread = {}
         self.world = None  # Ito world from the (axis-flipped) map, fixed when the map starts.
@@ -219,6 +229,9 @@ class SLAMBackend(RGBDBackend):
         from mast3r_slam.mast3r_utils import mast3r_inference_mono
 
         started = clock.now()
+        gray = rgb[..., 1].astype(np.float32)
+        sharp = float(np.abs(np.diff(gray, axis=0)).mean() + np.abs(np.diff(gray, axis=1)).mean())
+        since, self.seen = self.seen, now
         prior = np.asarray(camera, dtype=np.float64)
         restarted = None
         with torch.inference_mode():
@@ -261,6 +274,22 @@ class SLAMBackend(RGBDBackend):
                 if measured and self.unmatched_since is not None:
                     # Start the solve where the robot says the camera now looks.
                     frame.T_WC = self.unplaced(self.predicted(prior, previous), previous_scale)
+                if (
+                    measured
+                    and self.sharpness is not None
+                    and sharp < BLUR_FRACTION * self.sharpness
+                ):
+                    if self.blurred_since is None:
+                        self.blurred_since = now
+                    if now - self.blurred_since < BLUR_SKIP:
+                        # The robot's own pose carries the view; a smeared frame says
+                        # nothing about the map, so it does not count toward a loss.
+                        if self.unmatched_since is not None and since is not None:
+                            self.unmatched_since += now - since
+                        self.blurred += 1
+                        return
+                else:
+                    self.blurred_since = None
                 new_keyframe, _, lost = self.tracker.track(frame)
                 pose, scale = (None, 0) if lost else self.placed(frame.T_WC)
                 if measured:
@@ -346,6 +375,7 @@ class SLAMBackend(RGBDBackend):
                 self.xp.from_dlpack(footprint[valid].contiguous()),
             )
             self.tracked += 1
+            self.sharpness = sharp if self.sharpness is None else 0.9 * self.sharpness + 0.1 * sharp
             if restarted:
                 self.restart(restarted)
             else:
