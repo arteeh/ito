@@ -67,6 +67,15 @@ class Overlay:
             # captured, and a button ImGui believes held swallows every later click.
             if captured and event.type in (pygame.MOUSEMOTION, pygame.MOUSEBUTTONDOWN):
                 continue
+            # Tab toggles mouse-look. Outside a text field, ImGui would take it for keyboard
+            # navigation and from then on claim the keyboard, so Tab could no longer grab.
+            # Its release still arrives, like mouse releases above.
+            if (
+                event.type == pygame.KEYDOWN
+                and event.key == pygame.K_TAB
+                and not io.want_text_input
+            ):
+                continue
             self.backend.process_event(event)
         self.backend.io.display_size = size
         self.backend.process_inputs()
