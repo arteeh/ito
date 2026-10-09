@@ -12,6 +12,7 @@ from ito.render.pose import validate_pose
 
 from .rgbd import RGBDBackend
 from .ring import SplatUpdate, UpdateRing
+from .slam import RESTART_CAUSES
 
 __all__ = ["Reconstruction", "SplatUpdate", "default_budget"]
 
@@ -77,6 +78,7 @@ def _run(recon):
                         recon.output_captured.value = captured
                         recon.tracked.value = backend.tracked
                         recon.tracking.value = not backend.lost and backend.tracked > 0
+                        recon.restart_counts[:] = [backend.restarts[c] for c in RESTART_CAUSES]
                     finally:
                         recon.output_lock.release()
             # Bound work per turn; dirty slots coalesce while the display is behind.
@@ -146,6 +148,7 @@ class Reconstruction:
         self.output_captured = context.RawValue("d", 0)
         self.tracked = context.RawValue("Q", 0)
         self.tracking = context.RawValue("b", False)
+        self.restart_counts = context.RawArray("Q", len(RESTART_CAUSES))
         self.report("Starting MASt3R-SLAM" if backend == "slam" else "Posed RGB-D")
         # The worker publishes only between integrations, which take ~100 ms with
         # SLAM; a whole frame's refreshed slots must fit in one turn or they queue
@@ -206,6 +209,15 @@ class Reconstruction:
                 bool(self.tracking.value),
                 self.output_captured.value,
             )
+        finally:
+            self.output_lock.release()
+
+    def restarts(self):
+        """SLAM's local map restarts so far by cause; None while the worker is publishing."""
+        if not self.output_lock.acquire(False):
+            return None
+        try:
+            return dict(zip(RESTART_CAUSES, self.restart_counts, strict=True))
         finally:
             self.output_lock.release()
 

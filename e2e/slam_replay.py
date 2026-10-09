@@ -4,10 +4,18 @@ uv run --extra slam python e2e/slam_replay.py RECORDING [--out DIR] [--gaze-prio
 
 RECORDING comes from e2e/slam_drive.py --record. The backend sees what the live worker
 would: the newest frame whenever it finishes the previous one, with the robot's pose
-prior. Reports SLAM rate, lost and realigned frames, how long the pilot would see the
-flat feed, how far the SLAM heading strays from the robot's measured gaze, and how well
-the scene seen so far predicts the camera image one second later. --gaze-prior builds
-the prior from the recorded telemetry gaze, for recordings of drivers that sent none.
+prior. Reports SLAM rate, lost frames, local map restarts by cause (unmatched, heading,
+failure) in total and per 100 s, how long the pilot would see the flat feed, how far the
+SLAM heading strays from the robot's measured gaze, and how well the scene seen so far
+predicts the camera image one second later. --gaze-prior builds the prior from the
+recorded telemetry gaze, for recordings of drivers that sent none.
+
+To compare with another revision's backend, run this script with that checkout first on
+the path; a backend that does not count restarts itself has them inferred per frame:
+
+git worktree add ../ito-main main
+ln -s "$PWD/models" ../ito-main/models
+PYTHONPATH=../ito-main uv run --extra slam python e2e/slam_replay.py RECORDING
 """
 
 import argparse
@@ -21,6 +29,7 @@ from PIL import Image
 
 from ito.app.pilot import TRACKING_LOST
 from ito.protocol import Intrinsics
+from ito.reconstruction import slam as backend_module
 from ito.reconstruction.slam import SLAMBackend, heading
 from ito.render import pose
 from ito.render.pose import quaternion
@@ -135,6 +144,7 @@ def main():
     pending = []  # (due time, records, live) snapshots waiting for their future frame
     predictions = []
     previews = 0
+    inferred = dict(unmatched=0, heading=0, failure=0)  # For backends that do not count.
     origin = None
     while True:
         newer = np.flatnonzero(times <= now)
@@ -160,6 +170,9 @@ def main():
             ).astype(np.float32)
             measured = row.get("measured", False) or args.measured
         tracked_before = backend.tracked
+        realigned_before = getattr(backend, "realigned", 0)
+        failures_before = backend.failures
+        retained = len(backend.frames)
         before = len(messages)
         began = time.perf_counter()
         backend.integrate(rgb, None, prior, now - start, measured=measured and not args.unmeasured)
@@ -167,6 +180,14 @@ def main():
         seconds = time.perf_counter() - began
         news = messages[before:]
         tracked = backend.tracked > tracked_before
+        if getattr(backend, "realigned", 0) > realigned_before:
+            # Such a backend realigns on its third unmatched frame or on a heading stray.
+            misses = getattr(backend_module, "MEASURED_MISSES", 2)
+            inferred["unmatched" if failures_before >= misses else "heading"] += 1
+        if any("restarted" in m for m in news):
+            # Every retained view failed, or the local solve diverged.
+            gave_up = failures_before >= max(retained, 1) + 2
+            inferred["unmatched" if gave_up else "failure"] += 1
         slam = heading(backend.camera_pose[:3, :3])
         if origin is None:
             origin = (slam, row["gaze"])
@@ -216,6 +237,8 @@ def main():
             last_ok = stamp
         if last_ok is None or after - last_ok >= TRACKING_LOST:
             flat += after - stamp
+    restarts = dict(getattr(backend, "restarts", inferred))
+    per_100s = 100 / float(stamps[-1])
     stray = np.degrees(np.abs([math.remainder(p[6] - p[7], math.tau) for p in processed if p[3]]))
     report = dict(
         recording=str(args.recording),
@@ -229,8 +252,11 @@ def main():
         frame_ms_median=round(float(np.median(durations)) * 1000, 1),
         frame_ms_p95=round(float(np.percentile(durations, 95)) * 1000, 1),
         lost_frames=int((~ok).sum()),
-        realigned=backend.realigned,
-        restarts=sum("restarted" in m for m in messages),
+        restarts=restarts,
+        restarts_total=sum(restarts.values()),
+        restarts_per_100s={k: round(v * per_100s, 1) for k, v in restarts.items()},
+        restarts_inferred=not hasattr(backend, "restarts"),
+        heading_corrections=getattr(backend, "corrections", None),
         flat_fraction=round(flat / float(stamps[-1]), 3),
         gaze_range_deg=round(math.degrees(np.ptp([p[7] for p in processed])), 1),
         heading_error_deg_median=round(float(np.median(stray)), 1),
@@ -247,6 +273,12 @@ def main():
     (out / "frames.json").write_text(json.dumps(processed))
     (out / "summary.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))
+    print(
+        f"restarts per 100 s: {sum(restarts.values()) * per_100s:.1f} ("
+        + ", ".join(f"{k} {v}" for k, v in report["restarts_per_100s"].items())
+        + ")"
+        + (" inferred" if report["restarts_inferred"] else "")
+    )
 
 
 if __name__ == "__main__":
