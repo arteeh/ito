@@ -217,8 +217,11 @@ class RGBDBackend:
         self.records[slots, 2, 0] = 1
         self.records[slots, 3, :3] = (colors[observed] / 255 - 0.5) / 0.2820947918
         self.dirty[slots] = True
-        pressure = min(len(new) - admitted, max(1, self.budget // 4))
-        pressure = max(0, pressure - int(self.retiring.sum()))
+        # Keep a little room free: splats the view replaces hold their slots while they
+        # fade, and the next frame's own splats must not wait for them.
+        spare = max(0, self.budget - self.count) + int(self.retiring.sum())
+        wanted = len(new) - admitted + self.budget // 16
+        pressure = min(max(0, wanted - spare), max(1, self.budget // 4))
         candidates = np.flatnonzero((self.keys >= 0) & ~self.retiring & (self.seen < now))
         if pressure:
             self.retire(self.oldest(candidates, pressure))
