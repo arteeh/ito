@@ -13,7 +13,8 @@ from ito.protocol import FrameMetadata, Intrinsics
 
 
 class Camera:
-    def __init__(self, info):
+    def __init__(self, info, gaze=lambda: None):
+        """Gaze returns the robot's (body yaw, (head pan, tilt)) now, or None before telemetry."""
         import cv2
 
         self.cv = cv2
@@ -54,6 +55,7 @@ class Camera:
             )
         self.intrinsics = k
         self.source = geometry["source"]
+        self.gaze = gaze
         self.latest = None
         self.revision = 0
         self.changed = asyncio.Event()
@@ -77,8 +79,9 @@ class Camera:
             # mediad's WebRTC API exposes no per-frame capture timestamp. This is receive time,
             # not sensor exposure time; keep that distinction visible in telemetry.
             received = clock.now()
+            gaze = self.gaze()
             rgb = await asyncio.to_thread(self.rectify, frame)
-            self.latest = (rgb, received)
+            self.latest = (rgb, received, gaze)
             self.revision += 1
             self.changed.set()
 
@@ -107,7 +110,7 @@ class Track(VideoStreamTrack):
         if camera.closed:
             raise MediaStreamError
         self.revision = camera.revision
-        rgb, captured = camera.latest
+        rgb, captured, gaze = camera.latest
         if self.origin is None:
             self.origin = captured
         frame = av.VideoFrame.from_ndarray(rgb, format="rgb24")
@@ -119,6 +122,7 @@ class Track(VideoStreamTrack):
                 sequence=self.sequence,
                 capture_time=captured,
                 video_pts=frame.pts,
+                **({} if gaze is None else dict(body_yaw=gaze[0], head_angles=gaze[1])),
             )
         )
         self.sequence += 1

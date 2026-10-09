@@ -72,9 +72,7 @@ def _draw_as_meshes(body: ET.Element, asset: ET.Element, stretched: set) -> None
             vertices, uv, faces = _box(*size, stretch=geom.get("material") in stretched)
         elif kind == "cylinder":
             radius, half = size[0], size[1]
-            vertices, uv, faces = _lathe(
-                [(0, -half), (radius, -half), (radius, half), (0, half)]
-            )
+            vertices, uv, faces = _lathe([(0, -half), (radius, -half), (radius, half), (0, half)])
         elif kind in {"ellipsoid", "sphere"}:
             radii = np.array(size * 3 if kind == "sphere" else size)
             vertices, uv, faces = _lathe(
