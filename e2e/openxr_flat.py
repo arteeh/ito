@@ -223,8 +223,14 @@ def run():
         assert abs(disparity - separation / DISTANCE) < 4 * pixel, (disparity, separation)
         assert abs(left_width - right_width) < 2 * pixel, (left_width, right_width)
         disparities.append(float(disparity))
+    # How far the head turned while measured: the panel followed it, not the world.
+    forwards = [-pair[0]["center"][:3, 2] for pair in stereo]
+    head_turn = max(
+        np.degrees(np.arccos(np.clip(a @ b, -1, 1))) for a in forwards for b in forwards
+    )
     report = {
         "stereo_frames": len(stereo),
+        "head_turn_deg": float(head_turn),
         "eye_panel_box_px": [int(v) for v in stereo[0][0]["seen"]],
         "eye_separation_m": float(separation),
         "disparity_tangent_median": float(np.median(disparities)),
