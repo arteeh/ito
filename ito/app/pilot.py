@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 TRACKING_LOST = 2.0
 TRACKING_STEADY = 1.0
 TRACKING_GAP = 0.5
-# A failed RGB-D worker restarts after this delay, doubling up to RESTART_LONGEST; one that ran
+# A failed worker restarts after this delay, doubling up to RESTART_LONGEST; one that ran
 # RESTART_HEALTHY seconds before failing starts the count again.
 RESTART_FIRST, RESTART_LONGEST, RESTART_HEALTHY = 1.0, 30.0, 60.0
 
@@ -77,7 +77,7 @@ class Pilot:
         self.tracking = False
         self.tracking_steady_since = 0.0
         self.slam_view = False  # SLAM's 3D view is shown rather than the flat feed.
-        self.restart_at = None  # When a failed RGB-D worker starts again.
+        self.restart_at = None  # When a failed worker starts again.
         self.stop = threading.Event()
         self.thread = None
         self.loop = self.task = None
@@ -413,17 +413,20 @@ class Pilot:
                     with self.worker_lock:
                         failed, self.worker = self.worker, None
                     self._retire(failed)
-                    if self.backend == "rgbd":
-                        # Posed RGB-D has no missing model or device to wait for: try again.
+                    # Posed RGB-D has no missing model or device to wait for, nor has SLAM
+                    # that already tracked (a CUDA fault, a diverged solve): try again.
+                    if self.backend == "rgbd" or self.tracked_frames:
                         if now - worker_started >= RESTART_HEALTHY:
                             restart_delay = RESTART_FIRST
                         self.restart_at = now + restart_delay
                         restart_delay = min(RESTART_LONGEST, restart_delay * 2)
                 if self.restart_at is not None and now >= self.restart_at:
                     self.restart_at = self.failure = None
-                    self.reconstruction_status = "Restarting rgbd"
+                    self.reconstruction_status = "Restarting " + self.backend
+                    self.tracked_frames = 0
+                    self.tracking = self.slam_view = False
                     reconstruct()
-                    self.state = replace(self.state, flat_video=False)
+                    self.state = replace(self.state, flat_video=self.backend != "rgbd")
                 if now - self.last_frame > 5:
                     raise ConnectionError("No synchronized camera frames for five seconds")
                 for task in tasks:

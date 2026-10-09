@@ -133,6 +133,7 @@ def main():
     first_position = None
     tracked_before_stall = None
     video_before_failure = 0
+    killed = None
     error = None
     drive_error = None
     model = MODELS / "model.safetensors"
@@ -148,7 +149,7 @@ def main():
 
     def drive(app, window, value):
         nonlocal stage, changed, previous, suspended, first_position, tracked_before_stall
-        nonlocal video_before_failure, error
+        nonlocal video_before_failure, error, killed
         now = clock.now()
         limit = args.startup_timeout if args.cuda and stage == 0 else 60
         assert now - changed < limit, (stage, app.reconstruction_status, app.failure)
@@ -240,15 +241,22 @@ def main():
         elif stage == 5 and app.tracked_frames > tracked_before_stall + 2 and now - changed > 3:
             # Tracking must hold steady before the 3D view returns; by now it has.
             assert not app.state.flat_video
-            # A native crash must leave the camera and safety controls usable too.
+            # A native crash must leave the camera and safety controls usable too, and
+            # SLAM that was tracking comes back on its own.
+            killed = app.worker.process.pid
             app.worker.process.kill()
             video_before_failure = app.state.video_time
             stage, changed = 6, now
-        elif stage == 6 and now - changed > 3:
-            assert app.failure and app.state.flat_video
+        elif stage == 6 and app.failure:
+            assert app.state.flat_video
+            error = app.failure
+            stage = 8
+        elif stage == 8 and app.worker and app.worker.process.pid != killed:
+            assert not app.failure and app.connections == 1
+            stage = 9
+        elif stage == 9 and app.tracked_frames > 2 and not app.state.flat_video:
             assert app.state.video_time > video_before_failure
             assert app.connections == 1 and app.state.status.link == "CONNECTED"
-            error = app.failure
             key(pygame.K_F12)
             pygame.event.post(pygame.event.Event(pygame.QUIT))
             stage = 7
@@ -392,7 +400,7 @@ def main():
     print(
         "PASS: RGB-only auto selection, live video/SLAM, input, e-stop, persisted override"
         + (
-            ", budget eviction, worker stall/crash"
+            ", budget eviction, worker stall, crash and restart"
             if args.cuda
             else ", model fallback, zero external network I/O"
         )
