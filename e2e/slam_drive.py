@@ -179,6 +179,13 @@ def main():
     os.environ["ITO_TIMELINE"] = str(out / "timeline.jsonl")
     offered = (out / "offered.jsonl").open("w", buffering=1)
     legs = (out / "legs.jsonl").open("w", buffering=1)
+    # The robot's head pitch telemetry at every status (10/s), for the camera's dip and rise
+    # as the gait starts and stops (#28).
+    pitch = (out / "pitch.jsonl").open("w", buffering=1)
+    PITCH = ("gait", "pilot_tilt", "aimed_tilt", "camera_pitch", "look_hz", "look_ms")
+    PITCH += tuple(f"{j}{t}" for j in ("neck_pitch", "head_pitch") for t in ("", "_target"))
+    PITCH += ("requested_vx", "applied_vx", "requested_vyaw")
+    last_pitch = None
     flow_file = (out / "flow.jsonl").open("w", buffering=1)
 
     def flow_dump():
@@ -276,7 +283,7 @@ def main():
 
     def drive(app, window, value):
         nonlocal pilot, leg, leg_started, arrived, ready_at, held, previous, last_status, error
-        nonlocal rearmed, facing
+        nonlocal rearmed, facing, last_pitch
         pilot = app
         now = clock.now()
         dt, previous = now - previous, now
@@ -292,6 +299,13 @@ def main():
                 transitions.append((round(now - began, 2), kind))
             statuses[kind] += 1
             last_status = status
+        sample = tuple(app.telemetry.get(k) for k in PITCH)
+        if sample != last_pitch and app.telemetry.get("camera_pitch") is not None:
+            pitch.write(
+                json.dumps(dict(t=round(now, 3), leg=leg, **dict(zip(PITCH, sample, strict=True))))
+                + "\n"
+            )
+            last_pitch = sample
         if app.refusal:
             error = f"The robot refused this pilot: {app.refusal}"
         if ready_at is None:
