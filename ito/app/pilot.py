@@ -382,7 +382,8 @@ class Pilot:
             while True:
                 message = await peer.messages.get()
                 if isinstance(message, FrameMetadata) and message.camera == camera.name:
-                    self._submit(joined.described(message), peer)
+                    for pair in joined.described(message):
+                        self._submit(pair, peer)
                 elif isinstance(message, Status):
                     last_status = clock.now()
                     self.telemetry = message.telemetry
@@ -394,7 +395,8 @@ class Pilot:
             while True:
                 frame = await track.recv()
                 if track.id == camera.track_id:
-                    self._submit(joined.decoded(frame), peer)
+                    for pair in joined.decoded(frame):
+                        self._submit(pair, peer)
 
         async def tracks():
             while True:
