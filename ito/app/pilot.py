@@ -699,6 +699,13 @@ class Pilot:
                 stack = sys._current_frames().get(self.thread.ident)
                 log.error("Pilot link stuck at:\n%s", "".join(traceback.format_stack(stack)))
                 stuck.append("the pilot link")
+        # aiortc's video decoder threads are not daemons and end only in a finished teardown;
+        # the interpreter would wait for them forever.
+        decoders = [
+            t for t in threading.enumerate() if t.name.endswith("-decoder") and not t.daemon
+        ]
+        if decoders:
+            stuck.append("the WebRTC decoder threads")
         # Cancellation during connection setup, or a link stuck in teardown, can precede the
         # session's cleanup block. A worker left running would keep the app from exiting:
         # multiprocessing joins live worker processes at interpreter exit, without a timeout.

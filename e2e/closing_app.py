@@ -8,6 +8,8 @@ Resumes and holds W, then prints "closed <clock>" the moment it closes the windo
 - connecting: the robot accepts the connection but never answers.
 - stuck_link: the link's event loop blocks in teardown joining a thread that never ends, as
   aiortc does joining its non-daemon video decoder thread when decoding has backed up.
+- hung_teardown: aiortc's teardown awaits a DTLS transport that never answers, with the
+  event loop idle, as seen on Windows after a long SLAM drive (#27).
 - reconstruction: the worker process is inside one integration that never returns, as a
   SLAM step or CUDA call that never looks at the stop flag.
 
@@ -50,6 +52,21 @@ if SCENARIO == "stuck_link":
         await close(self)
 
     Peer.close = stuck_close
+
+if SCENARIO == "hung_teardown":
+    import asyncio
+
+    from aiortc.rtcdtlstransport import RTCDtlsTransport
+
+    stop = RTCDtlsTransport.stop
+
+    async def never_stops(self):
+        # Connection setup stops unused transports too; only the teardown hangs.
+        if closed is None:
+            return await stop(self)
+        await asyncio.Event().wait()
+
+    RTCDtlsTransport.stop = never_stops
 
 
 def key(code, kind):
