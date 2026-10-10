@@ -4,7 +4,7 @@ uv run --extra slam python e2e/slam_drive.py HOST:PORT [--code CODE] [--record D
     [--route short|tour] [--laps N]
 
 The short route walks 3 s forward, looks left and right, and walks 3 s back. The tour
-looks left, right and behind, walks, strafes, reverses and turns while walking. Then it
+looks left, right and behind, walks, reverses and turns while walking. Then it
 reports how long the pilot saw the flat feed and why, the SLAM rate, capture-to-scene
 latency and how well the SLAM camera's heading follows the robot's measured gaze (body
 heading plus head pan from telemetry), with a screenshot per leg. --record saves every
@@ -81,6 +81,8 @@ ROUTES["short"] = [
     (0, 0, "s", 3),
     (0, 0, "", 2),
 ]
+# No strafe legs: the Microduck policy has no usable sideways step (lateral_speed=0 in its
+# driver), so a/d alone never move it and only stall the leg.
 ROUTES["tour"] = [
     (0, 0, "", 4),
     (90, 0, "", 4),
@@ -94,8 +96,6 @@ ROUTES["tour"] = [
     (0, -25, "", 2),
     (0, 0, "", 2),
     (60, 0, "w", 5),
-    (60, 0, "d", 3),
-    (60, 0, "a", 3),
     (60, 0, "s", 4),
     (-60, 0, "w", 6),
     (-150, 0, "", 4),
@@ -362,7 +362,11 @@ def main():
                 arrived = now
         done = leg < 0
         if not done and arrived is not None:
-            facing_home = base and home and abs(math.remainder(home["yaw"] - base[2], 2 * math.pi)) < HOME_FACING
+            facing_home = (
+                base
+                and home
+                and abs(math.remainder(home["yaw"] - base[2], 2 * math.pi)) < HOME_FACING
+            )
             if "s" in held and not args.open_loop and facing_home:
                 # Walk back to where the drive began, not for a fixed time (3x as a cap).
                 ahead = (base[0] - home["x"]) * math.cos(home["yaw"]) + (
