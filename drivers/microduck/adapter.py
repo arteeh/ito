@@ -11,7 +11,7 @@ from ito.driver.walking import Walker
 from ito.protocol import Camera as CameraDescription
 from ito.protocol import DegreeOfFreedom, Pose, RobotDescription
 
-from . import frames
+from . import frames, gaze
 from .camera import Camera, Track
 from .remote import Remote
 
@@ -36,6 +36,9 @@ FRAME_DELAY = 0.09
 # late, so it adds to the camera's swing instead of cancelling it. The head is aimed from the
 # heading averaged over one gait period, moved on by the turn rate over two.
 GAIT_PERIOD = 0.42
+# robot.look aims the camera at a point; this far out, the camera moving a few centimetres
+# as the head turns changes the aim by a fraction of a degree.
+GAZE_DISTANCE = 10.0
 
 
 def steady_heading(samples):
@@ -97,6 +100,12 @@ class MicroduckAdapter(Adapter):
         # Recent measured camera poses: (time, position, orientation, body yaw).
         self._poses = deque(maxlen=40)
         self._headings = deque()  # (time, body yaw) over the last two gait periods.
+        # (time, world up in the trunk frame) over the last gait period, and the camera's
+        # position in the trunk: where robot.look's levelled gaze starts.
+        self._ups = deque()
+        self._camera_in_trunk = None
+        self._trim = gaze.TiltTrim()
+        self._measured_at = None
         self._neutral_done = asyncio.Event()
 
     @property
@@ -208,6 +217,7 @@ class MicroduckAdapter(Adapter):
                 await self.remote.call("robot.stop")
                 await self.remote.call("robot.pose", {"active": False})
                 # Hold head and beak: releasing a carried object is not a safe neutral.
+                self._trim.release()
                 self._neutral_done.set()
                 continue
             state = latest[1]
@@ -225,17 +235,24 @@ class MicroduckAdapter(Adapter):
                 )
             ]
             if state.head:
-                commands.append(
-                    (
-                        "robot.look",
-                        {
-                            "x": 2 * math.cos(move.pan) * math.cos(move.tilt),
-                            "y": 2 * math.sin(move.pan) * math.cos(move.tilt),
-                            "z": 2 * math.sin(move.tilt),
-                            "neck_pitch": 0.0,
-                        },
-                    )
+                # Levelled by the trunk's lean averaged over a gait period: chasing the gait's
+                # pitch sway with a head that lags it would add to the camera's swing. A robotd
+                # without IMU and head frames in robot.state gets the trunk's own axes.
+                up = (
+                    tuple(sum(u[i] for _, u in self._ups) for i in range(3))
+                    if self._ups
+                    else (0.0, 0.0, 1.0)
                 )
+                x, y, z = gaze.target(
+                    move.pan,
+                    self._trim(move.tilt, clock.now()),
+                    up,
+                    self._camera_in_trunk or (0.0, 0.0, 0.0),
+                    GAZE_DISTANCE,
+                )
+                commands.append(("robot.look", {"x": x, "y": y, "z": z, "neck_pitch": 0.0}))
+            else:
+                self._trim.release()
             commands.extend(
                 [
                     (
@@ -318,6 +335,11 @@ class MicroduckAdapter(Adapter):
             for index, value in enumerate(vector):
                 values[f"imu_{key}_{index}"] = value
         camera = (data.get("frames") or {}).get("camera")
+        if camera and data.get("imu"):
+            self._camera_in_trunk = tuple(camera["pos"])
+            self._ups.append((now, gaze.up_in_trunk(data["imu"]["quat"])))
+            while now - self._ups[0][0] > GAIT_PERIOD:
+                self._ups.popleft()
         if camera and data.get("imu") and position is not None:
             if self._origin is None:
                 self._origin = (position[0], position[1], self._yaw_origin)
@@ -327,6 +349,9 @@ class MicroduckAdapter(Adapter):
             self._poses.append((now, *pose, values["base_yaw"]))
             for name, angle in zip(("yaw", "pitch", "roll"), frames.angles(pose[1]), strict=True):
                 values[f"camera_{name}"] = angle
+            if self._measured_at is not None:
+                self._trim.measured(values["camera_pitch"], now, now - self._measured_at)
+            self._measured_at = now
         self._telemetry.update(values)
         self._state_at = clock.now()
 

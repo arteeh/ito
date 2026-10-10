@@ -1,6 +1,7 @@
 """Pollen's real Microduck stack: walk forward, back, sideways and turn, measured in MuJoCo.
 
-Also checks the camera pose robotd's head FK reports against where the pilot looks.
+Also checks the camera pose robotd's head FK reports against where the pilot looks: its
+heading, and its pitch against the pilot's tilt standing and walking.
 
 Runs inside the simulator environment (see drivers/microduck/setup-sim.sh):
 PYTHONPATH=. /opt/ito/stack/ito-venv/bin/python e2e/microduck_walking.py \
@@ -21,8 +22,10 @@ from ito.link import connect
 from ito.protocol import Command, PilotState, Pose, Status
 
 
-def head(yaw=0.0):
-    return Pose(orientation=(0.0, math.sin(yaw / 2), 0.0, math.cos(yaw / 2)))
+def head(yaw=0.0, tilt=0.0):
+    """Ito's head pose: yaw about up, then tilt (up positive) about the head's right axis."""
+    cy, sy, cp, sp = math.cos(yaw / 2), math.sin(yaw / 2), math.cos(tilt / 2), math.sin(tilt / 2)
+    return Pose(orientation=(cy * sp, sy * cp, -sy * sp, cy * cp))
 
 
 def heading(quat):
@@ -56,7 +59,7 @@ class Probe:
         x, y, z = physical["trunk"]
         return x, y, z, heading(physical["imu"]["quat"])
 
-    async def drive(self, label, duration, *, yaw=0.0, forward=0.0, right=0.0):
+    async def drive(self, label, duration, *, yaw=0.0, tilt=0.0, forward=0.0, right=0.0):
         start = clock.now()
         next_sample = start
         first = len(self.samples)
@@ -69,7 +72,7 @@ class Probe:
                     sequence=self.sequence,
                     capture_time=now,
                     deadman=True,
-                    head=head(yaw),
+                    head=head(yaw, tilt),
                     axes={"move_y": forward, "move_x": right},
                 )
             )
@@ -86,6 +89,7 @@ class Probe:
                         "y": y,
                         "z": z,
                         "yaw": body_yaw,
+                        "tilt": tilt,
                         **{
                             k: t.get(k)
                             for k in (
@@ -93,6 +97,16 @@ class Probe:
                                 "base_yaw",
                                 "head_yaw",
                                 "head_yaw_target",
+                                "head_pitch",
+                                "head_pitch_target",
+                                "neck_pitch",
+                                "neck_pitch_target",
+                                "head_roll",
+                                "head_roll_target",
+                                "imu_quat_0",
+                                "imu_quat_1",
+                                "imu_quat_2",
+                                "imu_quat_3",
                                 "camera_yaw",
                                 "camera_pitch",
                                 "camera_roll",
@@ -137,24 +151,39 @@ async def run(sim, out):
         report = {}
         checks = {}
 
-        async def leg(label, duration, *, gaze=0.0, **keys):
+        async def leg(label, duration, *, gaze=0.0, tilt=0.0, **keys):
             """Gaze is relative to the body's heading when the leg starts."""
             heading = probe.telemetry["base_yaw"]
-            segment = await probe.drive(label, duration, yaw=heading + gaze, **keys)
+            segment = await probe.drive(label, duration, yaw=heading + gaze, tilt=tilt, **keys)
             moved = change(segment)
             last = segment[-1]
             # The view direction robotd's head FK reports, against where the pilot looks.
             moved["camera_vs_gaze_deg"] = math.degrees(
                 math.remainder(last["camera_yaw"] - heading - gaze, 2 * math.pi)
             )
+            # Camera pitch against the pilot's tilt, once the head has settled: the mean over
+            # the leg's second half spans several gait periods, so the sway averages out.
+            settled = [s["camera_pitch"] for s in segment[len(segment) // 2 :]]
+            moved["camera_vs_tilt_deg"] = math.degrees(sum(settled) / len(settled) - tilt)
             moved["head_yaw_deg"] = math.degrees(last["head_yaw"])
             moved["camera_roll_deg"] = math.degrees(last["camera_roll"])
             moved["fallen"] = any(s["fallen"] for s in segment)
             report[label] = moved
             return moved
 
+        looked = await leg("level_standing", 3)
+        checks["standing, the camera is level when the pilot's gaze is"] = (
+            abs(looked["camera_vs_tilt_deg"]) < 1
+        )
+        looked = await leg("tilt_down_standing", 3, tilt=math.radians(-25))
+        checks["the camera tilts down with the pilot"] = abs(looked["camera_vs_tilt_deg"]) < 1
+        looked = await leg("tilt_up_standing", 3, tilt=math.radians(15))
+        checks["the camera tilts up with the pilot"] = abs(looked["camera_vs_tilt_deg"]) < 1
         walked = await leg("forward", 5, forward=1)
         checks["forward walks"] = walked["forward_m"] > 0.4
+        checks["walking, the camera is level when the pilot's gaze is"] = (
+            abs(walked["camera_vs_tilt_deg"]) < 1
+        )
         await leg("settle", 2)
         walked = await leg("backward", 5, forward=-1)
         checks["backward walks"] = walked["forward_m"] < -0.4
