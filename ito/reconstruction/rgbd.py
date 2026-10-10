@@ -8,10 +8,6 @@ import numpy as np
 
 LEVELS = 32  # Power-of-two cell sizes from 2^-16 to 2^15 world units.
 KEEP = 1e30  # Fade deadline of a splat nothing has evicted: never.
-# A splat is carved only once this many views have seen through it or replaced it without
-# refreshing it. One view placed a few degrees off (a restart, a recalled keyframe, a heading
-# correction) sees through nearly everything near an edge; agreeing views see what is gone.
-CARVE_VOTES = 3
 
 
 class RGBDBackend:
@@ -48,9 +44,8 @@ class RGBDBackend:
         self.records = np.zeros((capacity, 4, 4), np.float32)
         self.keys = np.full(capacity, -1, np.int64)
         self.seen = np.full(capacity, -np.inf)
-        self.votes = np.zeros(capacity, np.uint8)  # Views that found the splat stale.
-        # Placed on the robot's own pose while SLAM could not match: a guess any matched
-        # view may carve at once.
+        # Placed by a view whose pose is a guess (see carve): a later view of the same place
+        # replaces it.
         self.provisional = np.zeros(capacity, bool)
         self.retiring = np.zeros(capacity, bool)
         self.dirty = np.zeros(capacity, bool)
@@ -79,7 +74,6 @@ class RGBDBackend:
             self.records = np.pad(self.records, ((0, extra), (0, 0), (0, 0)))
             self.keys = np.pad(self.keys, (0, extra), constant_values=-1)
             self.seen = np.pad(self.seen, (0, extra), constant_values=-np.inf)
-            self.votes = np.pad(self.votes, (0, extra))
             self.provisional = np.pad(self.provisional, (0, extra))
             self.retiring = np.pad(self.retiring, (0, extra))
             self.dirty = np.pad(self.dirty, (0, extra))
@@ -111,25 +105,34 @@ class RGBDBackend:
         expired = (self.keys >= 0) & self.retiring & (self.release_after <= now)
         self.keys[expired] = -1
         self.records[expired] = 0
-        self.votes[expired] = 0
         self.provisional[expired] = False
         self.retiring[expired] = False
         self.retire_revision[expired] = np.inf
         self.release_after[expired] = np.inf
         self.dirty[expired] = True
 
-    def carve(self, camera, fx, fy, cx, cy, depth, now):
-        """Vote out older splats this view sees through or replaces with its own.
+    def carve(self, camera, fx, fy, cx, cy, depth, now, guessed=False):
+        """Retire older splats this view sees through or replaces with its own.
 
         A surface in view is what the camera sees now: earlier splats on it that this
-        frame did not refresh, or in front of it, fade out together once CARVE_VOTES views
-        agree, while surfaces out of view or behind it stay. Otherwise kept splats pile up
-        wherever the scene moved or the map was misplaced, as a second ghost room. Run it
-        after integrating the frame. Depth is axial along the camera's -Z, in world units,
-        at pixels of these intrinsics; zero marks no measurement.
+        frame did not refresh, or in front of it, fade out together, while surfaces out
+        of view or behind it stay. Otherwise kept splats pile up wherever the scene moved
+        or the map was misplaced, as a second ghost room. Run it after integrating the
+        frame. Depth is axial along the camera's -Z, in world units, at pixels of these
+        intrinsics; zero marks no measurement.
+
+        A view whose pose is a guess (`guessed`: SLAM did not match it, or its map has just
+        restarted, recalled a keyframe or is turning back onto the robot's heading, so it may
+        sit degrees off) fused provisional splats and must not erase placed ones: it only
+        replaces older provisional splats. Those give way to any later view anywhere it
+        measured, in front of its surface or behind it, so a place seen only by guesses holds
+        one guessed copy, not one per look, and a placed view puts the room back in place.
         """
         xp = self.xp
-        live = np.flatnonzero((self.keys >= 0) & ~self.retiring & (self.seen < now))
+        candidates = (self.keys >= 0) & ~self.retiring & (self.seen < now)
+        if guessed:
+            candidates &= self.provisional
+        live = np.flatnonzero(candidates)
         if not len(live):
             return
         centers = xp.asarray(self.records[live, 0, :3])
@@ -145,14 +148,13 @@ class RGBDBackend:
         seen = ahead & (u >= 0) & (u < width) & (v >= 0) & (v < height)
         observed = xp.zeros(len(live), xp.float32)
         observed[seen] = depth[v[seen], u[seen]]
+        measured = observed > 0
         # On or in front of the seen surface, within depth noise and the splat's size.
-        stale = (observed > 0) & (z < observed * 1.1 + 2 * size)
+        stale = measured & (z < observed * 1.1 + 2 * size)
         if xp is not np:
-            stale = xp.asnumpy(stale)
-        if stale.any():
-            stale = live[stale]
-            self.votes[stale] = np.minimum(self.votes[stale] + 1, CARVE_VOTES)
-            self.retire(stale[(self.votes[stale] >= CARVE_VOTES) | self.provisional[stale]])
+            measured, stale = xp.asnumpy(measured), xp.asnumpy(stale)
+        guesses = self.provisional[live]
+        self.retire(live[(measured & guesses) | (stale & ~guesses)])
 
     def integrate(self, rgb, depth, camera, now):
         xp = self.xp
@@ -171,7 +173,8 @@ class RGBDBackend:
         Sizes are optional per-point cell edges in world units. They snap to power-of-two
         levels, so near and far surfaces each get splats about one pixel footprint wide
         instead of one fixed voxel that is either huge or needlessly fine. Provisional points
-        come from a guessed pose: they add splats, and never make a placed one provisional.
+        come from a guessed pose: they add splats, and never make a placed one provisional;
+        placed points make the provisional splats they land on placed.
         """
         xp = self.xp
         valid = xp.all(xp.isfinite(points), axis=1)
@@ -214,7 +217,6 @@ class RGBDBackend:
         self.retire_revision[slots] = np.inf
         self.release_after[slots] = np.inf
         self.records[slots, 3, 3] = 0
-        self.votes[slots] = 0
         self.provisional[slots] &= provisional
         self.refreshed += len(slots)
         free = np.flatnonzero(self.keys < 0)
@@ -226,7 +228,6 @@ class RGBDBackend:
         slots = np.concatenate((slots, free[:admitted]))
         observed = np.concatenate((observed, selected))
         self.provisional[free[:admitted]] = provisional
-        self.votes[free[:admitted]] = 0
         self.keys[slots] = keys[observed]
         self.seen[slots] = now
         self.records[slots, 0, :3] = points[observed]

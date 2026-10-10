@@ -43,9 +43,10 @@ WINDOW = 4  # Recent keyframes in the local graph.
 # window is retried at once against the keyframe nearest the robot's gaze, not dropped.
 # ITO_SLAM_RECALL=0 restores the old behaviour for live comparisons.
 RECALL = os.environ.get("ITO_SLAM_RECALL", "1") != "0"
-# A map carves splats only once it has tracked this many frames since it started or switched
-# to a recalled keyframe, and while it is not turning its world back onto the robot's
-# heading: until then its frames may sit degrees off and would see through good geometry.
+# A map places splats for good only once it has tracked this many frames since it started or
+# switched to a recalled keyframe, and while it is not turning its world back onto the
+# robot's heading. Until then its frames may sit degrees off: they would see through good
+# geometry, so their splats are provisional, like those of frames fused on the robot's pose.
 SETTLE_FRAMES = 3
 RESTART_CAUSES = ("unmatched", "heading", "failure")
 REASONS = dict(unmatched="tracking lost", heading="heading lost", failure="solve failed")
@@ -109,6 +110,12 @@ class SLAMBackend(RGBDBackend):
             device="cuda",
         )
         self.transform = lietorch.Sim3.Identity(1, device="cuda")
+        self.begin()
+        self.axes = torch.tensor(AXES, device="cuda", dtype=torch.float32)
+        report("MASt3R-SLAM ready; waiting for camera")
+
+    def begin(self):
+        """Tracking state of a fresh session, kept beside the splat slots RGBDBackend owns."""
         self.camera_pose = np.eye(4, dtype=np.float32)
         self.tracked = 0
         self.restarts = dict.fromkeys(RESTART_CAUSES, 0)
@@ -129,8 +136,6 @@ class SLAMBackend(RGBDBackend):
         # Where the current local map started: its camera in the world, and the robot's
         # own idea of that camera. The robot's turns since then predict the heading.
         self.anchor = None
-        self.axes = torch.tensor(AXES, device="cuda", dtype=torch.float32)
-        report("MASt3R-SLAM ready; waiting for camera")
 
     def placed(self, transform):
         """The Ito world-from-camera pose of a map pose and its scale, or None if unusable."""
@@ -379,7 +384,7 @@ class SLAMBackend(RGBDBackend):
                 self.camera_pose,
                 scale,
                 now + clock.now() - started,
-                carve=not self.correcting and self.settled >= SETTLE_FRAMES,
+                provisional=self.correcting or self.settled < SETTLE_FRAMES,
             )
             self.settled += 1
             self.tracked += 1
@@ -388,7 +393,7 @@ class SLAMBackend(RGBDBackend):
             else:
                 self.report(f"MASt3R-SLAM tracking | {self.tracked} frames")
 
-    def fuse(self, frame, transform, pose, scale, when, *, carve=True, provisional=False):
+    def fuse(self, frame, transform, pose, scale, when, *, provisional=False):
         """Fuse a frame's MASt3R pointmap into the splats at a map pose (Sim3) and its Ito pose."""
         import torch
         from mast3r_slam.geometry import constrain_points_to_ray
@@ -408,17 +413,20 @@ class SLAMBackend(RGBDBackend):
         # once fits in about 400k splats; smaller budgets get proportionally coarser.
         pixels = 3 * max(1, (400_000 / self.budget) ** 0.5)
         footprint = local[:, 2] * float(scale) * pixels / self.K[0, 0]
-        # DLPack shares CUDA memory; only the fused slot records cross to the ring.
-        self.integrate_points(
-            self.xp.from_dlpack(points[valid].contiguous()),
-            self.xp.from_dlpack(colors[valid].contiguous()),
-            when,
-            self.xp.from_dlpack(footprint[valid].contiguous()),
-            provisional=provisional,
-        )
-        if not carve or provisional:
-            return
         height, width = frame.img.shape[-2:]
         depth = torch.where(valid, local[:, 2] * float(scale), 0).reshape(height, width)
-        fx, fy, cx, cy = (float(self.K[i, j]) for i, j in ((0, 0), (1, 1), (0, 2), (1, 2)))
-        self.carve(pose, fx, fy, cx, cy, self.xp.from_dlpack(depth.float().contiguous()), when)
+        # DLPack shares CUDA memory; only the fused slot records cross to the ring.
+        self.place(
+            *(self.xp.from_dlpack(t.contiguous()) for t in (points[valid], colors[valid])),
+            self.xp.from_dlpack(footprint[valid].contiguous()),
+            self.xp.from_dlpack(depth.float().contiguous()),
+            pose,
+            [float(self.K[i, j]) for i, j in ((0, 0), (1, 1), (0, 2), (1, 2))],
+            when,
+            provisional,
+        )
+
+    def place(self, points, colors, sizes, depth, pose, intrinsics, when, provisional):
+        """Fuse a view's world points, then carve with its depth map from its pose."""
+        self.integrate_points(points, colors, when, sizes, provisional=provisional)
+        self.carve(pose, *intrinsics, depth, when, guessed=provisional)
