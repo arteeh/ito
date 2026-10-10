@@ -107,6 +107,9 @@ KEYS = {"w": pygame.K_w, "a": pygame.K_a, "s": pygame.K_s, "d": pygame.K_d}
 TURN_RATE = math.radians(45)  # A brisk but ordinary head turn.
 # Closed loop (#25): the gait walks backward slower than forward and looks past the head's pan
 # limit turn the body, so an open-loop route creeps forward and skews lap by lap into walls.
+# Only a back leg walked facing the start heading returns home (the short route's); the tour
+# reverses while turned, where "behind the start" is never reached, so it keeps its timer.
+HOME_FACING = math.radians(30)
 HOME_MARGIN = 0.02  # m short of the start, along the start heading, that counts as back
 FACE_TOLERANCE = math.radians(4)  # body yaw off the start heading that a lap re-faces
 FACE_OVERSHOOT = 1.40 + math.radians(5)  # gaze past the pan limit (GAZE_PAN) turns the body
@@ -359,7 +362,8 @@ def main():
                 arrived = now
         done = leg < 0
         if not done and arrived is not None:
-            if "s" in held and not args.open_loop and home and base:
+            facing_home = base and home and abs(math.remainder(home["yaw"] - base[2], 2 * math.pi)) < HOME_FACING
+            if "s" in held and not args.open_loop and facing_home:
                 # Walk back to where the drive began, not for a fixed time (3x as a cap).
                 ahead = (base[0] - home["x"]) * math.cos(home["yaw"]) + (
                     base[1] - home["y"]
