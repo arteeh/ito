@@ -693,7 +693,7 @@ class Pilot:
 
     def start(self):
         def run():
-            with contextlib.suppress(asyncio.CancelledError):
+            with contextlib.suppress(asyncio.CancelledError), clock.fine_timers():
                 asyncio.run(self._run())
 
         # Daemon: a link stuck in teardown must not keep the closed app alive.
