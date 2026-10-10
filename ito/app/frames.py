@@ -25,6 +25,15 @@ class FrameJoin:
 
     def add(self, table, key, value):
         now = clock.now()
+        # The RTP round trip can land a decoded frame's pts one 90 kHz tick (11 µs) off the
+        # pts its sender published in the metadata; on Ceres that split 44% of all exposures
+        # from their metadata and dropped them. Exposures are milliseconds apart, so a tick
+        # of slack still never joins one exposure with another's.
+        other = self.metadata if table is self.video else self.video
+        for near in (key, key - 1, key + 1):
+            if near in other:
+                key = near
+                break
         table[key] = (now, value)
         for pending in (self.video, self.metadata):
             for stamp, (received, _) in list(pending.items()):
