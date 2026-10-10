@@ -12,8 +12,10 @@ def main():
         "--robot", default="ws://127.0.0.1:8443", help="robot mediad LAN signalling address"
     )
     driver_arguments(parser)
-    # Microduck's console owns port 8080; robotd runs its control loop at 50 Hz.
-    parser.set_defaults(port=8081, command_rate=50)
+    # Microduck's console owns port 8080. robotd runs its control loop at 50 Hz, but the
+    # adapter sends only the newest input, so passing every pilot sample on keeps the one each
+    # tick reads fresh.
+    parser.set_defaults(port=8081)
     args = parser.parse_args()
     args.prog = parser.prog
     args.audio_source, args.audio_sink = None, "none"
