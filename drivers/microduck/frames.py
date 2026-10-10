@@ -9,6 +9,7 @@ degrees at wide looks and the camera rolls by up to ~30 degrees near its pan lim
 Quaternions here are scalar-first (w, x, y, z), as robotd sends them.
 """
 
+import bisect
 import math
 
 # robotd's world and trunk: x forward, y left, z up. Ito's world: x right, y up, z back.
@@ -79,10 +80,14 @@ def angles(orientation):
     return yaw, pitch, roll
 
 
+def _time(sample):
+    return sample[0]
+
+
 def at(history, when):
     """(position, xyzw orientation, body yaw) at `when`, interpolated in a time-ordered
     history of (time, position, orientation, body yaw) samples; held at either end."""
-    later = next((i for i, sample in enumerate(history) if sample[0] > when), len(history))
+    later = bisect.bisect_right(history, when, key=_time)
     if later == 0 or later == len(history):
         return history[min(later, len(history) - 1)][1:]
     (t0, p0, q0, yaw0), (t1, p1, q1, yaw1) = history[later - 1], history[later]
