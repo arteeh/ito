@@ -28,6 +28,7 @@ from ito import clock
 from ito.app import frames as _frames
 from ito.app.__main__ import main as pilot_main
 from ito.app.pilot import TRACKING_LOST
+from ito.driver.walking import FACING
 from ito.link import media as _media
 from ito.reconstruction import Reconstruction
 
@@ -111,7 +112,12 @@ TURN_RATE = math.radians(45)  # A brisk but ordinary head turn.
 # reverses while turned, where "behind the start" is never reached, so it keeps its timer.
 HOME_FACING = math.radians(30)
 HOME_MARGIN = 0.02  # m short of the start, along the start heading, that counts as back
-FACE_TOLERANCE = math.radians(4)  # body yaw off the start heading that a lap re-faces
+# A lap starts by re-facing the start heading when the body is further off than this. A
+# standing body turns only for a gaze past its soft pan limit, and then until it faces the gaze,
+# so re-facing looks away past that limit, which turns the body there, and then back at the
+# start heading, which turns it back to face it. Every lap's last look ahead does the same, so
+# this only catches bodies a walk left skewed.
+FACE_TOLERANCE = 2.5 * FACING
 FACE_OVERSHOOT = 1.40 + math.radians(5)  # gaze past the pan limit (GAZE_PAN) turns the body
 STALL_WINDOW, STALL_DISTANCE = 1.0, 0.02  # walking yet moved under 2 cm in 1 s: a wall
 
@@ -192,6 +198,7 @@ def main():
     home = {}  # base x, y, yaw when the drive began
     walked = []  # (time, x, y) during the current walking leg
     facing = None  # when this lap's re-facing turn began
+    away = 0.0  # while re-facing: the look away, radians off the start heading; 0 looking back
     closed = Counter()  # stalls, re-facings, back legs ended at the start
     pilot = None
     recorded = queue.Queue(maxsize=512)
@@ -276,7 +283,7 @@ def main():
 
     def drive(app, window, value):
         nonlocal pilot, leg, leg_started, arrived, ready_at, held, previous, last_status, error
-        nonlocal rearmed, facing
+        nonlocal rearmed, facing, away
         pilot = app
         now = clock.now()
         dt, previous = now - previous, now
@@ -341,7 +348,16 @@ def main():
             target_yaw, target_pitch, _, hold = route[leg]
             if facing is not None:
                 skew = math.remainder(home["yaw"] - base[2], 2 * math.pi) if base else 0.0
-                if abs(skew) < FACE_TOLERANCE / 2 or now - facing > 8:
+                if away and base:
+                    target_yaw = math.degrees(home["yaw"] + away)
+                    turned = math.remainder(home["yaw"] + away - base[2], 2 * math.pi)
+                    if abs(turned) < FACE_TOLERANCE:
+                        away = 0.0
+                elif not away:
+                    target_yaw = math.degrees(home["yaw"])
+                looking_home = abs(math.remainder(home["yaw"] - window.input.yaw, 2 * math.pi))
+                settled = not away and looking_home < math.radians(1) and abs(skew) < FACE_TOLERANCE
+                if settled or now - facing > 15:
                     legs.write(
                         json.dumps(
                             dict(leg=leg, at=round(now, 4), faced=round(math.degrees(skew), 1))
@@ -349,8 +365,7 @@ def main():
                         + "\n"
                     )
                     facing = None
-                else:
-                    target_yaw = math.degrees(home["yaw"] + math.copysign(FACE_OVERSHOOT, skew))
+                    away = 0.0
             yaw_error = math.remainder(math.radians(target_yaw) - window.input.yaw, 2 * math.pi)
             pitch_error = math.radians(target_pitch) - window.input.pitch
             step = TURN_RATE * min(dt, 0.05)
@@ -404,6 +419,8 @@ def main():
                 # Each lap starts facing the way the first did.
                 if abs(math.remainder(home["yaw"] - base[2], 2 * math.pi)) > FACE_TOLERANCE:
                     facing = now
+                    skew = math.remainder(home["yaw"] - base[2], 2 * math.pi)
+                    away = math.copysign(FACE_OVERSHOOT, skew)
                     closed["faced"] += 1
             for name in held:
                 key(KEYS[name], True)

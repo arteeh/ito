@@ -192,8 +192,11 @@ async def run(sim, out):
         checks["a reachable look leaves the body"] = abs(looked["turn_deg"]) < 5
         checks["the camera looks where the pilot looks"] = abs(looked["camera_vs_gaze_deg"]) < 8
         looked = await leg("look_130_standing", 6, gaze=math.radians(130))
-        # The head reaches 80 degrees; the body turns the rest of the way.
-        checks["past the head's reach the body turns"] = 35 < looked["turn_deg"] < 65
+        # The head reaches 80 degrees; the body turns until it faces the gaze, the head back in
+        # the middle of its range.
+        checks["past the head's reach the body turns to face the gaze"] = (
+            120 < looked["turn_deg"] < 140 and abs(looked["head_yaw_deg"]) < 10
+        )
         checks["and the camera then looks there"] = abs(looked["camera_vs_gaze_deg"]) < 15
         await leg("face", 2)
         walked = await leg("right", 6, right=1)
