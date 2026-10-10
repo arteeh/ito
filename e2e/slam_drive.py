@@ -1,8 +1,10 @@
 """Pilot a live robot through a scripted walk with MASt3R-SLAM; measure the 3D view.
 
 uv run --extra slam python e2e/slam_drive.py HOST:PORT [--code CODE] [--record DIR]
+    [--route short|tour] [--laps N]
 
-Looks left, right and behind, walks, strafes, reverses and turns while walking, then
+The short route walks 3 s forward, looks left and right, and walks 3 s back. The tour
+looks left, right and behind, walks, strafes, reverses and turns while walking. Then it
 reports how long the pilot saw the flat feed and why, the SLAM rate, capture-to-scene
 latency and how well the SLAM camera's heading follows the robot's measured gaze (body
 heading plus head pan from telemetry), with a screenshot per leg. --record saves every
@@ -23,13 +25,63 @@ import pygame
 from PIL import Image
 
 from ito import clock
+from ito.app import frames as _frames
 from ito.app.__main__ import main as pilot_main
 from ito.app.pilot import TRACKING_LOST
+from ito.link import media as _media
 from ito.reconstruction import Reconstruction
+
+# Frame-flow counters, dumped to flow.jsonl each second: how many of the robot's video frames
+# reach the pilot's track, pair with their metadata (by kind) and get offered to SLAM.
+FLOW = Counter()
+JOINS = []  # the live FrameJoin, for its per-kind join counts
+_put = _media.LatestTrack._put
+
+
+def _counting_put(self, frame):
+    if self.kind == "video" and frame is not None:
+        FLOW["track_in"] += 1
+        FLOW["track_dropped"] += self._frames.full()
+    _put(self, frame)
+
+
+_media.LatestTrack._put = _counting_put
+_decoded, _described = _frames.FrameJoin.decoded, _frames.FrameJoin.described
+
+
+def _counting_decoded(self, frame):
+    if not JOINS or JOINS[-1] is not self:
+        JOINS.append(self)
+    FLOW["decoded"] += 1
+    pairs = _decoded(self, frame)
+    FLOW["joined"] += len(pairs)
+    return pairs
+
+
+def _counting_described(self, metadata):
+    FLOW["metadata"] += 1
+    pairs = _described(self, metadata)
+    FLOW["joined"] += len(pairs)
+    return pairs
+
+
+_frames.FrameJoin.decoded = _counting_decoded
+_frames.FrameJoin.described = _counting_described
 
 # (gaze yaw degrees, gaze pitch degrees, held keys, seconds to hold once there).
 # Positive yaw looks left. The body follows the gaze once the head runs out of pan.
-ROUTE = [
+ROUTES = {}
+ROUTES["short"] = [
+    (0, 0, "", 2),
+    (0, 0, "w", 3),
+    (0, 0, "", 1),
+    (90, 0, "", 2),
+    (-90, 0, "", 2),
+    (0, 0, "", 1),
+    (0, 0, "s", 3),
+    (0, 0, "", 2),
+]
+ROUTES["tour"] = [
     (0, 0, "", 4),
     (90, 0, "", 4),
     (180, 0, "", 4),
@@ -50,8 +102,15 @@ ROUTE = [
     (-150, 0, "w", 5),
     (0, 0, "", 4),
 ]
+ROUTE = ROUTES["tour"]
 KEYS = {"w": pygame.K_w, "a": pygame.K_a, "s": pygame.K_s, "d": pygame.K_d}
 TURN_RATE = math.radians(45)  # A brisk but ordinary head turn.
+# Closed loop (#25): the gait walks backward slower than forward and looks past the head's pan
+# limit turn the body, so an open-loop route creeps forward and skews lap by lap into walls.
+HOME_MARGIN = 0.02  # m short of the start, along the start heading, that counts as back
+FACE_TOLERANCE = math.radians(4)  # body yaw off the start heading that a lap re-faces
+FACE_OVERSHOOT = 1.40 + math.radians(5)  # gaze past the pan limit (GAZE_PAN) turns the body
+STALL_WINDOW, STALL_DISTANCE = 1.0, 0.02  # walking yet moved under 2 cm in 1 s: a wall
 
 
 def key(code, down=None):
@@ -96,7 +155,13 @@ def main():
     parser.add_argument("--code")
     parser.add_argument("--out", type=Path, default=Path("e2e/out/slam-drive"))
     parser.add_argument("--record", type=Path, help="save the frames reconstruction received")
+    parser.add_argument("--route", choices=sorted(ROUTES), default="short")
     parser.add_argument("--laps", type=int, default=1)
+    parser.add_argument(
+        "--open-loop",
+        action="store_true",
+        help="walk on timers only: no walking back to the start, re-facing or stall aborts",
+    )
     parser.add_argument("--startup-timeout", type=float, default=300)
     args = parser.parse_args()
     out = args.out
@@ -105,10 +170,49 @@ def main():
         old.unlink()
     # A private settings folder; the robot's one pilot credential may be copied in first.
     os.environ["XDG_CONFIG_HOME"] = os.environ["APPDATA"] = str(out / "config")
-    route = ROUTE * args.laps
+    route = ROUTES[args.route] * args.laps
+    # One line per frame the reconstruction worker took, and per frame offered to it.
+    (out / "timeline.jsonl").unlink(missing_ok=True)
+    os.environ["ITO_TIMELINE"] = str(out / "timeline.jsonl")
+    offered = (out / "offered.jsonl").open("w", buffering=1)
+    legs = (out / "legs.jsonl").open("w", buffering=1)
+    flow_file = (out / "flow.jsonl").open("w", buffering=1)
+
+    def flow_dump():
+        while True:
+            joins = JOINS[-1].joins if JOINS else {}
+            flow_file.write(json.dumps(dict(at=round(clock.now(), 3), **FLOW, joins=joins)) + "\n")
+            threading.Event().wait(1.0)
+
+    threading.Thread(target=flow_dump, daemon=True).start()
+    lap = len(ROUTES[args.route])
+    home = {}  # base x, y, yaw when the drive began
+    walked = []  # (time, x, y) during the current walking leg
+    facing = None  # when this lap's re-facing turn began
+    closed = Counter()  # stalls, re-facings, back legs ended at the start
     pilot = None
     recorded = queue.Queue(maxsize=512)
     dropped = 0
+
+    offer = Reconstruction.submit
+
+    def offering_submit(self, rgb, depth=None, camera=None, captured_at=None, **flags):
+        accepted = offer(self, rgb, depth, camera, captured_at, **flags)
+        offered.write(
+            json.dumps(
+                dict(
+                    at=round(clock.now(), 4),
+                    captured=None if captured_at is None else round(captured_at, 4),
+                    accepted=accepted,
+                    seq=self.sequence.value,
+                    gaze=None if pilot is None else gaze(pilot.telemetry),
+                )
+            )
+            + "\n"
+        )
+        return accepted
+
+    Reconstruction.submit = offering_submit
 
     if args.record:
         args.record.mkdir(parents=True, exist_ok=True)
@@ -169,7 +273,7 @@ def main():
 
     def drive(app, window, value):
         nonlocal pilot, leg, leg_started, arrived, ready_at, held, previous, last_status, error
-        nonlocal rearmed
+        nonlocal rearmed, facing
         pilot = app
         now = clock.now()
         dt, previous = now - previous, now
@@ -224,18 +328,58 @@ def main():
                     app.tracking,
                 )
             )
+        base = [app.telemetry.get(k) for k in ("base_x", "base_y", "base_yaw")]
+        base = None if None in base else base
+        if base and not home:
+            home.update(x=base[0], y=base[1], yaw=base[2])
+        if base and held:
+            walked.append((now, base[0], base[1]))
         if leg >= 0:
             target_yaw, target_pitch, _, hold = route[leg]
+            if facing is not None:
+                skew = math.remainder(home["yaw"] - base[2], 2 * math.pi) if base else 0.0
+                if abs(skew) < FACE_TOLERANCE / 2 or now - facing > 8:
+                    legs.write(
+                        json.dumps(
+                            dict(leg=leg, at=round(now, 4), faced=round(math.degrees(skew), 1))
+                        )
+                        + "\n"
+                    )
+                    facing = None
+                else:
+                    target_yaw = math.degrees(home["yaw"] + math.copysign(FACE_OVERSHOOT, skew))
             yaw_error = math.remainder(math.radians(target_yaw) - window.input.yaw, 2 * math.pi)
             pitch_error = math.radians(target_pitch) - window.input.pitch
             step = TURN_RATE * min(dt, 0.05)
             window.input.yaw += float(np.clip(yaw_error, -step, step))
             window.input.pitch += float(np.clip(pitch_error, -step, step))
-            if max(abs(yaw_error), abs(pitch_error)) > step:
+            if max(abs(yaw_error), abs(pitch_error)) > step or facing is not None:
                 arrived = None
             elif arrived is None:
                 arrived = now
-        if leg < 0 or (arrived is not None and now - arrived >= route[leg][3]):
+        done = leg < 0
+        if not done and arrived is not None:
+            if "s" in held and not args.open_loop and home and base:
+                # Walk back to where the drive began, not for a fixed time (3x as a cap).
+                ahead = (base[0] - home["x"]) * math.cos(home["yaw"]) + (
+                    base[1] - home["y"]
+                ) * math.sin(home["yaw"])
+                back = ahead <= HOME_MARGIN
+                closed["home"] += back
+                done = back or now - arrived >= 3 * route[leg][3]
+            else:
+                done = now - arrived >= route[leg][3]
+        if held and not args.open_loop and not done and now - leg_started > 1.5 and walked:
+            recent = [w for w in walked if now - w[0] <= STALL_WINDOW]
+            if recent and recent[0][0] <= now - 0.9 * STALL_WINDOW:
+                moved = math.hypot(recent[-1][1] - recent[0][1], recent[-1][2] - recent[0][2])
+                if moved < STALL_DISTANCE:
+                    closed["stalls"] += 1
+                    legs.write(
+                        json.dumps(dict(leg=leg, at=round(now, 4), stalled=round(moved, 3))) + "\n"
+                    )
+                    done = True
+        if done:
             for name in held:
                 key(KEYS[name], False)
             leg += 1
@@ -246,6 +390,13 @@ def main():
                 pygame.event.post(pygame.event.Event(pygame.QUIT))
                 return
             held = route[leg][2]
+            walked.clear()
+            legs.write(json.dumps(dict(leg=leg, at=round(now, 4), step=route[leg])) + "\n")
+            if leg % lap == 0 and leg and not args.open_loop and home and base:
+                # Each lap starts facing the way the first did.
+                if abs(math.remainder(home["yaw"] - base[2], 2 * math.pi)) > FACE_TOLERANCE:
+                    facing = now
+                    closed["faced"] += 1
             for name in held:
                 key(KEYS[name], True)
 
@@ -293,6 +444,8 @@ def main():
         for _, _, slam, looked, ok in poses
         if ok
     ]
+    base_end = pilot and [pilot.telemetry.get(k) for k in ("base_x", "base_y")]
+    base_end = None if not base_end or None in base_end else base_end
     report = dict(
         result=result,
         error=error,
@@ -313,6 +466,10 @@ def main():
         else None,
         heading_error_deg_p95=round(float(np.percentile(heading_error, 95)), 1)
         if heading_error
+        else None,
+        closed_loop=None if args.open_loop else dict(closed),
+        drift_m=round(math.hypot(base_end[0] - home["x"], base_end[1] - home["y"]), 3)
+        if home and base_end
         else None,
         gaze_range_deg=round(math.degrees(np.ptp([p[3] for p in poses])), 1) if poses else None,
         status_timeline=transitions[:300],
