@@ -1,4 +1,11 @@
-"""Real headless pilot: python e2e/microduck_link.py ADDRESS --code CODE."""
+"""Real headless pilot: python e2e/microduck_link.py ADDRESS --code CODE.
+
+Sends a headset's 90 Hz of head poses and checks they reach the robot at that rate: the driver
+applies them at >= 72 Hz and robot.look answers >= 72 times a second (#31).
+
+Against the bedrock/WSL simulator instead of an address, inside the simulator environment:
+python e2e/microduck_link.py --microduck M --rl RL --policies P
+"""
 
 import argparse
 import asyncio
@@ -6,6 +13,7 @@ import contextlib
 import json
 import math
 import statistics
+import tempfile
 from pathlib import Path
 
 from ito import clock
@@ -27,9 +35,10 @@ async def run(args):
     frames = 0
     statuses = []
     latencies = []
+    rates = []  # (pilot_input_hz, look_hz, look_ms) while the head sweeps
     latest = None
     sequence = 0
-    moving = False
+    moving = sweeping = False
     head_yaw = 0.0
     first_move = None
     response_ms = None
@@ -56,13 +65,17 @@ async def run(args):
                 t = message.telemetry
                 if "pilot_input_latency_ms" in t:
                     latencies.append(t["pilot_input_latency_ms"])
+                if sweeping and "pilot_input_hz" in t:
+                    rates.append((t["pilot_input_hz"], t.get("look_hz", 0), t.get("look_ms", 0)))
                 if first_move and response_ms is None and t.get("applied_vx", 0) > 0.02:
                     response_ms = (clock.now() - first_move) * 1000
 
     async def input_loop():
         nonlocal sequence, first_move
+        deadline = clock.now()
         while True:
             now = clock.now()
+            yaw = head_yaw + (0.3 * math.sin(2 * now) if sweeping else 0.0)
             if moving and first_move is None:
                 first_move = now
             assert peer.send(
@@ -71,11 +84,12 @@ async def run(args):
                     capture_time=now,
                     deadman=True,
                     axes={"move_y": 0.7 if moving else 0.0},
-                    head=Pose(orientation=(0, math.sin(head_yaw / 2), 0, math.cos(head_yaw / 2))),
+                    head=Pose(orientation=(0, math.sin(yaw / 2), 0, math.cos(yaw / 2))),
                 )
             )
             sequence += 1
-            await asyncio.sleep(1 / 60)
+            deadline = max(deadline + 1 / args.rate, now)
+            await asyncio.sleep(max(0, deadline - clock.now()))
 
     async def until(predicate):
         try:
@@ -103,6 +117,13 @@ async def run(args):
         )
         await asyncio.sleep(3)
         walking = latest.telemetry.copy()
+        moving, sweeping = False, True
+        await asyncio.sleep(6)
+        sweeping = False
+        # The rates are over a one-second window: skip the first second of the sweep.
+        swept = rates[len(rates) // 6 :]
+        applied_hz = statistics.median(r[0] for r in swept)
+        look_hz = statistics.median(r[1] for r in swept)
         peer.send(Command(sequence=1, action="e-stop"))
         await until(
             lambda: (
@@ -128,6 +149,11 @@ async def run(args):
             "telemetry_messages": len(statuses),
             "pilot_input_latency_ms_median": statistics.median(latencies),
             "pilot_input_latency_ms_max": max(latencies),
+            "pilot_send_hz": args.rate,
+            "pose_applied_hz_median": applied_hz,
+            "pose_applied_hz_p5": sorted(r[0] for r in swept)[len(swept) // 20],
+            "robot_look_hz_median": look_hz,
+            "robot_look_round_trip_ms_median": statistics.median(r[2] for r in swept),
             "walk_to_telemetry_ms": response_ms,
             "head_yaw_before": baseline,
             "head_yaw_after": walking["head_yaw"],
@@ -139,6 +165,8 @@ async def run(args):
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(report, indent=2) + "\n")
         print(json.dumps(report, indent=2))
+        if args.rate >= 72:
+            assert applied_hz >= 72 and look_hz >= 72, (applied_hz, look_hz)
     finally:
         peer.send(Command(sequence=2, action="e-stop"))
         for task in tasks:
@@ -149,9 +177,36 @@ async def run(args):
         await peer.close()
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("address")
-    parser.add_argument("--code", required=True)
+    parser.add_argument("address", nargs="?")
+    parser.add_argument("--code")
+    parser.add_argument("--rate", type=float, default=90, help="pilot poses per second")
+    parser.add_argument("--microduck", type=Path, help="start the simulator from these trees")
+    parser.add_argument("--rl", type=Path)
+    parser.add_argument("--policies", type=Path)
     parser.add_argument("--output", type=Path, default=Path("e2e/out/microduck-link.json"))
-    asyncio.run(run(parser.parse_args()))
+    args = parser.parse_args()
+    if not args.microduck:
+        if not args.address or not args.code:
+            parser.error("give ADDRESS and --code, or the simulator's --microduck/--rl/--policies")
+        asyncio.run(run(args))
+        return
+    from drivers.microduck.sim import port, simulation
+
+    with tempfile.TemporaryDirectory(prefix="ito-duck-link-") as temporary:
+        with simulation(
+            args.microduck,
+            args.rl,
+            args.policies,
+            logs=args.output.parent,
+            pairing_file=Path(temporary) / "pairing-code",
+            host="127.0.0.1",
+            driver_port=int(port()),
+        ) as sim:
+            args.address, args.code = f"127.0.0.1:{sim.port}", sim.code
+            asyncio.run(run(args))
+
+
+if __name__ == "__main__":
+    main()
