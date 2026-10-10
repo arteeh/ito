@@ -47,7 +47,24 @@ CONTROL_BUFFER = 2_000_000
 # Unacknowledged SCTP chunks (1200 bytes each) past which frames hold back: room for a few
 # status, clock and command messages, not for a frame with depth.
 FRAME_IN_FLIGHT = 16
+# aiortc's teardown normally takes ~20 ms. On Windows it has hung for good after a long
+# session (#27), awaiting a transport that never answers; closing is then abandoned so the
+# pilot app can still exit within its own budget.
+TEARDOWN_WAIT = 0.5
 log = logging.getLogger(__name__)
+
+
+def awaiting(task):
+    """The chain of awaits a suspended task sits in, outermost first, as one line."""
+    steps = []
+    coro = task.get_coro()
+    while coro is not None and len(steps) < 16:
+        frame = getattr(coro, "cr_frame", None) or getattr(coro, "gi_frame", None)
+        if frame is None:
+            break
+        steps.append(f"{frame.f_code.co_qualname}:{frame.f_lineno}")
+        coro = getattr(coro, "cr_await", None) or getattr(coro, "gi_yieldfrom", None)
+    return " > ".join(steps)
 
 
 @dataclass(frozen=True)
@@ -416,7 +433,15 @@ class Peer:
                 track.stop()
             await asyncio.gather(*(track._task for track in self._media), return_exceptions=True)
             with diagnostics.stage("webrtc"):
-                await self.pc.close()
+                closing = asyncio.ensure_future(self.pc.close())
+                await asyncio.wait({closing}, timeout=TEARDOWN_WAIT)
+                if not closing.done():
+                    where = awaiting(closing)
+                    log.warning(
+                        "WebRTC teardown abandoned after %.1f s at %s", TEARDOWN_WAIT, where
+                    )
+                    diagnostics.event("webrtc_teardown_abandoned", at=where)
+                    closing.cancel()
         finally:
             try:
                 if self.audio:
