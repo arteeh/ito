@@ -8,6 +8,10 @@ import numpy as np
 
 LEVELS = 32  # Power-of-two cell sizes from 2^-16 to 2^15 world units.
 KEEP = 1e30  # Fade deadline of a splat nothing has evicted: never.
+# A splat is carved only once this many views have seen through it or replaced it without
+# refreshing it. One view placed a few degrees off (a restart, a recalled keyframe, a heading
+# correction) sees through nearly everything near an edge; agreeing views see what is gone.
+CARVE_VOTES = 3
 
 
 class RGBDBackend:
@@ -44,6 +48,10 @@ class RGBDBackend:
         self.records = np.zeros((capacity, 4, 4), np.float32)
         self.keys = np.full(capacity, -1, np.int64)
         self.seen = np.full(capacity, -np.inf)
+        self.votes = np.zeros(capacity, np.uint8)  # Views that found the splat stale.
+        # Placed on the robot's own pose while SLAM could not match: a guess any matched
+        # view may carve at once.
+        self.provisional = np.zeros(capacity, bool)
         self.retiring = np.zeros(capacity, bool)
         self.dirty = np.zeros(capacity, bool)
         self.retire_revision = np.full(capacity, np.inf)
@@ -71,6 +79,8 @@ class RGBDBackend:
             self.records = np.pad(self.records, ((0, extra), (0, 0), (0, 0)))
             self.keys = np.pad(self.keys, (0, extra), constant_values=-1)
             self.seen = np.pad(self.seen, (0, extra), constant_values=-np.inf)
+            self.votes = np.pad(self.votes, (0, extra))
+            self.provisional = np.pad(self.provisional, (0, extra))
             self.retiring = np.pad(self.retiring, (0, extra))
             self.dirty = np.pad(self.dirty, (0, extra))
             self.retire_revision = np.pad(self.retire_revision, (0, extra), constant_values=np.inf)
@@ -101,20 +111,22 @@ class RGBDBackend:
         expired = (self.keys >= 0) & self.retiring & (self.release_after <= now)
         self.keys[expired] = -1
         self.records[expired] = 0
+        self.votes[expired] = 0
+        self.provisional[expired] = False
         self.retiring[expired] = False
         self.retire_revision[expired] = np.inf
         self.release_after[expired] = np.inf
         self.dirty[expired] = True
 
     def carve(self, camera, fx, fy, cx, cy, depth, now):
-        """Retire older splats this view sees through or replaces with its own.
+        """Vote out older splats this view sees through or replaces with its own.
 
         A surface in view is what the camera sees now: earlier splats on it that this
-        frame did not refresh, or in front of it, fade out together, while surfaces out
-        of view or behind it stay. Otherwise kept splats pile up wherever the scene moved
-        or the map was misplaced, as a second ghost room. Run it after integrating the
-        frame. Depth is axial along the camera's -Z, in world units, at pixels of these
-        intrinsics; zero marks no measurement.
+        frame did not refresh, or in front of it, fade out together once CARVE_VOTES views
+        agree, while surfaces out of view or behind it stay. Otherwise kept splats pile up
+        wherever the scene moved or the map was misplaced, as a second ghost room. Run it
+        after integrating the frame. Depth is axial along the camera's -Z, in world units,
+        at pixels of these intrinsics; zero marks no measurement.
         """
         xp = self.xp
         live = np.flatnonzero((self.keys >= 0) & ~self.retiring & (self.seen < now))
@@ -138,7 +150,9 @@ class RGBDBackend:
         if xp is not np:
             stale = xp.asnumpy(stale)
         if stale.any():
-            self.retire(live[stale])
+            stale = live[stale]
+            self.votes[stale] = np.minimum(self.votes[stale] + 1, CARVE_VOTES)
+            self.retire(stale[(self.votes[stale] >= CARVE_VOTES) | self.provisional[stale]])
 
     def integrate(self, rgb, depth, camera, now):
         xp = self.xp
@@ -151,12 +165,13 @@ class RGBDBackend:
         i = self.intrinsics
         self.carve(camera, i.fx, i.fy, i.cx, i.cy, xp.where(valid, z, 0).astype(xp.float32), now)
 
-    def integrate_points(self, points, colors, now, sizes=None):
+    def integrate_points(self, points, colors, now, sizes=None, provisional=False):
         """Fuse world-space dense points through the same budget, fade and eviction policy.
 
         Sizes are optional per-point cell edges in world units. They snap to power-of-two
         levels, so near and far surfaces each get splats about one pixel footprint wide
-        instead of one fixed voxel that is either huge or needlessly fine.
+        instead of one fixed voxel that is either huge or needlessly fine. Provisional points
+        come from a guessed pose: they add splats, and never make a placed one provisional.
         """
         xp = self.xp
         valid = xp.all(xp.isfinite(points), axis=1)
@@ -199,6 +214,8 @@ class RGBDBackend:
         self.retire_revision[slots] = np.inf
         self.release_after[slots] = np.inf
         self.records[slots, 3, 3] = 0
+        self.votes[slots] = 0
+        self.provisional[slots] &= provisional
         self.refreshed += len(slots)
         free = np.flatnonzero(self.keys < 0)
         room = max(0, self.budget - self.count)
@@ -208,6 +225,8 @@ class RGBDBackend:
         selected = new[np.linspace(0, len(new) - 1, admitted, dtype=int)] if admitted else new[:0]
         slots = np.concatenate((slots, free[:admitted]))
         observed = np.concatenate((observed, selected))
+        self.provisional[free[:admitted]] = provisional
+        self.votes[free[:admitted]] = 0
         self.keys[slots] = keys[observed]
         self.seen[slots] = now
         self.records[slots, 0, :3] = points[observed]
