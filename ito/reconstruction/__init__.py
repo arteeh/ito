@@ -76,6 +76,7 @@ def _run(recon):
                         getattr(backend, "tracked", 0),
                         sum(getattr(backend, "restarts", {}).values()),
                         backend.count,
+                        getattr(backend, "provisional", 0),
                     )
                     began = clock.now()
                 if recon.backend == "slam":
@@ -101,6 +102,8 @@ def _run(recon):
                         if restarted
                         else "tracked"
                         if tracked
+                        else "provisional"
+                        if getattr(backend, "provisional", 0) > before[3]
                         else "lost"
                         if getattr(backend, "lost", False)
                         else "unmatched"
@@ -113,10 +116,12 @@ def _run(recon):
                     timeline.write(json.dumps(row) + "\n")
                 if recon.backend == "slam" and recon.output_lock.acquire(False):
                     try:
-                        np.frombuffer(recon.output_camera, np.float32)[:] = (
-                            backend.camera_pose.ravel()
-                        )
-                        recon.output_captured.value = captured
+                        # The pose and its capture time move together, on tracked frames only.
+                        if backend.tracked != recon.tracked.value:
+                            np.frombuffer(recon.output_camera, np.float32)[:] = (
+                                backend.camera_pose.ravel()
+                            )
+                            recon.output_captured.value = captured
                         recon.tracked.value = backend.tracked
                         recon.tracking.value = not backend.lost and backend.tracked > 0
                         recon.restart_counts[:] = [backend.restarts[c] for c in RESTART_CAUSES]
