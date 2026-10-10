@@ -43,6 +43,10 @@ WINDOW = 4  # Recent keyframes in the local graph.
 # window is retried at once against the keyframe nearest the robot's gaze, not dropped.
 # ITO_SLAM_RECALL=0 restores the old behaviour for live comparisons.
 RECALL = os.environ.get("ITO_SLAM_RECALL", "1") != "0"
+# A map carves splats only once it has tracked this many frames since it started or switched
+# to a recalled keyframe, and while it is not turning its world back onto the robot's
+# heading: until then its frames may sit degrees off and would see through good geometry.
+SETTLE_FRAMES = 3
 RESTART_CAUSES = ("unmatched", "heading", "failure")
 REASONS = dict(unmatched="tracking lost", heading="heading lost", failure="solve failed")
 AXES = np.array([1.0, -1.0, -1.0])  # OpenCV camera/world axes (+Y down, +Z forward) to Ito.
@@ -110,6 +114,9 @@ class SLAMBackend(RGBDBackend):
         self.restarts = dict.fromkeys(RESTART_CAUSES, 0)
         self.corrections = 0  # Heading corrections started; each eases over a few frames.
         self.recalls = 0  # Failed frames retried, and matched, against a recalled keyframe.
+        # Unmatched frames fused on the robot's own pose while the map waits to match again.
+        self.provisional = 0
+        self.settled = 0  # Frames tracked since the map started or switched keyframe.
         self.correcting = False
         self.frame_id = 0
         self.lost = False
@@ -172,6 +179,7 @@ class SLAMBackend(RGBDBackend):
         self.correcting = False
         self.unmatched_since = None
         self.anchor = (pose, prior)
+        self.settled = 0
 
     def restart(self, cause):
         self.restarts[cause] += 1
@@ -200,6 +208,7 @@ class SLAMBackend(RGBDBackend):
             # The local graph always joins neighbouring keyframes; one that faced
             # elsewhere starts its own chain rather than a bogus edge to the last.
             self.frames[:] = [best]
+            self.settled = 0
             return True
         return False
 
@@ -225,7 +234,6 @@ class SLAMBackend(RGBDBackend):
         """Camera is the robot's world-from-camera estimate; measured when it tracks the gaze."""
         import torch
         from mast3r_slam.frame import create_frame
-        from mast3r_slam.geometry import constrain_points_to_ray
         from mast3r_slam.global_opt import FactorGraph
         from mast3r_slam.mast3r_utils import mast3r_inference_mono
 
@@ -301,7 +309,21 @@ class SLAMBackend(RGBDBackend):
                         self.unmatched_since = now
                     if cause and now - self.unmatched_since < LOSS_SECONDS:
                         # Keep the map and the last pose; the robot's own pose carries
-                        # the pilot's view until a frame matches again.
+                        # the pilot's view until a frame matches again. MASt3R has already
+                        # measured this frame's depth: fuse it where the robot says the
+                        # camera looks, at the map's last scale, so a look keeps building
+                        # the room. Matched frames correct it.
+                        if previous is not None and frame.X_canon is not None:
+                            guess = self.predicted(prior, previous)
+                            self.fuse(
+                                frame,
+                                self.unplaced(guess, previous_scale),
+                                guess,
+                                previous_scale,
+                                now + clock.now() - started,
+                                provisional=True,
+                            )
+                            self.provisional += 1
                         if not relocalized:
                             self.relocalize(prior)
                         return
@@ -351,43 +373,52 @@ class SLAMBackend(RGBDBackend):
                     self.remember(frame, pose)
             self.transform = frame.T_WC
             self.camera_pose = pose.astype(np.float32)
-            local = constrain_points_to_ray(frame.img.shape[-2:], frame.X_canon[None], self.K)[0]
-            world = torch.as_tensor(self.world, device="cuda", dtype=torch.float32)
-            points = self.transform.act(local) * self.axes
-            points = points @ world[:3, :3].T + world[:3, 3]
-            # No confidence cut: MASt3R is least confident on plain walls and floors,
-            # which it still places well, and a room without its walls is no room.
-            valid = torch.isfinite(points).all(dim=1) & (local[:, 2] > 0)
-            colors = (frame.uimg.to("cuda").reshape(-1, 3) * 255).to(torch.uint8)
-            # Size splats by the pixel footprint in the world's own (arbitrary) Sim3 units.
-            # Per-frame pose and depth jitter moves every point a little: at 1.5 pixels
-            # almost every cell is new each frame, the budget starves and views arrive
-            # as scattered dots. Three pixels refresh in place, so a room looked around
-            # once fits in about 400k splats; smaller budgets get proportionally coarser.
-            pixels = 3 * max(1, (400_000 / self.budget) ** 0.5)
-            footprint = local[:, 2] * float(scale) * pixels / self.K[0, 0]
-            when = now + clock.now() - started
-            # DLPack shares CUDA memory; only the fused slot records cross to the ring.
-            self.integrate_points(
-                self.xp.from_dlpack(points[valid].contiguous()),
-                self.xp.from_dlpack(colors[valid].contiguous()),
-                when,
-                self.xp.from_dlpack(footprint[valid].contiguous()),
-            )
-            height, width = frame.img.shape[-2:]
-            depth = torch.where(valid, local[:, 2] * float(scale), 0).reshape(height, width)
-            fx, fy, cx, cy = (float(self.K[i, j]) for i, j in ((0, 0), (1, 1), (0, 2), (1, 2)))
-            self.carve(
+            self.fuse(
+                frame,
+                self.transform,
                 self.camera_pose,
-                fx,
-                fy,
-                cx,
-                cy,
-                self.xp.from_dlpack(depth.float().contiguous()),
-                when,
+                scale,
+                now + clock.now() - started,
+                carve=not self.correcting and self.settled >= SETTLE_FRAMES,
             )
+            self.settled += 1
             self.tracked += 1
             if restarted:
                 self.restart(restarted)
             else:
                 self.report(f"MASt3R-SLAM tracking | {self.tracked} frames")
+
+    def fuse(self, frame, transform, pose, scale, when, *, carve=True, provisional=False):
+        """Fuse a frame's MASt3R pointmap into the splats at a map pose (Sim3) and its Ito pose."""
+        import torch
+        from mast3r_slam.geometry import constrain_points_to_ray
+
+        local = constrain_points_to_ray(frame.img.shape[-2:], frame.X_canon[None], self.K)[0]
+        world = torch.as_tensor(self.world, device="cuda", dtype=torch.float32)
+        points = transform.act(local) * self.axes
+        points = points @ world[:3, :3].T + world[:3, 3]
+        # No confidence cut: MASt3R is least confident on plain walls and floors,
+        # which it still places well, and a room without its walls is no room.
+        valid = torch.isfinite(points).all(dim=1) & (local[:, 2] > 0)
+        colors = (frame.uimg.to("cuda").reshape(-1, 3) * 255).to(torch.uint8)
+        # Size splats by the pixel footprint in the world's own (arbitrary) Sim3 units.
+        # Per-frame pose and depth jitter moves every point a little: at 1.5 pixels
+        # almost every cell is new each frame, the budget starves and views arrive
+        # as scattered dots. Three pixels refresh in place, so a room looked around
+        # once fits in about 400k splats; smaller budgets get proportionally coarser.
+        pixels = 3 * max(1, (400_000 / self.budget) ** 0.5)
+        footprint = local[:, 2] * float(scale) * pixels / self.K[0, 0]
+        # DLPack shares CUDA memory; only the fused slot records cross to the ring.
+        self.integrate_points(
+            self.xp.from_dlpack(points[valid].contiguous()),
+            self.xp.from_dlpack(colors[valid].contiguous()),
+            when,
+            self.xp.from_dlpack(footprint[valid].contiguous()),
+            provisional=provisional,
+        )
+        if not carve or provisional:
+            return
+        height, width = frame.img.shape[-2:]
+        depth = torch.where(valid, local[:, 2] * float(scale), 0).reshape(height, width)
+        fx, fy, cx, cy = (float(self.K[i, j]) for i, j in ((0, 0), (1, 1), (0, 2), (1, 2)))
+        self.carve(pose, fx, fy, cx, cy, self.xp.from_dlpack(depth.float().contiguous()), when)
