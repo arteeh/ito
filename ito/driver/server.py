@@ -12,6 +12,7 @@ from aiortc.sdp import SessionDescription
 from ito import clock
 from ito.driver.adapter import Adapter
 from ito.driver.pairing import Pairing, PairingRefused, default_path
+from ito.driver.timing import PoseTiming
 from ito.link import Peer
 from ito.link.audio import Audio, opus
 from ito.link.pairing import proof, token
@@ -81,6 +82,7 @@ class Driver:
         self._last_apply = 0.0
         self._input_latency_ms: float | None = None
         self._applied = Rate()  # pilot poses applied to the robot
+        self._timing = PoseTiming.from_environment()
         self._arrived = asyncio.Event()  # A new pilot state to apply.
         self._connected_at = 0.0
         self._negotiating = False
@@ -130,7 +132,12 @@ class Driver:
                 or not -0.1 <= now - capture <= self.input_timeout
             ):
                 self.peer.rejected_messages += 1
+                if self._timing:
+                    self._timing.rejected_pose()
                 return
+            if self._timing:
+                pending = bool(self._latest) and self._latest.sequence != self._applied_sequence
+                self._timing.received_pose(message.sequence, capture, now, pending)
             self._capture = capture
             self._received = now
             if not message.deadman:
@@ -238,6 +245,8 @@ class Driver:
                         self.adapter.apply(self._latest)
                         self._input_latency_ms = max(0, (clock.now() - self._capture) * 1000)
                         self._applied.tick()
+                        if self._timing:
+                            self._timing.applied_pose(clock.now())
                         self._applied_sequence = self._latest.sequence
                         self._last_apply = now
                         self.state, self.reason = "active", "pilot input"
