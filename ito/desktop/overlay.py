@@ -107,6 +107,7 @@ class Overlay:
         target: moderngl.Framebuffer | None = None,
         xr_mode: bool = False,
         driving: bool = False,
+        shown_hz: float | None = None,
     ) -> int | None:
         if target is not None:
             target.use()
@@ -185,10 +186,12 @@ class Overlay:
             imgui.text_wrapped(status.reconstruction)
             imgui.pop_text_wrap_pos()
         if status.link == "CONNECTED":
-            pose_hz, camera_hz, scene_hz = ("--" if r is None else f"{r:.1f}" for r in status.rates)
+            pose_hz, camera_hz, scene_hz, shown = (
+                "--" if r is None else f"{r:.1f}" for r in (*status.rates, shown_hz)
+            )
             imgui.text(
-                f"Pose->robot {pose_hz} Hz | camera->recon {camera_hz}/s"
-                f" | recon->scene {scene_hz}/s"
+                f"Pose->robot {pose_hz} Hz | camera->view {shown}/s"
+                f" | camera->recon {camera_hz}/s | recon->scene {scene_hz}/s"
             )
         if status.input_latency_ms is not None:
             imgui.text(f"Pilot input -> robot: {status.input_latency_ms:.1f} ms")
