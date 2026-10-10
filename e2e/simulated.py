@@ -85,6 +85,8 @@ def main():
         waited = now - changed
         assert now - began < 120, (stage, app.state.status)
         status = app.state.status
+        if status.rates[2] is not None:
+            report["scene_hz_max"] = max(report.get("scene_hz_max", 0), status.rates[2])
         layout = window.overlay.layout
         if stage == "connecting" and status.link == "CONNECTED" and window.renderer.count > 1000:
             # On the pilot's own PC the simulated robot has no microphone or speaker:
@@ -166,6 +168,10 @@ def main():
             assert abs(app.telemetry["simulation_time"] - current["simulation_time"]) < 0.5
             assert abs(app.telemetry["base_x"] - report["base_before"]) > 0.1, app.telemetry
             report["viewer_tracking"] = current
+            # #20: all three live rates show while driving with RGB-D reconstruction.
+            report["rates_while_driving"] = status.rates
+            assert status.rates[0] > 5 and status.rates[1] > 0, status.rates
+            assert report.get("scene_hz_max", 0) > 0, report
             from PIL import ImageGrab
 
             ImageGrab.grab().save(OUT / "viewer.png")
