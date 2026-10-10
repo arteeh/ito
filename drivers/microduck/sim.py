@@ -78,6 +78,7 @@ def simulation(
         "OPENBLAS_NUM_THREADS": "1",
         "OMP_NUM_THREADS": "1",
         "ITO_MICRODUCK_CAMERA_HEIGHT": str(camera_height),
+        "ITO_MICRODUCK_CAMERA_FPS": "30",
     }
     if Path("/dev/dxg").exists() and "GALLIUM_DRIVER" not in os.environ:
         # WSL's Mesa defaults to llvmpipe; d3d12 renders the viewer and head camera on the GPU.
