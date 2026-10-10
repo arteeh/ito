@@ -226,10 +226,8 @@ class MicroduckAdapter(Adapter):
             # The walking policy needs enough command range to enter its stepping gait.
             # Continuous intents go as notifications: robotd applies the newest on its next
             # tick, so waiting for an answer to each would only hold the next pose back.
-            self.remote.notify(
-                "robot.move",
-                {"vx": move.forward, "vy": move.left, "vyaw": yaw_command(move.turn)},
-            )
+            vyaw = yaw_command(move.turn)
+            self.remote.notify("robot.move", {"vx": move.forward, "vy": move.left, "vyaw": vyaw})
             beak = max(0.0, axes.get("right_trigger", 0.0), float(buttons.get("g", False)))
             self.remote.notify("robot.mouth", {"open": beak})
             crouch = buttons.get("c", False)
@@ -247,7 +245,7 @@ class MicroduckAdapter(Adapter):
             )
             x, y, z = gaze.target(
                 move.pan,
-                self._trim(move.tilt, clock.now()),
+                self._trim(move.tilt, clock.now(), gaze.gait(move.forward, move.left, vyaw)),
                 up,
                 self._camera_in_trunk or (0.0, 0.0, 0.0),
                 GAZE_DISTANCE,
