@@ -602,7 +602,7 @@ class Pilot:
                         status=replace(shown, armed=self.armed, focus_hold=self.focus_hold),
                     )
                 deadline = max(deadline + HEARTBEAT, now)
-                await asyncio.sleep(max(0, now + SEND_INTERVAL - clock.now()))
+                await clock.sleep_until(now + SEND_INTERVAL)
                 if not arrived.is_set():
                     with contextlib.suppress(TimeoutError):
                         await asyncio.wait_for(arrived.wait(), max(0, deadline - clock.now()))

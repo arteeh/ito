@@ -89,7 +89,7 @@ async def run(args):
             )
             sequence += 1
             deadline = max(deadline + 1 / args.rate, now)
-            await asyncio.sleep(max(0, deadline - clock.now()))
+            await clock.sleep_until(deadline)
 
     async def until(predicate):
         try:
