@@ -13,6 +13,7 @@ is counted by cause.
 """
 
 import math
+import os
 
 import numpy as np
 
@@ -33,8 +34,15 @@ HEADING_LOST = math.radians(60)
 # A gait sway, a step or a blank patch costs MASt3R a few frames; the pilot's view drops
 # to the flat feed after TRACKING_LOST (2 s), so a lasting loss restarts well before that.
 LOSS_SECONDS = 1.0
-# Keyframes kept per heading sector, beyond the live window, for turning back.
-SPREAD = math.radians(30)
+# A tracked frame this far in heading from the newest keyframe becomes one, whatever the
+# tracker's overlap test says (#24). Frames match 92-99% within 10 degrees of the last
+# tracked view and almost never past 20-30: during a head turn the map must grow keyframes
+# along the way, or the turn outruns it and every later frame of the look goes unmatched.
+# ITO_SLAM_KEYFRAME_YAW (degrees, 0 off) overrides, for live comparisons.
+KEYFRAME_YAW = math.radians(float(os.environ.get("ITO_SLAM_KEYFRAME_YAW", 8)))
+# Keyframes kept per heading sector, beyond the live window, for turning back; fine enough
+# that the one nearest the robot's gaze is within the tracker's reach.
+SPREAD = math.radians(float(os.environ.get("ITO_SLAM_SPREAD", 10)))
 WINDOW = 4  # Recent keyframes in the local graph.
 RESTART_CAUSES = ("unmatched", "heading", "failure")
 REASONS = dict(unmatched="tracking lost", heading="heading lost", failure="solve failed")
@@ -102,6 +110,7 @@ class SLAMBackend(RGBDBackend):
         self.tracked = 0
         self.restarts = dict.fromkeys(RESTART_CAUSES, 0)
         self.corrections = 0  # Heading corrections started; each eases over a few frames.
+        self.yaw_keyframes = 0  # Keyframes added because the camera turned (#24).
         self.correcting = False
         self.frame_id = 0
         self.lost = False
@@ -169,6 +178,17 @@ class SLAMBackend(RGBDBackend):
         self.report(
             f"SLAM map restarted: {REASONS[cause]} | "
             + ", ".join(f"{name} {count}" for name, count in self.restarts.items())
+        )
+
+    def turned(self, pose):
+        """The camera has turned far enough from the newest keyframe to need another."""
+        if not KEYFRAME_YAW or pose is None or not self.frames:
+            return False
+        last, _ = self.placed(self.frames[-1].T_WC)
+        if last is None:
+            return False
+        return abs(math.remainder(heading(pose[:3, :3]) - heading(last[:3, :3]), math.tau)) > (
+            KEYFRAME_YAW
         )
 
     def remember(self, frame, pose):
@@ -302,6 +322,9 @@ class SLAMBackend(RGBDBackend):
                     return
                 self.failures = 0
                 self.lost = False
+                if not new_keyframe and not restarted and self.turned(pose):
+                    new_keyframe = True
+                    self.yaw_keyframes += 1
                 if new_keyframe:
                     self.frames.append(frame)
                     # Bounded graph includes adjacent edges and a local loop to the
