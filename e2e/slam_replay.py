@@ -142,6 +142,7 @@ def main():
     processed = []  # (frame, time, seconds, tracked, keyframes, message, heading, gaze)
     pending = []  # (due time, records, live) snapshots waiting for their future frame
     predictions = []
+    splats, drops = [0], []  # Splats shown after each frame; frames that cut them by a tenth
     previews = 0
     inferred = dict(unmatched=0, heading=0, failure=0)  # For backends that do not count.
     origin = None
@@ -223,6 +224,11 @@ def main():
             if not pending or now - pending[-1][0] + AHEAD > 0.5:
                 live = backend.keys >= 0
                 pending.append((now + AHEAD, backend.records.copy(), live.copy()))
+        # Splats the scene shows: a drop of a tenth in one frame is a view carving the room.
+        shown = int(np.count_nonzero((backend.keys >= 0) & ~backend.retiring))
+        if shown < 0.9 * splats[-1]:
+            drops.append((round(now - start, 2), splats[-1], shown))
+        splats.append(shown)
         backend.expire(now - start, np.inf)
         # The live worker also publishes and sleeps between frames.
         now += seconds + 0.01
@@ -256,6 +262,12 @@ def main():
         restarts_per_100s={k: round(v * per_100s, 1) for k, v in restarts.items()},
         restarts_inferred=not hasattr(backend, "restarts"),
         heading_corrections=getattr(backend, "corrections", None),
+        recalls=getattr(backend, "recalls", None),
+        provisional_frames=getattr(backend, "provisional_frames", None),
+        splats_peak=max(splats),
+        splats_final=splats[-1],
+        splat_drops_over_10pct=len(drops),
+        splat_drops=drops[:20],
         flat_fraction=round(flat / float(stamps[-1]), 3),
         gaze_range_deg=round(math.degrees(np.ptp([p[7] for p in processed])), 1),
         heading_error_deg_median=round(float(np.median(stray)), 1),
@@ -277,6 +289,8 @@ def main():
         + ", ".join(f"{k} {v}" for k, v in report["restarts_per_100s"].items())
         + ")"
         + (" inferred" if report["restarts_inferred"] else "")
+        + f"; recalls {report['recalls']}, provisional frames {report['provisional_frames']}, "
+        f"splat drops over 10% {report['splat_drops_over_10pct']}"
     )
 
 
