@@ -165,6 +165,9 @@ async def run(sim, out):
             # the leg's second half spans several gait periods, so the sway averages out.
             settled = [s["camera_pitch"] for s in segment[len(segment) // 2 :]]
             moved["camera_vs_tilt_deg"] = math.degrees(sum(settled) / len(settled) - tilt)
+            # The worst the camera strays from the pilot's tilt while a stop or start settles.
+            early = [s["camera_pitch"] - tilt for s in segment if s["t"] < 1.5]
+            moved["camera_vs_tilt_early_worst_deg"] = math.degrees(max(early, key=abs))
             moved["head_yaw_deg"] = math.degrees(last["head_yaw"])
             moved["camera_roll_deg"] = math.degrees(last["camera_roll"])
             moved["fallen"] = any(s["fallen"] for s in segment)
@@ -187,7 +190,12 @@ async def run(sim, out):
         await leg("settle", 2)
         walked = await leg("backward", 5, forward=-1)
         checks["backward walks"] = walked["forward_m"] < -0.4
-        await leg("settle", 2)
+        stopped = await leg("settle", 2)
+        # The policy drops the neck as the robot stops; the head must follow it without the
+        # camera dipping (it sank 13 degrees for a second when one trim served every gait).
+        checks["stopping a backward walk keeps the camera level"] = (
+            abs(stopped["camera_vs_tilt_early_worst_deg"]) < 7
+        )
         looked = await leg("look_60_standing", 3, gaze=math.radians(60))
         checks["a reachable look leaves the body"] = abs(looked["turn_deg"]) < 5
         checks["the camera looks where the pilot looks"] = abs(looked["camera_vs_gaze_deg"]) < 8
