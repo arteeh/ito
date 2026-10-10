@@ -108,6 +108,7 @@ def _run(recon):
                         else "skipped",
                         splats=int(backend.count),
                         splats_delta=int(backend.count) - before[2],
+                        yaw_keyframes=getattr(backend, "yaw_keyframes", None),
                     )
                     timeline.write(json.dumps(row) + "\n")
                 if recon.backend == "slam" and recon.output_lock.acquire(False):
