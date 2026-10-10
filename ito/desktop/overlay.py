@@ -20,6 +20,9 @@ class PilotStatus:
     robot_state: str = ""  # The driver's last reported state; "active" means it obeys input.
     detail: str = ""
     input_latency_ms: float | None = None
+    # Live rates: pilot poses applied by the robot, camera frames handed to reconstruction,
+    # reconstruction updates reaching the scene. None: not measured on this link.
+    rates: tuple[float | None, float | None, float | None] = (None, None, None)
     reconstruction: str = ""
     audio: str = ""
     robot_audio: str = ""
@@ -181,6 +184,12 @@ class Overlay:
             imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + 550)
             imgui.text_wrapped(status.reconstruction)
             imgui.pop_text_wrap_pos()
+        if status.link == "CONNECTED":
+            pose_hz, camera_hz, scene_hz = ("--" if r is None else f"{r:.1f}" for r in status.rates)
+            imgui.text(
+                f"Pose->robot {pose_hz} Hz | camera->recon {camera_hz}/s"
+                f" | recon->scene {scene_hz}/s"
+            )
         if status.input_latency_ms is not None:
             imgui.text(f"Pilot input -> robot: {status.input_latency_ms:.1f} ms")
         if capture_latency_ms is not None:

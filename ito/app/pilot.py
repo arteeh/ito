@@ -15,6 +15,7 @@ from ito.desktop import DesktopState, PilotStatus
 from ito.link import PairingError, connect
 from ito.link.audio import Audio
 from ito.protocol import Command, FrameMetadata, Paired, PilotState, Pose, Status
+from ito.rates import CounterRate, Rate
 from ito.reconstruction import Reconstruction
 from ito.render import pose
 from ito.render.pose import quaternion
@@ -100,6 +101,8 @@ class Pilot:
         self.settings_revision = 0
         self.last_frame = 0.0
         self.extrinsics = pose()
+        self.camera_rate = Rate()  # joined frames handed to reconstruction
+        self.scene_rate = CounterRate()  # frames reconstruction integrated into the scene
 
     @property
     def max_splats(self):
@@ -156,6 +159,17 @@ class Pilot:
         old = self.state.status
         diagnostics.event("link_state", interval=0 if old.link != link else 1, state=link)
         name = peer.description.name if peer else old.robot
+        rates = (None, None, None)
+        worker = self.worker
+        if peer:
+            rates = (
+                self.telemetry.get("pilot_input_hz"),
+                self.camera_rate.hz(),
+                self.scene_rate.hz(worker.integrated.value) if worker is not None else None,
+            )
+            diagnostics.event(
+                "rates", interval=1, pose_hz=rates[0], camera_hz=rates[1], scene_hz=rates[2]
+            )
         self.state = replace(
             self.state,
             status=PilotStatus(
@@ -166,6 +180,7 @@ class Pilot:
                 robot_state=status.state if status else old.robot_state if link == old.link else "",
                 detail=detail or (f"{status.state}: {status.reason}" if status else ""),
                 input_latency_ms=self.telemetry.get("pilot_input_latency_ms") if peer else None,
+                rates=rates,
                 reconstruction=self.reconstruction_status,
                 audio=self._audio_status(peer),
                 robot_audio=self.telemetry.get("audio", "") if peer else "",
@@ -241,6 +256,7 @@ class Pilot:
             # A driver that measures its camera pose or gaze also holds SLAM to its heading.
             measured = camera is not None or pair[1].head_angles is not None
             camera = self._prior(camera, pair[1])
+        self.camera_rate.tick()
         try:
             accepted = self.worker.submit(rgb, depth, camera, captured, measured=measured)
         except ValueError as exc:

@@ -26,6 +26,7 @@ from ito.protocol import (
     WireMessage,
     encode,
 )
+from ito.rates import Rate
 
 log = logging.getLogger(__name__)
 
@@ -78,6 +79,7 @@ class Driver:
         self._last_status = 0.0
         self._last_apply = 0.0
         self._input_latency_ms: float | None = None
+        self._applied = Rate()  # pilot poses applied to the robot
         self._connected_at = 0.0
         self._negotiating = False
         self._closing = False
@@ -180,7 +182,8 @@ class Driver:
                         {"pilot_input_latency_ms": self._input_latency_ms}
                         if self._input_latency_ms is not None
                         else {}
-                    ),
+                    )
+                    | {"pilot_input_hz": self._applied.hz()},
                 )
             )
         except Exception:
@@ -230,6 +233,7 @@ class Driver:
                         self._is_neutral = False
                         self.adapter.apply(self._latest)
                         self._input_latency_ms = max(0, (clock.now() - self._capture) * 1000)
+                        self._applied.tick()
                         self._applied_sequence = self._latest.sequence
                         self._last_apply = now
                         self.state, self.reason = "active", "pilot input"

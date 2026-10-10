@@ -70,6 +70,7 @@ def _run(recon):
                     backend.integrate(*frame, now, measured=measured)
                 else:
                     backend.integrate(*frame, now)
+                recon.integrated.value += 1
                 if recon.backend == "slam" and recon.output_lock.acquire(False):
                     try:
                         np.frombuffer(recon.output_camera, np.float32)[:] = (
@@ -147,6 +148,7 @@ class Reconstruction:
         self.output_camera = context.RawArray("f", 16)
         self.output_captured = context.RawValue("d", 0)
         self.tracked = context.RawValue("Q", 0)
+        self.integrated = context.RawValue("Q", 0)  # frames integrated into the scene
         self.tracking = context.RawValue("b", False)
         self.restart_counts = context.RawArray("Q", len(RESTART_CAUSES))
         self.report("Starting MASt3R-SLAM" if backend == "slam" else "Posed RGB-D")

@@ -132,6 +132,7 @@ def main():
     suspended = None
     first_position = None
     tracked_before_stall = None
+    rates = None
     video_before_failure = 0
     killed = None
     error = None
@@ -149,7 +150,7 @@ def main():
 
     def drive(app, window, value):
         nonlocal stage, changed, previous, suspended, first_position, tracked_before_stall
-        nonlocal video_before_failure, error, killed
+        nonlocal video_before_failure, error, killed, rates
         now = clock.now()
         limit = args.startup_timeout if args.cuda and stage == 0 else 60
         assert now - changed < limit, (stage, app.reconstruction_status, app.failure)
@@ -194,6 +195,9 @@ def main():
         elif stage == 1 and now - changed > 3:
             distance = np.linalg.norm(np.array([t["base_x"], t["base_y"]]) - first_position)
             assert distance > 0.15, ("Robot did not move while reconstructing/falling back", t)
+            rates = app.state.status.rates
+            assert rates[0] is not None and rates[0] > 5, ("pose->robot rate", rates)
+            assert app.worker is None or (rates[1] or 0) > 1, ("camera->recon rate", rates)
             key(pygame.K_w, False)
             key(pygame.K_e)
             key(pygame.K_F12)
@@ -392,6 +396,7 @@ def main():
             float(np.median(splat_latency)) if splat_latency else None
         ),
         fallback=error,
+        rates_while_driving=rates,
         messages=sorted(messages),
         captures=list(map(str, captures)),
     )
