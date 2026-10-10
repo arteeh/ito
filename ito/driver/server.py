@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import logging
 import math
 from collections.abc import Sequence
@@ -80,6 +81,7 @@ class Driver:
         self._last_apply = 0.0
         self._input_latency_ms: float | None = None
         self._applied = Rate()  # pilot poses applied to the robot
+        self._arrived = asyncio.Event()  # A new pilot state to apply.
         self._connected_at = 0.0
         self._negotiating = False
         self._closing = False
@@ -135,6 +137,7 @@ class Driver:
                 self._neutral("deadman released")
             elif not (self._estop or self._stopped or self._fault):
                 self._latest = message
+                self._arrived.set()
         elif isinstance(message, Paired):
             credential = peer.credential
             if self._pairing_code and credential and message.pilot == credential.pilot:
@@ -217,6 +220,7 @@ class Driver:
     async def _run(self) -> None:
         interval = min(0.01, self.input_timeout / 4, 1 / self.command_rate)
         while True:
+            self._arrived.clear()
             now = clock.now()
             if self._fault and not self._is_neutral:
                 if now - self._last_neutral_attempt >= 1 / self.command_rate:
@@ -252,7 +256,14 @@ class Driver:
                     await expired.close()
                     if self.peer is expired:
                         self.peer = None
-            await asyncio.sleep(interval)
+            # Apply each pilot state as it arrives, as soon as the command rate allows, rather
+            # than on the next watchdog tick: polling held a 50 Hz robot to about 39.
+            if self._latest and self._latest.sequence != self._applied_sequence:
+                due = self._last_apply + 1 / self.command_rate - clock.now()
+                await asyncio.sleep(min(interval, max(0, due)))
+            elif not self._arrived.is_set():
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(self._arrived.wait(), interval)
 
     def _watchdog_ended(self, task: asyncio.Task) -> None:
         """Without the watchdog nothing enforces the input timeout: stop the robot for good."""

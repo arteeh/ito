@@ -10,6 +10,7 @@ from ito.driver import Adapter
 from ito.driver.walking import Walker
 from ito.protocol import Camera as CameraDescription
 from ito.protocol import DegreeOfFreedom, Pose, RobotDescription
+from ito.rates import Rate
 
 from . import frames, gaze
 from .camera import Camera, Track
@@ -91,7 +92,6 @@ class MicroduckAdapter(Adapter):
         self._tasks = []
         self._error = None
         self._latest = None
-        self._generation = 0
         self._wake = asyncio.Event()
         self._telemetry = {}
         self._state_at = 0.0
@@ -105,6 +105,8 @@ class MicroduckAdapter(Adapter):
         self._ups = deque()
         self._camera_in_trunk = None
         self._trim = gaze.TiltTrim()
+        self._looks = Rate()  # robot.look calls answered, and their round trips.
+        self._look_ms = deque(maxlen=50)
         self._measured_at = None
         self._neutral_done = asyncio.Event()
 
@@ -193,13 +195,11 @@ class MicroduckAdapter(Adapter):
             self.neutral()
             return
         self._latest = (clock.now(), state)
-        self._generation += 1
         self._neutral_done.clear()
         self._wake.set()
 
     def neutral(self):
         self._latest = None
-        self._generation += 1
         self._wake.set()
 
     async def _commands(self):
@@ -212,7 +212,7 @@ class MicroduckAdapter(Adapter):
                     continue
                 self._latest = None
             self._wake.clear()
-            generation, latest = self._generation, self._latest
+            latest = self._latest
             if not latest or clock.now() - latest[0] >= self.input_timeout:
                 await self.remote.call("robot.stop")
                 await self.remote.call("robot.pose", {"active": False})
@@ -224,63 +224,47 @@ class MicroduckAdapter(Adapter):
             axes, buttons = state.axes, state.buttons
             move = self.walker(state, steady_heading(self._headings))
             # The walking policy needs enough command range to enter its stepping gait.
-            commands = [
-                (
-                    "robot.move",
-                    {
-                        "vx": move.forward,
-                        "vy": move.left,
-                        "vyaw": yaw_command(move.turn),
-                    },
-                )
-            ]
-            if state.head:
-                # Levelled by the trunk's lean averaged over a gait period: chasing the gait's
-                # pitch sway with a head that lags it would add to the camera's swing. A robotd
-                # without IMU and head frames in robot.state gets the trunk's own axes.
-                up = (
-                    tuple(sum(u[i] for _, u in self._ups) for i in range(3))
-                    if self._ups
-                    else (0.0, 0.0, 1.0)
-                )
-                x, y, z = gaze.target(
-                    move.pan,
-                    self._trim(move.tilt, clock.now()),
-                    up,
-                    self._camera_in_trunk or (0.0, 0.0, 0.0),
-                    GAZE_DISTANCE,
-                )
-                commands.append(("robot.look", {"x": x, "y": y, "z": z, "neck_pitch": 0.0}))
-            else:
-                self._trim.release()
-            commands.extend(
-                [
-                    (
-                        "robot.mouth",
-                        {
-                            "open": max(
-                                0.0, axes.get("right_trigger", 0.0), float(buttons.get("g", False))
-                            )
-                        },
-                    ),
-                    (
-                        "robot.pose",
-                        {
-                            "z": -0.025 if buttons.get("c", False) else 0.0,
-                            "active": buttons.get("c", False),
-                        },
-                    ),
-                ]
+            # Continuous intents go as notifications: robotd applies the newest on its next
+            # tick, so waiting for an answer to each would only hold the next pose back.
+            self.remote.notify(
+                "robot.move",
+                {"vx": move.forward, "vy": move.left, "vyaw": yaw_command(move.turn)},
             )
-            for method, params in commands:
-                # Newest wins, including a stop arriving during an outstanding RPC.
-                if generation != self._generation:
-                    break
-                if clock.now() - latest[0] >= self.input_timeout:
-                    self.neutral()
-                    break
-                await self.remote.call(method, params, deadline=self.input_timeout)
-            await asyncio.sleep(0.02)
+            beak = max(0.0, axes.get("right_trigger", 0.0), float(buttons.get("g", False)))
+            self.remote.notify("robot.mouth", {"open": beak})
+            crouch = buttons.get("c", False)
+            self.remote.notify("robot.pose", {"z": -0.025 if crouch else 0.0, "active": crouch})
+            if not state.head:
+                self._trim.release()
+                continue
+            # Levelled by the trunk's lean averaged over a gait period: chasing the gait's
+            # pitch sway with a head that lags it would add to the camera's swing. A robotd
+            # without IMU and head frames in robot.state gets the trunk's own axes.
+            up = (
+                tuple(sum(u[i] for _, u in self._ups) for i in range(3))
+                if self._ups
+                else (0.0, 0.0, 1.0)
+            )
+            x, y, z = gaze.target(
+                move.pan,
+                self._trim(move.tilt, clock.now()),
+                up,
+                self._camera_in_trunk or (0.0, 0.0, 0.0),
+                GAZE_DISTANCE,
+            )
+            # robot.look answers with the IK's joints; one in flight at a time, always the
+            # newest gaze. A stop arriving meanwhile is sent as soon as it answers.
+            sent = clock.now()
+            await self.remote.call(
+                "robot.look",
+                {"x": x, "y": y, "z": z, "neck_pitch": 0.0},
+                deadline=self.input_timeout,
+            )
+            self._looks.tick()
+            self._look_ms.append((clock.now() - sent) * 1000)
+            self._telemetry.update(
+                look_hz=self._looks.hz(), look_ms=sorted(self._look_ms)[len(self._look_ms) // 2]
+            )
 
     async def _health(self):
         while True:
