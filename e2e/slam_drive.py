@@ -28,6 +28,7 @@ from ito import clock
 from ito.app import frames as _frames
 from ito.app.__main__ import main as pilot_main
 from ito.app.pilot import TRACKING_LOST
+from ito.driver.walking import RETURN, SOFT_LIMIT
 from ito.link import media as _media
 from ito.reconstruction import Reconstruction
 
@@ -111,8 +112,13 @@ TURN_RATE = math.radians(45)  # A brisk but ordinary head turn.
 # reverses while turned, where "behind the start" is never reached, so it keeps its timer.
 HOME_FACING = math.radians(30)
 HOME_MARGIN = 0.02  # m short of the start, along the start heading, that counts as back
-FACE_TOLERANCE = math.radians(4)  # body yaw off the start heading that a lap re-faces
-FACE_OVERSHOOT = 1.40 + math.radians(5)  # gaze past the pan limit (GAZE_PAN) turns the body
+# A lap re-faces the start heading by looking RETURN of the pan limit (GAZE_PAN, 1.40) past
+# it, toward the body: a settled gaze past the soft limit turns the body until the head is
+# back at RETURN, which leaves the body facing the start. Only a body further off than the
+# gap between the soft limit and RETURN can be turned that way, hence the tolerance.
+FACE_LOOK = RETURN * 1.40
+FACE_TOLERANCE = (SOFT_LIMIT - RETURN) * 1.40 + math.radians(2)
+FACE_DONE = math.radians(4)
 STALL_WINDOW, STALL_DISTANCE = 1.0, 0.02  # walking yet moved under 2 cm in 1 s: a wall
 
 
@@ -192,6 +198,7 @@ def main():
     home = {}  # base x, y, yaw when the drive began
     walked = []  # (time, x, y) during the current walking leg
     facing = None  # when this lap's re-facing turn began
+    facing_side = 0.0  # the side the body turns while re-facing: +1 left, -1 right
     closed = Counter()  # stalls, re-facings, back legs ended at the start
     pilot = None
     recorded = queue.Queue(maxsize=512)
@@ -276,7 +283,7 @@ def main():
 
     def drive(app, window, value):
         nonlocal pilot, leg, leg_started, arrived, ready_at, held, previous, last_status, error
-        nonlocal rearmed, facing
+        nonlocal rearmed, facing, facing_side
         pilot = app
         now = clock.now()
         dt, previous = now - previous, now
@@ -341,7 +348,9 @@ def main():
             target_yaw, target_pitch, _, hold = route[leg]
             if facing is not None:
                 skew = math.remainder(home["yaw"] - base[2], 2 * math.pi) if base else 0.0
-                if abs(skew) < FACE_TOLERANCE / 2 or now - facing > 8:
+                # Done once facing the start, or past it: a turning body may overshoot a little,
+                # and a look the other way would only start another turn.
+                if abs(skew) < FACE_DONE or skew * facing_side < 0 or now - facing > 12:
                     legs.write(
                         json.dumps(
                             dict(leg=leg, at=round(now, 4), faced=round(math.degrees(skew), 1))
@@ -350,7 +359,7 @@ def main():
                     )
                     facing = None
                 else:
-                    target_yaw = math.degrees(home["yaw"] + math.copysign(FACE_OVERSHOOT, skew))
+                    target_yaw = math.degrees(home["yaw"] + facing_side * FACE_LOOK)
             yaw_error = math.remainder(math.radians(target_yaw) - window.input.yaw, 2 * math.pi)
             pitch_error = math.radians(target_pitch) - window.input.pitch
             step = TURN_RATE * min(dt, 0.05)
@@ -402,8 +411,9 @@ def main():
             legs.write(json.dumps(dict(leg=leg, at=round(now, 4), step=route[leg])) + "\n")
             if leg % lap == 0 and leg and not args.open_loop and home and base:
                 # Each lap starts facing the way the first did.
-                if abs(math.remainder(home["yaw"] - base[2], 2 * math.pi)) > FACE_TOLERANCE:
-                    facing = now
+                skew = math.remainder(home["yaw"] - base[2], 2 * math.pi)
+                if abs(skew) > FACE_TOLERANCE:
+                    facing, facing_side = now, math.copysign(1.0, skew)
                     closed["faced"] += 1
             for name in held:
                 key(KEYS[name], True)
