@@ -12,11 +12,12 @@ import pygame
 from OpenGL import GL
 
 from ito import clock, diagnostics
+from ito.rates import Rate
 from ito.reconstruction import SplatUpdate, default_budget
 from ito.render import GaussianRenderer, SceneSource, current_context, perspective, pose
 from ito.render.anchor import AnchorGlide
 from ito.render.scene import FloatArray
-from ito.render.video import VideoPanel
+from ito.render.video import LiveFrame, VideoPanel
 
 from .dispatch import DisplayDispatch
 from .input import DesktopInput, PilotInput
@@ -33,6 +34,10 @@ class DesktopState:
     video: object | None = field(default=None, repr=False, compare=False)
     video_time: float = 0
     video_fov: float | None = None  # The camera's horizontal field of view in radians.
+    # World-from-camera orientation at the video frame's capture, in the scene's world, and
+    # the camera's intrinsics: where the live frame hangs in the 3D view.
+    video_orientation: FloatArray | None = field(default=None, repr=False, compare=False)
+    video_intrinsics: object | None = None
     flat_video: bool = False
 
 
@@ -48,6 +53,8 @@ class DesktopWindow:
         max_splats: int | None = None,
     ):
         self.context = self.renderer = self.overlay = self.input = self.video_panel = None
+        self.live_frame = None
+        self.shown = Rate()  # Camera frames the pilot has seen, flat or in the scene.
         if (
             min(size) < 64
             or fps < 1
@@ -82,6 +89,7 @@ class DesktopWindow:
             self.size = size
             self.renderer = GaussianRenderer(self.context)
             self.video_panel = VideoPanel(self.context)
+            self.live_frame = LiveFrame(self.context)
             memory_mb = 0
             if "GL_NVX_gpu_memory_info" in self.context.extensions:
                 memory_mb = int(GL.glGetIntegerv(0x9048)) // 1024
@@ -199,6 +207,7 @@ class DesktopWindow:
                 live=live,
                 capture_latency_ms=capture_to_visible_ms,
                 driving=any(pilot.movement),
+                shown_hz=self.shown.hz(),
             )
             dispatch.ui(io, self.overlay.commands)
             self.overlay.commands.clear()
@@ -254,6 +263,7 @@ class DesktopWindow:
                             "status": current.status.detail,
                             "reconstruction": current.status.reconstruction,
                             "flat_video": current.flat_video,
+                            "camera_shown_hz": self.shown.hz(),
                             "video_capture_time": current.video_time,
                             "e_stop": current.status.e_stop,
                             "rtt_ms": current.status.latency_ms,
@@ -274,6 +284,9 @@ class DesktopWindow:
     def draw_view(self, current, head, projection, target, viewport, sort=True, center=None):
         """Draw one eye; center is the pose between both eyes, for a stereo panel."""
         if current.flat_video:
+            fresh = current.video is not None and clock.now() - current.video_time <= 2
+            if fresh and self.video_panel.stamp != current.video_time:
+                self.shown.tick()
             self.video_panel.draw(
                 current.video,
                 current.video_time,
@@ -288,9 +301,25 @@ class DesktopWindow:
             self.renderer.draw(
                 current.robot_camera, head, projection, target, viewport=viewport, sort=sort
             )
+            if self.live_frame.draw(
+                current.video,
+                current.video_time,
+                current.video_orientation,
+                current.video_intrinsics,
+                current.robot_camera @ head,
+                projection,
+                current.robot_camera @ (head if center is None else center),
+            ):
+                self.shown.tick()
 
     def close(self) -> None:
-        for resource in (self.input, self.overlay, self.video_panel, self.renderer):
+        for resource in (
+            self.input,
+            self.overlay,
+            self.video_panel,
+            self.live_frame,
+            self.renderer,
+        ):
             if resource is not None:
                 resource.close()
         if self.context is not None:

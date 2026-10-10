@@ -10,6 +10,8 @@ import traceback
 from collections import deque
 from dataclasses import replace
 
+import numpy as np
+
 from ito import clock, diagnostics
 from ito.desktop import DesktopState, PilotStatus
 from ito.link import PairingError, connect
@@ -98,6 +100,11 @@ class Pilot:
         self.connections = 0
         self.camera_pose = pose()
         self.last_tracking = 0.0
+        # Where the robot thought recent submitted frames looked (capture time, rotation), and
+        # the turn from that onto SLAM's map, from the newest tracked one: the live frame
+        # hangs where the map's splats of the same view are, not a heading error away.
+        self.priors = deque(maxlen=64)
+        self.correction = np.eye(3)
         self.settings_revision = 0
         self.last_frame = 0.0
         self.extrinsics = pose()
@@ -244,11 +251,6 @@ class Pilot:
             return
         rgb, depth, camera, _ = FrameJoin.arrays(pair, peer.clock)
         self.last_frame = clock.now()
-        self.state = replace(self.state, video=rgb, video_time=captured)
-        if self.backend == "rgbd" and camera is not None:
-            self._anchor(camera)
-        if self.worker is None or self.failure:
-            return
         measured = False
         if self.backend == "slam":
             # SLAM places the camera itself; it needs only the driver's best guess of
@@ -256,6 +258,18 @@ class Pilot:
             # A driver that measures its camera pose or gaze also holds SLAM to its heading.
             measured = camera is not None or pair[1].head_angles is not None
             camera = self._prior(camera, pair[1])
+            self.priors.append((captured, camera[:3, :3]))
+        orientation = None
+        if camera is not None:
+            orientation = np.eye(4)
+            orientation[:3, :3] = self.correction @ camera[:3, :3]
+        self.state = replace(
+            self.state, video=rgb, video_time=captured, video_orientation=orientation
+        )
+        if self.backend == "rgbd" and camera is not None:
+            self._anchor(camera)
+        if self.worker is None or self.failure:
+            return
         self.camera_rate.tick()
         try:
             accepted = self.worker.submit(rgb, depth, camera, captured, measured=measured)
@@ -343,6 +357,8 @@ class Pilot:
         self.tracked_frames = 0
         self.tracking = self.slam_view = False
         self.restart_at = None
+        self.priors.clear()
+        self.correction = np.eye(3)
         restart_delay = RESTART_FIRST
         worker_started = 0.0
         self.extrinsics = camera_matrix(camera.extrinsics)
@@ -350,6 +366,8 @@ class Pilot:
             self.state,
             flat_video=self.backend != "rgbd",
             video=None,
+            video_orientation=None,
+            video_intrinsics=camera.intrinsics,
             video_fov=2 * math.atan(camera.intrinsics.width / (2 * camera.intrinsics.fx)),
         )
 
@@ -437,8 +455,13 @@ class Pilot:
                         # A stalled worker may hold the pose lock; staleness alone pauses.
                         tracked = self.worker.pose()
                         if tracked:
-                            transform, count, self.tracking, _ = tracked
+                            transform, count, self.tracking, captured = tracked
                             if count != self.tracked_frames:
+                                prior = next(
+                                    (r for t, r in reversed(self.priors) if t == captured), None
+                                )
+                                if prior is not None:
+                                    self.correction = transform[:3, :3] @ prior.T
                                 if now - self.last_tracking > TRACKING_GAP:
                                     self.tracking_steady_since = now
                                 self.last_tracking = now
