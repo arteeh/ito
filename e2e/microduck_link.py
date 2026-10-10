@@ -190,7 +190,8 @@ def main():
     if not args.microduck:
         if not args.address or not args.code:
             parser.error("give ADDRESS and --code, or the simulator's --microduck/--rl/--policies")
-        asyncio.run(run(args))
+        with clock.fine_timers():
+            asyncio.run(run(args))
         return
     from drivers.microduck.sim import port, simulation
 
@@ -205,7 +206,8 @@ def main():
             driver_port=int(port()),
         ) as sim:
             args.address, args.code = f"127.0.0.1:{sim.port}", sim.code
-            asyncio.run(run(args))
+            with clock.fine_timers():
+                asyncio.run(run(args))
 
 
 if __name__ == "__main__":
