@@ -1,8 +1,10 @@
 """Pilot a live robot through a scripted walk with MASt3R-SLAM; measure the 3D view.
 
 uv run --extra slam python e2e/slam_drive.py HOST:PORT [--code CODE] [--record DIR]
+    [--route short|tour] [--laps N]
 
-Looks left, right and behind, walks, strafes, reverses and turns while walking, then
+The short route walks 3 s forward, looks left and right, and walks 3 s back. The tour
+looks left, right and behind, walks, strafes, reverses and turns while walking. Then it
 reports how long the pilot saw the flat feed and why, the SLAM rate, capture-to-scene
 latency and how well the SLAM camera's heading follows the robot's measured gaze (body
 heading plus head pan from telemetry), with a screenshot per leg. --record saves every
@@ -29,7 +31,18 @@ from ito.reconstruction import Reconstruction
 
 # (gaze yaw degrees, gaze pitch degrees, held keys, seconds to hold once there).
 # Positive yaw looks left. The body follows the gaze once the head runs out of pan.
-ROUTE = [
+ROUTES = {}
+ROUTES["short"] = [
+    (0, 0, "", 2),
+    (0, 0, "w", 3),
+    (0, 0, "", 1),
+    (90, 0, "", 2),
+    (-90, 0, "", 2),
+    (0, 0, "", 1),
+    (0, 0, "s", 3),
+    (0, 0, "", 2),
+]
+ROUTES["tour"] = [
     (0, 0, "", 4),
     (90, 0, "", 4),
     (180, 0, "", 4),
@@ -50,6 +63,7 @@ ROUTE = [
     (-150, 0, "w", 5),
     (0, 0, "", 4),
 ]
+ROUTE = ROUTES["tour"]
 KEYS = {"w": pygame.K_w, "a": pygame.K_a, "s": pygame.K_s, "d": pygame.K_d}
 TURN_RATE = math.radians(45)  # A brisk but ordinary head turn.
 
@@ -96,6 +110,7 @@ def main():
     parser.add_argument("--code")
     parser.add_argument("--out", type=Path, default=Path("e2e/out/slam-drive"))
     parser.add_argument("--record", type=Path, help="save the frames reconstruction received")
+    parser.add_argument("--route", choices=sorted(ROUTES), default="short")
     parser.add_argument("--laps", type=int, default=1)
     parser.add_argument("--startup-timeout", type=float, default=300)
     args = parser.parse_args()
@@ -105,10 +120,35 @@ def main():
         old.unlink()
     # A private settings folder; the robot's one pilot credential may be copied in first.
     os.environ["XDG_CONFIG_HOME"] = os.environ["APPDATA"] = str(out / "config")
-    route = ROUTE * args.laps
+    route = ROUTES[args.route] * args.laps
+    # One line per frame the reconstruction worker took, and per frame offered to it.
+    (out / "timeline.jsonl").unlink(missing_ok=True)
+    os.environ["ITO_TIMELINE"] = str(out / "timeline.jsonl")
+    offered = (out / "offered.jsonl").open("w", buffering=1)
+    legs = (out / "legs.jsonl").open("w", buffering=1)
     pilot = None
     recorded = queue.Queue(maxsize=512)
     dropped = 0
+
+    offer = Reconstruction.submit
+
+    def offering_submit(self, rgb, depth=None, camera=None, captured_at=None, **flags):
+        accepted = offer(self, rgb, depth, camera, captured_at, **flags)
+        offered.write(
+            json.dumps(
+                dict(
+                    at=round(clock.now(), 4),
+                    captured=None if captured_at is None else round(captured_at, 4),
+                    accepted=accepted,
+                    seq=self.sequence.value,
+                    gaze=None if pilot is None else gaze(pilot.telemetry),
+                )
+            )
+            + "\n"
+        )
+        return accepted
+
+    Reconstruction.submit = offering_submit
 
     if args.record:
         args.record.mkdir(parents=True, exist_ok=True)
@@ -246,6 +286,7 @@ def main():
                 pygame.event.post(pygame.event.Event(pygame.QUIT))
                 return
             held = route[leg][2]
+            legs.write(json.dumps(dict(leg=leg, at=round(now, 4), step=route[leg])) + "\n")
             for name in held:
                 key(KEYS[name], True)
 
