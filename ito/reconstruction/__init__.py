@@ -160,15 +160,14 @@ class Reconstruction:
         *,
         max_splats=262_144,
         voxel_size=0.04,
-        window_seconds=4.0,
         fade_seconds=0.5,
         device="auto",
         backend="rgbd",
     ):
         if not 1 <= max_splats <= 4_194_304:
             raise ValueError("Max splats must be between 1 and 4,194,304")
-        if not all(np.isfinite(v) and v > 0 for v in (voxel_size, window_seconds, fade_seconds)):
-            raise ValueError("Voxel size, temporal window and fade must be finite and positive")
+        if not all(np.isfinite(v) and v > 0 for v in (voxel_size, fade_seconds)):
+            raise ValueError("Voxel size and fade must be finite and positive")
         if backend not in ("rgbd", "slam"):
             raise ValueError("Reconstruction backend must be rgbd or slam")
         self.backend = backend
@@ -176,7 +175,6 @@ class Reconstruction:
         self.shape = (intrinsics.height, intrinsics.width)
         self.options = dict(
             voxel_size=voxel_size,
-            window_seconds=window_seconds,
             fade_seconds=fade_seconds,
             device=device,
         )
