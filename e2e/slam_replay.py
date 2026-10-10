@@ -263,7 +263,7 @@ def main():
         restarts_inferred=not hasattr(backend, "restarts"),
         heading_corrections=getattr(backend, "corrections", None),
         recalls=getattr(backend, "recalls", None),
-        provisional_frames=getattr(backend, "provisional", None),
+        provisional_frames=getattr(backend, "provisional_frames", None),
         splats_peak=max(splats),
         splats_final=splats[-1],
         splat_drops_over_10pct=len(drops),
