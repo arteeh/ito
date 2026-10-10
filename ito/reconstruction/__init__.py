@@ -1,7 +1,9 @@
 """Nonblocking RGB-D/monocular input and incremental shared-memory scene output."""
 
+import json
 import logging
 import multiprocessing as mp
+import os
 import time
 
 import numpy as np
@@ -41,6 +43,9 @@ def _run(recon):
         else:
             backend = RGBDBackend(recon.budget.value, recon.intrinsics, **recon.options)
         sequence = 0
+        # ITO_TIMELINE names a file for one line per frame the worker took: what became of it.
+        timeline = os.environ.get("ITO_TIMELINE")
+        timeline = open(timeline, "a", buffering=1) if timeline else None
         cursor = 0
         revision = 0
         captured = recon.epoch
@@ -66,11 +71,45 @@ def _run(recon):
                 finally:
                     recon.input_lock.release()
             if frame is not None:
+                if timeline:
+                    before = (
+                        getattr(backend, "tracked", 0),
+                        sum(getattr(backend, "restarts", {}).values()),
+                        backend.count,
+                    )
+                    began = clock.now()
                 if recon.backend == "slam":
                     backend.integrate(*frame, now, measured=measured)
                 else:
                     backend.integrate(*frame, now)
                 recon.integrated.value += 1
+                if timeline:
+                    done = clock.now()
+                    restarted = sum(getattr(backend, "restarts", {}).values()) - before[1]
+                    tracked = getattr(backend, "tracked", 0) - before[0]
+                    since = getattr(backend, "unmatched_since", None)
+                    row = dict(
+                        seq=sequence,
+                        captured=round(captured, 4),
+                        began=round(began, 4),
+                        age_ms=round((began - captured) * 1000, 1),
+                        work_ms=round((done - began) * 1000, 1),
+                        measured=measured if recon.backend == "slam" else None,
+                        outcome="integrated"
+                        if recon.backend != "slam"
+                        else "restart"
+                        if restarted
+                        else "tracked"
+                        if tracked
+                        else "lost"
+                        if getattr(backend, "lost", False)
+                        else "unmatched"
+                        if since is not None
+                        else "skipped",
+                        splats=int(backend.count),
+                        splats_delta=int(backend.count) - before[2],
+                    )
+                    timeline.write(json.dumps(row) + "\n")
                 if recon.backend == "slam" and recon.output_lock.acquire(False):
                     try:
                         np.frombuffer(recon.output_camera, np.float32)[:] = (
