@@ -243,9 +243,11 @@ class MicroduckAdapter(Adapter):
                 if self._ups
                 else (0.0, 0.0, 1.0)
             )
+            gait = gaze.gait(move.forward, move.left, vyaw)
+            aim = self._trim(move.tilt, clock.now(), gait)
             x, y, z = gaze.target(
                 move.pan,
-                self._trim(move.tilt, clock.now(), gaze.gait(move.forward, move.left, vyaw)),
+                aim,
                 up,
                 self._camera_in_trunk or (0.0, 0.0, 0.0),
                 GAZE_DISTANCE,
@@ -260,8 +262,14 @@ class MicroduckAdapter(Adapter):
             )
             self._looks.tick()
             self._look_ms.append((clock.now() - sent) * 1000)
+            # The gait and the tilt aimed at, trim included, show how the trim follows the
+            # gait's head droop (#28) next to the measured camera, neck and head pitch.
             self._telemetry.update(
-                look_hz=self._looks.hz(), look_ms=sorted(self._look_ms)[len(self._look_ms) // 2]
+                look_hz=self._looks.hz(),
+                look_ms=sorted(self._look_ms)[len(self._look_ms) // 2],
+                gait=gait,
+                pilot_tilt=move.tilt,
+                aimed_tilt=aim,
             )
 
     async def _health(self):
