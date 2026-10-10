@@ -115,7 +115,7 @@ class SLAMBackend(RGBDBackend):
         self.corrections = 0  # Heading corrections started; each eases over a few frames.
         self.recalls = 0  # Failed frames retried, and matched, against a recalled keyframe.
         # Unmatched frames fused on the robot's own pose while the map waits to match again.
-        self.provisional = 0
+        self.provisional_frames = 0
         self.settled = 0  # Frames tracked since the map started or switched keyframe.
         self.correcting = False
         self.frame_id = 0
@@ -323,7 +323,7 @@ class SLAMBackend(RGBDBackend):
                                 now + clock.now() - started,
                                 provisional=True,
                             )
-                            self.provisional += 1
+                            self.provisional_frames += 1
                         if not relocalized:
                             self.relocalize(prior)
                         return

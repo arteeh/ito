@@ -76,7 +76,7 @@ def _run(recon):
                         getattr(backend, "tracked", 0),
                         sum(getattr(backend, "restarts", {}).values()),
                         backend.count,
-                        getattr(backend, "provisional", 0),
+                        getattr(backend, "provisional_frames", 0),
                     )
                     began = clock.now()
                 if recon.backend == "slam":
@@ -103,7 +103,7 @@ def _run(recon):
                         else "tracked"
                         if tracked
                         else "provisional"
-                        if getattr(backend, "provisional", 0) > before[3]
+                        if getattr(backend, "provisional_frames", 0) > before[3]
                         else "lost"
                         if getattr(backend, "lost", False)
                         else "unmatched"
