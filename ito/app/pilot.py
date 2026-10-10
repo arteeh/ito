@@ -35,6 +35,10 @@ RESTART_FIRST, RESTART_LONGEST, RESTART_HEALTHY = 1.0, 30.0, 60.0
 # Input older than INPUT_FRESH releases the deadman. A pilot who never let go is re-armed when
 # input returns within SHORT_STALL; a longer gap may have changed the scene, so they resume.
 INPUT_FRESH, SHORT_STALL = 0.2, 1.0
+# Pilot state goes out as each input sample arrives (a headset's 72-90 Hz, a monitor's refresh),
+# at most this often, and at least at HEARTBEAT when samples stop: the robot must hear the
+# deadman go stale.
+SEND_INTERVAL, HEARTBEAT = 1 / 120, 1 / 60
 # A closing app waits this long for the link to tear down, then this long more for each
 # reconstruction worker; anything still running is abandoned so the app can exit.
 LINK_WAIT, WORKER_WAIT = 1.0, 0.8
@@ -73,6 +77,7 @@ class Pilot:
         self.state = DesktopState(status=PilotStatus(link="CONNECTING"))
         self.telemetry = {}
         self.latest_input = None
+        self.input_arrived = None  # Set from the input thread to wake the link loop.
         self.commands = deque()
         self.armed = False  # Resume sent and input fresh since, or back within SHORT_STALL.
         self.stalled = False  # Disarmed by an input stall alone; fresh input soon re-arms.
@@ -139,6 +144,10 @@ class Pilot:
                 break
             self.commands.append(command)
         self.latest_input = value
+        loop, arrived = self.loop, self.input_arrived
+        if loop and arrived:
+            with contextlib.suppress(RuntimeError):  # The link loop has just closed.
+                loop.call_soon_threadsafe(arrived.set)
 
     def poll(self):
         if not self.worker_lock.acquire(False):
@@ -424,6 +433,7 @@ class Pilot:
 
         tasks.extend([asyncio.create_task(messages()), asyncio.create_task(tracks())])
         deadline = clock.now()
+        self.input_arrived = arrived = asyncio.Event()
         try:
             while not self.stop.is_set():
                 now = clock.now()
@@ -591,10 +601,17 @@ class Pilot:
                         self.state,
                         status=replace(shown, armed=self.armed, focus_hold=self.focus_hold),
                     )
-                deadline = max(deadline + 1 / 60, now)
-                await asyncio.sleep(max(0, deadline - clock.now()))
+                deadline = max(deadline + HEARTBEAT, now)
+                await asyncio.sleep(max(0, now + SEND_INTERVAL - clock.now()))
+                if not arrived.is_set():
+                    with contextlib.suppress(TimeoutError):
+                        await asyncio.wait_for(arrived.wait(), max(0, deadline - clock.now()))
+                if arrived.is_set():
+                    arrived.clear()
+                    deadline = clock.now()
         finally:
             self.armed = False
+            self.input_arrived = None
             peer.send(Command(sequence=command_sequence, action="stop"))
             for task in tasks:
                 task.cancel()

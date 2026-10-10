@@ -82,8 +82,17 @@ class Remote:
                     future.set_result(result)
             elif "method" in message:
                 self.notification(message["method"], message.get("params", {}))
+            elif "error" in message:
+                # Only a notification is refused without an id: robotd will not do what the
+                # driver keeps asking for.
+                raise RemoteError(f"Microduck refused a notification: {message['error']}")
         except Exception as exc:
             self.fail(exc)
+
+    def notify(self, method, params):
+        """A continuous intent: robotd applies the newest on its next tick and never answers."""
+        self.check()
+        self.channel.send(json.dumps({"jsonrpc": "2.0", "method": method, "params": params}))
 
     async def call(self, method, params=None, deadline=0.5):
         self.check()
