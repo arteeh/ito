@@ -256,6 +256,7 @@ class XRWindow(DesktopWindow):
                             target=target,
                             xr_mode=True,
                             driving=any(value.movement),
+                            shown_hz=self.shown.hz(),
                         )
                         if budget is not None:
                             if budget <= self.splat_limit:
