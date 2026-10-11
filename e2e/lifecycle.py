@@ -239,7 +239,14 @@ async def run():
         assert entries[-1]["event"] == "neutral", entries[-3:]
     assert driver.returncode == 1 and "safety watchdog stopped" in driver.log, driver.log
     closes = {}
-    for scenario in ("streaming", "connecting", "stuck_link", "reconstruction", "sim"):
+    for scenario in (
+        "streaming",
+        "connecting",
+        "stuck_link",
+        "hung_teardown",
+        "reconstruction",
+        "sim",
+    ):
         closes[scenario] = await closing(scenario)
     print(
         "PASS: idle live media, failed offers, reconnect/e-stop latch, "
@@ -344,6 +351,10 @@ async def closing(scenario):
                 assert "Traceback" not in text, (scenario, text[-3000:])
                 if scenario == "stuck_link":
                     assert "Pilot link stuck at" in text, text[-3000:]
+                if scenario == "hung_teardown":
+                    # Abandoned within the link's budget, and the app exits cleanly.
+                    assert "WebRTC teardown abandoned" in text, text[-3000:]
+                    assert "RTCPeerConnection.close" in text, text[-3000:]
                 if scenario == "reconstruction":
                     assert "Reconstruction process" in text and "killed" in text, text[-3000:]
             finally:
