@@ -9,7 +9,7 @@ uniform mat4 projection;
 uniform vec3 eye;
 uniform vec2 viewport;
 layout(std430, binding = 0) readonly buffer Order { uvec2 order[]; };
-out vec2 gaussian_uv;
+noperspective out vec2 gaussian_uv;
 flat out vec4 color_opacity;
 
 vec4 attribute_at(uint id, uint offset) {
@@ -83,5 +83,19 @@ void main() {
     gaussian_uv = corner * 3.0;
     vec2 offset = 3.0 * (corner.x * major * axis + corner.y * minor * vec2(-axis.y, axis.x));
     gl_Position = clip + vec4(offset * 2.0 / viewport * clip.w, 0, 0);
+    // Put the screen ellipse's corners on the measured tangent plane. Hardware
+    // interpolates its depth; UV stays linear in screen pixels for the Gaussian.
+    if (s.z < 0.1 * min(s.x, s.y)) {
+        vec3 normal = mat3(view) * rotation[2];
+        vec2 pixel_ndc = gl_Position.xy / gl_Position.w;
+        vec3 ray = vec3((pixel_ndc.x + projection[2][0]) / projection[0][0],
+                        (pixel_ndc.y + projection[2][1]) / projection[1][1], -1);
+        float denominator = dot(normal, ray);
+        float numerator = dot(normal, center.xyz);
+        // At a grazing silhouette the antialiasing footprint extends beyond the
+        // plane's horizon; retain centre depth for this degenerate projection.
+        if (abs(denominator) > 1e-5 && numerator / denominator > 0)
+            gl_Position = projection * vec4(ray * (numerator / denominator), 1);
+    }
     color_opacity = vec4(color(id, normalize(p.xyz - eye)), p.w);
 }

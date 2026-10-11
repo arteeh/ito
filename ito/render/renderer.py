@@ -183,13 +183,18 @@ class GaussianRenderer:
             raise ValueError("Viewport dimensions must be positive")
         self.context.viewport = viewport
         self.context.scissor = None
-        self.context.enable_only(moderngl.BLEND)
+        self.context.enable_only(moderngl.BLEND | moderngl.DEPTH_TEST)
+        self.context.depth_func = "<="
+        target.depth_mask = True
         self.context.blend_func = moderngl.ONE, moderngl.ONE_MINUS_SRC_ALPHA
         self.context.blend_equation = moderngl.FUNC_ADD
         if clear is not None:
             target.clear(*clear, viewport=viewport)
         if not self.draw_count:
             return
+        # Transparent Gaussian tails must not occlude later contributions. Keep
+        # depth testing against opaque geometry, but composite the sorted splats.
+        target.depth_mask = False
         if sort:
             self.sort(robot_camera, head)
         view = self._view(world_from_eye)
@@ -204,6 +209,7 @@ class GaussianRenderer:
         self.program["stride"] = self.stride
         self.program["sh_degree"] = self.degree
         self.vao.render(mode=moderngl.TRIANGLE_STRIP, vertices=4, instances=self.draw_count)
+        target.depth_mask = True
 
     def close(self) -> None:
         for resource in (

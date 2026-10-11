@@ -258,7 +258,7 @@ def main():
                 window.run(
                     source,
                     state=lambda: DesktopState(
-                        anchor, PilotStatus("CONNECTED", 0, "Procedural RGB-D room")
+                        anchor, PilotStatus("CONNECTED", 0, "Procedural RGB-D room", armed=True)
                     ),
                     on_input=drive,
                     metrics=metrics,

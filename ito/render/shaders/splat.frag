@@ -1,5 +1,5 @@
 #version 430
-in vec2 gaussian_uv;
+noperspective in vec2 gaussian_uv;
 flat in vec4 color_opacity;
 out vec4 frag_color;
 void main() {
