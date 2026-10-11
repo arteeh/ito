@@ -131,6 +131,10 @@ def _run(recon):
                         splats_delta=int(backend.count) - before[2],
                         recalls=getattr(backend, "recalls", None),
                         matched=getattr(backend, "matched", None),
+                        blurred=getattr(backend, "blurred", None),
+                        frame_delay_ms=round(backend.graph.td * 1000, 1)
+                        if hasattr(backend, "graph")
+                        else None,
                     )
                     timeline.write(json.dumps(row) + "\n")
                 if recon.backend == "slam" and recon.output_lock.acquire(False):
