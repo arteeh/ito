@@ -89,6 +89,77 @@ def source(cache, work, name, url, digest, report):
     return root
 
 
+# Robot-first tracking (ito/reconstruction/mast3r_frontend.py): FrameTracker.solve adds the
+# fused prediction as a prior to its Gauss-Newton normal equations, so a frame with few
+# matches yields a pose leaning on the robot instead of being dropped as lost. Without a
+# prior (the vision-only tracker) upstream's behaviour is unchanged.
+RELATIVE_SETUP = (
+    "        # Solving for relative pose without scale!\n        T_CkCf = T_WCk.inv() * T_WCf\n"
+)
+TRACKER_ADAPTATIONS = (
+    (
+        "        self.device = device\n\n        self.reset_idx_f2k()\n",
+        "        self.device = device\n\n        self.reset_idx_f2k()\n"
+        "        # Ito: (predicted T_WCf Sim3, 7 information weights) or None.\n"
+        "        self.prior = None\n"
+        "        self.prior_relative = None\n"
+        "        self.match_frac = 0.0\n",
+    ),
+    (
+        "        match_frac = valid_opt.sum() / valid_opt.numel()\n"
+        '        if match_frac < self.cfg["min_match_frac"]:\n',
+        "        match_frac = valid_opt.sum() / valid_opt.numel()\n"
+        "        self.match_frac = float(match_frac)\n"
+        '        if match_frac < self.cfg["min_match_frac"] and self.prior is None:\n',
+    ),
+    (
+        "        self.keyframes[len(self.keyframes) - 1] = keyframe\n",
+        '        if getattr(self.keyframes, "reference", None) is None:\n'
+        "            self.keyframes[len(self.keyframes) - 1] = keyframe\n",
+    ),
+    (
+        "    def solve(self, sqrt_info, r, J):\n",
+        "    def solve(self, sqrt_info, r, J, T_CkCf=None):\n",
+    ),
+    (
+        "        cost = 0.5 * (b.T @ b).item()\n",
+        "        cost = 0.5 * (b.T @ b).item()\n"
+        "        if self.prior_relative is not None and T_CkCf is not None:\n"
+        "            # retr is Exp(tau) * X: the prior's residual moves one for one with tau.\n"
+        "            weight = self.prior[1].to(H.dtype)\n"
+        "            r_p = (T_CkCf * self.prior_relative.inv()).log().view(-1, 1).to(H.dtype)\n"
+        "            H = H + torch.diag(weight)\n"
+        "            g = g - weight.view(-1, 1) * r_p\n"
+        "            cost += 0.5 * (weight.view(-1, 1) * r_p * r_p).sum().item()\n",
+    ),
+    (
+        RELATIVE_SETUP,
+        RELATIVE_SETUP + "        self.prior_relative = (\n"
+        "            None if self.prior is None else T_WCk.inv() * self.prior[0]\n"
+        "        )\n",
+    ),
+    (
+        "            tau_ij_sim3, new_cost = self.solve(sqrt_info, r, J)\n",
+        "            tau_ij_sim3, new_cost = self.solve(sqrt_info, r, J, T_CkCf)\n",
+    ),
+    (
+        "            tau_ij_sim3, new_cost = self.solve(sqrt_info2, r, J)\n",
+        "            tau_ij_sim3, new_cost = self.solve(sqrt_info2, r, J, T_CkCf)\n",
+    ),
+)
+
+
+def adapt_tracker(path):
+    code = path.read_text(encoding="utf-8")
+    for old, new in TRACKER_ADAPTATIONS:
+        # Both pose solvers share the relative-pose setup; everything else is unique.
+        expected = 2 if old == RELATIVE_SETUP else 1
+        if code.count(old) != expected:
+            raise RuntimeError(f"MASt3R-SLAM tracker changed upstream; cannot adapt {path}")
+        code = code.replace(old, new)
+    path.write_text(code, encoding="utf-8")
+
+
 def compile_extensions(cache, work):
     try:
         import torch
@@ -216,6 +287,7 @@ def main():
             "    retriever_path = (",
         )
         utils.write_text(code, encoding="utf-8")
+    adapt_tracker(slam / "mast3r_slam/tracker.py")
     for path in (slam / "mast3r_slam/backend/src").glob("*.cu"):
         original = path.read_text(encoding="utf-8")
         fixed = re.sub(r"\blong\b", "int64_t", original)
@@ -252,7 +324,7 @@ def main():
         "Unmodified safetensors weights. CC BY-NC-SA 4.0; see LICENSE, NOTICE and "
         "CHECKPOINTS_NOTICE for attribution and training-dataset restrictions.\n"
         "Ito source adaptations: lazy retrieval import, fixed-width CUDA indices, "
-        "and distinct lietorch CPU kernel symbols.\n",
+        "distinct lietorch CPU kernel symbols, and a pose prior in the frame tracker.\n",
         encoding="utf-8",
     )
     # Never carry kernels from a different Python/platform through a skipped build.

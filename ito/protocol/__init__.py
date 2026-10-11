@@ -1,4 +1,4 @@
-"""Wire v2: metres, xyzw rotations, and local monotonic seconds for timestamps."""
+"""Wire v3: metres, xyzw rotations, and local monotonic seconds for timestamps."""
 
 import base64
 import zlib
@@ -15,7 +15,7 @@ from pydantic import (
     model_validator,
 )
 
-VERSION = 2
+VERSION = 3
 MAX_MESSAGE_BYTES = 1_500_000
 Number = Annotated[float, Field(allow_inf_nan=False)]
 Time = Annotated[Number, Field(ge=0)]
@@ -61,6 +61,13 @@ class Camera(Model):
     track_id: Name
     intrinsics: Intrinsics
     extrinsics: Pose = Field(default_factory=Pose, description="Camera-to-robot transform")
+    capture_delay: Number = Field(
+        default=0,
+        ge=0,
+        le=1,
+        description="How long before its capture_time a frame was exposed, as the driver "
+        "estimates it; robot-first tracking refines it against the robot's motion",
+    )
 
 
 class DegreeOfFreedom(Model):
@@ -77,7 +84,7 @@ class DegreeOfFreedom(Model):
 
 
 class Message(Model):
-    version: Literal[2] = VERSION
+    version: Literal[3] = VERSION
 
     @model_validator(mode="after")
     def wire_version(self, info: ValidationInfo) -> Self:
@@ -93,12 +100,31 @@ class Message(Model):
         return value
 
 
+class MotionNoise(Model):
+    """How far the robot's own camera pose can be trusted, as one standard deviation.
+
+    Between two samples dt seconds apart that moved the camera d metres, the relative rotation
+    is off by about hypot(rotation_deg, rotation_deg_per_s * dt) and the relative translation by
+    translation_m + translation_fraction * d. Pitch and roll against gravity are off by at most
+    gravity_deg at any time. A robot that is held or has fallen knows far less (MotionSample).
+    """
+
+    rotation_deg: Number = Field(ge=0, le=90)
+    rotation_deg_per_s: Number = Field(ge=0, le=90)
+    translation_m: Number = Field(ge=0, le=10)
+    translation_fraction: Number = Field(ge=0, le=10)
+    gravity_deg: Number = Field(gt=0, le=90)
+
+
 class RobotDescription(Message):
     type: Literal["robot"] = "robot"
     name: Name
     cameras: tuple[Camera, ...] = Field(default=(), max_length=16)
     capabilities: tuple[Name, ...] = Field(default=(), max_length=64)
     degrees_of_freedom: tuple[DegreeOfFreedom, ...] = Field(default=(), max_length=256)
+    motion_noise: MotionNoise | None = Field(
+        default=None, description="Set by a robot that streams Motion for its first camera"
+    )
 
     @model_validator(mode="after")
     def unique_names(self) -> Self:
@@ -162,6 +188,30 @@ class FrameMetadata(Message):
     head_angles: tuple[Number, Number] | None = Field(
         default=None, description="Measured pan and tilt in radians from this exposure"
     )
+
+
+class MotionSample(Model):
+    time: Time = Field(description="Driver clock at the sample's source, not its arrival")
+    camera_pose: Pose = Field(
+        description="First camera's camera-to-world; world is the robot's odometry at startup"
+    )
+    angular_velocity: tuple[Number, Number, Number] = Field(
+        description="Camera frame, rad/s; a gyro where the robot has one"
+    )
+    state: Literal["standing", "walking", "turning", "held", "fallen"]
+
+
+class Motion(Message):
+    """The robot's own camera motion, batched: every sample once, oldest first."""
+
+    type: Literal["motion"] = "motion"
+    samples: tuple[MotionSample, ...] = Field(min_length=1, max_length=16)
+
+    @model_validator(mode="after")
+    def ordered(self) -> Self:
+        if any(b.time <= a.time for a, b in zip(self.samples, self.samples[1:], strict=False)):
+            raise ValueError("motion samples must be in time order")
+        return self
 
 
 class PilotState(Message):
@@ -241,6 +291,7 @@ class Pong(Message):
 WireMessage = Annotated[
     RobotDescription
     | FrameMetadata
+    | Motion
     | PilotState
     | Command
     | Credential

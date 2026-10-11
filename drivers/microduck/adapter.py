@@ -9,12 +9,19 @@ from ito import clock
 from ito.driver import Adapter
 from ito.driver.walking import Walker
 from ito.protocol import Camera as CameraDescription
-from ito.protocol import DegreeOfFreedom, Pose, RobotDescription
+from ito.protocol import (
+    DegreeOfFreedom,
+    Motion,
+    MotionNoise,
+    MotionSample,
+    Pose,
+    RobotDescription,
+)
 from ito.rates import Rate
 
 from . import frames, gaze
 from .camera import Camera, Track
-from .remote import Remote
+from .remote import Remote, RemoteError
 
 # Alpha MJCF travel limits. robot.look applies the robot's own IK and joint limits as well.
 HEAD_LIMITS = {
@@ -40,6 +47,24 @@ GAIT_PERIOD = 0.42
 # robot.look aims the camera at a point; this far out, the camera moving a few centimetres
 # as the head turns changes the aim by a fraction of a degree.
 GAZE_DISTANCE = 10.0
+# Frame metadata keeps the receive-stamped 20 Hz pose it always carried, so the vision-only
+# tracker can still be compared against robot-first tracking on the same build. Motion
+# carries every 50 Hz tick of robotd's loop, stamped when robotd read its sensors.
+METADATA_POSE_INTERVAL = 0.05
+# Head FK on the trunk IMU against MuJoCo truth over 800 poses of a walking drive (#33):
+# p95 1.32 degrees rotation, 1.77 cm per metre walked, both with receive stamps. One sigma is
+# about half a p95; robotd's game-rotation IMU drifts in yaw well under a degree a minute.
+MOTION_NOISE = MotionNoise(
+    rotation_deg=0.66,
+    rotation_deg_per_s=0.2,
+    translation_m=0.005,
+    translation_fraction=0.018,
+    gravity_deg=0.66,
+)
+# A head-IMU sample this close to a robot.state tick turns the camera at that tick.
+HEAD_IMU_MATCH = 0.025
+# Odometry speeds that count as walking or turning in a motion sample's state.
+WALKING_SPEED, TURNING_RATE = 0.02, 0.05
 
 
 def steady_heading(samples):
@@ -75,14 +100,53 @@ def yaw_command(rate):
     return math.copysign(0.33 + abs(rate) / 0.6, rate)
 
 
+def motion_state(data):
+    """What the body is doing this tick, for how far its odometry can be trusted."""
+    safety = data.get("safety") or {}
+    if safety.get("fallen"):
+        return "fallen"
+    if safety.get("picked_up"):
+        return "held"
+    vx, vy, vyaw = (data.get("move") or {}).get("applied") or (0.0, 0.0, 0.0)
+    if math.hypot(vx, vy) > WALKING_SPEED:
+        return "walking"
+    return "turning" if abs(vyaw) > TURNING_RATE else "standing"
+
+
+class SourceClock:
+    """robotd's tick time (CLOCK_MONOTONIC, ns) on the driver's clock.
+
+    On the robot and in the simulator perf_counter is the same CLOCK_MONOTONIC, so the time
+    is taken as it is and the link's clock offset carries it to the pilot. A driver running
+    elsewhere sees a different clock: the smallest transport delay over the last ten seconds
+    then stands in for the offset. A robotd without t_ns gets the arrival time.
+    """
+
+    def __init__(self):
+        self.shared = None
+        self.lags = deque(maxlen=500)
+
+    def __call__(self, t_ns, received):
+        if not t_ns:
+            return received, "driver receive time"
+        source = t_ns / 1e9
+        if self.shared is None:
+            self.shared = -0.005 <= received - source <= 0.5
+        if self.shared:
+            return source, "robot t_ns"
+        self.lags.append(received - source)
+        return source + min(self.lags), "robot t_ns, offset by arrival"
+
+
 class MicroduckAdapter(Adapter):
-    def __init__(self, robot="ws://127.0.0.1:8443", input_timeout=0.25):
+    def __init__(self, robot="ws://127.0.0.1:8443", input_timeout=0.25, head_imu=False):
         if not robot.startswith(("ws://", "wss://")):
             raise ValueError("--robot must be mediad's ws://host:8443 address")
         if not math.isfinite(input_timeout) or not 0.02 <= input_timeout <= 0.5:
             raise ValueError("Microduck input timeout must be between 0.02 and 0.5 seconds")
         self.remote = Remote(robot, self._notification)
         self.input_timeout = input_timeout
+        self.head_imu = head_imu
         # The policy's trained forward/backward range is +-0.4 m/s and it stands still below
         # about 0.35. It has no usable sideways step (none up to its trained 0.3 m/s), so
         # sideways input steers the body into that direction instead.
@@ -97,8 +161,14 @@ class MicroduckAdapter(Adapter):
         self._state_at = 0.0
         self._yaw_origin = None
         self._origin = None  # Trunk x, y and yaw at startup, in robotd's odometry world.
-        # Recent measured camera poses: (time, position, orientation, body yaw).
+        # Recent measured camera poses: (receive time, position, orientation, body yaw).
         self._poses = deque(maxlen=40)
+        self._pose_due = 0.0
+        self._source_clock = SourceClock()
+        self._motion = deque(maxlen=16)  # Samples not yet sent, oldest first.
+        self._previous_motion = None  # (time, xyzw) of the last motion sample.
+        self._motion_rate = Rate()
+        self._head_gyro = deque(maxlen=8)  # (source time, gyro in sensor axes)
         self._headings = deque()  # (time, body yaw) over the last two gait periods.
         # (time, world up in the trunk frame) over the last gait period, and the camera's
         # position in the trunk: where robot.look's levelled gaze starts.
@@ -128,9 +198,14 @@ class MicroduckAdapter(Adapter):
             self.camera = Camera(await self.remote.call("media.video"), self._frame_metadata)
             self._description = RobotDescription(
                 name="Microduck",
+                motion_noise=MOTION_NOISE,
                 cameras=(
                     CameraDescription(
-                        name="head", track_id="microduck-rgb", intrinsics=self.camera.intrinsics
+                        name="head",
+                        track_id="microduck-rgb",
+                        intrinsics=self.camera.intrinsics,
+                        # Frames carry their arrival time; mediad dates none at the sensor.
+                        capture_delay=FRAME_DELAY,
                     ),
                 ),
                 capabilities=("head", "walking", "posture", "beak"),
@@ -148,7 +223,17 @@ class MicroduckAdapter(Adapter):
                 camera_calibration=self.camera.source, camera_timestamp="driver receive time"
             )
             await self.remote.call("robot.stop")
-            await self.remote.call("robot.subscribe", {"hz": 20})
+            if self.head_imu:
+                try:
+                    await self.remote.call("head_imu.stream")
+                except RemoteError as exc:
+                    raise RuntimeError(
+                        f"Microduck head IMU unavailable ({exc}); enable [head_imu] in tofd "
+                        "on the robot, or run without --head-imu"
+                    ) from exc
+            # Every tick of robotd's 50 Hz loop: robot-first tracking on the pilot PC
+            # interpolates the camera's motion between them.
+            await self.remote.call("robot.subscribe", {})
             self._tasks = [
                 asyncio.create_task(self._guard(work))
                 for work in (
@@ -286,6 +371,10 @@ class MicroduckAdapter(Adapter):
                 raise RuntimeError("Microduck telemetry stalled")
 
     def _notification(self, method, data):
+        if method == "head_imu.frame":
+            source, _ = self._source_clock(data.get("t_ns"), clock.now())
+            self._head_gyro.append((source, tuple(data["gyro"])))
+            return
         if method != "robot.state":
             return
         values = {"policy": data["policy"]}
@@ -336,7 +425,10 @@ class MicroduckAdapter(Adapter):
             pose = frames.camera_in_world(
                 data["imu"]["quat"], position, (camera["pos"], camera["quat"]), self._origin
             )
-            self._poses.append((now, *pose, values["base_yaw"]))
+            if now >= self._pose_due:
+                self._pose_due = max(self._pose_due + METADATA_POSE_INTERVAL, now - 0.05)
+                self._poses.append((now, *pose, values["base_yaw"]))
+            self._moved(data, now, pose, camera)
             for name, angle in zip(("yaw", "pitch", "roll"), frames.angles(pose[1]), strict=True):
                 values[f"camera_{name}"] = angle
             if self._measured_at is not None:
@@ -344,6 +436,43 @@ class MicroduckAdapter(Adapter):
             self._measured_at = now
         self._telemetry.update(values)
         self._state_at = clock.now()
+
+    def _moved(self, data, received, pose, camera):
+        """Queue this tick's camera pose for the pilot, stamped when robotd read its sensors."""
+        source, stamp = self._source_clock(data.get("t_ns"), received)
+        previous = self._previous_motion
+        if previous is not None and source <= previous[0]:
+            return
+        gyro = None
+        mount = (data.get("frames") or {}).get("head_imu") if self.head_imu else None
+        if self._head_gyro and mount:
+            when, reading = min(self._head_gyro, key=lambda g: abs(g[0] - source))
+            if abs(when - source) <= HEAD_IMU_MATCH:
+                gyro = frames.gyro_in_camera(reading, mount["quat"], camera["quat"])
+        gyro_from_fk = gyro is None
+        if gyro_from_fk:
+            gyro = (
+                frames.angular_velocity(previous[1], pose[1], source - previous[0])
+                if previous is not None
+                else (0.0, 0.0, 0.0)
+            )
+        self._previous_motion = (source, pose[1])
+        self._motion.append(
+            MotionSample(
+                time=source,
+                camera_pose=Pose(position=pose[0], orientation=pose[1]),
+                angular_velocity=gyro,
+                state=motion_state(data),
+            )
+        )
+        if self.publish_motion(Motion(samples=tuple(self._motion))):
+            self._motion.clear()
+        self._motion_rate.tick()
+        self._telemetry.update(
+            motion_hz=self._motion_rate.hz(),
+            motion_clock=stamp,
+            motion_gyro="head FK" if gyro_from_fk else "head IMU",
+        )
 
     def _frame_metadata(self):
         """What the robot measured about its camera when the frame arriving now was taken.

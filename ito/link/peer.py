@@ -31,6 +31,7 @@ from ito.protocol import (
     Command,
     Credential,
     FrameMetadata,
+    Motion,
     Paired,
     PilotState,
     Ping,
@@ -81,7 +82,9 @@ LANES = {
     "control": Lane(
         True, None, CONTROL_BUFFER, (Command, Paired), (RobotDescription, Credential, Status)
     ),
-    "frames": Lane(False, None, 0, (), (FrameMetadata,), bulk=True),
+    # The robot's own motion rides with the frames it places: a driver resends samples the
+    # lane dropped while a frame was in flight, in its next batch.
+    "frames": Lane(False, None, 0, (), (FrameMetadata, Motion), bulk=True),
     "clock": Lane(False, 0, 0, (Ping, Pong), (Ping, Pong)),
     "pilot": Lane(False, 0, 0, (PilotState,), ()),
 }
@@ -310,6 +313,9 @@ class Peer:
                         raise ProtocolError("robot description may not change during a connection")
                     self.description = message
                     self.robot_received.set()
+                if isinstance(message, Motion) and self.description is None:
+                    self.dropped_messages += 1
+                    return
                 if isinstance(message, FrameMetadata):
                     # Frames and the description travel on separate channels.
                     if self.description is None:

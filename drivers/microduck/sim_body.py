@@ -1,5 +1,7 @@
 """Keep the CAD body visible in Pollen's viewer without occluding its head camera."""
 
+import base64
+import json
 import os
 import socket
 import struct
@@ -8,10 +10,24 @@ import threading
 import time
 
 import mujoco
+import numpy as np
 from mjlab_microduck.sim import body_server
 from mjlab_microduck.sim.camera import Camera, to_uyvy
 
 from drivers.microduck import lens
+
+WORLD = np.array([[0, -1, 0], [0, 0, 1], [-1, 0, 0]])
+UPRIGHT = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]])
+THUMB = 24
+
+
+def thumbnail(rgb):
+    """A THUMB x THUMB grey image of a frame, base64: enough to tell frames apart."""
+    height, width = rgb.shape[:2]
+    rows = (np.arange(THUMB) + 0.5) * height / THUMB
+    columns = (np.arange(THUMB) + 0.5) * width / THUMB
+    grey = rgb[rows.astype(int)][:, columns.astype(int)].mean(axis=2)
+    return base64.b64encode(grey.astype(np.uint8).tobytes()).decode("ascii")
 
 
 class HeadCamera(Camera):
@@ -25,17 +41,51 @@ class HeadCamera(Camera):
             lens.vertical_fov_deg(width, height)
         )
         super().__init__(model, name, width, height)
+        # ITO_MICRODUCK_TRUTH names a file for one line per rendered frame: when it was taken
+        # (perf_counter, the driver's clock), the camera's true pose and a thumbnail to find
+        # it again among the frames the pilot received (e2e/truth.py).
+        path = os.environ.get("ITO_MICRODUCK_TRUTH")
+        self.truth = open(path, "a", buffering=1) if path else None
+        # ITO_MICRODUCK_BLUR=N averages N renders made back to back into each frame: motion
+        # blur the simulator otherwise never shows (drive (f) of #36). The exposure is their
+        # span; the truth pose is the middle one's.
+        self.blur = max(1, int(os.environ.get("ITO_MICRODUCK_BLUR", 1)))
 
     def render(self, world):
         option = mujoco.MjvOption()
         option.geomgroup[2] = 0
         option.geomgroup[5] = 1  # Room cutaway walls are hidden only in the overview viewer.
-        with world.lock:
-            self.renderer.update_scene(world.data, camera=self.camera, scene_option=option)
-        # MuJoCo's shadow pass produces dark floor triangles at this low camera height.
-        # Keep the head image clean without changing the viewer or the robot's physics.
-        self.renderer.scene.flags[mujoco.mjtRndFlag.mjRND_SHADOW] = False
-        packed = to_uyvy(self.renderer.render())
+        frames, poses = [], []
+        for _ in range(self.blur):
+            with world.lock:
+                self.renderer.update_scene(world.data, camera=self.camera, scene_option=option)
+                if self.truth:
+                    camera = np.eye(4)
+                    # MuJoCo's world (z up) and camera to Ito's (y up), the image upright.
+                    camera[:3, :3] = (
+                        WORLD @ world.data.cam_xmat[self.camera].reshape(3, 3) @ UPRIGHT
+                    )
+                    camera[:3, 3] = WORLD @ world.data.cam_xpos[self.camera]
+                    poses.append((time.perf_counter(), camera))
+            # MuJoCo's shadow pass produces dark floor triangles at this low camera height.
+            # Keep the head image clean without changing the viewer or the robot's physics.
+            self.renderer.scene.flags[mujoco.mjtRndFlag.mjRND_SHADOW] = False
+            frames.append(self.renderer.render().copy())
+        rgb = frames[0] if self.blur == 1 else np.mean(frames, axis=0).astype(np.uint8)
+        if self.truth:
+            taken, camera = poses[len(poses) // 2]
+            self.truth.write(
+                json.dumps(
+                    dict(
+                        t=taken,
+                        exposure=poses[-1][0] - poses[0][0],
+                        camera=camera.ravel().tolist(),
+                        thumb=thumbnail(rgb),
+                    ),
+                )
+                + "\n"
+            )
+        packed = to_uyvy(rgb)
         with self.lock:
             self.latest = packed
 

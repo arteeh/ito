@@ -1,16 +1,19 @@
 """Pilot a live robot through a scripted walk with MASt3R-SLAM; measure the 3D view.
 
 uv run --extra slam python e2e/slam_drive.py HOST:PORT [--code CODE] [--record DIR]
-    [--route short|tour] [--laps N]
+    [--route short|tour|sweep] [--laps N] [--turn-rate DEG_S] [--reconstruction slam|video]
 
 The short route walks 3 s forward, looks left and right, and walks 3 s back. The tour
-looks left, right and behind, walks, reverses and turns while walking. Then it
+looks left, right and behind, walks, reverses and turns while walking. The sweep stands
+and swings the head across the room and up and down. --reconstruction video drives on the
+flat feed, to record a drive where there is no CUDA. Then it
 reports how long the pilot saw the flat feed and why, the SLAM rate, capture-to-scene
 latency and how far the SLAM camera's heading strays from the robot's own measured camera
 heading for the same frame (the pose prior it sent with it: head FK, or body heading plus head
 pan), with a screenshot halfway through each standing leg (--no-shots for none). --record
-saves every frame handed to reconstruction, with the robot's pose prior and gaze, for
-e2e/slam_replay.py.
+saves every frame the pilot took, with the robot's pose prior and gaze, every robot Motion
+sample on both clocks and the robot's description, for e2e/slam_replay.py; start the virtual
+Microduck with --truth to score them against the simulator.
 """
 
 import argparse
@@ -29,7 +32,7 @@ from PIL import Image
 from ito import clock
 from ito.app import frames as _frames
 from ito.app.__main__ import main as pilot_main
-from ito.app.pilot import TRACKING_LOST
+from ito.app.pilot import TRACKING_LOST, Pilot
 from ito.link import media as _media
 from ito.reconstruction import Reconstruction
 
@@ -104,9 +107,23 @@ ROUTES["tour"] = [
     (-150, 0, "w", 5),
     (0, 0, "", 4),
 ]
+# Drive (a) of the tracking plan (#36): standing, the head swept across the room and up and
+# down, the motions vision tracks worst and the robot measures best. Run it with
+# --turn-rate at the head's full speed.
+ROUTES["sweep"] = [
+    (0, 0, "", 2),
+    (80, 0, "", 1),
+    (-80, 0, "", 1),
+    (80, 0, "", 1),
+    (0, 0, "", 1),
+    (0, 25, "", 1),
+    (0, -25, "", 1),
+    (-80, 15, "", 1),
+    (80, -15, "", 1),
+    (0, 0, "", 2),
+]
 ROUTE = ROUTES["tour"]
 KEYS = {"w": pygame.K_w, "a": pygame.K_a, "s": pygame.K_s, "d": pygame.K_d}
-TURN_RATE = math.radians(45)  # A brisk but ordinary head turn.
 # Closed loop (#25): the gait walks backward slower than forward and looks past the head's pan
 # limit turn the body, so an open-loop route creeps forward and skews lap by lap into walls.
 # Only a back leg walked facing the start heading returns home (the short route's); the tour
@@ -162,6 +179,15 @@ def main():
     parser.add_argument("--record", type=Path, help="save the frames reconstruction received")
     parser.add_argument("--route", choices=sorted(ROUTES), default="short")
     parser.add_argument("--laps", type=int, default=1)
+    parser.add_argument(
+        "--turn-rate", type=float, default=45, help="degrees/s the pilot's head turns"
+    )
+    parser.add_argument(
+        "--reconstruction",
+        choices=("slam", "video"),
+        default="slam",
+        help="video drives on the flat feed: records without CUDA, measures no SLAM",
+    )
     parser.add_argument(
         "--open-loop",
         action="store_true",
@@ -248,29 +274,61 @@ def main():
         args.record.mkdir(parents=True, exist_ok=True)
         for old in args.record.glob("*.jpg"):
             old.unlink()
-        submit = Reconstruction.submit
+        shown = Pilot._submit
 
-        def recording_submit(self, rgb, depth=None, camera=None, captured_at=None, **flags):
+        def recording_submit(self, pair, peer):
+            # Every frame the pilot took (the flat feed shows it; SLAM is offered it), with
+            # the pose prior SLAM is offered and its capture time on both clocks.
             nonlocal dropped
-            accepted = submit(self, rgb, depth, camera, captured_at, **flags)
-            if pilot is not None:
-                telemetry = pilot.telemetry
-                row = dict(
-                    captured=captured_at,
-                    accepted=accepted,
-                    measured=flags.get("measured", False),
-                    camera=None if camera is None else np.asarray(camera).ravel().tolist(),
-                    gaze=gaze(telemetry),
-                    base=[telemetry.get(k) for k in ("base_x", "base_y", "base_yaw")],
-                    head=[telemetry.get(k) for k in ("head_yaw", "head_pitch", "neck_pitch")],
-                )
-                try:
-                    recorded.put_nowait((rgb.copy(), row))
-                except queue.Full:
-                    dropped += 1
-            return accepted
+            before = self.state.video_time
+            shown(self, pair, peer)
+            if pair is None or self.state.video_time == before:
+                return
+            rgb, _, camera, captured = _frames.FrameJoin.arrays(pair, peer.clock)
+            metadata = pair[1]
+            measured = camera is not None or metadata.head_angles is not None
+            prior = self._prior(camera, metadata)
+            telemetry = self.telemetry
+            row = dict(
+                captured=captured,
+                capture_time=metadata.capture_time,
+                measured=measured,
+                camera=np.asarray(prior).ravel().tolist(),
+                gaze=gaze(telemetry),
+                base=[telemetry.get(k) for k in ("base_x", "base_y", "base_yaw")],
+                head=[telemetry.get(k) for k in ("head_yaw", "head_pitch", "neck_pitch")],
+            )
+            try:
+                recorded.put_nowait((rgb.copy(), row))
+            except queue.Full:
+                dropped += 1
 
-        Reconstruction.submit = recording_submit
+        Pilot._submit = recording_submit
+        motion_file = (args.record / "motion.jsonl").open("w", buffering=1)
+        received_motion = Pilot._motion
+
+        def recording_motion(self, message, peer):
+            # Every sample once, on both clocks: `time` is the driver's (robotd's t_ns where
+            # it shares the robot's clock), `local` the pilot's, as the worker sees it.
+            fresh = received_motion(self, message, peer)
+            remote = {peer.clock.remote_to_local(m.time): m.time for m in message.samples}
+            for local, camera, spin, state in fresh:
+                motion_file.write(
+                    json.dumps(
+                        dict(
+                            time=remote[local],
+                            local=local,
+                            camera=np.asarray(camera).ravel().tolist(),
+                            angular_velocity=list(spin),
+                            state=state,
+                            clock=self.telemetry.get("motion_clock"),
+                        )
+                    )
+                    + "\n"
+                )
+            return fresh
+
+        Pilot._motion = recording_motion
 
         def writer():
             (args.record / "camera.json").unlink(missing_ok=True)
@@ -312,8 +370,11 @@ def main():
         dt, previous = now - previous, now
         if app.worker:
             workers.add(app.worker.process.pid)
-            if args.record and not (args.record / "camera.json").exists():
-                (args.record / "camera.json").write_text(app.worker.intrinsics.model_dump_json())
+        if args.record and not (args.record / "camera.json").exists() and app.description:
+            camera = app.description.cameras[0]
+            (args.record / "camera.json").write_text(camera.intrinsics.model_dump_json())
+            # What robot-first tracking needs to replay this drive.
+            (args.record / "robot.json").write_text(app.description.model_dump_json())
         status = app.reconstruction_status
         if status != last_status:
             # Frame counters change every update; keep the kind of message only.
@@ -336,7 +397,12 @@ def main():
                 error = error or f"SLAM never showed the 3D view: {status!r} {app.failure!r}"
                 pygame.event.post(pygame.event.Event(pygame.QUIT))
                 return
-            if app.tracked_frames and not app.state.flat_video and gaze(app.telemetry) is not None:
+            shown = (
+                app.state.video is not None
+                if args.reconstruction == "video"
+                else app.tracked_frames and not app.state.flat_video
+            )
+            if shown and gaze(app.telemetry) is not None:
                 ready_at = leg_started = now
                 window.input.yaw = window.input.pitch = 0.0
                 key(pygame.K_r)
@@ -393,7 +459,7 @@ def main():
                     target_yaw = math.degrees(home["yaw"] + math.copysign(FACE_OVERSHOOT, skew))
             yaw_error = math.remainder(math.radians(target_yaw) - window.input.yaw, 2 * math.pi)
             pitch_error = math.radians(target_pitch) - window.input.pitch
-            step = TURN_RATE * min(dt, 0.05)
+            step = math.radians(args.turn_rate) * min(dt, 0.05)
             window.input.yaw += float(np.clip(yaw_error, -step, step))
             window.input.pitch += float(np.clip(pitch_error, -step, step))
             if max(abs(yaw_error), abs(pitch_error)) > step or facing is not None:
@@ -469,7 +535,7 @@ def main():
             "--fps",
             "60",
             "--reconstruction",
-            "slam",
+            args.reconstruction,
             "--audio-source",
             "none",
             "--audio-sink",

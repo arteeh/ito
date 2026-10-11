@@ -85,15 +85,23 @@ projection/voxelization on NVIDIA; the default automatically falls back to NumPy
 
 Monocular SLAM needs an NVIDIA GPU. Models and their licence notices are included in
 `models/` beside the app. Missing or damaged models keep the live flat camera feed usable.
-Recent keyframes are bounded to four; tracking recovery searches that local window. Monocular
-scale is estimated, so reconstructed distances are not a measurement tool.
+A robot that streams its own camera motion (Microduck does) is tracked robot-first: its
+source-stamped 50 Hz camera pose is fused with MASt3R's relative poses in a 12-keyframe
+window, in the robot's odometry frame, so there is no map to restart and a frame vision
+cannot match still gets a pose; so does one the camera's turn blurs, which adds no splats.
+The frame delay is estimated online against the robot's motion. Corrections reach the view at most 2 degrees/s and 5 cm/s,
+only while it moves. `--tracking vision` saves a per-robot switch back to MASt3R-SLAM alone
+(four keyframes, map restarts) for comparison. Monocular scale is estimated, so
+reconstructed distances are not a measurement tool.
 
 On Microduck, from this checkout: `uv run --project drivers/microduck ito-driver-microduck`; connect with `uv run ito <duck-address>:8081` and enter its printed pairing code.
 Microduck must have robotd/mediad running and be enabled with `robotctl robot enable`; G/right trigger opens the beak, C crouches.
+The driver streams the head camera's pose at robotd's 50 Hz, stamped when robotd read its sensors; `--head-imu` turns it by the head IMU's gyro (enable `[head_imu]` in tofd first).
 
 Virtual Microduck on Ubuntu: `drivers/microduck/setup-sim.sh /path/to/prefix`, then `/path/to/prefix/microduck-sim --viewer`.
 From built checkouts: `uv run --extra microduck python -m drivers.microduck.sim --microduck /path/to/microduck --rl /path/to/microduck_rl --policies /path/to/policies/current [--viewer] [--camera-height 360|720|1080]` (head camera size; the lens is the real 62 degrees at all of them).
 Enter the printed address and pairing code in Ito; Ctrl+C or closing the viewer stops the complete robot.
+`--truth FILE` writes each head-camera frame's true pose, and `--blur N` averages N back-to-back renders per frame (motion blur); `e2e/slam_drive.py --record` and `e2e/slam_replay.py --pose L1..L5 --truth FILE` score tracking against them.
 
 ## Development and releases
 
@@ -156,6 +164,7 @@ LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/desktop.py
 uv run python e2e/tab_look.py   # Tab never turns the view; own Xvfb + Xvnc, needs xdotool, tigervnc
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/stream.py
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/anchor_glide.py # no eye steps at SLAM rate
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/correction_ease.py # fusion's corrections eased in
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/flat_panel.py # flat feed follows the head
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/reconstruction.py  # two-minute live room
 ```

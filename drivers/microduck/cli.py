@@ -11,6 +11,11 @@ def main():
     parser.add_argument(
         "--robot", default="ws://127.0.0.1:8443", help="robot mediad LAN signalling address"
     )
+    parser.add_argument(
+        "--head-imu",
+        action="store_true",
+        help="turn the camera by the head IMU's gyro (enable [head_imu] in tofd first)",
+    )
     driver_arguments(parser)
     # Microduck's console owns port 8080. robotd runs its control loop at 50 Hz, but the
     # adapter sends only the newest input, so passing every pilot sample on keeps the one each
@@ -20,7 +25,9 @@ def main():
     args.prog = parser.prog
     args.audio_source, args.audio_sink = None, "none"
     args.adapter = "drivers.microduck.adapter:MicroduckAdapter"
-    args.adapter_args = json.dumps({"robot": args.robot, "input_timeout": args.input_timeout})
+    args.adapter_args = json.dumps(
+        {"robot": args.robot, "input_timeout": args.input_timeout, "head_imu": args.head_imu}
+    )
     logging.basicConfig(level=logging.INFO)
     try:
         if not pairing_command(args):
