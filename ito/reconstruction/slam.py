@@ -10,6 +10,9 @@ cannot match are skipped while the robot's own pose carries the view, and after 
 the tracker tries the keyframe that last faced the robot's way. A loss that outlasts
 that, or a solve that diverges, starts a fresh map at the robot's heading; each restart
 is counted by cause.
+
+ITO_SLAM_IMU=1 instead seeds every measured frame, gates full rotation before fusion,
+retains robot tilt and permits only slow visual yaw drift correction. Opt-in pending CUDA A/B.
 """
 
 import math
@@ -19,6 +22,7 @@ import numpy as np
 
 from ito import clock
 
+from . import prior as imu
 from .rgbd import RGBDBackend
 
 # A stray larger than the robot's own error (joint/IMU latency during a brisk turn) starts
@@ -110,6 +114,10 @@ class SLAMBackend(RGBDBackend):
         self.restarts = dict.fromkeys(RESTART_CAUSES, 0)
         self.corrections = 0  # Heading corrections started; each eases over a few frames.
         self.recalls = 0  # Failed frames retried, and matched, against a recalled keyframe.
+        self.prior_tracking = os.environ.get("ITO_SLAM_IMU", "0") == "1"
+        self.prior_yaw = 0.0
+        self.prior_time = None
+        self.prior_rejections = 0
         self.correcting = False
         self.frame_id = 0
         self.lost = False
@@ -128,15 +136,10 @@ class SLAMBackend(RGBDBackend):
     def placed(self, transform):
         """The Ito world-from-camera pose of a map pose and its scale, or None if unusable."""
         matrix = transform.matrix()[0].double().cpu().numpy()
-        scale = abs(np.linalg.det(matrix[:3, :3])) ** (1 / 3)
-        if not np.isfinite(matrix).all() or not 0.01 < scale < 100:
-            return None, scale
-        # Sim3 rotations drift from orthonormal in float32; snap to the nearest one.
-        u, _, vh = np.linalg.svd(matrix[:3, :3])
-        rigid = np.eye(4)
-        rigid[:3, :3] = (u @ vh) * AXES[:, None] * AXES[None, :]
-        rigid[:3, 3] = matrix[:3, 3] * AXES
-        return (rigid if self.world is None else self.world @ rigid), scale
+        rigid, scale = imu.split_sim3(matrix)
+        return (
+            None if rigid is None else rigid if self.world is None else self.world @ rigid
+        ), scale
 
     def unplaced(self, pose, scale):
         """The map's Sim3 for an Ito world-from-camera pose."""
@@ -149,6 +152,8 @@ class SLAMBackend(RGBDBackend):
 
     def predicted(self, prior, fallback):
         """Where the robot's turns since the map started say the camera now looks."""
+        if getattr(self, "prior_tracking", False):
+            return imu.predict(prior, fallback, self.prior_yaw)
         start, robot = self.anchor
         rotation = prior[:3, :3] @ robot[:3, :3].T @ start[:3, :3]
         # Composed onto a map tilted unlike the robot's estimate (a measured camera rolls
@@ -232,6 +237,10 @@ class SLAMBackend(RGBDBackend):
         started = clock.now()
         prior = np.asarray(camera, dtype=np.float64)
         restarted = None
+        visual_pose = None
+        aided = measured and self.prior_tracking
+        dt = 0 if self.prior_time is None else now - self.prior_time
+        self.prior_time = now
         with torch.inference_mode():
             frame = create_frame(self.frame_id, rgb.astype(np.float32) / 255, self.transform)
             frame.K = self.K
@@ -260,6 +269,9 @@ class SLAMBackend(RGBDBackend):
                         turn(heading(prior[:3, :3]) - heading(pose[:3, :3])) @ pose[:3, :3]
                     )
                     frame.T_WC = self.unplaced(pose, scale)
+                if aided:
+                    pose = imu.predict(prior, pose, self.prior_yaw)
+                    frame.T_WC = self.unplaced(pose, scale)
                 self.start_map(frame, pose, prior)
             else:
                 # Without the robot's heading, try one retained keyframe per observation
@@ -271,11 +283,40 @@ class SLAMBackend(RGBDBackend):
                 previous, previous_scale = self.placed(self.transform) if measured else (None, 0)
                 relocalized = False
                 for attempt in range(2 if measured and RECALL else 1):
-                    if measured and (self.unmatched_since is not None or attempt):
+                    if measured and (aided or self.unmatched_since is not None or attempt):
                         # Start the solve where the robot says the camera now looks.
                         frame.T_WC = self.unplaced(self.predicted(prior, previous), previous_scale)
+                    reference = self.frames[-1]
+                    # "recent" filtering replaces tensors; references suffice for rollback.
+                    saved = (
+                        (reference.X_canon, reference.C, reference.N, reference.N_updates)
+                        if aided
+                        else None
+                    )
                     new_keyframe, _, lost = self.tracker.track(frame)
                     pose, scale = (None, 0) if lost else self.placed(frame.T_WC)
+                    if aided:
+                        fused, _ = (
+                            (None, self.prior_yaw)
+                            if pose is None
+                            else imu.blend(prior, pose, self.prior_yaw, 0)
+                        )
+                        if fused is None:
+                            reference.X_canon, reference.C, reference.N, reference.N_updates = saved
+                            self.tracker.reset_idx_f2k()
+                        if pose is not None and fused is None:
+                            self.prior_rejections += 1
+                            self.camera_pose = self.predicted(prior, previous).astype(np.float32)
+                            self.lost = True
+                            self.relocalize(prior)
+                            self.report(f"SLAM IMU rejected rotation | {self.prior_rejections}")
+                            return
+                        if fused is not None:
+                            visual_pose = pose.copy()
+                            pose = fused
+                            frame.T_WC = self.unplaced(pose, scale)
+                            # The reference pointmap was transformed using the raw visual pose.
+                            reference.X_canon, reference.C, reference.N, reference.N_updates = saved
                     if not measured:
                         break
                     cause = "unmatched" if lost else "failure" if pose is None else None
@@ -321,7 +362,8 @@ class SLAMBackend(RGBDBackend):
                         new_keyframe = False
                         restarted = cause
                     else:
-                        pose = self.steer(pose, stray)
+                        if not aided:
+                            pose = self.steer(pose, stray)
                     self.unmatched_since = None
                 elif pose is None:
                     self.lost = True
@@ -340,7 +382,28 @@ class SLAMBackend(RGBDBackend):
                     graph.add_factors(list(range(last)), list(range(1, last + 1)), 0.1)
                     if last > 1:
                         graph.add_factors([0], [last], 0.1)
+                    saved_poses = (
+                        [(kf, kf.T_WC, self.placed(kf.T_WC)[0]) for kf in self.frames]
+                        if aided
+                        else []
+                    )
                     graph.solve_GN_calib()
+                    if aided:
+                        # The pinned CUDA solver has only visual pair factors, no unary prior.
+                        # Roll back the whole solve if any camera leaves its accepted rotation.
+                        solved = [(kf, self.placed(kf.T_WC)) for kf in self.frames]
+                        if any(
+                            p is None
+                            or imu.rotation_error(p[:3, :3], old[:3, :3]) > imu.ROTATION_GATE
+                            for (_, (p, _)), (_, _, old) in zip(solved, saved_poses, strict=True)
+                        ):
+                            for kf, transform, _ in saved_poses:
+                                kf.T_WC = transform
+                            self.prior_rejections += 1
+                        else:
+                            for (kf, (p, s)), (_, _, old) in zip(solved, saved_poses, strict=True):
+                                p[:3, :3] = old[:3, :3]
+                                kf.T_WC = self.unplaced(p, s)
                     self.tracker.reset_idx_f2k()
                     pose, scale = self.placed(frame.T_WC)
                     if pose is None:
@@ -349,6 +412,11 @@ class SLAMBackend(RGBDBackend):
                         self.restart("failure")
                         return
                     self.remember(frame, pose)
+            if aided:
+                if visual_pose is not None:
+                    _, self.prior_yaw = imu.blend(prior, visual_pose, self.prior_yaw, dt)
+                pose = imu.predict(prior, pose, self.prior_yaw)
+                frame.T_WC = self.unplaced(pose, scale)
             self.transform = frame.T_WC
             self.camera_pose = pose.astype(np.float32)
             local = constrain_points_to_ray(frame.img.shape[-2:], frame.X_canon[None], self.K)[0]

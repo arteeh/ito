@@ -143,6 +143,7 @@ def main():
     pending = []  # (due time, records, live) snapshots waiting for their future frame
     predictions = []
     previews = 0
+    camera_heading_errors = []
     inferred = dict(unmatched=0, heading=0, failure=0)  # For backends that do not count.
     origin = None
     while True:
@@ -203,6 +204,10 @@ def main():
             )
         )
         if tracked:
+            if measured and prior is not None:
+                camera_heading_errors.append(
+                    math.degrees(abs(math.remainder(slam - heading(prior[:3, :3]), math.tau)))
+                )
             camera = backend.camera_pose.astype(np.float64)
             for due, records, live in [p for p in pending if p[0] <= now]:
                 pending.remove((due, records, live))
@@ -243,11 +248,18 @@ def main():
         recording=str(args.recording),
         measured=not args.unmeasured,
         prior_delay=args.prior_delay,
+        imu_tracking=getattr(backend, "prior_tracking", False),
+        imu_rejections=getattr(backend, "prior_rejections", 0),
         overrides=args.set,
         seconds=round(float(stamps[-1]), 1),
         frames_available=len(rows),
         frames_processed=len(processed),
         slam_hz=round(len(processed) / float(stamps[-1]), 2),
+        tracked_hz=round(float(ok.sum()) / float(stamps[-1]), 2),
+        camera_heading_frames=len(camera_heading_errors),
+        camera_heading_error_deg_p95=float(np.percentile(camera_heading_errors, 95))
+        if camera_heading_errors
+        else None,
         frame_ms_median=round(float(np.median(durations)) * 1000, 1),
         frame_ms_p95=round(float(np.percentile(durations, 95)) * 1000, 1),
         lost_frames=int((~ok).sum()),

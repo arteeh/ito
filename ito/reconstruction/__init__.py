@@ -109,6 +109,7 @@ def _run(recon):
                         splats=int(backend.count),
                         splats_delta=int(backend.count) - before[2],
                         recalls=getattr(backend, "recalls", None),
+                        imu_rejections=getattr(backend, "prior_rejections", None),
                     )
                     timeline.write(json.dumps(row) + "\n")
                 if recon.backend == "slam" and recon.output_lock.acquire(False):
