@@ -88,7 +88,8 @@ Monocular SLAM needs an NVIDIA GPU. Models and their licence notices are include
 A robot that streams its own camera motion (Microduck does) is tracked robot-first: its
 source-stamped 50 Hz camera pose is fused with MASt3R's relative poses in a 12-keyframe
 window, in the robot's odometry frame, so there is no map to restart and a frame vision
-cannot match still gets a pose. Corrections reach the view at most 2 degrees/s and 5 cm/s,
+cannot match still gets a pose; so does one the camera's turn blurs, which adds no splats.
+The frame delay is estimated online against the robot's motion. Corrections reach the view at most 2 degrees/s and 5 cm/s,
 only while it moves. `--tracking vision` saves a per-robot switch back to MASt3R-SLAM alone
 (four keyframes, map restarts) for comparison. Monocular scale is estimated, so
 reconstructed distances are not a measurement tool.

@@ -24,6 +24,15 @@ from .slam_vision import RESTART_CAUSES
 
 __all__ = ["RESTART_CAUSES", "SLAMBackend"]
 
+# A frame smeared further than this by the camera's turn during its exposure still gets a
+# pose, from the robot, but neither a visual factor nor splats: no tracker matches through
+# it, and its splats would be streaks. Blur is |angular velocity| x exposure x focal length.
+BLUR_PIXELS = 8.0
+# Nothing on the wire says how long the sensor exposed; indoor auto-exposure runs about this.
+EXPOSURE = 0.010
+# How far the online frame-delay estimate may stray from the driver's own.
+DELAY_RANGE = (-0.1, 0.2)
+
 
 class SLAMBackend(RGBDBackend):
     """frame_delay: the driver's estimate of how long before its capture_time a frame was
@@ -53,11 +62,16 @@ class SLAMBackend(RGBDBackend):
         # A keyframe needs the robot's motion back to its exposure; a minute outlasts any
         # look around the room.
         self.motion = MotionBuffer(motion_noise, seconds=60.0)
-        self.graph = PoseGraph(self.motion, td=frame_delay, td_bounds=(0.0, 0.3))
+        # The frame delay is estimated online, against the robot's motion: visual turns
+        # only line up with the robot's at the right delay.
+        bounds = (max(0.0, frame_delay + DELAY_RANGE[0]), frame_delay + DELAY_RANGE[1])
+        self.graph = PoseGraph(self.motion, td=frame_delay, td_bounds=bounds, estimate_td=True)
+        self.focal = float(intrinsics.fx)
         self.camera_pose = np.eye(4, dtype=np.float32)
         self.correction = np.eye(4, dtype=np.float32)
         self.tracked = 0  # frames given a pose
         self.matched = 0  # of those, frames vision matched
+        self.blurred = 0  # of those, frames too blurred to look at
         self.restarts = dict.fromkeys(RESTART_CAUSES, 0)  # Always zero: there is no map.
         self.lost = False
         self.unmatched_since = None
@@ -86,6 +100,12 @@ class SLAMBackend(RGBDBackend):
         last = graph.latest_keyframe()
         reference_time = graph.nodes[last].time if last is not None else captured
         _, covariance = self.motion.between(reference_time - graph.td, exposure)
+        spin = float(np.linalg.norm(self.motion.angular_velocity(exposure)))
+        if oracle is None and spin * EXPOSURE * self.focal > BLUR_PIXELS:
+            self.blurred += 1
+            graph.solve_frame()
+            self._publish(node)
+            return
         result = self.frontend.track(rgb, node, predicted, np.sqrt(np.diag(covariance)))
         if result.relative is not None:
             graph.add_visual(result.reference, node, result.relative, result.sigma)
@@ -103,17 +123,22 @@ class SLAMBackend(RGBDBackend):
                 poses, scale = {k: graph.pose(k) for k in graph.keyframes}, 1.0
             self.frontend.correct(poses, scale)
             self.frontend.forget(dropped)
+        pose = self._publish(node)
+        if result.cloud is not None:
+            self.place(result.cloud, pose, now + clock.now() - started)
+
+    def _publish(self, node):
+        graph = self.graph
         pose = graph.pose(node)
         self.camera_pose = pose.astype(np.float32)
         self.correction = graph.correction(node).astype(np.float32)
         self.tracked += 1
-        if result.cloud is not None:
-            self.place(result.cloud, pose, now + clock.now() - started)
         self.report(
             f"Robot-first tracking | {self.tracked} frames, "
-            f"{self.matched / self.tracked:.0%} matched, "
+            f"{self.matched / self.tracked:.0%} matched, {self.blurred} blurred, "
             f"frame delay {graph.td * 1000:.0f} ms"
         )
+        return pose
 
     def place(self, cloud, pose, when):
         """Splats for a frame's points seen from pose; the view replaces what it sees through."""
