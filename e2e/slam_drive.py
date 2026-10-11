@@ -6,8 +6,9 @@ uv run --extra slam python e2e/slam_drive.py HOST:PORT [--code CODE] [--record D
 The short route walks 3 s forward, looks left and right, and walks 3 s back. The tour
 looks left, right and behind, walks, reverses and turns while walking. Then it
 reports how long the pilot saw the flat feed and why, the SLAM rate, capture-to-scene
-latency and how well the SLAM camera's heading follows the robot's measured gaze (body
-heading plus head pan from telemetry), with a screenshot per leg. --record saves every
+latency and how far the SLAM camera's heading strays from the robot's own measured camera
+heading for the same frame (the pose prior it sent with it: head FK, or body heading plus head
+pan), with a screenshot per leg. --record saves every
 frame handed to reconstruction, with the robot's pose prior and gaze, for e2e/slam_replay.py.
 """
 
@@ -201,6 +202,10 @@ def main():
 
     def offering_submit(self, rgb, depth=None, camera=None, captured_at=None, **flags):
         accepted = offer(self, rgb, depth, camera, captured_at, **flags)
+        if accepted and camera is not None and captured_at is not None:
+            priors[captured_at] = heading(camera)
+            if len(priors) > 2000:
+                del priors[next(iter(priors))]
         offered.write(
             json.dumps(
                 dict(
@@ -216,6 +221,17 @@ def main():
         return accepted
 
     Reconstruction.submit = offering_submit
+    pose_of = Reconstruction.pose
+    published = {}  # The newest SLAM pose the pilot read: (camera, tracked, tracking, captured)
+
+    def reading_pose(self):
+        # The pilot's own reads, so measuring adds no contention on the worker's pose lock.
+        pose = pose_of(self)
+        if pose:
+            published["pose"] = pose
+        return pose
+
+    Reconstruction.pose = reading_pose
 
     if args.record:
         args.record.mkdir(parents=True, exist_ok=True)
@@ -268,10 +284,12 @@ def main():
     statuses = Counter()
     transitions = []
     last_status = None
-    poses = []  # (seconds, tracked frame count, SLAM heading, robot gaze) on each update
+    # (seconds, tracked frame count, SLAM heading, the robot's camera heading for that frame,
+    # tracking) on each tracked frame SLAM publishes; headings in the startup-relative world.
+    poses = []
+    priors = {}  # capture time: heading of the robot's camera pose sent with that frame
     workers = set()
     error = None
-    origin = {}
     rearmed = 0.0
 
     def drive(app, window, value):
@@ -318,17 +336,21 @@ def main():
             return
         flat = app.state.flat_video
         samples.append((dt, flat, reason(app, now) if flat else None))
-        looked = gaze(app.telemetry)
-        if app.tracked_frames != (poses[-1][1] if poses else None) and looked is not None:
-            if not origin:
-                origin.update(slam=heading(app.camera_pose), gaze=looked)
+        # SLAM's world shares the robot's startup heading, so its camera heading compares with
+        # the robot's own for the same frame as is. Zeroing both on the first pose instead, or
+        # comparing with the gaze now, skewed a run by the head's motion during the ~230 ms
+        # from capture to pose (a 36 degree p95 in one Ceres run).
+        latest = published.get("pose")
+        if latest and latest[1] != (poses[-1][1] if poses else None):
+            camera, count, tracking, captured = latest
+            robot = priors.get(captured)
             poses.append(
                 (
                     now - ready_at,
-                    app.tracked_frames,
-                    math.remainder(heading(app.camera_pose) - origin["slam"], 2 * math.pi),
-                    math.remainder(looked - origin["gaze"], 2 * math.pi),
-                    app.tracking,
+                    count,
+                    heading(camera),
+                    robot,
+                    tracking,
                 )
             )
         base = [app.telemetry.get(k) for k in ("base_x", "base_y", "base_yaw")]
@@ -446,11 +468,10 @@ def main():
             flat_time[why] += dt
     episodes = sum(1 for a, b in zip(samples, samples[1:], strict=False) if b[1] and not a[1])
     tracked = poses[-1][1] - poses[0][1] if len(poses) > 1 else 0
-    # Heading error once the SLAM pose has had a moment to follow the gaze.
     heading_error = [
-        abs(math.degrees(math.remainder(slam - looked, 2 * math.pi)))
-        for _, _, slam, looked, ok in poses
-        if ok
+        abs(math.degrees(math.remainder(slam - robot, 2 * math.pi)))
+        for _, _, slam, robot, ok in poses
+        if ok and robot is not None
     ]
     base_end = pilot and [pilot.telemetry.get(k) for k in ("base_x", "base_y")]
     base_end = None if not base_end or None in base_end else base_end
@@ -479,7 +500,11 @@ def main():
         drift_m=round(math.hypot(base_end[0] - home["x"], base_end[1] - home["y"]), 3)
         if home and base_end
         else None,
-        gaze_range_deg=round(math.degrees(np.ptp([p[3] for p in poses])), 1) if poses else None,
+        heading_frames=len(heading_error),
+        heading_frames_without_prior=sum(1 for p in poses if p[4] and p[3] is None),
+        gaze_range_deg=round(math.degrees(np.ptp(np.unwrap(robot))), 1)
+        if (robot := [p[3] for p in poses if p[3] is not None])
+        else None,
         status_timeline=transitions[:300],
     )
     (out / "poses.json").write_text(json.dumps(poses))
