@@ -7,7 +7,8 @@ The short route walks 3 s forward, looks left and right, and walks 3 s back. The
 looks left, right and behind, walks, reverses and turns while walking. Then it
 reports how long the pilot saw the flat feed and why, the SLAM rate, capture-to-scene
 latency and how well the SLAM camera's heading follows the robot's measured gaze (body
-heading plus head pan from telemetry), with a screenshot per leg. --record saves every
+heading plus head pan from telemetry), with a screenshot halfway through each standing leg
+(--no-shots for none). --record saves every
 frame handed to reconstruction, with the robot's pose prior and gaze, for e2e/slam_replay.py.
 """
 
@@ -166,6 +167,9 @@ def main():
         help="walk on timers only: no walking back to the start, re-facing or stall aborts",
     )
     parser.add_argument("--startup-timeout", type=float, default=300)
+    parser.add_argument(
+        "--no-shots", action="store_true", help="no screenshots: each stalls the pilot ~0.45 s"
+    )
     args = parser.parse_args()
     out = args.out
     out.mkdir(parents=True, exist_ok=True)
@@ -269,6 +273,7 @@ def main():
     leg = -1
     leg_started = began = previous = clock.now()
     arrived = None
+    shot = None  # the last leg screenshotted
     ready_at = None
     held = ""
     samples = []  # (dt, flat, reason) per display frame after the first 3D view
@@ -283,7 +288,7 @@ def main():
 
     def drive(app, window, value):
         nonlocal pilot, leg, leg_started, arrived, ready_at, held, previous, last_status, error
-        nonlocal rearmed, facing, last_pitch
+        nonlocal rearmed, facing, last_pitch, shot
         pilot = app
         now = clock.now()
         dt, previous = now - previous, now
@@ -317,7 +322,6 @@ def main():
                 ready_at = leg_started = now
                 window.input.yaw = window.input.pitch = 0.0
                 key(pygame.K_r)
-                key(pygame.K_F12)
             return
         if leg == len(route):
             return
@@ -401,13 +405,24 @@ def main():
                         json.dumps(dict(leg=leg, at=round(now, 4), stalled=round(moved, 3))) + "\n"
                     )
                     done = True
+        # Saving a screenshot stalls the pilot about 0.45 s: take it halfway through a leg
+        # standing still, never as a walk starts or stops (the gait change #28 measures).
+        if (
+            not done
+            and not held
+            and not args.no_shots
+            and shot != leg
+            and arrived is not None
+            and now - arrived >= route[leg][3] / 2
+        ):
+            key(pygame.K_F12)
+            shot = leg
         if done:
             for name in held:
                 key(KEYS[name], False)
             leg += 1
             arrived = None
             leg_started = now
-            key(pygame.K_F12)
             if leg == len(route):
                 pygame.event.post(pygame.event.Event(pygame.QUIT))
                 return
