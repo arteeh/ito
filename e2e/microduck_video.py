@@ -55,10 +55,12 @@ class VideoEvidence:
                         if len(header) != 4:
                             raise RuntimeError("sensor closed before evidence capture ended")
                         length = struct.unpack("<I", header)[0]
-                        if length != 640 * 360 * 2:
+                        height = round((length * 9 / 32) ** 0.5)
+                        width = height * 16 // 9
+                        if height not in (360, 720, 1080) or length != width * height * 2:
                             raise RuntimeError(f"unexpected sensor frame length: {length}")
                         packed = stream.read(length)
-                        frame = np.frombuffer(packed, np.uint8).reshape(360, 640, 2)
+                        frame = np.frombuffer(packed, np.uint8).reshape(height, width, 2)
                         rgb = cv2.cvtColor(frame, cv2.COLOR_YUV2RGB_UYVY)
                         rgb = np.ascontiguousarray(np.rot90(rgb, -1))
                         self.write("sensor", rgb)

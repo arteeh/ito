@@ -66,7 +66,7 @@ def simulation(
     driver_port=8081,
     viewer=False,
     gl=None,
-    camera_height=360,
+    camera_height=1080,
 ):
     upstream, rl, policies_dir = (p.resolve() for p in (upstream, rl, policies_dir))
     logs.mkdir(parents=True, exist_ok=True)
@@ -295,7 +295,7 @@ def main():
         "--camera-height",
         type=int,
         choices=sorted(lens.RESOLUTIONS),
-        default=360,
+        default=1080,
         help="head camera frame height in pixels (16:9); larger costs render time",
     )
     parser.add_argument("--host", default="0.0.0.0")

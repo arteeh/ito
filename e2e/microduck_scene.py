@@ -99,7 +99,7 @@ def main():
             data.qpos[3:7] = [np.cos(yaw / 2), 0, 0, np.sin(yaw / 2)]
             mujoco.mj_forward(model, data)
             head.render(world)
-            packed = np.frombuffer(head.latest, dtype=np.uint8).reshape(360, 640, 2)
+            packed = np.frombuffer(head.latest, dtype=np.uint8).reshape(head.height, head.width, 2)
             rgb = cv2.cvtColor(packed, cv2.COLOR_YUV2RGB_UYVY)
             Image.fromarray(np.rot90(rgb, k=3)).save(OUT / f"head-{name}.png")
     finally:

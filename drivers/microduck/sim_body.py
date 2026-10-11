@@ -16,7 +16,7 @@ from drivers.microduck import lens
 
 class HeadCamera(Camera):
     def __init__(self, model, name):
-        height = int(os.environ.get("ITO_MICRODUCK_CAMERA_HEIGHT", 360))
+        height = int(os.environ.get("ITO_MICRODUCK_CAMERA_HEIGHT", 1080))
         width = lens.width_for(height)
         # MuJoCo renders no larger than the offscreen buffer, which the scene sizes at 640x480.
         model.vis.global_.offwidth = max(model.vis.global_.offwidth, width)
