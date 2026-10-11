@@ -152,7 +152,9 @@ class RGBDBackend:
         z = xp.asarray(depth, dtype=xp.float32)
         valid = xp.isfinite(z) & (z > 0) & (z < 1000)
         local = self.rays * xp.where(valid, z, 0)[..., None]
-        normals, sizes, valid, axes = surfaces(local, valid, xp)
+        normals, sizes, valid, axes = surfaces(
+            local, valid, xp, (self.intrinsics.fx, self.intrinsics.fy)
+        )
         transform = xp.asarray(camera, dtype=xp.float32)
         points = local @ transform[:3, :3].T + transform[:3, 3]
         normals = normals @ transform[:3, :3].T

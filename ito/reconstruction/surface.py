@@ -1,7 +1,7 @@
 """Pixel footprints and normals, on NumPy or CuPy without per-pixel Python work."""
 
 
-def surfaces(points, valid, xp):
+def surfaces(points, valid, xp, focal=None):
     # Choose the shorter one-sided difference: never bridge a foreground silhouette.
     dx = xp.zeros_like(points)
     dy = xp.zeros_like(points)
@@ -19,6 +19,18 @@ def surfaces(points, valid, xp):
         b = xp.where(good_backward, xp.sum(backward**2, axis=-1), xp.inf)
         target[:] = xp.where((a < b)[..., None], forward, backward)
         target[~(good_forward | good_backward)] = 0
+        # A one-pixel silhouette has no same-surface neighbour on either side.
+        # Its measured pixel is still valid, but a derivative across the gap is
+        # not: use the camera-plane footprint until a later view resolves it.
+        broken = xp.linalg.norm(target, axis=-1) > 0.05 * xp.linalg.norm(points, axis=-1)
+        if focal is None:
+            valid = valid & ~broken
+        else:
+            fallback = xp.zeros_like(target)
+            component = 0 if axis == 1 else 1
+            sign = 1 if axis == 1 else -1
+            fallback[..., component] = -points[..., 2] * sign / focal[component]
+            target[broken] = fallback[broken]
     normal = xp.cross(dx, dy)
     length = xp.linalg.norm(normal, axis=-1)
     normal /= xp.maximum(length[..., None], 1e-20)

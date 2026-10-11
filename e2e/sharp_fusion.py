@@ -70,6 +70,13 @@ def main():
     )
     assert set(np.unique(sample_rgb)) == {128, 200}, "patch merger blurred a colour edge"
     assert np.min(sample_sizes) < 0.02, "colour edges lost their pixel footprints"
+    thin = depth.copy()
+    thin[:, 80] = 0.5
+    _, _, visible, footprint = surfaces(backend.rays * thin[..., None], thin > 0, np, (k.fx, k.fy))
+    assert visible[:, 80].all(), "one-pixel silhouette disappeared"
+    assert np.max(np.linalg.norm(footprint[:, 80], axis=-1)) < 0.01, (
+        "footprint crossed a depth edge"
+    )
     rng = np.random.default_rng(34)
     counts, errors = [], []
     for frame in range(30):
