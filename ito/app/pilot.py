@@ -75,6 +75,7 @@ class Pilot:
         self.code = code  # Used once, when the robot does not know this pilot yet.
         self.credential = credential
         self.refusal = None  # Why the robot refused to pair; the pilot must act.
+        self.description = None  # The robot connected last
         self.settings = defaults or settings.Settings()
         self.defaults = self.settings
         self.overrides = overrides or {}
@@ -113,6 +114,8 @@ class Pilot:
         self.camera_rate = Rate()  # joined frames handed to reconstruction
         self.motion_rate = Rate()  # robot motion samples received
         self.motion_time = -1.0  # Pilot-clock time of the newest robot motion sample
+        # SLAM places the eye from the robot's own motion, corrected by fusion (tracking.py).
+        self.robot_first = False
         self.scene_rate = CounterRate()  # frames reconstruction integrated into the scene
 
     @property
@@ -301,6 +304,13 @@ class Pilot:
             fresh.append(
                 (local, camera_matrix(sample.camera_pose), sample.angular_velocity, sample.state)
             )
+        if fresh and self.robot_first:
+            # The eye follows the robot's newest camera pose at its own 50 Hz; the renderer
+            # moves it by fusion's correction. Reconstruction fuses every sample.
+            self._anchor(fresh[-1][1])
+            worker = self.worker
+            if worker is not None and not self.failure:
+                worker.motion(fresh)
         return fresh
 
     def _retire(self, worker):
@@ -335,7 +345,7 @@ class Pilot:
         self.state = replace(self.state, robot_camera=pose(camera[:3, 3]))
 
     async def _session(self, peer):
-        description = peer.description
+        self.description = description = peer.description
         camera = next(
             (
                 c
@@ -378,6 +388,7 @@ class Pilot:
         self.tracked_frames = 0
         self.tracking = self.slam_view = False
         self.motion_time = -1.0  # A new link has a new clock offset.
+        self.robot_first = False
         self.restart_at = None
         restart_delay = RESTART_FIRST
         worker_started = 0.0
@@ -398,7 +409,12 @@ class Pilot:
                     camera.intrinsics,
                     max_splats=self.max_splats,
                     backend=self.backend,
+                    tracking=self.settings.tracking,
+                    motion_noise=description.motion_noise,
+                    frame_delay=camera.capture_delay,
                 )
+            self.robot_first = self.backend == "slam" and self.worker.tracking_mode == "robot"
+            self.state = replace(self.state, correction=pose())
 
         if self.backend != "video":
             reconstruct()
@@ -485,7 +501,11 @@ class Pilot:
                             self.tracked_frames = count
                         self._log_restarts(self.worker.restarts())
                         live = self.tracking and now - self.last_tracking < TRACKING_LOST
-                        if live and tracked:
+                        if live and tracked and self.robot_first:
+                            correction = self.worker.correction()
+                            if correction is not None:
+                                self.state = replace(self.state, correction=correction)
+                        elif live and tracked:
                             self._anchor(transform)
                         elif self.tracking and not live:
                             self.reconstruction_status = (

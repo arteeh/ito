@@ -13,8 +13,8 @@ from ito.protocol import Intrinsics
 from ito.render.pose import validate_pose
 
 from .rgbd import RGBDBackend
-from .ring import SplatUpdate, UpdateRing
-from .slam import RESTART_CAUSES
+from .ring import MotionRing, SplatUpdate, UpdateRing
+from .slam_vision import RESTART_CAUSES
 
 __all__ = ["Reconstruction", "SplatUpdate", "default_budget"]
 
@@ -31,10 +31,25 @@ def default_budget(renderer: str = "", video_memory_mb: int = 0) -> int:
 
 def _run(recon):
     try:
-        if recon.backend == "slam":
-            from .slam import SLAMBackend
+        robot_first = recon.backend == "slam" and recon.tracking_mode == "robot"
+        if robot_first:
+            try:
+                from .slam import SLAMBackend
+            except ImportError as exc:
+                raise RuntimeError("Robot-first tracking needs Ito's SLAM components") from exc
 
             backend = SLAMBackend(
+                recon.budget.value,
+                recon.intrinsics,
+                report=recon.report,
+                motion_noise=recon.motion_noise,
+                frame_delay=recon.frame_delay,
+                **recon.options,
+            )
+        elif recon.backend == "slam":
+            from .slam_vision import VisionSLAMBackend
+
+            backend = VisionSLAMBackend(
                 recon.budget.value,
                 recon.intrinsics,
                 report=recon.report,
@@ -47,6 +62,7 @@ def _run(recon):
         timeline = os.environ.get("ITO_TIMELINE")
         timeline = open(timeline, "a", buffering=1) if timeline else None
         cursor = 0
+        motion_cursor = 0
         revision = 0
         captured = recon.epoch
         # A pilot app that died without closing it would otherwise leave it holding the GPU.
@@ -56,6 +72,9 @@ def _run(recon):
             backend.expire(now, recon.ring.last_acknowledged())
             if backend.budget != recon.budget.value:
                 backend.resize(recon.budget.value, now)
+            if robot_first:
+                rows, motion_cursor = recon.motion_ring.read(motion_cursor)
+                backend.add_motion(rows)
             frame = None
             if recon.input_lock.acquire(False):
                 try:
@@ -78,7 +97,9 @@ def _run(recon):
                         backend.count,
                     )
                     began = clock.now()
-                if recon.backend == "slam":
+                if robot_first:
+                    backend.integrate(*frame, now, captured=captured)
+                elif recon.backend == "slam":
                     backend.integrate(*frame, now, measured=measured)
                 else:
                     backend.integrate(*frame, now)
@@ -109,12 +130,16 @@ def _run(recon):
                         splats=int(backend.count),
                         splats_delta=int(backend.count) - before[2],
                         recalls=getattr(backend, "recalls", None),
+                        matched=getattr(backend, "matched", None),
                     )
                     timeline.write(json.dumps(row) + "\n")
                 if recon.backend == "slam" and recon.output_lock.acquire(False):
                     try:
                         np.frombuffer(recon.output_camera, np.float32)[:] = (
                             backend.camera_pose.ravel()
+                        )
+                        np.frombuffer(recon.output_correction, np.float32)[:] = (
+                            backend.correction.ravel() if robot_first else np.eye(4).ravel()
                         )
                         recon.output_captured.value = captured
                         recon.tracked.value = backend.tracked
@@ -163,14 +188,25 @@ class Reconstruction:
         fade_seconds=0.5,
         device="auto",
         backend="rgbd",
+        tracking="robot",
+        motion_noise=None,
+        frame_delay=0.0,
     ):
+        """tracking: for SLAM, "robot" fuses the robot's Motion with vision (it needs the
+        robot's motion_noise); "vision" is MASt3R-SLAM alone, steered by the pose prior
+        each frame carries."""
         if not 1 <= max_splats <= 4_194_304:
             raise ValueError("Max splats must be between 1 and 4,194,304")
         if not all(np.isfinite(v) and v > 0 for v in (voxel_size, fade_seconds)):
             raise ValueError("Voxel size and fade must be finite and positive")
         if backend not in ("rgbd", "slam"):
             raise ValueError("Reconstruction backend must be rgbd or slam")
+        if tracking not in ("robot", "vision"):
+            raise ValueError("Tracking must be robot or vision")
         self.backend = backend
+        self.tracking_mode = tracking if motion_noise is not None else "vision"
+        self.motion_noise = motion_noise
+        self.frame_delay = frame_delay
         self.intrinsics = intrinsics
         self.shape = (intrinsics.height, intrinsics.width)
         self.options = dict(
@@ -184,12 +220,20 @@ class Reconstruction:
         self.status_text = context.RawArray("B", 1024)
         self.output_lock = context.Lock()
         self.output_camera = context.RawArray("f", 16)
+        self.output_correction = context.RawArray("f", np.eye(4).ravel().tolist())
+        self.motion_ring = MotionRing(context)
         self.output_captured = context.RawValue("d", 0)
         self.tracked = context.RawValue("Q", 0)
         self.integrated = context.RawValue("Q", 0)  # frames integrated into the scene
         self.tracking = context.RawValue("b", False)
         self.restart_counts = context.RawArray("Q", len(RESTART_CAUSES))
-        self.report("Starting MASt3R-SLAM" if backend == "slam" else "Posed RGB-D")
+        self.report(
+            "Posed RGB-D"
+            if backend != "slam"
+            else "Starting robot-first tracking"
+            if self.tracking_mode == "robot"
+            else "Starting MASt3R-SLAM"
+        )
         # The worker publishes only between integrations, which take ~100 ms with
         # SLAM; a whole frame's refreshed slots must fit in one turn or they queue
         # behind the next frame. The display still drains a bounded few per frame.
@@ -251,6 +295,22 @@ class Reconstruction:
             )
         finally:
             self.output_lock.release()
+
+    def correction(self):
+        """World-from-odometry for the newest pose: the robot's own camera pose, moved by it,
+        is the fused one. Identity unless tracking is robot-first; None while publishing."""
+        if not self.output_lock.acquire(False):
+            return None
+        try:
+            return np.frombuffer(self.output_correction, np.float32).reshape(4, 4).copy()
+        finally:
+            self.output_lock.release()
+
+    def motion(self, samples):
+        """The robot's camera motion on the pilot clock, (time, world-from-camera, rad/s,
+        state) oldest first. Never waits: a busy worker gets them with the next batch."""
+        if self.tracking_mode == "robot" and self.backend == "slam":
+            self.motion_ring.put(samples)
 
     def restarts(self):
         """SLAM's local map restarts so far by cause; None while the worker is publishing."""

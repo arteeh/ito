@@ -1,4 +1,4 @@
-"""SLAM keyframe recall (#24), without CUDA: sector keyframes outlive map restarts, and
+"""Vision-only SLAM keyframe recall (#24), without CUDA: sector keyframes outlive map restarts, and
 relocalization picks the one nearest the robot's gaze and says whether it switched.
 
 uv run python e2e/slam_recall.py
@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from ito.reconstruction import slam
+from ito.reconstruction import slam_vision as slam
 
 
 def facing(degrees):
@@ -22,7 +22,7 @@ def facing(degrees):
 
 
 def backend():
-    b = slam.SLAMBackend.__new__(slam.SLAMBackend)
+    b = slam.VisionSLAMBackend.__new__(slam.VisionSLAMBackend)
     b.frames = slam.Keyframes()
     b.spread = {}
     b.tracker = SimpleNamespace(reset_idx_f2k=lambda: None)

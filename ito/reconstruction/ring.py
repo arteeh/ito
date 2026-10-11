@@ -1,7 +1,8 @@
-"""Single producer/consumer ring. Full rings retain dirty slots at the producer.
+"""Single producer/consumer rings. Full rings retain dirty slots at the producer.
 
 Each packet replaces only the listed stable slots; zero opacity evicts a slot.
 Locks are always tried, never waited on, including publication and consumption.
+The robot's motion has a ring of its own (MotionRing): the worker may wait for it.
 """
 
 from collections.abc import Callable
@@ -117,3 +118,55 @@ class UpdateRing:
             )
         finally:
             self.locks[slot].release()
+
+
+# The robot's motion samples cross to the worker as rows of time, a 4x4 world-from-camera
+# pose, camera-frame angular velocity and a state index.
+MOTION_STATES = ("standing", "walking", "turning", "held", "fallen")
+MOTION_CAPACITY = 512  # 10 s at robotd's 50 Hz
+MOTION_FIELDS = 1 + 16 + 3 + 1
+
+
+class MotionRing:
+    """Single-writer shared ring of motion samples from the pilot to the worker.
+
+    The writer never waits: a busy lock keeps the samples for its next call. The worker
+    reads everything written since its last read.
+    """
+
+    def __init__(self, context, capacity=MOTION_CAPACITY):
+        self.capacity = capacity
+        self.data = context.RawArray("d", capacity * MOTION_FIELDS)
+        self.written = context.RawValue("Q", 0)
+        self.lock = context.Lock()
+        self.pending = []
+
+    def put(self, samples):
+        """samples: (time, 4x4 world-from-camera, angular velocity, state name), oldest first."""
+        self.pending.extend(samples)
+        del self.pending[: -self.capacity]
+        if not self.pending or not self.lock.acquire(False):
+            return
+        try:
+            data = np.frombuffer(self.data).reshape(self.capacity, MOTION_FIELDS)
+            written = self.written.value
+            for time, pose, spin, state in self.pending:
+                row = data[written % self.capacity]
+                row[0] = time
+                row[1:17] = np.asarray(pose, dtype=np.float64).ravel()
+                row[17:20] = spin
+                row[20] = MOTION_STATES.index(state)
+                written += 1
+            self.written.value = written
+            self.pending.clear()
+        finally:
+            self.lock.release()
+
+    def read(self, cursor):
+        """(rows since cursor, new cursor); rows lost to a lapped reader are skipped."""
+        with self.lock:
+            written = self.written.value
+            first = max(cursor, written - self.capacity)
+            data = np.frombuffer(self.data).reshape(self.capacity, MOTION_FIELDS)
+            rows = data[np.arange(first, written) % self.capacity].copy()
+        return rows, written

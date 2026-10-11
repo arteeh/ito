@@ -64,6 +64,12 @@ def main(argv=None, *, on_frame=None):
         choices=("auto", "rgbd", "slam", "video"),
         help="persist reconstruction backend (default: automatic)",
     )
+    parser.add_argument(
+        "--tracking",
+        choices=("robot", "vision"),
+        help="persist how SLAM tracks the camera: the robot's own motion corrected by vision "
+        "(default, for robots that stream it), or vision alone",
+    )
     parser.add_argument("--camera", help="camera name (defaults to the first camera)")
     parser.add_argument("--cameras", type=int, default=1, help="number of driver video tracks")
     parser.add_argument("--size", type=int, nargs=2, default=(1280, 720))
