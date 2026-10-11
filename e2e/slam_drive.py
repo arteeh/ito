@@ -8,8 +8,9 @@ looks left, right and behind, walks, reverses and turns while walking. Then it
 reports how long the pilot saw the flat feed and why, the SLAM rate, capture-to-scene
 latency and how far the SLAM camera's heading strays from the robot's own measured camera
 heading for the same frame (the pose prior it sent with it: head FK, or body heading plus head
-pan), with a screenshot per leg. --record saves every
-frame handed to reconstruction, with the robot's pose prior and gaze, for e2e/slam_replay.py.
+pan), with a screenshot halfway through each standing leg (--no-shots for none). --record
+saves every frame handed to reconstruction, with the robot's pose prior and gaze, for
+e2e/slam_replay.py.
 """
 
 import argparse
@@ -167,6 +168,9 @@ def main():
         help="walk on timers only: no walking back to the start, re-facing or stall aborts",
     )
     parser.add_argument("--startup-timeout", type=float, default=300)
+    parser.add_argument(
+        "--no-shots", action="store_true", help="no screenshots: each stalls the pilot ~0.45 s"
+    )
     args = parser.parse_args()
     out = args.out
     out.mkdir(parents=True, exist_ok=True)
@@ -180,6 +184,13 @@ def main():
     os.environ["ITO_TIMELINE"] = str(out / "timeline.jsonl")
     offered = (out / "offered.jsonl").open("w", buffering=1)
     legs = (out / "legs.jsonl").open("w", buffering=1)
+    # The robot's head pitch telemetry at every status (10/s), for the camera's dip and rise
+    # as the gait starts and stops (#28).
+    pitch = (out / "pitch.jsonl").open("w", buffering=1)
+    PITCH = ("gait", "pilot_tilt", "aimed_tilt", "camera_pitch", "look_hz", "look_ms")
+    PITCH += tuple(f"{j}{t}" for j in ("neck_pitch", "head_pitch") for t in ("", "_target"))
+    PITCH += ("requested_vx", "applied_vx", "requested_vyaw")
+    last_pitch = None
     flow_file = (out / "flow.jsonl").open("w", buffering=1)
 
     def flow_dump():
@@ -278,6 +289,7 @@ def main():
     leg = -1
     leg_started = began = previous = clock.now()
     arrived = None
+    shot = None  # the last leg screenshotted
     ready_at = None
     held = ""
     samples = []  # (dt, flat, reason) per display frame after the first 3D view
@@ -294,7 +306,7 @@ def main():
 
     def drive(app, window, value):
         nonlocal pilot, leg, leg_started, arrived, ready_at, held, previous, last_status, error
-        nonlocal rearmed, facing
+        nonlocal rearmed, facing, last_pitch, shot
         pilot = app
         now = clock.now()
         dt, previous = now - previous, now
@@ -310,6 +322,13 @@ def main():
                 transitions.append((round(now - began, 2), kind))
             statuses[kind] += 1
             last_status = status
+        sample = tuple(app.telemetry.get(k) for k in PITCH)
+        if sample != last_pitch and app.telemetry.get("camera_pitch") is not None:
+            pitch.write(
+                json.dumps(dict(t=round(now, 3), leg=leg, **dict(zip(PITCH, sample, strict=True))))
+                + "\n"
+            )
+            last_pitch = sample
         if app.refusal:
             error = f"The robot refused this pilot: {app.refusal}"
         if ready_at is None:
@@ -321,7 +340,6 @@ def main():
                 ready_at = leg_started = now
                 window.input.yaw = window.input.pitch = 0.0
                 key(pygame.K_r)
-                key(pygame.K_F12)
             return
         if leg == len(route):
             return
@@ -409,13 +427,24 @@ def main():
                         json.dumps(dict(leg=leg, at=round(now, 4), stalled=round(moved, 3))) + "\n"
                     )
                     done = True
+        # Saving a screenshot stalls the pilot about 0.45 s: take it halfway through a leg
+        # standing still, never as a walk starts or stops (the gait change #28 measures).
+        if (
+            not done
+            and not held
+            and not args.no_shots
+            and shot != leg
+            and arrived is not None
+            and now - arrived >= route[leg][3] / 2
+        ):
+            key(pygame.K_F12)
+            shot = leg
         if done:
             for name in held:
                 key(KEYS[name], False)
             leg += 1
             arrived = None
             leg_started = now
-            key(pygame.K_F12)
             if leg == len(route):
                 pygame.event.post(pygame.event.Event(pygame.QUIT))
                 return
