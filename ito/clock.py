@@ -19,13 +19,29 @@ def fine_timers():
 
     Windows wakes sleeping threads on its 15.6 ms timer tick unless a process asks for
     finer: an asyncio loop pacing pilot poses at 90 Hz then sends at 64. SDL asks for 1 ms
-    once a window is up; a link that runs without one must ask itself.
+    once a window is up; a link that runs without one must ask itself. Windows 11 also stops
+    honouring the request while a process's windows are occluded, minimized or on no visible
+    display, unless the process opts out of that power throttling: a pilot looking at a
+    headset, not the desktop window, still drives the robot.
     """
     if sys.platform != "win32":
         yield
         return
     import ctypes
 
+    class Throttling(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_ulong) for name in ("version", "control", "state")]
+
+    # PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION under control, state off: always honour.
+    # Older Windows has no such class and fails the call, harmlessly.
+    kernel32 = ctypes.WinDLL("kernel32")
+    throttling = Throttling(1, 0x4, 0)
+    kernel32.SetProcessInformation(
+        ctypes.c_void_p(kernel32.GetCurrentProcess()),
+        4,  # ProcessPowerThrottling
+        ctypes.byref(throttling),
+        ctypes.sizeof(throttling),
+    )
     winmm = ctypes.WinDLL("winmm")
     fine = winmm.timeBeginPeriod(1) == 0  # TIMERR_NOERROR
     try:

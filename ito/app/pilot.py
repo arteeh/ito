@@ -37,7 +37,10 @@ RESTART_FIRST, RESTART_LONGEST, RESTART_HEALTHY = 1.0, 30.0, 60.0
 INPUT_FRESH, SHORT_STALL = 0.2, 1.0
 # Pilot state goes out as each input sample arrives (a headset's 72-90 Hz, a monitor's refresh),
 # at most this often, and at least at HEARTBEAT when samples stop: the robot must hear the
-# deadman go stale.
+# deadman go stale. Only a sample that comes sooner than SEND_INTERVAL after the last send
+# waits, and goes out with any newer one as one pose: the robot then never gets poses in
+# pairs, and a steady stream never waits on a timer (a sleep after every send held each
+# Windows desktop sample back about 5 ms, #31).
 SEND_INTERVAL, HEARTBEAT = 1 / 120, 1 / 60
 # A closing app waits this long for the link to tear down, then this long more for each
 # reconstruction worker; anything still running is abandoned so the app can exit.
@@ -433,6 +436,7 @@ class Pilot:
 
         tasks.extend([asyncio.create_task(messages()), asyncio.create_task(tracks())])
         deadline = clock.now()
+        sent = -math.inf  # When the last pilot state went out.
         self.input_arrived = arrived = asyncio.Event()
         try:
             while not self.stop.is_set():
@@ -594,6 +598,7 @@ class Pilot:
                             sequence=sequence, capture_time=now, deadman=False, head=head
                         )
                     peer.send(state)
+                    sent = clock.now()
                     sequence += 1
                 shown = self.state.status
                 if (shown.armed, shown.focus_hold) != (self.armed, self.focus_hold):
@@ -602,11 +607,11 @@ class Pilot:
                         status=replace(shown, armed=self.armed, focus_hold=self.focus_hold),
                     )
                 deadline = max(deadline + HEARTBEAT, now)
-                await clock.sleep_until(now + SEND_INTERVAL)
                 if not arrived.is_set():
                     with contextlib.suppress(TimeoutError):
                         await asyncio.wait_for(arrived.wait(), max(0, deadline - clock.now()))
                 if arrived.is_set():
+                    await clock.sleep_until(sent + SEND_INTERVAL)
                     arrived.clear()
                     deadline = clock.now()
         finally:
