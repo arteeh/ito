@@ -9,8 +9,8 @@ reports how long the pilot saw the flat feed and why, the SLAM rate, capture-to-
 latency and how far the SLAM camera's heading strays from the robot's own measured camera
 heading for the same frame (the pose prior it sent with it: head FK, or body heading plus head
 pan), with a screenshot halfway through each standing leg (--no-shots for none). --record
-saves every frame handed to reconstruction, with the robot's pose prior and gaze, for
-e2e/slam_replay.py.
+saves every frame handed to reconstruction, with the robot's pose prior and gaze, and every
+robot Motion sample with its source time, for e2e/slam_replay.py.
 """
 
 import argparse
@@ -29,7 +29,7 @@ from PIL import Image
 from ito import clock
 from ito.app import frames as _frames
 from ito.app.__main__ import main as pilot_main
-from ito.app.pilot import TRACKING_LOST
+from ito.app.pilot import TRACKING_LOST, Pilot
 from ito.link import media as _media
 from ito.reconstruction import Reconstruction
 
@@ -271,6 +271,31 @@ def main():
             return accepted
 
         Reconstruction.submit = recording_submit
+        motion_file = (args.record / "motion.jsonl").open("w", buffering=1)
+        received_motion = Pilot._motion
+
+        def recording_motion(self, message, peer):
+            # Every sample once, on both clocks: `time` is the driver's (robotd's t_ns where
+            # it shares the robot's clock), `local` the pilot's, as the worker sees it.
+            fresh = received_motion(self, message, peer)
+            remote = {peer.clock.remote_to_local(m.time): m.time for m in message.samples}
+            for local, camera, spin, state in fresh:
+                motion_file.write(
+                    json.dumps(
+                        dict(
+                            time=remote[local],
+                            local=local,
+                            camera=np.asarray(camera).ravel().tolist(),
+                            angular_velocity=list(spin),
+                            state=state,
+                            clock=self.telemetry.get("motion_clock"),
+                        )
+                    )
+                    + "\n"
+                )
+            return fresh
+
+        Pilot._motion = recording_motion
 
         def writer():
             (args.record / "camera.json").unlink(missing_ok=True)

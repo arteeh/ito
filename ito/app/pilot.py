@@ -14,7 +14,7 @@ from ito import clock, diagnostics
 from ito.desktop import DesktopState, PilotStatus
 from ito.link import PairingError, connect
 from ito.link.audio import Audio
-from ito.protocol import Command, FrameMetadata, Paired, PilotState, Pose, Status
+from ito.protocol import Command, FrameMetadata, Motion, Paired, PilotState, Pose, Status
 from ito.rates import CounterRate, Rate
 from ito.reconstruction import Reconstruction
 from ito.render import pose
@@ -111,6 +111,8 @@ class Pilot:
         self.last_frame = 0.0
         self.extrinsics = pose()
         self.camera_rate = Rate()  # joined frames handed to reconstruction
+        self.motion_rate = Rate()  # robot motion samples received
+        self.motion_time = -1.0  # Pilot-clock time of the newest robot motion sample
         self.scene_rate = CounterRate()  # frames reconstruction integrated into the scene
 
     @property
@@ -194,6 +196,9 @@ class Pilot:
                 detail=detail or (f"{status.state}: {status.reason}" if status else ""),
                 input_latency_ms=self.telemetry.get("pilot_input_latency_ms") if peer else None,
                 rates=rates,
+                motion_hz=self.motion_rate.hz()
+                if peer and peer.description.motion_noise is not None
+                else None,
                 reconstruction=self.reconstruction_status,
                 audio=self._audio_status(peer),
                 robot_audio=self.telemetry.get("audio", "") if peer else "",
@@ -281,6 +286,23 @@ class Pilot:
             self.matched_frames += 1
             self.last_frame = clock.now()
 
+    def _motion(self, message, peer):
+        """The robot's camera motion, on the pilot clock: (time, world-from-camera, rad/s, state).
+
+        Samples arrive in batches that may repeat ones already seen; only newer ones count.
+        """
+        fresh = []
+        for sample in message.samples:
+            local = peer.clock.remote_to_local(sample.time)
+            if local <= self.motion_time:
+                continue
+            self.motion_time = local
+            self.motion_rate.tick()
+            fresh.append(
+                (local, camera_matrix(sample.camera_pose), sample.angular_velocity, sample.state)
+            )
+        return fresh
+
     def _retire(self, worker):
         # Never on the link loop: a busy or wedged worker takes a while to stop or kill.
         closer = threading.Thread(target=worker.close, name="ito-reconstruction-close")
@@ -355,6 +377,7 @@ class Pilot:
         )
         self.tracked_frames = 0
         self.tracking = self.slam_view = False
+        self.motion_time = -1.0  # A new link has a new clock offset.
         self.restart_at = None
         restart_delay = RESTART_FIRST
         worker_started = 0.0
@@ -413,6 +436,8 @@ class Pilot:
                 if isinstance(message, FrameMetadata) and message.camera == camera.name:
                     for pair in joined.described(message):
                         self._submit(pair, peer)
+                elif isinstance(message, Motion):
+                    self._motion(message, peer)
                 elif isinstance(message, Status):
                     last_status = clock.now()
                     self.telemetry = message.telemetry
