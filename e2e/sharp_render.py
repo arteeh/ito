@@ -18,7 +18,15 @@ from ito.render import GaussianBuffer, GaussianRenderer, current_context, perspe
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scene", type=Path, action="append", help="time a scene_truth snapshot")
+    parser.add_argument(
+        "--size", type=int, nargs=2, default=(960, 540), metavar=("WIDTH", "HEIGHT")
+    )
+    parser.add_argument("--stereo", action="store_true", help="two eyes with one shared depth sort")
     args = parser.parse_args()
+    if min(args.size) <= 0:
+        parser.error("size must be positive")
+    width, height = args.size
+    eyes = (-0.032, 0.032) if args.stereo else (0.0,)
     pygame.display.init()
     pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MAJOR_VERSION, 4)
     pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MINOR_VERSION, 3)
@@ -26,7 +34,7 @@ def main():
     pygame.display.set_mode((64, 64), pygame.OPENGL | pygame.HIDDEN)
     context = current_context()
     renderer = GaussianRenderer(context)
-    target = context.simple_framebuffer((960, 540))
+    target = context.simple_framebuffer((width * len(eyes), height))
     try:
         limit = context.info["GL_MAX_SHADER_STORAGE_BLOCK_SIZE"] // 64
         maximum = min(4_194_304, limit)
@@ -55,24 +63,37 @@ def main():
             for _ in range(12):
                 context.finish()
                 start = time.perf_counter()
-                renderer.draw(
-                    camera,
-                    pose(),
-                    perspective(math.radians(fovy), 16 / 9),
-                    target,
-                    clear=(0, 0, 0, 0),
-                )
+                renderer.sort(camera, pose())
+                for eye_index, eye_x in enumerate(eyes):
+                    head = pose()
+                    head[0, 3] = eye_x
+                    renderer.draw(
+                        camera,
+                        head,
+                        perspective(math.radians(fovy), width / height),
+                        target,
+                        viewport=(eye_index * width, 0, width, height),
+                        sort=False,
+                        clear=(0, 0, 0, 0),
+                    )
                 context.finish()
                 times.append((time.perf_counter() - start) * 1000)
             if not isinstance(case, Path):
-                pixels = np.frombuffer(target.read(components=4), np.uint8).reshape(540, 960, 4)
-                assert np.percentile(pixels[135:405, 240:720, 3], 1) > 250, (
-                    "opaque surface has gaps"
+                pixels = np.frombuffer(target.read(components=4), np.uint8).reshape(
+                    height, width * len(eyes), 4
                 )
+                assert (
+                    np.percentile(
+                        pixels[height // 4 : 3 * height // 4, width // 4 : 3 * width // 4, 3], 1
+                    )
+                    > 250
+                ), "opaque surface has gaps"
             print(
                 json.dumps(
                     dict(
                         scene=str(case),
+                        eye_size=list(args.size),
+                        eyes=len(eyes),
                         splats=count,
                         renderer=context.info["GL_RENDERER"],
                         frame_p50_ms=float(np.median(times[2:])),
