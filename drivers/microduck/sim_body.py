@@ -25,6 +25,16 @@ class HeadCamera(Camera):
             lens.vertical_fov_deg(width, height)
         )
         super().__init__(model, name, width, height)
+        self.recording = None
+        directory = os.environ.get("ITO_MICRODUCK_RECORD")
+        if directory:
+            from drivers.microduck.recording import Recording
+
+            # Depth must describe centre rays, not multisampled edge minima.
+            model.vis.quality.offsamples = 0
+            self.renderer.close()
+            self.renderer = mujoco.Renderer(model, height=height, width=width)
+            self.recording = Recording(directory, model, self.camera, width, height)
 
     def render(self, world):
         option = mujoco.MjvOption()
@@ -32,10 +42,19 @@ class HeadCamera(Camera):
         option.geomgroup[5] = 1  # Room cutaway walls are hidden only in the overview viewer.
         with world.lock:
             self.renderer.update_scene(world.data, camera=self.camera, scene_option=option)
+            snapshot = self.recording.snapshot(world.data) if self.recording else None
         # MuJoCo's shadow pass produces dark floor triangles at this low camera height.
         # Keep the head image clean without changing the viewer or the robot's physics.
         self.renderer.scene.flags[mujoco.mjtRndFlag.mjRND_SHADOW] = False
-        packed = to_uyvy(self.renderer.render())
+        rgb = self.renderer.render().copy()
+        packed = to_uyvy(rgb)
+        if self.recording:
+            self.renderer.enable_depth_rendering()
+            try:
+                depth = self.renderer.render().copy()
+            finally:
+                self.renderer.disable_depth_rendering()
+            self.recording.save(rgb, depth, snapshot)
         with self.lock:
             self.latest = packed
 
