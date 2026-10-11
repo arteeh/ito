@@ -11,6 +11,7 @@ uniform vec2 viewport;
 layout(std430, binding = 0) readonly buffer Order { uvec2 order[]; };
 noperspective out vec2 gaussian_uv;
 flat out vec4 color_opacity;
+flat out float optical_density;
 
 vec4 attribute_at(uint id, uint offset) {
     return attributes[id * stride + offset];
@@ -48,6 +49,7 @@ void main() {
     vec4 clip = projection * center;
     gaussian_uv = vec2(0);
     color_opacity = vec4(0);
+    optical_density = 0;
     gl_Position = vec4(2, 2, 2, 1);
     if (clip.w <= 0 || clip.z < -clip.w || clip.z > clip.w || p.w < 1.0/255.0) return;
 
@@ -86,6 +88,10 @@ void main() {
     // Put the screen ellipse's corners on the measured tangent plane. Hardware
     // interpolates its depth; UV stays linear in screen pixels for the Gaussian.
     if (s.z < 0.1 * min(s.x, s.y)) {
+        // Live reconstruction carries a fade deadline; file Gaussians retain
+        // their authored alpha even when their covariance happens to be flat.
+        if (attribute_at(id, 1u).w > 0)
+            optical_density = -log(max(1.0 - p.w, 1e-4));
         vec3 normal = mat3(view) * rotation[2];
         vec2 pixel_ndc = gl_Position.xy / gl_Position.w;
         vec3 ray = vec3((pixel_ndc.x + projection[2][0]) / projection[0][0],

@@ -49,22 +49,35 @@ def main():
                 records[:, 0, 2:] = [-3, 0.98]
                 records[:, 1, :3] = [2.5 / side, 1.5 / side, 0.075 / side]
                 records[:, 2, 0] = 1
+                records[:, 1, 3] = 1e30  # Live surfels, retained until pressure evicts them.
             renderer.upload(GaussianBuffer(records))
             times = []
-            for _ in range(4):
+            for _ in range(12):
                 context.finish()
                 start = time.perf_counter()
-                renderer.draw(camera, pose(), perspective(math.radians(fovy), 16 / 9), target)
+                renderer.draw(
+                    camera,
+                    pose(),
+                    perspective(math.radians(fovy), 16 / 9),
+                    target,
+                    clear=(0, 0, 0, 0),
+                )
                 context.finish()
                 times.append((time.perf_counter() - start) * 1000)
+            if not isinstance(case, Path):
+                pixels = np.frombuffer(target.read(components=4), np.uint8).reshape(540, 960, 4)
+                assert np.percentile(pixels[135:405, 240:720, 3], 1) > 250, (
+                    "opaque surface has gaps"
+                )
             print(
                 json.dumps(
                     dict(
                         scene=str(case),
                         splats=count,
                         renderer=context.info["GL_RENDERER"],
-                        frame_p50_ms=float(np.median(times[1:])),
-                        frame_max_ms=max(times[1:]),
+                        frame_p50_ms=float(np.median(times[2:])),
+                        frame_max_ms=max(times[2:]),
+                        frame_p95_ms=float(np.percentile(times[2:], 95)),
                     )
                 ),
                 flush=True,
