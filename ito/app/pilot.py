@@ -36,9 +36,13 @@ RESTART_FIRST, RESTART_LONGEST, RESTART_HEALTHY = 1.0, 30.0, 60.0
 # input returns within SHORT_STALL; a longer gap may have changed the scene, so they resume.
 INPUT_FRESH, SHORT_STALL = 0.2, 1.0
 # Pilot state goes out as each input sample arrives (a headset's 72-90 Hz, a monitor's refresh),
-# at most this often, and at least at HEARTBEAT when samples stop: the robot must hear the
-# deadman go stale.
-SEND_INTERVAL, HEARTBEAT = 1 / 120, 1 / 60
+# and at least at HEARTBEAT when samples stop: the robot must hear the deadman go stale.
+# Only a sample that comes within SEND_INTERVAL of the last send waits, and goes out with
+# any newer one as one pose, so near-simultaneous samples are not sent as a pair. The
+# window is short on purpose: the driver keeps only the newest pose anyway, and a wider
+# one (1/120 s) made a desktop pilot's samples wait out the interval, which doubled
+# input-to-robot latency on Windows (#31).
+SEND_INTERVAL, HEARTBEAT = 0.002, 1 / 60
 # A closing app waits this long for the link to tear down, then this long more for each
 # reconstruction worker; anything still running is abandoned so the app can exit.
 LINK_WAIT, WORKER_WAIT = 1.0, 0.8
@@ -433,6 +437,7 @@ class Pilot:
 
         tasks.extend([asyncio.create_task(messages()), asyncio.create_task(tracks())])
         deadline = clock.now()
+        sent = -math.inf  # When the last pilot state went out.
         self.input_arrived = arrived = asyncio.Event()
         try:
             while not self.stop.is_set():
@@ -594,6 +599,7 @@ class Pilot:
                             sequence=sequence, capture_time=now, deadman=False, head=head
                         )
                     peer.send(state)
+                    sent = clock.now()
                     sequence += 1
                 shown = self.state.status
                 if (shown.armed, shown.focus_hold) != (self.armed, self.focus_hold):
@@ -602,11 +608,11 @@ class Pilot:
                         status=replace(shown, armed=self.armed, focus_hold=self.focus_hold),
                     )
                 deadline = max(deadline + HEARTBEAT, now)
-                await asyncio.sleep(max(0, now + SEND_INTERVAL - clock.now()))
                 if not arrived.is_set():
                     with contextlib.suppress(TimeoutError):
                         await asyncio.wait_for(arrived.wait(), max(0, deadline - clock.now()))
                 if arrived.is_set():
+                    await clock.sleep_until(sent + SEND_INTERVAL)
                     arrived.clear()
                     deadline = clock.now()
         finally:
@@ -670,7 +676,7 @@ class Pilot:
 
     def start(self):
         def run():
-            with contextlib.suppress(asyncio.CancelledError):
+            with contextlib.suppress(asyncio.CancelledError), clock.fine_timers():
                 asyncio.run(self._run())
 
         # Daemon: a link stuck in teardown must not keep the closed app alive.

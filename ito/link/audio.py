@@ -50,7 +50,7 @@ class Microphone(MediaStreamTrack):
             raise MediaStreamError
         now = clock.now()
         self.deadline = max(self.deadline or now, now - 0.02)
-        await asyncio.sleep(max(0, self.deadline - now))
+        await clock.sleep_until(self.deadline)
         self.deadline += 0.02
         audio = self.audio
         samples = np.zeros(SAMPLES, dtype=np.int16)
