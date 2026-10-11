@@ -32,6 +32,11 @@ SETTLE = 0.3
 # not ahead of it (switching at once left the camera 11 degrees high), and learns nothing
 # until the blend is done.
 GAIT_BLEND = 0.3
+# Gaits whose trim applies the moment the move command asks for them. Walking backward, the
+# policy lifts the neck within two or three state updates, past its own target; a trim
+# blending down from the standing one (+15 degrees for a level gaze) kept the head aimed high
+# meanwhile, and the camera rose 13-16 degrees on Ceres (pitch.jsonl, round F).
+AT_ONCE = {"backward"}
 
 
 def gait(forward, left, turn):
@@ -100,6 +105,8 @@ class TiltTrim:
                     [a * (1 - w) + b * w for a, b in zip(start, self.bins, strict=True)],
                     now,
                 )
+            if gait in AT_ONCE:
+                self.blend = None
             self.gait, self.bins = gait, self.tables.setdefault(gait, [0.0] * TRIM_BINS)
             self.anchor = (tilt, now)
         elif self.anchor is None or abs(tilt - self.anchor[0]) > STEADY:
