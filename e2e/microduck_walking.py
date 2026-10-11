@@ -117,6 +117,9 @@ class Probe:
                                 "applied_vy",
                                 "applied_vyaw",
                                 "fallen",
+                                "gait",
+                                "pilot_tilt",
+                                "aimed_tilt",
                             )
                         },
                     }
@@ -167,6 +170,8 @@ async def run(sim, out):
             moved["camera_vs_tilt_deg"] = math.degrees(sum(settled) / len(settled) - tilt)
             # The worst the camera strays from the pilot's tilt while a stop or start settles.
             early = [s["camera_pitch"] - tilt for s in segment if s["t"] < 1.5]
+            moved["camera_vs_tilt_early_min_deg"] = math.degrees(min(early))
+            moved["camera_vs_tilt_early_max_deg"] = math.degrees(max(early))
             moved["camera_vs_tilt_early_worst_deg"] = math.degrees(max(early, key=abs))
             moved["head_yaw_deg"] = math.degrees(last["head_yaw"])
             moved["camera_roll_deg"] = math.degrees(last["camera_roll"])
@@ -187,10 +192,10 @@ async def run(sim, out):
         checks["walking, the camera is level when the pilot's gaze is"] = (
             abs(walked["camera_vs_tilt_deg"]) < 1
         )
-        await leg("settle", 2)
+        await leg("stop_forward", 2)
         walked = await leg("backward", 5, forward=-1)
         checks["backward walks"] = walked["forward_m"] < -0.4
-        stopped = await leg("settle", 2)
+        stopped = await leg("stop_backward", 2)
         # The policy drops the neck as the robot stops; the head must follow it without the
         # camera dipping (it sank 13 degrees for a second when one trim served every gait).
         checks["stopping a backward walk keeps the camera level"] = (
@@ -198,9 +203,9 @@ async def run(sim, out):
         )
         for lap in (2, 3):
             await leg(f"forward{lap}", 4, forward=1)
-            await leg("settle", 2)
+            await leg(f"stop_forward{lap}", 2)
             await leg(f"backward{lap}", 4, forward=-1)
-            await leg("settle", 2)
+            await leg(f"stop_backward{lap}", 2)
         looked = await leg("look_60_standing", 3, gaze=math.radians(60))
         checks["a reachable look leaves the body"] = abs(looked["turn_deg"]) < 5
         checks["the camera looks where the pilot looks"] = abs(looked["camera_vs_gaze_deg"]) < 8
