@@ -196,6 +196,11 @@ async def run(sim, out):
         checks["stopping a backward walk keeps the camera level"] = (
             abs(stopped["camera_vs_tilt_early_worst_deg"]) < 7
         )
+        for lap in (2, 3):
+            await leg(f"forward{lap}", 4, forward=1)
+            await leg("settle", 2)
+            await leg(f"backward{lap}", 4, forward=-1)
+            await leg("settle", 2)
         looked = await leg("look_60_standing", 3, gaze=math.radians(60))
         checks["a reachable look leaves the body"] = abs(looked["turn_deg"]) < 5
         checks["the camera looks where the pilot looks"] = abs(looked["camera_vs_gaze_deg"]) < 8
