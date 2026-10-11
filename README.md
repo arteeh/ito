@@ -90,6 +90,7 @@ scale is estimated, so reconstructed distances are not a measurement tool.
 
 On Microduck, from this checkout: `uv run --project drivers/microduck ito-driver-microduck`; connect with `uv run ito <duck-address>:8081` and enter its printed pairing code.
 Microduck must have robotd/mediad running and be enabled with `robotctl robot enable`; G/right trigger opens the beak, C crouches.
+The driver streams the head camera's pose at robotd's 50 Hz, stamped when robotd read its sensors; `--head-imu` turns it by the head IMU's gyro (enable `[head_imu]` in tofd first).
 
 Virtual Microduck on Ubuntu: `drivers/microduck/setup-sim.sh /path/to/prefix`, then `/path/to/prefix/microduck-sim --viewer`.
 From built checkouts: `uv run --extra microduck python -m drivers.microduck.sim --microduck /path/to/microduck --rl /path/to/microduck_rl --policies /path/to/policies/current [--viewer] [--camera-height 360|720|1080]` (head camera size; the lens is the real 62 degrees at all of them).

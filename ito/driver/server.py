@@ -22,6 +22,7 @@ from ito.protocol import (
     Command,
     Credential,
     FrameMetadata,
+    Motion,
     Paired,
     PilotState,
     Status,
@@ -56,6 +57,7 @@ class Driver:
         self.audio_source, self.audio_sink = audio_source, audio_sink
         self.adapter = adapter
         adapter.frame_sink = self.publish_frame
+        adapter.motion_sink = self.publish_motion
         self.input_timeout = input_timeout
         self.command_rate = command_rate
         self.ice_servers = ice_servers
@@ -223,6 +225,11 @@ class Driver:
         ):
             raise ValueError("depth dimensions do not match camera")
         return self.peer.send(metadata) if self.peer else False
+
+    def publish_motion(self, motion: Motion) -> bool:
+        if self.adapter.description.motion_noise is None:
+            raise ValueError("a robot that publishes motion must describe its motion noise")
+        return self.peer.send(motion) if self.peer else False
 
     async def _run(self) -> None:
         interval = min(0.01, self.input_timeout / 4, 1 / self.command_rate)
@@ -435,7 +442,7 @@ class Driver:
             return
         self._closing = True
         self._neutral("driver shutting down")
-        self.adapter.frame_sink = None
+        self.adapter.frame_sink = self.adapter.motion_sink = None
         try:
             if self._task:
                 self._task.cancel()

@@ -68,6 +68,37 @@ def camera_in_world(trunk, position, camera, origin):
     return rotate(TO_ITO, world), (x, y, z, w)
 
 
+def conjugate(q):
+    return (q[0], -q[1], -q[2], -q[3])
+
+
+def rotation_vector(q):
+    """Axis times angle of a scalar-first unit quaternion, the short way round."""
+    w, x, y, z = q if q[0] >= 0 else tuple(-v for v in q)
+    sine = math.sqrt(x * x + y * y + z * z)
+    if sine < 1e-12:
+        return (2 * x, 2 * y, 2 * z)
+    scale = 2 * math.atan2(sine, w) / sine
+    return (x * scale, y * scale, z * scale)
+
+
+def angular_velocity(previous, current, dt):
+    """Camera-frame rad/s that turns xyzw orientation `previous` into `current` in dt."""
+    q0 = (previous[3], *previous[:3])
+    q1 = (current[3], *current[:3])
+    return tuple(v / dt for v in rotation_vector(multiply(conjugate(q0), q1)))
+
+
+def gyro_in_camera(gyro, sensor, camera):
+    """A head-IMU gyro reading (sensor axes) in Ito camera axes, from the two trunk mounts.
+
+    sensor and camera are robotd's scalar-first sensor-to-trunk and camera-to-trunk rotations.
+    """
+    trunk = rotate(normalized(sensor), gyro)
+    x, y, z = rotate(conjugate(normalized(camera)), trunk)
+    return (x, -y, -z)  # OpenCV camera axes to Ito's
+
+
 def angles(orientation):
     """Yaw (left positive), pitch (up positive) and roll (image right side up positive) of
     an Ito xyzw camera orientation, radians."""

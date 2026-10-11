@@ -3,7 +3,7 @@ from collections.abc import Callable, Sequence
 
 from aiortc import MediaStreamTrack
 
-from ito.protocol import FrameMetadata, PilotState, RobotDescription
+from ito.protocol import FrameMetadata, Motion, PilotState, RobotDescription
 
 
 class Adapter(ABC):
@@ -12,12 +12,19 @@ class Adapter(ABC):
     The robot must also enforce its own hardware deadman. media_tracks returns fresh
     tracks per connection (use aiortc's MediaRelay for a persistent camera source).
     Camera track IDs must match description; publish metadata at camera capture time.
+    A robot that knows its camera's motion publishes it as it is measured, stamped at the
+    source, and describes its noise in RobotDescription.motion_noise.
     """
 
     frame_sink: Callable[[FrameMetadata], bool] | None = None
+    motion_sink: Callable[[Motion], bool] | None = None
 
     def publish_frame(self, metadata: FrameMetadata) -> bool:
         return self.frame_sink(metadata) if self.frame_sink else False
+
+    def publish_motion(self, motion: Motion) -> bool:
+        """False when nothing was sent: the caller keeps the samples for its next batch."""
+        return self.motion_sink(motion) if self.motion_sink else False
 
     @property
     @abstractmethod

@@ -23,6 +23,7 @@ class PilotStatus:
     # Live rates: pilot poses applied by the robot, camera frames handed to reconstruction,
     # reconstruction updates reaching the scene. None: not measured on this link.
     rates: tuple[float | None, float | None, float | None] = (None, None, None)
+    motion_hz: float | None = None  # The robot's own camera motion; None: it sends none.
     reconstruction: str = ""
     audio: str = ""
     robot_audio: str = ""
@@ -189,6 +190,7 @@ class Overlay:
             imgui.text(
                 f"Pose->robot {pose_hz} Hz | camera->recon {camera_hz}/s"
                 f" | recon->scene {scene_hz}/s"
+                + ("" if status.motion_hz is None else f" | motion {status.motion_hz:.0f} Hz")
             )
         if status.input_latency_ms is not None:
             imgui.text(f"Pilot input -> robot: {status.input_latency_ms:.1f} ms")
