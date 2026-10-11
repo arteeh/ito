@@ -159,7 +159,7 @@ class Reconstruction:
         intrinsics: Intrinsics,
         *,
         max_splats=262_144,
-        voxel_size=0.04,
+        voxel_size=0.08,
         fade_seconds=0.5,
         device="auto",
         backend="rgbd",

@@ -20,6 +20,7 @@ import numpy as np
 from ito import clock
 
 from .rgbd import RGBDBackend
+from .surface import full_depth
 
 # A stray larger than the robot's own error (joint/IMU latency during a brisk turn) starts
 # turning the world back onto the robot's heading, a third of the stray per frame, until
@@ -96,6 +97,7 @@ class SLAMBackend(RGBDBackend):
         # MASt3R sees a resized, centre-cropped image; carry the driver's calibration there.
         blank = np.zeros((intrinsics.height, intrinsics.width, 3))
         _, (sx, sy, crop_x, crop_y) = resize_img(blank, 512, return_transformation=True)
+        self.image_transform = (sx, sy, crop_x, crop_y)
         self.K = torch.tensor(
             [
                 [intrinsics.fx / sx, 0, intrinsics.cx / sx - crop_x],
@@ -352,40 +354,18 @@ class SLAMBackend(RGBDBackend):
             self.transform = frame.T_WC
             self.camera_pose = pose.astype(np.float32)
             local = constrain_points_to_ray(frame.img.shape[-2:], frame.X_canon[None], self.K)[0]
-            world = torch.as_tensor(self.world, device="cuda", dtype=torch.float32)
-            points = self.transform.act(local) * self.axes
-            points = points @ world[:3, :3].T + world[:3, 3]
-            # No confidence cut: MASt3R is least confident on plain walls and floors,
-            # which it still places well, and a room without its walls is no room.
-            valid = torch.isfinite(points).all(dim=1) & (local[:, 2] > 0)
-            colors = (frame.uimg.to("cuda").reshape(-1, 3) * 255).to(torch.uint8)
-            # Size splats by the pixel footprint in the world's own (arbitrary) Sim3 units.
-            # Per-frame pose and depth jitter moves every point a little: at 1.5 pixels
-            # almost every cell is new each frame, the budget starves and views arrive
-            # as scattered dots. Three pixels refresh in place, so a room looked around
-            # once fits in about 400k splats; smaller budgets get proportionally coarser.
-            pixels = 3 * max(1, (400_000 / self.budget) ** 0.5)
-            footprint = local[:, 2] * float(scale) * pixels / self.K[0, 0]
-            when = now + clock.now() - started
-            # DLPack shares CUDA memory; only the fused slot records cross to the ring.
-            self.integrate_points(
-                self.xp.from_dlpack(points[valid].contiguous()),
-                self.xp.from_dlpack(colors[valid].contiguous()),
-                when,
-                self.xp.from_dlpack(footprint[valid].contiguous()),
-            )
+            # Tracking stays at 512. Geometry is interpolated on the driver's rays;
+            # colour comes directly from the full-resolution exposure being tracked.
             height, width = frame.img.shape[-2:]
-            depth = torch.where(valid, local[:, 2] * float(scale), 0).reshape(height, width)
-            fx, fy, cx, cy = (float(self.K[i, j]) for i, j in ((0, 0), (1, 1), (0, 2), (1, 2)))
-            self.carve(
-                self.camera_pose,
-                fx,
-                fy,
-                cx,
-                cy,
+            depth = local[:, 2].reshape(height, width) * float(scale)
+            dense = full_depth(
                 self.xp.from_dlpack(depth.float().contiguous()),
-                when,
+                rgb.shape[:2],
+                self.image_transform,
+                self.xp,
             )
+            when = now + clock.now() - started
+            super().integrate(rgb, dense, self.camera_pose, when)
             self.tracked += 1
             if restarted:
                 self.restart(restarted)

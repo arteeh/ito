@@ -132,7 +132,12 @@ def grade(name, splats, truth, alpha):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--seconds", type=float, default=60)
-    parser.add_argument("--budget", type=int, default=131_072)
+    parser.add_argument(
+        "--budget",
+        type=int,
+        default=400_000,
+        help="scene slots (400k detail budget; smaller budgets evict earlier views)",
+    )
     parser.add_argument("--rate", type=float, default=8, help="Camera frames per second")
     parser.add_argument("--label", default="run")
     args = parser.parse_args()
