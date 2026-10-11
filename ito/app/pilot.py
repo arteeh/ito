@@ -36,12 +36,13 @@ RESTART_FIRST, RESTART_LONGEST, RESTART_HEALTHY = 1.0, 30.0, 60.0
 # input returns within SHORT_STALL; a longer gap may have changed the scene, so they resume.
 INPUT_FRESH, SHORT_STALL = 0.2, 1.0
 # Pilot state goes out as each input sample arrives (a headset's 72-90 Hz, a monitor's refresh),
-# at most this often, and at least at HEARTBEAT when samples stop: the robot must hear the
-# deadman go stale. Only a sample that comes sooner than SEND_INTERVAL after the last send
-# waits, and goes out with any newer one as one pose: the robot then never gets poses in
-# pairs, and a steady stream never waits on a timer (a sleep after every send held each
-# Windows desktop sample back about 5 ms, #31).
-SEND_INTERVAL, HEARTBEAT = 1 / 120, 1 / 60
+# and at least at HEARTBEAT when samples stop: the robot must hear the deadman go stale.
+# Only a sample that comes within SEND_INTERVAL of the last send waits, and goes out with
+# any newer one as one pose, so near-simultaneous samples are not sent as a pair. The
+# window is short on purpose: the driver keeps only the newest pose anyway, and a wider
+# one (1/120 s) made a desktop pilot's samples wait out the interval, which doubled
+# input-to-robot latency on Windows (#31).
+SEND_INTERVAL, HEARTBEAT = 0.002, 1 / 60
 # A closing app waits this long for the link to tear down, then this long more for each
 # reconstruction worker; anything still running is abandoned so the app can exit.
 LINK_WAIT, WORKER_WAIT = 1.0, 0.8
