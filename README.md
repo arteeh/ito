@@ -101,6 +101,7 @@ The driver streams the head camera's pose at robotd's 50 Hz, stamped when robotd
 Virtual Microduck on Ubuntu: `drivers/microduck/setup-sim.sh /path/to/prefix`, then `/path/to/prefix/microduck-sim --viewer`.
 From built checkouts: `uv run --extra microduck python -m drivers.microduck.sim --microduck /path/to/microduck --rl /path/to/microduck_rl --policies /path/to/policies/current [--viewer] [--camera-height 360|720|1080]` (head camera size; the lens is the real 62 degrees at all of them).
 Enter the printed address and pairing code in Ito; Ctrl+C or closing the viewer stops the complete robot.
+`--truth FILE` writes each head-camera frame's true pose, and `--blur N` averages N back-to-back renders per frame (motion blur); `e2e/slam_drive.py --record` and `e2e/slam_replay.py --pose L1..L5 --truth FILE` score tracking against them.
 
 ## Development and releases
 

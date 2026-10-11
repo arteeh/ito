@@ -67,6 +67,8 @@ def simulation(
     viewer=False,
     gl=None,
     camera_height=360,
+    truth=None,
+    blur=1,
 ):
     upstream, rl, policies_dir = (p.resolve() for p in (upstream, rl, policies_dir))
     logs.mkdir(parents=True, exist_ok=True)
@@ -80,6 +82,9 @@ def simulation(
         "ITO_MICRODUCK_CAMERA_HEIGHT": str(camera_height),
         "ITO_MICRODUCK_CAMERA_FPS": "30",
     }
+    if truth is not None:
+        sim_env["ITO_MICRODUCK_TRUTH"] = str(Path(truth).resolve())
+    sim_env["ITO_MICRODUCK_BLUR"] = str(blur)
     if Path("/dev/dxg").exists() and "GALLIUM_DRIVER" not in os.environ:
         # WSL's Mesa defaults to llvmpipe; d3d12 renders the viewer and head camera on the GPU.
         sim_env["GALLIUM_DRIVER"] = "d3d12"
@@ -298,6 +303,15 @@ def main():
         default=360,
         help="head camera frame height in pixels (16:9); larger costs render time",
     )
+    parser.add_argument(
+        "--truth", type=Path, help="write each head camera frame's true pose here (JSONL)"
+    )
+    parser.add_argument(
+        "--blur",
+        type=int,
+        default=1,
+        help="average this many back-to-back renders into each frame: motion blur",
+    )
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8081)
     parser.add_argument("--logs", type=Path, default=Path.home() / ".local/state/ito/microduck-sim")
@@ -325,6 +339,8 @@ def main():
             viewer=args.viewer,
             gl=args.gl,
             camera_height=args.camera_height,
+            truth=args.truth,
+            blur=args.blur,
         ) as sim:
             addresses = [args.host]
             if args.host == "0.0.0.0":
