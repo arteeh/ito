@@ -14,7 +14,7 @@ from OpenGL import GL
 from ito import clock, diagnostics
 from ito.reconstruction import SplatUpdate, default_budget
 from ito.render import GaussianRenderer, SceneSource, current_context, perspective, pose
-from ito.render.anchor import AnchorGlide
+from ito.render.anchor import AnchorGlide, CorrectionEase
 from ito.render.scene import FloatArray
 from ito.render.video import VideoPanel
 
@@ -34,6 +34,8 @@ class DesktopState:
     video_time: float = 0
     video_fov: float | None = None  # The camera's horizontal field of view in radians.
     flat_video: bool = False
+    # Fusion's world-from-odometry: the eye is drawn at correction @ robot_camera, eased in.
+    correction: FloatArray = field(default_factory=pose)
 
 
 class DesktopWindow:
@@ -59,6 +61,7 @@ class DesktopWindow:
         self.fps, self.fov, self.capture_dir = fps, math.radians(fov), capture_dir
         self.capture_number = 0
         self.glide = AnchorGlide()
+        self.ease = CorrectionEase()
         pygame.display.init()
         try:
             pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MAJOR_VERSION, 4)
@@ -181,7 +184,7 @@ class DesktopWindow:
                 elif frame.revision != revision:
                     self.renderer.upload(frame.gaussians)
                 revision, captured_at = frame.revision, frame.captured_at
-            current = self.glided(state(), now)
+            current = self.glided(state(), now, pilot.head)
             size = pygame.display.get_window_size()
             if min(size) > 0:
                 self.size = size
@@ -268,8 +271,10 @@ class DesktopWindow:
                 next_metric = now + 0.5
             pacing.tick(self.fps)
 
-    def glided(self, current, now):
-        return replace(current, robot_camera=self.glide(current.robot_camera, now))
+    def glided(self, current, now, head=None):
+        """The eye to draw now: glided between updates, fusion's corrections eased in."""
+        anchor = self.glide(current.robot_camera, now)
+        return replace(current, robot_camera=self.ease(current.correction, anchor, head, now))
 
     def draw_view(self, current, head, projection, target, viewport, sort=True, center=None):
         """Draw one eye; center is the pose between both eyes, for a stereo panel."""

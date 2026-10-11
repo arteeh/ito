@@ -29,8 +29,9 @@ from PIL import Image
 
 from ito.app.pilot import TRACKING_LOST
 from ito.protocol import Intrinsics
-from ito.reconstruction import slam as backend_module
-from ito.reconstruction.slam import SLAMBackend, heading
+from ito.reconstruction import slam_vision as backend_module
+from ito.reconstruction.slam_vision import VisionSLAMBackend as SLAMBackend
+from ito.reconstruction.slam_vision import heading
 from ito.render import pose
 from ito.render.pose import quaternion
 

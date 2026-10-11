@@ -17,6 +17,8 @@ RECENT = 6
 
 class Settings(Model):
     reconstruction: Literal["auto", "rgbd", "slam", "video"] = "auto"
+    # SLAM tracking: the robot's own camera motion fused with vision, or vision alone (A/B).
+    tracking: Literal["robot", "vision"] = "robot"
     max_splats: int = Field(default=16384, ge=1, le=4_194_304)
     fov: float = Field(default=70, ge=30, le=120)
     sensitivity: float = Field(default=0.0025, ge=0.0001, le=0.02)
