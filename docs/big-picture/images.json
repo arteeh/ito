@@ -1,0 +1,249 @@
+{
+  "scene": "truth/data/scan/scene.mjb",
+  "scene_sha256": "7f131443eb81c1e6f5f263985a4a27c2a6bf67c8e0e64c3445bdb14ad1b4a77c",
+  "gl_renderer": "llvmpipe (LLVM 21.1.8, 256 bits)",
+  "images": [
+    {
+      "run": "sweep180",
+      "frame": 215,
+      "kind": "reference",
+      "capture_offset": 7.133607505282271,
+      "recorded_psnr": 29.653986163027895,
+      "truth_match_error": 32.773921966552734
+    },
+    {
+      "run": "sweep180",
+      "frame": 453,
+      "kind": "reference",
+      "capture_offset": 15.070790593286802,
+      "recorded_psnr": 28.10045493163897,
+      "truth_match_error": 61.88252639770508
+    },
+    {
+      "run": "sweep180",
+      "frame": 693,
+      "kind": "reference",
+      "capture_offset": 23.067231850276585,
+      "recorded_psnr": 30.052491547164983,
+      "truth_match_error": 35.83893585205078
+    },
+    {
+      "run": "sweep180",
+      "frame": 215,
+      "kind": "main-L1",
+      "snapshot_frame": 215,
+      "count": 48803,
+      "psnr": 19.92549904446826,
+      "snapshot": "bigpic-out/sweep180-L1/snapshot-6.npz",
+      "snapshot_sha256": "e302fc573de5556bd642311477fe81a021e96cfab9b7e03ffa98403dbab59ec2"
+    },
+    {
+      "run": "sweep180",
+      "frame": 453,
+      "kind": "main-L1",
+      "snapshot_frame": 453,
+      "count": 58971,
+      "psnr": 21.553176234589657,
+      "snapshot": "bigpic-out/sweep180-L1/snapshot-15.npz",
+      "snapshot_sha256": "c3003c2fedfba0cb21c1d5beb79dbafb78763af314f1cda1e20ed7e92570f342"
+    },
+    {
+      "run": "sweep180",
+      "frame": 693,
+      "kind": "main-L1",
+      "snapshot_frame": 693,
+      "count": 161000,
+      "psnr": 26.381343909874193,
+      "snapshot": "bigpic-out/sweep180-L1/snapshot-23.npz",
+      "snapshot_sha256": "3e89d0349be92bd3f9811c5b8c498b3487393c3551ccc33988662c6ed3ff0b36"
+    },
+    {
+      "run": "sweep180",
+      "frame": 215,
+      "kind": "main-L4",
+      "snapshot_frame": 181,
+      "count": 60747,
+      "psnr": 19.985427681861545,
+      "snapshot": "bigpic-out/sweep180-L4/snapshot-6.npz",
+      "snapshot_sha256": "dc823fa8406224bdbafbb1829e85662a6af8dc0912c0325060ad60e79bd6b652"
+    },
+    {
+      "run": "sweep180",
+      "frame": 453,
+      "kind": "main-L4",
+      "snapshot_frame": 453,
+      "count": 63756,
+      "psnr": 17.920125209841654,
+      "snapshot": "bigpic-out/sweep180-L4/snapshot-15.npz",
+      "snapshot_sha256": "e9edf155aed729fba5be937907e75fa63b9bdad462b16c8ea7a1be20072911b7"
+    },
+    {
+      "run": "sweep180",
+      "frame": 693,
+      "kind": "main-L4",
+      "snapshot_frame": 691,
+      "count": 136511,
+      "psnr": 15.062752958757164,
+      "snapshot": "bigpic-out/sweep180-L4/snapshot-23.npz",
+      "snapshot_sha256": "199b14ee8f8dff6f369e52c41d5bd6ed806fd66c0aaa4383a18f106884bec055"
+    },
+    {
+      "run": "sweep180",
+      "frame": 453,
+      "kind": "offline-true",
+      "count": 1133251,
+      "psnr": 25.719221564047277,
+      "model": "gs/out/sweep180/true/scene.ply",
+      "model_sha256": "3895e14147a0dbbef9874b050edeada6b057be4ab4769fcbe14b4d1becf44655"
+    },
+    {
+      "run": "sweep180",
+      "frame": 693,
+      "kind": "offline-true",
+      "count": 1133251,
+      "psnr": 27.151838563116762,
+      "model": "gs/out/sweep180/true/scene.ply",
+      "model_sha256": "3895e14147a0dbbef9874b050edeada6b057be4ab4769fcbe14b4d1becf44655"
+    },
+    {
+      "run": "sweep180",
+      "frame": 453,
+      "kind": "offline-fused",
+      "count": 1039112,
+      "psnr": 22.29351677509088,
+      "model": "gs/out/sweep180/fused/scene.ply",
+      "model_sha256": "647a3ba153b9a4a4d08151ab9c93a4d45ff0307a11fe863a1f533fc26c5a3b6e"
+    },
+    {
+      "run": "sweep180",
+      "frame": 693,
+      "kind": "offline-fused",
+      "count": 1039112,
+      "psnr": 24.383880953366965,
+      "model": "gs/out/sweep180/fused/scene.ply",
+      "model_sha256": "647a3ba153b9a4a4d08151ab9c93a4d45ff0307a11fe863a1f533fc26c5a3b6e"
+    },
+    {
+      "run": "tour",
+      "frame": 363,
+      "kind": "reference",
+      "capture_offset": 12.071243733837036,
+      "recorded_psnr": 30.931220465433206,
+      "truth_match_error": 23.42534637451172
+    },
+    {
+      "run": "tour",
+      "frame": 1501,
+      "kind": "reference",
+      "capture_offset": 50.003467033333436,
+      "recorded_psnr": 28.54291895927421,
+      "truth_match_error": 57.09182357788086
+    },
+    {
+      "run": "tour",
+      "frame": 2284,
+      "kind": "reference",
+      "capture_offset": 76.10097937034152,
+      "recorded_psnr": 28.948299934502817,
+      "truth_match_error": 66.30960845947266
+    },
+    {
+      "run": "tour",
+      "frame": 363,
+      "kind": "main-L1",
+      "snapshot_frame": 363,
+      "count": 41200,
+      "psnr": 21.047161927190317,
+      "snapshot": "bigpic-out/tour-L1/snapshot-12.npz",
+      "snapshot_sha256": "0490c17fdc1e212b675d9119a418c756482e140776d0ddab65168851c421d454"
+    },
+    {
+      "run": "tour",
+      "frame": 1501,
+      "kind": "main-L1",
+      "snapshot_frame": 1501,
+      "count": 263921,
+      "psnr": 23.60119168189051,
+      "snapshot": "bigpic-out/tour-L1/snapshot-50.npz",
+      "snapshot_sha256": "6d48becb90f7d54c69380fc4fc28f888d7f01a2b62c5551bb1dc9a36f00d74c3"
+    },
+    {
+      "run": "tour",
+      "frame": 2284,
+      "kind": "main-L1",
+      "snapshot_frame": 2284,
+      "count": 519750,
+      "psnr": 26.254537362186298,
+      "snapshot": "bigpic-out/tour-L1/snapshot-76.npz",
+      "snapshot_sha256": "8d4e861242fd098276d85d3686de82110303cc0ee31abb59e0c35315c861da24"
+    },
+    {
+      "run": "tour",
+      "frame": 363,
+      "kind": "main-L4",
+      "snapshot_frame": 362,
+      "count": 44192,
+      "psnr": 21.018315262655648,
+      "snapshot": "bigpic-out/tour-L4/snapshot-12.npz",
+      "snapshot_sha256": "85c59eeb13796e147159394114dfe636533983cc7675922ac18c561f26727a0e"
+    },
+    {
+      "run": "tour",
+      "frame": 1501,
+      "kind": "main-L4",
+      "snapshot_frame": 1501,
+      "count": 277826,
+      "psnr": 18.64780597931622,
+      "snapshot": "bigpic-out/tour-L4/snapshot-50.npz",
+      "snapshot_sha256": "511dc0f22eeef94e4be383fa0faf0007ce5252af7d9c35a48315ae293d269d4e"
+    },
+    {
+      "run": "tour",
+      "frame": 2284,
+      "kind": "main-L4",
+      "snapshot_frame": 2281,
+      "count": 573764,
+      "psnr": 23.43412180501538,
+      "snapshot": "bigpic-out/tour-L4/snapshot-76.npz",
+      "snapshot_sha256": "51ea08255d72e041e96ef24491af238e5fa25e4c513f95120aca2a8f666c00c0"
+    },
+    {
+      "run": "tour",
+      "frame": 1501,
+      "kind": "offline-true-calibrated",
+      "count": 1329103,
+      "psnr": 26.38929841352413,
+      "model": "gs/out/tour/true-calibrated/scene.ply",
+      "model_sha256": "f206d9381d058b96aa8dc366950e9f535d4047b50334fc3300ca546633bb5233"
+    },
+    {
+      "run": "tour",
+      "frame": 2284,
+      "kind": "offline-true-calibrated",
+      "count": 1329103,
+      "psnr": 26.559151005234508,
+      "model": "gs/out/tour/true-calibrated/scene.ply",
+      "model_sha256": "f206d9381d058b96aa8dc366950e9f535d4047b50334fc3300ca546633bb5233"
+    },
+    {
+      "run": "tour",
+      "frame": 1501,
+      "kind": "offline-fused-calibrated",
+      "count": 1018954,
+      "psnr": 22.63617300588251,
+      "model": "gs/out/tour/fused-calibrated/scene.ply",
+      "model_sha256": "c5e384d41e154767ccd30609ccbad894b845bedcc57aae97cebfcd0ed0f8327f"
+    },
+    {
+      "run": "tour",
+      "frame": 2284,
+      "kind": "offline-fused-calibrated",
+      "count": 1018954,
+      "psnr": 23.162568037029413,
+      "model": "gs/out/tour/fused-calibrated/scene.ply",
+      "model_sha256": "c5e384d41e154767ccd30609ccbad894b845bedcc57aae97cebfcd0ed0f8327f"
+    }
+  ],
+  "code_revision": "fff04390daa945af16ddf7f97b7afc0ae8118b88",
+  "method": "Static room, matched true camera, 360x640 centred projection; active main slots, no publication timing; final offline GS checkpoints; view-dependent SH evaluated before upload without dropping terms."
+}
