@@ -13,7 +13,9 @@ heading for the same frame (the pose prior it sent with it: head FK, or body hea
 pan), with a screenshot halfway through each standing leg (--no-shots for none). --record
 saves every frame the pilot took, with the robot's pose prior and gaze, every robot Motion
 sample on both clocks and the robot's description, for e2e/slam_replay.py; start the virtual
-Microduck with --truth to score them against the simulator.
+Microduck with --truth to score them against the simulator. Every camera pose the pilot was
+shown goes to camera-poses.jsonl; with a recording and a truth file, e2e/truth.py scores the
+live drive's tracking the way slam_replay.py scores a replay's.
 """
 
 import argparse
@@ -358,6 +360,9 @@ def main():
     # tracking) on each tracked frame SLAM publishes; headings in the startup-relative world.
     poses = []
     priors = {}  # capture time: heading of the robot's camera pose sent with that frame
+    # Every published camera pose with its frame's capture time: e2e/truth.py scores them
+    # against the virtual Microduck's truth with the recording's frames.
+    fused = (out / "camera-poses.jsonl").open("w", buffering=1)
     workers = set()
     error = None
     rearmed = 0.0
@@ -428,6 +433,7 @@ def main():
         if latest and latest[1] != (poses[-1][1] if poses else None):
             camera, count, tracking, captured = latest
             robot = priors.get(captured)
+            fused.write(json.dumps(dict(captured=captured, camera=camera.ravel().tolist())) + "\n")
             poses.append(
                 (
                     now - ready_at,
@@ -592,6 +598,8 @@ def main():
         if heading_error
         else None,
         closed_loop=None if args.open_loop else dict(closed),
+        # Where the robot's base ended, from where it began (its own odometry): whether a
+        # closed-loop route came home, not how far tracking drifted (e2e/truth.py scores that).
         drift_m=round(math.hypot(base_end[0] - home["x"], base_end[1] - home["y"]), 3)
         if home and base_end
         else None,
