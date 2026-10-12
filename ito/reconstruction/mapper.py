@@ -53,6 +53,9 @@ PRUNE_OPACITY = 0.005
 PRUNE_SCALE3D = 0.1  # of the scene scale
 WORLD = 1 << 62  # publication key of slot 0 (node ids are tracking's, from 0)
 FILTER = math.sqrt(0.2)  # Mip-Splatting 3D filter, in pixels of the closest training view
+ALIGN_PIXELS = 512  # opaque map pixels a view needs before alignment says anything
+ALIGN_STEP = 2e-3  # finite-difference step: rad and metres, ~0.5 px at 1/2 resolution
+ALIGN_HUBER = 0.05  # residual (0-1 colour) beyond which a pixel's weight falls off
 
 
 @dataclass(frozen=True)
@@ -654,13 +657,15 @@ class GaussianMap:
 
     # -- map alignment (tracking's photometric factor) -----------------------------------
 
-    def align(self, rgb, pose0, intrinsics, *, steps=30, downscale=2):
-        """Return (world-from-camera, sigma[rotation rad, translation m], inlier pixels).
+    def align(self, rgb, pose0, intrinsics, *, iterations=3, downscale=2):
+        """Return (world-from-camera, sigma[rotation rad, translation m], agreeing pixels).
 
-        Frozen map, robust photometric fit at 1/downscale resolution. Degenerate or
-        unsupported fits return the input with infinite sigma and zero inliers. Sigma is
-        a local linearized estimate, not a calibrated sensor uncertainty; fusion must
-        impose its own noise floor.
+        Gauss-Newton on the frozen map rendered at 1/downscale resolution, the 6-DoF
+        Jacobian by finite differences (the CUDA rasterizer has no second derivatives),
+        Huber-weighted photometric residuals where the map is opaque. A fit that does
+        not lower the residual, or a map that hardly covers the view, says nothing:
+        the input pose, infinite sigma, zero pixels. Sigma is the local linearised
+        estimate, not a calibrated sensor noise; fusion floors it.
         """
         torch = self.torch
         import torch.nn.functional as F
@@ -678,49 +683,53 @@ class GaussianMap:
                 cx=i.cx / downscale,
                 cy=i.cy / downscale,
             )
-        world = self.world()
-        target = self.tensor(rgb).permute(2, 0, 1)[None] / 255
-        target = F.interpolate(target, (i.height, i.width), mode="area")[0].permute(1, 2, 0)
-        base = self.tensor(validate_pose(pose0))
-        delta = torch.zeros(6, device="cuda", requires_grad=True)
-        optimizer = torch.optim.Adam([delta], lr=0.001)
         with torch.no_grad():
-            initial, _, alpha, _ = self.render(base, i, world=world)
-            mask = alpha > 0.7
-            if int(mask.sum()) < 128:
+            world = self.world()
+            target = self.tensor(rgb).permute(2, 0, 1)[None] / 255
+            target = F.interpolate(target, (i.height, i.width), mode="area")[0].permute(1, 2, 0)
+            base = self.tensor(validate_pose(pose0))
+            delta = torch.zeros(6, device="cuda")
+            pred, _, alpha, _ = self.render(base, i, delta, world=world)
+            mask = (alpha > 0.7).flatten()
+            if int(mask.sum()) < ALIGN_PIXELS:
                 return failure
-            initial_loss = (initial[mask] - target[mask]).abs().mean()
-        for _ in range(steps):
-            pred = self.render(base, i, delta, world=world)[0]
-            residual = pred[mask] - target[mask]
-            loss = (residual.square() + 0.01**2).sqrt().mean()
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            optimizer.step()
-            with torch.no_grad():
+            ids = torch.where(mask)[0]
+            ids = ids[:: max(1, len(ids) // 8192)]
+
+            def residual(image):
+                return (image - target).reshape(-1, 3)[ids].flatten()
+
+            r = residual(pred)
+            initial = float(r.abs().mean())
+            H = None
+            for _ in range(iterations):
+                jac = []
+                for axis in range(6):
+                    offset = delta.clone()
+                    offset[axis] += ALIGN_STEP
+                    shifted = self.render(base, i, offset, world=world)[0]
+                    jac.append((residual(shifted) - r) / ALIGN_STEP)
+                J = torch.stack(jac, 1).double()
+                w = (ALIGN_HUBER / r.abs().double().clamp_min(1e-9)).clamp(max=1)
+                H = J.T @ (w[:, None] * J)
+                g = J.T @ (w * r.double())
+                damped = H + 1e-3 * torch.diag(H.diagonal()) + 1e-9 * torch.eye(6, device="cuda")
+                step = -torch.linalg.solve(damped, g).float()
+                delta = delta + step
                 delta[:3].clamp_(-0.1, 0.1)
                 delta[3:].clamp_(-0.2, 0.2)
-        with torch.no_grad():
-            pred, _, alpha, _ = self.render(base, i, delta, world=world)
-            residual = pred - target
-            inliers = mask & (alpha > 0.7) & (residual.abs().mean(-1) < 0.1)
-            n = int(inliers.sum())
-            if n < 128 or residual[mask].abs().mean() > initial_loss:
+                pred = self.render(base, i, delta, world=world)[0]
+                r = residual(pred)
+                if float(step[:3].norm()) < 1e-5 and float(step[3:].norm()) < 1e-5:
+                    break
+            if not np.isfinite(float(r.abs().mean())) or float(r.abs().mean()) >= initial:
                 return failure
-            # Six finite differences avoid unsupported second derivatives of the CUDA
-            # rasterizer. Sample a bounded set of pixels for the 6x6 information matrix.
-            ids = torch.where(inliers.flatten())[0][:: max(1, n // 2048)]
-            jac = []
-            for axis in range(6):
-                offset = delta.detach().clone()
-                offset[axis] += 0.0001
-                shifted = self.render(base, i, offset, world=world)[0]
-                jac.append(((shifted - pred).reshape(-1, 3)[ids] / 0.0001).flatten())
-            J = torch.stack(jac, dim=1).double()
-            H = J.T @ J
+            agree = int((r.reshape(-1, 3).abs().mean(-1) < 0.1).sum()) * max(
+                1, int(mask.sum()) // len(ids)
+            )
             eigen = torch.linalg.eigvalsh(H)
-            if not torch.isfinite(H).all() or eigen[0] < eigen[-1] * 1e-6:
+            if agree < ALIGN_PIXELS or not torch.isfinite(H).all() or eigen[0] < eigen[-1] * 1e-8:
                 return failure
-            variance = residual.reshape(-1, 3)[ids].square().mean().double().clamp_min(1e-6)
+            variance = (r.double().square() * w).sum() / w.sum()
             sigma = (torch.linalg.inv(H).diagonal() * variance).sqrt()
-            return ((base @ pose_delta(delta)).cpu().numpy(), sigma.cpu().numpy(), n)
+            return ((base @ pose_delta(delta)).double().cpu().numpy(), sigma.cpu().numpy(), agree)

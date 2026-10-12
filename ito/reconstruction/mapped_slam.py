@@ -4,6 +4,9 @@ from .mapper import Keyframe
 from .mapper_online import OnlineMapper
 from .slam import SLAMBackend
 
+# The map aligns every tracked frame (fusion's map factor) unless tracking has an aligner.
+ALIGN = True
+
 
 class MappedSLAMBackend(SLAMBackend):
     """Robot-first tracking feeding the optimised Gaussian map: keyframes seed and anchor
@@ -18,6 +21,8 @@ class MappedSLAMBackend(SLAMBackend):
             self.mapper_status = f"Point map fallback: {exc}"
         else:
             self.mapper_status = "Optimised Gaussian map (SH 0)"
+            if ALIGN and self.aligner is None:
+                self.aligner = self.mapper
         self.report(self.mapper_status)
 
     @property
