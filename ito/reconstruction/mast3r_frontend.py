@@ -26,6 +26,10 @@ UNMATCHED_KEYFRAME = 3
 # predicted view this much closer than the newest one: coming back to a view ties the frame
 # to where it was placed before.
 NEWEST_PREFERENCE = math.radians(10)
+# A frame the reference does not match is tried once more against the other keyframe that
+# faces its predicted view most nearly, within this: after a turn too fast to follow, the
+# view is often one an older keyframe saw.
+RETRY_ANGLE = math.radians(30)
 # A fully matched relative pose, one sigma; fewer matches widen it by 1/sqrt(match).
 VISUAL_ROTATION = math.radians(0.5)
 VISUAL_TRANSLATION = 0.02
@@ -121,13 +125,45 @@ class MASt3RFrontend:
 
     # -- tracking -----------------------------------------------------------------------
 
-    def _reference(self, predicted):
+    def _angles(self, predicted):
         poses = [self.placed(kf.T_WC)[0] for kf in self.frames]
-        angles = [math.inf if p is None else view_angle(p, predicted) for p in poses]
+        return [math.inf if p is None else view_angle(p, predicted) for p in poses]
+
+    def _reference(self, predicted):
+        angles = self._angles(predicted)
         best = int(np.argmin(angles))
         if angles[-1] <= angles[best] + NEWEST_PREFERENCE:
             return len(self.frames) - 1
         return best
+
+    def _retry(self, predicted, tried):
+        """The keyframe besides `tried` facing the predicted view most nearly, if close."""
+        angles = self._angles(predicted)
+        angles[tried] = math.inf
+        best = int(np.argmin(angles))
+        return best if angles[best] <= RETRY_ANGLE else None
+
+    def _attempt(self, frame, reference, predicted, prior_sigma):
+        """Track the frame against one keyframe: (new keyframe, lost, keyframe pose and
+        scale, the frame's pose and scale)."""
+        if self.ids[reference] != self.tracked_against:
+            # Upstream reuses the last frame's matches as the next search's start.
+            self.tracker.reset_idx_f2k()
+            self.tracked_against = self.ids[reference]
+        self.frames.reference = reference
+        keyframe = self.frames[reference]
+        keyframe_pose, keyframe_scale = self.placed(keyframe.T_WC)
+        frame.T_WC = self.unplaced(predicted, keyframe_scale)
+        self.tracker.prior = (frame.T_WC, self._prior_weight(prior_sigma, keyframe_scale))
+        try:
+            new_keyframe, _, lost = self.tracker.track(frame)
+        finally:
+            self.tracker.prior = None
+            self.frames.reference = None
+        match = 0.0 if lost else float(self.tracker.match_frac)
+        pose, scale = (None, keyframe_scale) if lost else self.placed(frame.T_WC)
+        usable = pose is not None and keyframe_pose is not None and match >= MIN_MATCH
+        return new_keyframe, usable, match, keyframe_pose, keyframe_scale, pose, scale
 
     def _cloud(self, frame, scale):
         from mast3r_slam.geometry import constrain_points_to_ray
@@ -172,23 +208,12 @@ class MASt3RFrontend:
                 self._keep(frame, node)
                 return VisualResult(None, None, UNKNOWN, 0.0, self._cloud(frame, 1.0), True)
             reference = self._reference(predicted)
-            if self.ids[reference] != self.tracked_against:
-                # Upstream reuses the last frame's matches as the next search's start.
-                self.tracker.reset_idx_f2k()
-                self.tracked_against = self.ids[reference]
-            self.frames.reference = reference
-            keyframe = self.frames[reference]
-            keyframe_pose, keyframe_scale = self.placed(keyframe.T_WC)
-            frame.T_WC = self.unplaced(predicted, keyframe_scale)
-            self.tracker.prior = (frame.T_WC, self._prior_weight(prior_sigma, keyframe_scale))
-            try:
-                new_keyframe, _, lost = self.tracker.track(frame)
-            finally:
-                self.tracker.prior = None
-                self.frames.reference = None
-            match = 0.0 if lost else float(self.tracker.match_frac)
-            pose, scale = (None, keyframe_scale) if lost else self.placed(frame.T_WC)
-            usable = pose is not None and keyframe_pose is not None and match >= MIN_MATCH
+            attempt = self._attempt(frame, reference, predicted, prior_sigma)
+            if not attempt[1] and (other := self._retry(predicted, reference)) is not None:
+                retried = self._attempt(frame, other, predicted, prior_sigma)
+                if retried[1]:
+                    reference, attempt = other, retried
+            new_keyframe, usable, match, keyframe_pose, keyframe_scale, pose, scale = attempt
             self.unmatched = 0 if usable else self.unmatched + 1
             if not usable:
                 frame.T_WC = self.unplaced(predicted, keyframe_scale)
