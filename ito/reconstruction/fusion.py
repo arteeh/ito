@@ -22,12 +22,6 @@ A map aligner (the Gaussian map rendered at a frame's pose and compared with its
 adds a map factor: the frame's pose in the world the map was built in, with its sigma,
 under the same Cauchy loss as a visual factor.
 
-Keyframes leaving the window that vision placed, and that look at the room from where no
-held keyframe does, stay as held keyframes: fixed, out of the solve, but still references
-the front end can track a frame against. Coming back to a view after a turn too fast to
-track (or a minute later) then ties the frame to where that view was placed before,
-instead of to keyframes placed by the robot's motion through the turn.
-
 The front end's lengths become metres through one log-scale estimated apart from the poses,
 from direct observations of it (the floor under a frame, slam.py), not from the visual
 translations: a front end seeded at the robot's prediction mostly echoes the robot's travel
@@ -43,12 +37,10 @@ from scipy.optimize import least_squares
 from scipy.sparse import lil_matrix
 from scipy.spatial.transform import Rotation
 
-WINDOW = 12  # keyframes
-# Held keyframes: at most this many, each looking from further than this, or in a direction
-# further than this, than any other held one.
-HELD = 24
-HELD_ANGLE = math.radians(15)
-HELD_DISTANCE = 0.3
+# Keyframes. Coming back to a view after a turn too fast to track, a frame should find the
+# keyframes vision placed before the turn still in the window, not only those the robot's
+# motion placed through it: on the sweep180 replay 30 halves the rotation p95 of 12.
+WINDOW = 30
 # The oldest node stays near where the window last placed it: the only thing fixing the
 # window's heading and position, since every other factor is relative or about gravity.
 ANCHOR_ROTATION = math.radians(2)
@@ -80,7 +72,6 @@ PUBLISHED = 600
 class Node:
     time: float  # Frame stamp on the pilot clock; exposed at time - td.
     pose: np.ndarray  # World-from-camera, 4x4.
-    seen: bool = False  # Vision measured it against a keyframe.
 
 
 @dataclass
@@ -114,7 +105,6 @@ class PoseGraph:
         self.scale_known = False
         self.nodes: dict[int, Node] = {}
         self.keyframes: list[int] = []  # oldest first
-        self.held: list[int] = []  # keyframes out of the window, fixed, still references
         self.current: int | None = None
         self.visual: list[Visual] = []
         self.mapped: dict[int, tuple[np.ndarray, np.ndarray]] = {}  # node: (pose, sigma 6)
@@ -184,7 +174,6 @@ class PoseGraph:
         self.visual.append(
             Visual(reference, frame, np.array(relative[:3, :3], float), translation, sigma)
         )
-        self.nodes[frame].seen = True
         if self.estimate_td:
             self._observe_delay(self.visual[-1])
 
@@ -198,7 +187,6 @@ class PoseGraph:
         if not np.isfinite(pose).all():
             return False
         self.mapped[node] = (np.array(pose, float), np.maximum(sigma, MAP_FLOOR))
-        self.nodes[node].seen = True
         return True
 
     def _observe_delay(self, visual):
@@ -247,48 +235,27 @@ class PoseGraph:
         self.current = None
         dropped = []
         while len(self.keyframes) > WINDOW:
-            dropped += self._retire(self.keyframes.pop(0))
+            oldest = self.keyframes.pop(0)
+            self._drop(oldest)
+            dropped.append(oldest)
             # Where the window put the new oldest node holds the world's heading from now on.
             self.anchor = self.nodes[self.keyframes[0]].pose.copy()
         return dropped
 
     def expire(self, oldest):
-        """Retire keyframes exposed before `oldest`, where the robot's motion no longer
-        reaches; returns the nodes dropped altogether."""
-        dropped, retired = [], False
-        while self.keyframes and self.nodes[self.keyframes[0]].time - self.td < oldest:
-            dropped += self._retire(self.keyframes.pop(0))
-            retired = True
-        if retired and self.keyframes:
-            self.anchor = self.nodes[self.keyframes[0]].pose.copy()
-        return dropped
-
-    def _retire(self, node):
-        """A keyframe leaves the window: held if vision placed it and it adds a view, else
-        dropped. Returns the nodes dropped."""
-        pose = self.nodes[node].pose
-        if not self.nodes[node].seen or any(_near(self.nodes[h].pose, pose) for h in self.held):
-            self._drop(node)
-            return [node]
-        self.held.append(node)
-        # Factors between two held keyframes can no longer move anything.
-        held = set(self.held)
-        self.visual = [v for v in self.visual if not {v.reference, v.frame} <= held]
+        """Drop keyframes exposed before `oldest`, where the robot's motion no longer reaches."""
         dropped = []
-        if len(self.held) > HELD:
-            # The one furthest from where the camera is now.
-            newest = self.nodes[self.keyframes[-1]].pose if self.keyframes else pose
-            far = max(self.held, key=lambda h: _distance(self.nodes[h].pose, newest))
-            self.held.remove(far)
-            self._drop(far)
-            dropped.append(far)
+        while self.keyframes and self.nodes[self.keyframes[0]].time - self.td < oldest:
+            node = self.keyframes.pop(0)
+            self._drop(node)
+            dropped.append(node)
+        if dropped and self.keyframes:
+            self.anchor = self.nodes[self.keyframes[0]].pose.copy()
         return dropped
 
     def _drop(self, node):
         del self.nodes[node]
         self.mapped.pop(node, None)
-        if node in self.held:
-            self.held.remove(node)
         self.visual = [v for v in self.visual if node not in (v.reference, v.frame)]
         if self.current == node:
             self.current = None
@@ -379,9 +346,7 @@ class PoseGraph:
             order = sorted(involved, key=lambda n: self.nodes[n].time)
             chain_nodes = [(self.keyframes[-1], self.current)] if self.keyframes else []
         else:
-            # Held keyframes the window's visual factors reach take part, fixed.
-            outside = {n for v in visual for n in (v.reference, v.frame)} - set(window)
-            order = window + sorted(outside)
+            order = window
             chain_nodes = list(zip(window, window[1:], strict=False))
         index = {node: i for i, node in enumerate(order)}
         free_index = {node: i for i, node in enumerate(free)}
@@ -530,17 +495,3 @@ class PoseGraph:
             for c in columns:
                 matrix[r, c] = 1
         return matrix
-
-
-def _distance(a, b):
-    """How differently two world-from-camera poses see: view angle plus HELD_ANGLE per
-    HELD_DISTANCE between them."""
-    cosine = float(np.clip(a[:3, 2] @ b[:3, 2], -1, 1))
-    apart = float(np.linalg.norm(a[:3, 3] - b[:3, 3]))
-    return math.acos(cosine) + HELD_ANGLE * apart / HELD_DISTANCE
-
-
-def _near(a, b):
-    cosine = float(np.clip(a[:3, 2] @ b[:3, 2], -1, 1))
-    apart = float(np.linalg.norm(a[:3, 3] - b[:3, 3]))
-    return math.acos(cosine) < HELD_ANGLE and apart < HELD_DISTANCE

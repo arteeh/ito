@@ -22,13 +22,12 @@ LOCAL_WINDOW = 4  # keyframes in MASt3R's own local graph
 MIN_MATCH = 0.05
 # This many such frames in a row and the next becomes a keyframe at fusion's pose.
 UNMATCHED_KEYFRAME = 3
-# An older keyframe (fusion's held ones among them) becomes the reference when it faces the
-# predicted view this much closer than the newest one: coming back to a view ties the frame
-# to where it was placed before.
+# An older keyframe becomes the reference when it faces the predicted view this much closer
+# than the newest one: coming back to a view ties the frame to where it was placed before.
 NEWEST_PREFERENCE = math.radians(10)
 # A frame the reference does not match is tried once more against the other keyframe that
 # faces its predicted view most nearly, within this: after a turn too fast to follow, the
-# view is often one an older keyframe saw.
+# view is often one an older keyframe in fusion's window saw.
 RETRY_ANGLE = math.radians(30)
 # A fully matched relative pose, one sigma; fewer matches widen it by 1/sqrt(match).
 VISUAL_ROTATION = math.radians(0.5)
