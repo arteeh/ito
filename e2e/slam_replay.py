@@ -168,6 +168,12 @@ def main():
     parser.add_argument(
         "--set", action="append", default=[], help="override MASt3R-SLAM config: tracking.Q_conf=2"
     )
+    parser.add_argument(
+        "--describe",
+        action="append",
+        default=[],
+        help="robot description override: cameras.exposure=0, motion_noise.time_s=0.006",
+    )
     args = parser.parse_args()
     source = RUNGS.get(args.pose, args.pose)
     if source not in RUNGS.values():
@@ -198,6 +204,14 @@ def main():
         if (args.recording / "robot.json").exists()
         else None
     )
+    for override in args.describe:
+        # Recordings from before a field existed replay as a driver sending it would.
+        name, value = override.split("=", 1)
+        part, key = name.split(".")
+        data = robot.model_dump()
+        for item in data[part] if part == "cameras" else [data[part]]:
+            item[key] = None if value == "none" else float(value)
+        robot = RobotDescription.model_validate(data)
     if source in ("source", "fused", "truth", "receive") and not args.poses_only and not motion:
         parser.error(f"{rung} needs a recording with the robot's Motion (motion.jsonl)")
     if source in ("source", "fused") and (not motion or robot is None or not robot.motion_noise):
@@ -263,6 +277,7 @@ def main():
             report=messages.append,
             motion_noise=robot.motion_noise if robot else None,
             frame_delay=delay,
+            exposure=robot.cameras[0].exposure if robot else None,
             oracle=None if source == "fused" else oracle,
             voxel_size=0.04,
             fade_seconds=0.5,
@@ -429,7 +444,7 @@ def main():
         pose=source,
         measured=not args.unmeasured,
         prior_delay=args.prior_delay,
-        overrides=args.set,
+        overrides=args.set + args.describe,
         seconds=round(float(stamps[-1]), 1),
         frames_available=len(rows),
         frames_processed=len(processed),

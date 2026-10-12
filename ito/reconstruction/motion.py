@@ -109,6 +109,10 @@ class MotionBuffer:
             index -= 1
         return self.spins[index]
 
+    def _timing(self, t):
+        """Radians the camera's pose at t is off by from its stamp's error: speed x time_s."""
+        return float(np.linalg.norm(self.angular_velocity(t))) * self.noise.time_s
+
     def _unreliable(self, t0, t1):
         lo, hi = np.searchsorted(self.times, (min(t0, t1), max(t0, t1)))
         states = self.states[max(lo - 1, 0) : hi + 1]
@@ -123,7 +127,11 @@ class MotionBuffer:
             np.interp(t1, self.times, self.travel) - np.interp(t0, self.times, self.travel)
         )
         noise = self.noise
-        rotation = math.radians(math.hypot(noise.rotation_deg, noise.rotation_deg_per_s * dt))
+        rotation = math.hypot(
+            math.radians(math.hypot(noise.rotation_deg, noise.rotation_deg_per_s * dt)),
+            self._timing(t0),
+            self._timing(t1),
+        )
         translation = noise.translation_m + noise.translation_fraction * travelled
         scale = UNRELIABLE if self._unreliable(t0, t1) else 1.0
         sigma = np.repeat((rotation * scale, translation * scale), 3)
@@ -132,4 +140,4 @@ class MotionBuffer:
     def gravity_sigma(self, t):
         """Radians of pitch and roll error at t, one sigma."""
         scale = UNRELIABLE if self._unreliable(t, t) else 1.0
-        return math.radians(self.noise.gravity_deg) * scale
+        return math.hypot(math.radians(self.noise.gravity_deg), self._timing(t)) * scale

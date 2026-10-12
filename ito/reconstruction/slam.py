@@ -33,7 +33,7 @@ __all__ = ["RESTART_CAUSES", "SLAMBackend"]
 # pose, from the robot, but neither a visual factor nor splats: no tracker matches through
 # it, and its splats would be streaks. Blur is |angular velocity| x exposure x focal length.
 BLUR_PIXELS = 8.0
-# Nothing on the wire says how long the sensor exposed; indoor auto-exposure runs about this.
+# A camera whose driver cannot say how long it exposes: indoor auto-exposure runs about this.
 EXPOSURE = 0.010
 # How far the online frame-delay estimate may stray from the driver's own.
 DELAY_RANGE = (-0.1, 0.2)
@@ -50,7 +50,8 @@ SCALE_STEP = 0.01  # Between keyframes the front end takes a new scale past this
 
 class SLAMBackend(RGBDBackend):
     """frame_delay: the driver's estimate of how long before its capture_time a frame was
-    exposed. oracle: replaces fusion's pose with a known one (e2e/slam_replay's rungs)."""
+    exposed; exposure: how long the sensor integrates one, None if the driver cannot say.
+    oracle: replaces fusion's pose with a known one (e2e/slam_replay's rungs)."""
 
     def __init__(
         self,
@@ -60,6 +61,7 @@ class SLAMBackend(RGBDBackend):
         report,
         motion_noise,
         frame_delay=0.0,
+        exposure=None,
         frontend=None,
         oracle=None,
         **options,
@@ -81,6 +83,7 @@ class SLAMBackend(RGBDBackend):
         bounds = (max(0.0, frame_delay + DELAY_RANGE[0]), frame_delay + DELAY_RANGE[1])
         self.graph = PoseGraph(self.motion, td=frame_delay, td_bounds=bounds, estimate_td=True)
         self.focal = float(intrinsics.fx)
+        self.exposure = EXPOSURE if exposure is None else float(exposure)
         self.camera_pose = np.eye(4, dtype=np.float32)
         self.correction = np.eye(4, dtype=np.float32)
         self.tracked = 0  # frames given a pose
@@ -115,7 +118,7 @@ class SLAMBackend(RGBDBackend):
         reference_time = graph.nodes[last].time if last is not None else captured
         _, covariance = self.motion.between(reference_time - graph.td, exposure)
         spin = float(np.linalg.norm(self.motion.angular_velocity(exposure)))
-        if oracle is None and spin * EXPOSURE * self.focal > BLUR_PIXELS:
+        if oracle is None and spin * self.exposure * self.focal > BLUR_PIXELS:
             self.blurred += 1
             graph.solve_frame()
             self._publish(node)
