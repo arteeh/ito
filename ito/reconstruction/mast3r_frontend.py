@@ -22,9 +22,10 @@ LOCAL_WINDOW = 4  # keyframes in MASt3R's own local graph
 MIN_MATCH = 0.05
 # This many such frames in a row and the next becomes a keyframe at fusion's pose.
 UNMATCHED_KEYFRAME = 3
-# An older keyframe becomes the reference when it faces the predicted view this much closer
-# than the newest one.
-NEWEST_PREFERENCE = math.radians(20)
+# An older keyframe (fusion's held ones among them) becomes the reference when it faces the
+# predicted view this much closer than the newest one: coming back to a view ties the frame
+# to where it was placed before.
+NEWEST_PREFERENCE = math.radians(10)
 # A fully matched relative pose, one sigma; fewer matches widen it by 1/sqrt(match).
 VISUAL_ROTATION = math.radians(0.5)
 VISUAL_TRANSLATION = 0.02
