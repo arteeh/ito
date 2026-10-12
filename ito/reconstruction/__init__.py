@@ -44,6 +44,7 @@ def _run(recon):
                 report=recon.report,
                 motion_noise=recon.motion_noise,
                 frame_delay=recon.frame_delay,
+                exposure=recon.exposure,
                 **recon.options,
             )
         elif recon.backend == "slam":
@@ -195,6 +196,7 @@ class Reconstruction:
         tracking="robot",
         motion_noise=None,
         frame_delay=0.0,
+        exposure=None,
     ):
         """tracking: for SLAM, "robot" fuses the robot's Motion with vision (it needs the
         robot's motion_noise); "vision" is MASt3R-SLAM alone, steered by the pose prior
@@ -211,6 +213,7 @@ class Reconstruction:
         self.tracking_mode = tracking if motion_noise is not None else "vision"
         self.motion_noise = motion_noise
         self.frame_delay = frame_delay
+        self.exposure = exposure
         self.intrinsics = intrinsics
         self.shape = (intrinsics.height, intrinsics.width)
         self.options = dict(

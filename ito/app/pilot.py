@@ -412,6 +412,7 @@ class Pilot:
                     tracking=self.settings.tracking,
                     motion_noise=description.motion_noise,
                     frame_delay=camera.capture_delay,
+                    exposure=camera.exposure,
                 )
             self.robot_first = self.backend == "slam" and self.worker.tracking_mode == "robot"
             self.state = replace(self.state, correction=pose())

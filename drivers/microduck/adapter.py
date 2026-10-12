@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import math
+import os
 from collections import deque
 
 from ito import clock
@@ -54,12 +55,15 @@ METADATA_POSE_INTERVAL = 0.05
 # Head FK on the trunk IMU against MuJoCo truth over 800 poses of a walking drive (#33):
 # p95 1.32 degrees rotation, 1.77 cm per metre walked, both with receive stamps. One sigma is
 # about half a p95; robotd's game-rotation IMU drifts in yaw well under a degree a minute.
+# In a turn the pose is off along the turn, as if read a few milliseconds from its t_ns:
+# against truth, an interquartile spread of 6-9 ms over the sweep180 and tour drives.
 MOTION_NOISE = MotionNoise(
     rotation_deg=0.66,
     rotation_deg_per_s=0.2,
     translation_m=0.005,
     translation_fraction=0.018,
     gravity_deg=0.66,
+    time_s=0.006,
 )
 # A head-IMU sample this close to a robot.state tick turns the camera at that tick.
 HEAD_IMU_MATCH = 0.025
@@ -180,6 +184,13 @@ class MicroduckAdapter(Adapter):
         self._measured_at = None
         self._neutral_done = asyncio.Event()
 
+    def _exposure(self):
+        """The simulator renders a frame at an instant (or averages --blur renders); the
+        IMX219's auto-exposure time reaches nobody."""
+        if self.camera.source == "sim" and os.environ.get("ITO_MICRODUCK_BLUR", "1") == "1":
+            return 0.0
+        return None
+
     @property
     def description(self):
         if self._description is None:
@@ -206,6 +217,7 @@ class MicroduckAdapter(Adapter):
                         intrinsics=self.camera.intrinsics,
                         # Frames carry their arrival time; mediad dates none at the sensor.
                         capture_delay=FRAME_DELAY,
+                        exposure=self._exposure(),
                     ),
                 ),
                 capabilities=("head", "walking", "posture", "beak"),
