@@ -20,6 +20,12 @@ SLAM_REV = "e6f4e3d474fad0e11f561482012be864ba8c3f17"
 LIE_REV = "e7df86554156b36846008d8ddbcc4d8521a16554"
 EIGEN_REV = "bddaa99e151244402c6e804e01b970288650da6b"
 MODEL_REV = "06e7259f34c3060f322df5cb0c7b9094f57e41fc"
+GSPLAT_VERSION = "1.5.3"
+GSPLAT_URL = (
+    "https://files.pythonhosted.org/packages/6d/94/"
+    "a0963873708223385ac926112dc3e40ab08297784ac53d95309b4cb5a801/gsplat-1.5.3.tar.gz"
+)
+GSPLAT_SHA256 = "343f080c470e891ba3c697c03bdf0952cb982d1d535fdc24adb23c2cb4fba906"
 MODEL = "naver/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric"
 
 
@@ -237,6 +243,14 @@ def compile_extensions(cache, work):
     )
     croco = slam / "thirdparty/mast3r/dust3r/croco/models/curope"
     build("curope", [croco / "curope.cpp", croco / "kernels.cu"])
+    gsplat = cache / "gsplat/gsplat/cuda"
+    build(
+        "gsplat_cuda",
+        sorted((gsplat / "csrc").glob("*.cu"))
+        + sorted((gsplat / "csrc").glob("*.cpp"))
+        + [gsplat / "ext.cpp"],
+        [gsplat / "include", gsplat / "csrc/third_party/glm"],
+    )
     return native, str(torch.__version__)
 
 
@@ -275,6 +289,7 @@ def main():
         "7a246279efcaf15464aac710ca36fde772000fa0a16082a8c03dfe78c15dce93",
         report,
     )
+    source(cache, work, "gsplat", GSPLAT_URL, GSPLAT_SHA256, report)
     # Retain all upstream licences. Retrieval's ASMK database is unnecessary for a
     # bounded live map: recovery searches the retained keyframes directly.
     utils = slam / "mast3r_slam/mast3r_utils.py"
@@ -343,7 +358,13 @@ def main():
                 abi=abi(),
                 torch=torch_version,
                 native=native,
-                revisions=dict(slam=SLAM_REV, lie=LIE_REV, eigen=EIGEN_REV, model=MODEL_REV),
+                revisions=dict(
+                    slam=SLAM_REV,
+                    lie=LIE_REV,
+                    eigen=EIGEN_REV,
+                    model=MODEL_REV,
+                    gsplat=GSPLAT_VERSION,
+                ),
                 files=files,
             ),
             indent=2,

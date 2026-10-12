@@ -94,6 +94,8 @@ def models(stage, source):
     manifest = json.loads((target / "manifest.json").read_text(encoding="utf-8"))
     if manifest["version"] != BUNDLE_VERSION or manifest["abi"] != abi() or not manifest["native"]:
         raise SystemExit(f"{target} is not a complete bundle {BUNDLE_VERSION} for {abi()}")
+    if "gsplat_cuda" not in manifest["native"]:
+        raise SystemExit("Release bundle is missing precompiled gsplat kernels")
     for name, size in manifest["files"].items():
         if (target / name).stat().st_size != size:
             raise SystemExit(f"Damaged model file: {target / name}")
@@ -217,7 +219,9 @@ def check(stage):
         "assert MODELS == root / 'models', MODELS\n"
         "for module in (torch, cupy, mujoco, aiortc, xr, imgui_bundle, ito):\n"
         "    assert pathlib.Path(module.__file__).is_relative_to(root), module.__file__\n"
-        "assert torch.version.cuda, 'torch without CUDA'\n",
+        "assert torch.version.cuda, 'torch without CUDA'\n"
+        "from ito.reconstruction.gaussian_runtime import prepare as gaussian_kernels\n"
+        "if torch.cuda.is_available(): gaussian_kernels()\n",
         stage, env=env, cwd=stage,
     )  # fmt: skip
 
