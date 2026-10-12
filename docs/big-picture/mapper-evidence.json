@@ -1,0 +1,299 @@
+{
+  "note": "Historical mapper experiment outputs, not new fff0439 baseline runs. Different frame schedules and render paths; diagnostic comparisons only.",
+  "runs": [
+    {
+      "source": "mapper/out/r-m2-main-s-L1/summary.json",
+      "sha256": "5e8f6bc915f140d6ec13c07f7ebd551d3750eb1cb4c3a9c25d3dc4f4cb0b1519",
+      "rung": "L1",
+      "slam_hz": 8.16,
+      "frame_to_pose_ms_p95": 339.4,
+      "prediction_psnr_median": 22.19,
+      "prediction_coverage_median": 0.988,
+      "prediction_full_psnr_median": 20.46,
+      "prediction_ssim_median": 0.726,
+      "gaussians": 252563,
+      "vram_mb_peak": 3510,
+      "every_frame": {
+        "frames": 890,
+        "rotation_deg": {
+          "p50": 0.0,
+          "p95": 0.0,
+          "max": 0.0
+        },
+        "translation_m": {
+          "p50": 0.0,
+          "p95": 0.0,
+          "max": 0.0
+        },
+        "camera_path_m": 1.01,
+        "drift_per_m": 0.0,
+        "end_error_m": 0.0,
+        "usable_fraction": 1.0
+      },
+      "eye_corrections": null
+    },
+    {
+      "source": "mapper/out/r-m2-s-L1/summary.json",
+      "sha256": "eb8d25c8cf5c736ecc25c73a3e95fc0536ee60eb38f0ab95bf4f38a673d14ac8",
+      "rung": "L1",
+      "slam_hz": 8.29,
+      "frame_to_pose_ms_p95": 427.6,
+      "prediction_psnr_median": 24.51,
+      "prediction_coverage_median": 0.984,
+      "prediction_full_psnr_median": 21.08,
+      "prediction_ssim_median": 0.842,
+      "gaussians": 108445,
+      "vram_mb_peak": 3698,
+      "every_frame": {
+        "frames": 890,
+        "rotation_deg": {
+          "p50": 0.0,
+          "p95": 0.0,
+          "max": 0.0
+        },
+        "translation_m": {
+          "p50": 0.0,
+          "p95": 0.0,
+          "max": 0.0
+        },
+        "camera_path_m": 1.01,
+        "drift_per_m": 0.0,
+        "end_error_m": 0.0,
+        "usable_fraction": 1.0
+      },
+      "eye_corrections": null
+    },
+    {
+      "source": "mapper/out/r-m2-main-t-L1/summary.json",
+      "sha256": "c5154d918b7099c20f1f098b0ef76e00390d3e579626b634ecf05d6b0bcb313c",
+      "rung": "L1",
+      "slam_hz": 6.54,
+      "frame_to_pose_ms_p95": 450.8,
+      "prediction_psnr_median": 21.5,
+      "prediction_coverage_median": 0.991,
+      "prediction_full_psnr_median": 19.2,
+      "prediction_ssim_median": 0.729,
+      "gaussians": 930219,
+      "vram_mb_peak": 3603,
+      "every_frame": {
+        "frames": 3022,
+        "rotation_deg": {
+          "p50": 0.0,
+          "p95": 0.0,
+          "max": 0.0
+        },
+        "translation_m": {
+          "p50": 0.0,
+          "p95": 0.0,
+          "max": 0.0
+        },
+        "camera_path_m": 11.92,
+        "drift_per_m": 0.0,
+        "end_error_m": 0.0,
+        "usable_fraction": 1.0
+      },
+      "eye_corrections": null
+    },
+    {
+      "source": "mapper/out/r-m2-t-L1/summary.json",
+      "sha256": "4d64997e5d6803738564f307a2c697870551fb7291e984000eb7e858b8ed9bfb",
+      "rung": "L1",
+      "slam_hz": 6.98,
+      "frame_to_pose_ms_p95": 458.1,
+      "prediction_psnr_median": 22.05,
+      "prediction_coverage_median": 0.988,
+      "prediction_full_psnr_median": 19.19,
+      "prediction_ssim_median": 0.815,
+      "gaussians": 341929,
+      "vram_mb_peak": 3796,
+      "every_frame": {
+        "frames": 3022,
+        "rotation_deg": {
+          "p50": 0.0,
+          "p95": 0.0,
+          "max": 0.0
+        },
+        "translation_m": {
+          "p50": 0.0,
+          "p95": 0.0,
+          "max": 0.0
+        },
+        "camera_path_m": 11.92,
+        "drift_per_m": 0.0,
+        "end_error_m": 0.0,
+        "usable_fraction": 1.0
+      },
+      "eye_corrections": null
+    },
+    {
+      "source": "mapper/out/r-m2-main-s-L4/summary.json",
+      "sha256": "2dd6db695272f40703d8c3fec94c2f90f534bf07705748d1d0d4ebad8d8424ee",
+      "rung": "L4",
+      "slam_hz": 10.77,
+      "frame_to_pose_ms_p95": 137.9,
+      "prediction_psnr_median": 21.87,
+      "prediction_coverage_median": 0.991,
+      "prediction_full_psnr_median": 20.44,
+      "prediction_ssim_median": 0.737,
+      "gaussians": 202100,
+      "vram_mb_peak": 3490,
+      "every_frame": {
+        "frames": 890,
+        "rotation_deg": {
+          "p50": 0.13,
+          "p95": 1.3,
+          "max": 3.18
+        },
+        "translation_m": {
+          "p50": 0.002,
+          "p95": 0.005,
+          "max": 0.006
+        },
+        "camera_path_m": 1.01,
+        "drift_per_m": 0.005,
+        "end_error_m": 0.005,
+        "usable_fraction": 0.985
+      },
+      "eye_corrections": {
+        "turn_deg_s_p99": 4.87,
+        "slide_cm_s_p99": 0.91
+      }
+    },
+    {
+      "source": "mapper/out/r-m2-s-L4-na/summary.json",
+      "sha256": "53997656df6b94feadcd223cff6c96bb23926293d40a263265701f18160f5a72",
+      "rung": "L4",
+      "slam_hz": 11.73,
+      "frame_to_pose_ms_p95": 137.1,
+      "prediction_psnr_median": 22.49,
+      "prediction_coverage_median": 0.969,
+      "prediction_full_psnr_median": 17.67,
+      "prediction_ssim_median": 0.802,
+      "gaussians": 78045,
+      "vram_mb_peak": 3559,
+      "every_frame": {
+        "frames": 890,
+        "rotation_deg": {
+          "p50": 0.16,
+          "p95": 1.16,
+          "max": 2.85
+        },
+        "translation_m": {
+          "p50": 0.002,
+          "p95": 0.004,
+          "max": 0.005
+        },
+        "camera_path_m": 1.01,
+        "drift_per_m": 0.004,
+        "end_error_m": 0.004,
+        "usable_fraction": 0.993
+      },
+      "eye_corrections": {
+        "turn_deg_s_p99": 5.42,
+        "slide_cm_s_p99": 0.95
+      }
+    },
+    {
+      "source": "mapper/out/r-m2-main-t-L4/summary.json",
+      "sha256": "423617717418c0569d583ac3a663ca88946fb4730ee407b5fb9ef612af4aa07d",
+      "rung": "L4",
+      "slam_hz": 8.71,
+      "frame_to_pose_ms_p95": 486.7,
+      "prediction_psnr_median": 21.28,
+      "prediction_coverage_median": 0.991,
+      "prediction_full_psnr_median": 18.41,
+      "prediction_ssim_median": 0.717,
+      "gaussians": 888036,
+      "vram_mb_peak": 3602,
+      "every_frame": {
+        "frames": 3022,
+        "rotation_deg": {
+          "p50": 0.39,
+          "p95": 1.4,
+          "max": 3.97
+        },
+        "translation_m": {
+          "p50": 0.009,
+          "p95": 0.026,
+          "max": 0.035
+        },
+        "camera_path_m": 11.92,
+        "drift_per_m": 0.001,
+        "end_error_m": 0.006,
+        "usable_fraction": 0.984
+      },
+      "eye_corrections": {
+        "turn_deg_s_p99": 7.71,
+        "slide_cm_s_p99": 8.31
+      }
+    },
+    {
+      "source": "mapper/out/r-m2-t-L4-na/summary.json",
+      "sha256": "67d651b746604a611b16d28dd5238adce209e1a4ea6c6132eba44ee651be994e",
+      "rung": "L4",
+      "slam_hz": 9.06,
+      "frame_to_pose_ms_p95": 408.5,
+      "prediction_psnr_median": 20.49,
+      "prediction_coverage_median": 0.984,
+      "prediction_full_psnr_median": 18.11,
+      "prediction_ssim_median": 0.791,
+      "gaussians": 344490,
+      "vram_mb_peak": 3783,
+      "every_frame": {
+        "frames": 3022,
+        "rotation_deg": {
+          "p50": 0.27,
+          "p95": 1.4,
+          "max": 3.56
+        },
+        "translation_m": {
+          "p50": 0.011,
+          "p95": 0.028,
+          "max": 0.036
+        },
+        "camera_path_m": 11.92,
+        "drift_per_m": 0.0,
+        "end_error_m": 0.006,
+        "usable_fraction": 0.989
+      },
+      "eye_corrections": {
+        "turn_deg_s_p99": 7.8,
+        "slide_cm_s_p99": 4.1
+      }
+    },
+    {
+      "source": "mapper/out/r-m2-t-L4-al/summary.json",
+      "sha256": "f5e90d2ab4e8373e1e45bc4e3b31953cc5bcee739bb6f01a990afda7a003badc",
+      "rung": "L4",
+      "slam_hz": 6.44,
+      "frame_to_pose_ms_p95": 606.6,
+      "prediction_psnr_median": 18.41,
+      "prediction_coverage_median": 0.969,
+      "prediction_full_psnr_median": 15.54,
+      "prediction_ssim_median": 0.748,
+      "gaussians": 282195,
+      "vram_mb_peak": 3739,
+      "every_frame": {
+        "frames": 3022,
+        "rotation_deg": {
+          "p50": 2.54,
+          "p95": 5.17,
+          "max": 7.42
+        },
+        "translation_m": {
+          "p50": 0.065,
+          "p95": 0.205,
+          "max": 0.232
+        },
+        "camera_path_m": 11.92,
+        "drift_per_m": 0.019,
+        "end_error_m": 0.23,
+        "usable_fraction": 0.174
+      },
+      "eye_corrections": {
+        "turn_deg_s_p99": 49.96,
+        "slide_cm_s_p99": 77.01
+      }
+    }
+  ]
+}
