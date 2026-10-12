@@ -7,14 +7,15 @@ frame vision cannot use simply adds no visual factor, and its pose comes from th
 
 Variables: one pose per node (the last WINDOW keyframes and the current frame), the frame
 delay td (a frame stamped t was exposed at t - td) and one log-scale between the visual
-front end's translations and metres. Factors: the robot's relative motion between
-consecutive nodes, gravity (pitch and roll) per node, a weak prior holding the oldest node
-where the window last put it, and visual relative poses with a Cauchy loss. Solved with
-scipy's least squares on a sparse Jacobian: per frame the current node alone, per keyframe
-the whole window.
+front end's lengths and metres. Factors: the robot's relative motion between consecutive
+nodes, gravity (pitch and roll) per node, a weak prior holding the oldest node where the
+window last put it, visual relative poses and direct observations of the scale (the floor
+under a frame, slam.py), both with a Cauchy loss. Solved with scipy's least squares on a
+sparse Jacobian: per frame the current node alone, per keyframe the whole window.
 """
 
 import math
+from collections import deque
 from dataclasses import dataclass
 
 import numpy as np
@@ -30,6 +31,8 @@ ANCHOR_POSITION = 0.05
 # A visual factor whose whitened error is past this many sigmas counts less and less.
 CAUCHY = 2.0
 SCALE_SIGMA = 0.2  # Log-scale prior per keyframe solve, around the last estimate.
+# Scale observations kept: a few seconds of frames, as the front end's own scale drifts.
+SCALE_MEMORY = 60
 TD_STEP = 0.01  # How far the frame delay may wander between keyframe solves, one sigma.
 UP = np.array([0.0, 1.0, 0.0])
 
@@ -64,6 +67,10 @@ class PoseGraph:
         self.td_bounds = td_bounds
         self.estimate_td = estimate_td
         self.log_scale = 0.0
+        # (log metres per front-end unit, sigma), newest last; until the first is solved the
+        # front end's scale is unknown, and nothing holds it near its start.
+        self.scales = deque(maxlen=SCALE_MEMORY)
+        self.scale_known = False
         self.nodes: dict[int, Node] = {}
         self.keyframes: list[int] = []  # oldest first
         self.current: int | None = None
@@ -89,8 +96,15 @@ class PoseGraph:
         factor = math.exp(self.log_scale)
         for v in self.visual:
             v.translation = v.translation * factor
+        self.scales = deque(
+            ((value - self.log_scale, sigma) for value, sigma in self.scales), SCALE_MEMORY
+        )
         self.log_scale = 0.0
         return factor
+
+    def add_scale(self, log_scale, sigma):
+        """An observation of the front end's scale: log metres per front-end unit."""
+        self.scales.append((float(log_scale), float(sigma)))
 
     def predict(self, t):
         """World-from-camera for a frame stamped t: the newest node moved on by the robot."""
@@ -184,7 +198,12 @@ class PoseGraph:
             self._solve(order, frame_only=False)
         return {k: self.nodes[k].pose for k in self.keyframes}
 
-    def _solve(self, free, frame_only):
+    def solve_scale(self):
+        """Refine the scale alone, every pose and the frame delay held (known poses)."""
+        if self.keyframes:
+            self._solve([], frame_only=False, estimate_td=False)
+
+    def _solve(self, free, frame_only, estimate_td=True):
         window = self.keyframes + ([self.current] if self.current is not None else [])
         visual = [v for v in self.visual if v.reference in self.nodes and v.frame in self.nodes]
         if frame_only:
@@ -205,8 +224,11 @@ class PoseGraph:
         start_r = Rotation.from_matrix(np.array([start[n][:3, :3] for n in order]))
         start_p = np.array([start[n][:3, 3] for n in order])
         times = np.array([self.nodes[n].time for n in order])
-        estimate_td = self.estimate_td and not frame_only
-        estimate_scale = not frame_only and bool(self.visual)
+        estimate_td = estimate_td and self.estimate_td and not frame_only
+        estimate_scale = not frame_only and bool(self.visual or self.scales)
+        observed = np.array(self.scales if estimate_scale else np.empty((0, 2))).reshape(-1, 2)
+        # The first observations set the scale freely; after that it drifts slowly.
+        scale_prior = estimate_scale and (self.scale_known or not len(observed))
         extra = int(estimate_td) + int(estimate_scale)
         size = 6 * len(free) + extra
         td0, scale0 = self.td, self.log_scale
@@ -274,7 +296,10 @@ class PoseGraph:
                 blocks.append(_cauchy(np.hstack((rotation, moved)) / v_sigma).ravel())
             if estimate_td:
                 blocks.append(np.array([(td - td0) / TD_STEP]))
-            if estimate_scale:
+            if len(observed):
+                error = (scale - observed[:, :1]) / observed[:, 1:]
+                blocks.append(_cauchy(error).ravel())
+            if scale_prior:
                 blocks.append(np.array([(scale - scale0) / SCALE_SIGMA]))
             return np.concatenate(blocks) if blocks else np.zeros(1)
 
@@ -283,11 +308,20 @@ class PoseGraph:
             x0[6 * len(free)] = td0
         if estimate_scale:
             x0[6 * len(free) + int(estimate_td)] = scale0
+        scale_rows = len(observed) + int(scale_prior) if estimate_scale else 0
         sparsity = (
             None
-            if frame_only
+            if frame_only or not free
             else self._sparsity(
-                order, free_index, chain_nodes, visual, anchored, estimate_td, estimate_scale, size
+                order,
+                free_index,
+                chain_nodes,
+                visual,
+                anchored,
+                estimate_td,
+                estimate_scale,
+                scale_rows,
+                size,
             )
         )
         lower = np.full(size, -np.inf)
@@ -298,8 +332,9 @@ class PoseGraph:
         result = least_squares(
             residuals,
             x0,
-            # A frame's six unknowns differentiate faster densely than through sparse groups.
-            jac_sparsity=None if frame_only else sparsity,
+            # A frame's six unknowns, or the scale alone, differentiate faster densely than
+            # through sparse groups.
+            jac_sparsity=sparsity,
             bounds=(lower, upper),
             method="trf",
             x_scale="jac",
@@ -315,9 +350,12 @@ class PoseGraph:
             pose[:3, 3] = positions[i]
             self.nodes[node].pose = pose
         self.td, self.log_scale = float(td), float(scale)
+        self.scale_known = self.scale_known or bool(len(observed))
         self.solves += 1
 
-    def _sparsity(self, order, free_index, chain, visual, anchored, estimate_td, scale, size):
+    def _sparsity(
+        self, order, free_index, chain, visual, anchored, estimate_td, scale, scale_rows, size
+    ):
         rows = []
 
         def block(count, nodes, uses_td=False, uses_scale=False):
@@ -341,8 +379,7 @@ class PoseGraph:
             block(6, (v.reference, v.frame), uses_scale=True)
         if estimate_td:
             block(1, (), uses_td=True)
-        if scale:
-            block(1, (), uses_scale=True)
+        block(scale_rows, (), uses_scale=True)
         matrix = lil_matrix((max(len(rows), 1), size), dtype=int)
         for r, columns in enumerate(rows):
             for c in columns:

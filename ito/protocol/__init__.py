@@ -193,7 +193,10 @@ class FrameMetadata(Message):
 class MotionSample(Model):
     time: Time = Field(description="Driver clock at the sample's source, not its arrival")
     camera_pose: Pose = Field(
-        description="First camera's camera-to-world; world is the robot's odometry at startup"
+        description=(
+            "First camera's camera-to-world; world is the robot's odometry at startup, its y the"
+            " height above the floor the robot stands on (it gives reconstruction metric scale)"
+        )
     )
     angular_velocity: tuple[Number, Number, Number] = Field(
         description="Camera frame, rad/s; a gyro where the robot has one"

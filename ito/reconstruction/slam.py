@@ -6,6 +6,11 @@ frame where it started, so nothing restarts: a frame vision cannot use still get
 from the robot, and the pilot's eye keeps moving. Each frame's points are placed at its
 fused pose, and the view it sees through replaces older splats there (carve).
 
+The points are in metres because the robot knows how high its camera is above the floor:
+where a frame sees the floor, its height in the frame's points measures the front end's
+scale. Fusion weighs that with the robot's own travel against vision's, and the front end's
+map takes the result at every keyframe.
+
 The pilot side gets the fused camera pose and the correction (world-from-odometry) that
 turns the robot's newest pose into the eye; the renderer eases changes of that correction
 in, below what a pilot notices.
@@ -17,7 +22,7 @@ import numpy as np
 
 from ito import clock
 
-from .fusion import PoseGraph
+from .fusion import UP, PoseGraph
 from .motion import MotionBuffer
 from .rgbd import RGBDBackend
 from .slam_vision import RESTART_CAUSES
@@ -32,6 +37,14 @@ BLUR_PIXELS = 8.0
 EXPOSURE = 0.010
 # How far the online frame-delay estimate may stray from the driver's own.
 DELAY_RANGE = (-0.1, 0.2)
+# The floor: points on rays at least this far below the horizon, the densest level among
+# the lower half of them (low furniture stands above the floor, nothing below), holding at
+# least this share of the frame's points, under a camera at least this high.
+FLOOR_RAY = math.radians(10)
+FLOOR_SHARE = 0.1
+FLOOR_HEIGHT = 0.05
+FLOOR_LEVEL = 0.05  # log half-width of the floor's level
+FLOOR_SIGMA = 0.15  # one frame's log-scale from it, one sigma (MASt3R bends near depths)
 
 
 class SLAMBackend(RGBDBackend):
@@ -107,9 +120,15 @@ class SLAMBackend(RGBDBackend):
             self._publish(node)
             return
         result = self.frontend.track(rgb, node, predicted, np.sqrt(np.diag(covariance)))
+        cloud = result.cloud
         if result.relative is not None:
             graph.add_visual(result.reference, node, result.relative, result.sigma)
             self.matched += 1
+        if cloud is not None:
+            robot = self.motion.at(exposure)
+            scale = floor_scale(cloud, robot[:3, :3].T @ UP, float(robot[1, 3]))
+            if scale is not None:
+                graph.add_scale(math.log(scale), FLOOR_SIGMA)
         if oracle is not None:
             graph.nodes[node].pose = np.array(oracle, dtype=np.float64)
         else:
@@ -118,14 +137,18 @@ class SLAMBackend(RGBDBackend):
             dropped = graph.promote()
             if oracle is None:
                 poses = graph.solve_window()
-                scale = graph.fold_scale()
             else:
-                poses, scale = {k: graph.pose(k) for k in graph.keyframes}, 1.0
+                poses = {k: graph.pose(k) for k in graph.keyframes}
+                graph.solve_scale()
+            scale = graph.fold_scale()
             self.frontend.correct(poses, scale)
             self.frontend.forget(dropped)
+            if cloud is not None:
+                # This frame's points were measured in the units the fold just replaced.
+                cloud = cloud._replace(points=cloud.points * scale)
         pose = self._publish(node)
-        if result.cloud is not None:
-            self.place(result.cloud, pose, now + clock.now() - started)
+        if cloud is not None:
+            self.place(cloud, pose, now + clock.now() - started)
 
     def _publish(self, node):
         graph = self.graph
@@ -170,6 +193,28 @@ class SLAMBackend(RGBDBackend):
             self.xp.from_dlpack(image.float().contiguous()),
             when,
         )
+
+
+def floor_scale(cloud, up, height):
+    """Metres per front-end unit from the floor in a frame's points, or None if it is not
+    in view. up: the world's up in the camera frame; height: the camera's above the floor."""
+    if height < FLOOR_HEIGHT:
+        return None
+    torch = _torch()
+    points = cloud.points[cloud.valid][::4]
+    up = torch.as_tensor(up, device=points.device, dtype=points.dtype)
+    below = -(points @ up)
+    lower = below > math.sin(FLOOR_RAY) * torch.linalg.vector_norm(points, dim=1)
+    levels = torch.log(below[lower]).cpu().numpy()
+    if len(levels) < FLOOR_SHARE * len(points):
+        return None
+    bottom, top = np.percentile(levels, (40, 99.5))
+    counts, edges = np.histogram(levels, np.arange(bottom, top + 0.04, 0.02))
+    densest = int(np.argmax(np.convolve(counts, np.ones(5), "same")))
+    near = np.abs(levels - edges[densest] - 0.01) < FLOOR_LEVEL
+    if near.sum() < FLOOR_SHARE * len(points):
+        return None
+    return height / math.exp(float(np.median(levels[near])))
 
 
 def _torch():
