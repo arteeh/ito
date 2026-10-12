@@ -5,12 +5,18 @@ The robot measures where its camera points better than monocular vision does (en
 The world is the robot's odometry frame where it started, so there is no map to restart: a
 frame vision cannot use simply adds no visual factor, and its pose comes from the robot.
 
-Variables: one pose per node (the last WINDOW keyframes and the current frame), the frame
-delay td (a frame stamped t was exposed at t - td) and a log-scale for the visual
-translations. Factors: the robot's relative motion between consecutive nodes, gravity
-(pitch and roll) per node, a weak prior holding the oldest node where the window last put
-it, and visual relative poses with a Cauchy loss. Solved with scipy's least squares on a
-sparse Jacobian: per frame the current node alone, per keyframe the whole window.
+Variables: one pose per node (the last WINDOW keyframes and the current frame) and a
+log-scale for the visual translations. Factors: the robot's relative motion between
+consecutive nodes, gravity (pitch and roll) per node, a weak prior holding the oldest node
+where the window last put it, and visual relative poses with a Cauchy loss. Solved with
+scipy's least squares on a sparse Jacobian: per frame the current node alone, per keyframe
+the whole window.
+
+The frame delay td (a frame stamped t was exposed at t - td) is estimated apart from the
+poses too, from every visual rotation measured while the camera turned: the robot's
+rotation between the same two frames matches it only at the right delay. A delay a few
+milliseconds off turns every frame of a fast turn by the turn rate times the error, so it
+has to settle within the first turn, not over a window's slow keyframes.
 
 The front end's lengths become metres through one log-scale estimated apart from the poses,
 from direct observations of it (the floor under a frame, slam.py), not from the visual
@@ -37,7 +43,12 @@ CAUCHY = 2.0
 SCALE_SIGMA = 0.2  # Log-scale prior per solve, around the last estimate.
 # Scale observations kept: about two seconds of frames, as the front end's own scale drifts.
 SCALE_MEMORY = 20
-TD_STEP = 0.01  # How far the frame delay may wander between keyframe solves, one sigma.
+# Frame-delay observations kept, and the camera's turn between a visual rotation's two
+# frames, per second of delay, below which one says too little to keep.
+DELAY_MEMORY = 60
+DELAY_TURN = math.radians(20)
+DELAY_REACH = 0.05  # seconds either side of the current delay an observation may land
+DELAY_STEP = 0.001
 UP = np.array([0.0, 1.0, 0.0])
 # Published poses kept for pose_at: at 10 Hz about as far back as a minute of motion reaches.
 PUBLISHED = 600
@@ -72,6 +83,7 @@ class PoseGraph:
         self.td = float(td)
         self.td_bounds = td_bounds
         self.estimate_td = estimate_td
+        self.delays = deque(maxlen=DELAY_MEMORY)  # (seconds, sigma), newest last
         self.log_scale = 0.0
         # (log metres per front-end unit, sigma), newest last; until the first is solved the
         # front end's scale is unknown, and nothing holds it near its start.
@@ -150,6 +162,46 @@ class PoseGraph:
                 np.asarray(sigma, float),
             )
         )
+        if self.estimate_td:
+            self._observe_delay(self.visual[-1])
+
+    def _observe_delay(self, visual):
+        """The delay at which the robot's rotation between a visual factor's two frames
+        matches the one vision measured, if the camera turned enough to tell."""
+        a, b = self.nodes[visual.reference].time, self.nodes[visual.frame].time
+        low, high = self.td_bounds
+        delays = np.arange(
+            max(low, self.td - DELAY_REACH), min(high, self.td + DELAY_REACH) + 1e-9, DELAY_STEP
+        )
+        if len(delays) < 3:
+            return
+        rotations, _ = self.motion.poses(np.concatenate((a - delays, b - delays)))
+        robot = rotations[: len(delays)].inv() * rotations[len(delays) :]
+        error = (Rotation.from_matrix(visual.rotation).inv() * robot).magnitude()
+        best = int(np.argmin(error))
+        if best in (0, len(delays) - 1):
+            return
+        # How fast the robot's relative rotation moves with the delay, around the best one.
+        turn = (robot[best - 1].inv() * robot[best + 1]).magnitude() / (2 * DELAY_STEP)
+        if turn < DELAY_TURN:
+            return
+        # Sub-step minimum of the parabola through the three around it.
+        left, middle, right = error[best - 1 : best + 2]
+        curve = left - 2 * middle + right
+        shift = 0.5 * (left - right) / curve if curve > 1e-12 else 0.0
+        delay = float(delays[best] + np.clip(shift, -1, 1) * DELAY_STEP)
+        self.delays.append((delay, float(visual.sigma[0]) / turn))
+
+    def solve_delay(self):
+        """The frame delay from its observations, robustly, as solve_scale the scale."""
+        if not self.estimate_td or not self.delays:
+            return
+        values, sigmas = np.array(self.delays).T
+        delay = float(np.median(values))
+        for _ in range(8):
+            weights = 1 / (sigmas**2 + ((delay - values) / CAUCHY) ** 2)
+            delay = float(weights @ values / weights.sum())
+        self.td = float(np.clip(delay, *self.td_bounds))
 
     def promote(self):
         """The current frame becomes a keyframe; the oldest leaves a full window."""
@@ -279,26 +331,24 @@ class PoseGraph:
         start_r = Rotation.from_matrix(np.array([start[n][:3, :3] for n in order]))
         start_p = np.array([start[n][:3, 3] for n in order])
         times = np.array([self.nodes[n].time for n in order])
-        estimate_td = self.estimate_td and not frame_only
         # The visual translations' units float a little per solve, around the scale from the
         # floor: they need not match it exactly, and are not handed to the front end.
         estimate_scale = not frame_only and bool(self.visual)
-        extra = int(estimate_td) + int(estimate_scale)
-        size = 6 * len(free) + extra
-        td0, scale0 = self.td, self.log_scale
+        size = 6 * len(free) + int(estimate_scale)
+        td, scale0 = self.td, self.log_scale
 
         rows = np.array([index[n] for n in free], dtype=int)
         start_q = start_r.as_quat()
         ci = np.array([i for i, _ in chain], dtype=int)
         cj = np.array([j for _, j in chain], dtype=int)
-        # Noise grows with time and travel, not with td's few milliseconds: fixed per solve.
         robot_sigma = np.array(
             [
-                np.sqrt(np.diag(self.motion.between(times[i] - td0, times[j] - td0)[1]))
+                np.sqrt(np.diag(self.motion.between(times[i] - td, times[j] - td)[1]))
                 for i, j in chain
             ]
         ).reshape(-1, 6)
-        gravity_sigma = np.array([self.motion.gravity_sigma(times[i] - td0) for i in rows])
+        gravity_sigma = np.array([self.motion.gravity_sigma(times[i] - td) for i in rows])
+        robot_r, robot_p = self.motion.poses(times - td)
         vi = np.array([index[v.reference] for v in visual], dtype=int)
         vj = np.array([index[v.frame] for v in visual], dtype=int)
         if visual:
@@ -314,15 +364,11 @@ class PoseGraph:
                 delta = x[: 6 * len(free)].reshape(-1, 6)
                 quats[rows] = (start_r[rows] * Rotation.from_rotvec(delta[:, :3])).as_quat()
                 positions[rows] += delta[:, 3:]
-            at = 6 * len(free)
-            td = x[at] if estimate_td else td0
-            at += int(estimate_td)
-            scale = x[at] if estimate_scale else scale0
-            return Rotation.from_quat(quats), positions, td, scale
+            scale = x[6 * len(free)] if estimate_scale else scale0
+            return Rotation.from_quat(quats), positions, scale
 
         def residuals(x):
-            rotations, positions, td, scale = unpack(x)
-            robot_r, robot_p = self.motion.poses(times - td)
+            rotations, positions, scale = unpack(x)
             blocks = []
             if len(ci):
                 # Robot relative motion between consecutive nodes, in the earlier one's frame.
@@ -348,75 +394,59 @@ class PoseGraph:
                     ri_inv.apply(positions[vj] - positions[vi]) - math.exp(scale) * v_translation
                 )
                 blocks.append(_cauchy(np.hstack((rotation, moved)) / v_sigma).ravel())
-            if estimate_td:
-                blocks.append(np.array([(td - td0) / TD_STEP]))
             if estimate_scale:
                 blocks.append(np.array([(scale - scale0) / SCALE_SIGMA]))
             return np.concatenate(blocks) if blocks else np.zeros(1)
 
         x0 = np.zeros(size)
-        if estimate_td:
-            x0[6 * len(free)] = td0
         if estimate_scale:
-            x0[6 * len(free) + int(estimate_td)] = scale0
+            x0[6 * len(free)] = scale0
         sparsity = (
             None
             if frame_only
-            else self._sparsity(
-                order, free_index, chain_nodes, visual, anchored, estimate_td, estimate_scale, size
-            )
+            else self._sparsity(order, free_index, chain_nodes, visual, anchored, estimate_scale)
         )
-        lower = np.full(size, -np.inf)
-        upper = np.full(size, np.inf)
-        if estimate_td:
-            lower[6 * len(free)], upper[6 * len(free)] = self.td_bounds
-            x0[6 * len(free)] = float(np.clip(td0, *self.td_bounds))
         result = least_squares(
             residuals,
             x0,
             # A frame's six unknowns differentiate faster densely than through sparse groups.
-            jac_sparsity=None if frame_only else sparsity,
-            bounds=(lower, upper),
+            jac_sparsity=sparsity,
             method="trf",
             x_scale="jac",
             max_nfev=20 if frame_only else 40,
         )
         if not np.isfinite(result.x).all():
             return
-        rotations, positions, td, scale = unpack(result.x)
+        rotations, positions, scale = unpack(result.x)
         matrices = rotations.as_matrix()
         for node, i in zip(free, rows, strict=True):
             pose = np.eye(4)
             pose[:3, :3] = matrices[i]
             pose[:3, 3] = positions[i]
             self.nodes[node].pose = pose
-        self.td = float(td)
         self.solves += 1
 
-    def _sparsity(self, order, free_index, chain, visual, anchored, estimate_td, scale, size):
+    def _sparsity(self, order, free_index, chain, visual, anchored, scale):
         rows = []
+        size = 6 * len(free_index) + int(scale)
 
-        def block(count, nodes, uses_td=False, uses_scale=False):
+        def block(count, nodes, uses_scale=False):
             columns = set()
             for node in nodes:
                 if node in free_index:
                     columns.update(range(6 * free_index[node], 6 * free_index[node] + 6))
-            if uses_td and estimate_td:
-                columns.add(6 * len(free_index))
             if uses_scale and scale:
-                columns.add(6 * len(free_index) + int(estimate_td))
+                columns.add(6 * len(free_index))
             rows.extend([columns] * count)
 
         for a, b in chain:
-            block(6, (a, b), uses_td=True)
+            block(6, (a, b))
         for node in free_index:
-            block(2, (node,), uses_td=True)
+            block(2, (node,))
         if anchored:
             block(6, (order[0],))
         for v in visual:
             block(6, (v.reference, v.frame), uses_scale=True)
-        if estimate_td:
-            block(1, (), uses_td=True)
         if scale:
             block(1, (), uses_scale=True)
         matrix = lil_matrix((max(len(rows), 1), size), dtype=int)

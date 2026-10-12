@@ -127,6 +127,7 @@ class SLAMBackend(RGBDBackend):
         cloud = result.cloud
         if result.relative is not None:
             graph.add_visual(result.reference, node, result.relative, result.sigma)
+            graph.solve_delay()
             self.matched += 1
         floor = None
         if cloud is not None:
