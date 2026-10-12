@@ -435,6 +435,8 @@ def main():
                             float(-10 * np.log10(error)),
                             float(-10 * np.log10(full)),
                             ssim(rendered, rgb / 255),
+                            round(now - start, 2),
+                            int(live.sum()),
                         )
                     )
                     if previews < 12 and len(predictions) % 10 == 1:
@@ -515,6 +517,9 @@ def main():
         messages=sorted({m.split(" | ")[0] for m in messages}),
     )
     (out / "frames.json").write_text(json.dumps(processed))
+    (out / "predictions.json").write_text(json.dumps(predictions))
+    if args.mapper:
+        np.save(out / "map.npy", scene.records[scene.keys >= 0])
     (out / "summary.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))
     print(
