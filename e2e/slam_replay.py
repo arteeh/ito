@@ -25,6 +25,12 @@ frame's pose, tracked or not, once the next tracked frame is in: the backend's p
 it has one (the robot's motion between fused poses), else the published poses interpolated.
 --align truth gives L4 a map aligner that knows each frame's true pose (0.1 degree, 1 cm):
 what a pixel-accurate map alignment would make of fusion.
+--eye LABEL writes into OUT, instead of prediction previews, at 8 evenly spaced moments and
+the 4 fastest turns, the camera frame beside the scene the pilot is shown, drawn by the
+pilot's renderer from the true pose (and from Ito's pose), and a contact sheet
+(e2e/eye_check.py). --mapper replays with
+the revision's optimised Gaussian map (ito/reconstruction/mapped_slam.py, fix/gsplat-mapper)
+instead of point splats; the prediction PSNR still draws its records as dots.
 --poses-only skips MASt3R, for L2, L3 and L4 (fusion without vision) on a CPU.
 --gaze-prior builds the prior from the recorded telemetry gaze, for recordings of drivers
 that sent none.
@@ -160,6 +166,8 @@ def main():
     parser.add_argument("--limit", type=float, default=0, help="stop after this many seconds")
     parser.add_argument("--gaze-prior", action="store_true")
     parser.add_argument("--align", choices=("truth",), help="L4 with a truth map aligner")
+    parser.add_argument("--eye", metavar="LABEL", help="eye-check PNGs (e2e/eye_check.py)")
+    parser.add_argument("--mapper", action="store_true", help="the optimised Gaussian map")
     parser.add_argument("--unmeasured", action="store_true", help="hide the robot's heading")
     parser.add_argument("--measured", action="store_true", help="trust the recorded prior")
     parser.add_argument(
@@ -186,6 +194,8 @@ def main():
         parser.error("L1 needs --truth")
     if args.align and (source != "fused" or not args.truth):
         parser.error("--align truth needs L4 and --truth")
+    if args.eye and not args.truth:
+        parser.error("--eye needs --truth")
     if args.poses_only and source not in ("receive", "source", "fused"):
         parser.error("--poses-only replays L2, L3 or L4")
     out = args.out or Path("e2e/out/slam-replay") / f"{args.recording.name}-{rung}"
@@ -275,7 +285,10 @@ def main():
             args.budget, intrinsics, report=messages.append, voxel_size=0.04, fade_seconds=0.5
         )
     else:
-        from ito.reconstruction.slam import SLAMBackend
+        if args.mapper:
+            from ito.reconstruction.mapped_slam import MappedSLAMBackend as SLAMBackend
+        else:
+            from ito.reconstruction.slam import SLAMBackend
 
         backend = SLAMBackend(
             args.budget,
@@ -290,6 +303,16 @@ def main():
             voxel_size=0.04,
             fade_seconds=0.5,
         )
+    scene = getattr(backend, "scene", backend)
+    if args.mapper and scene is backend:
+        parser.error(f"--mapper: {getattr(backend, 'mapper_status', 'no Gaussian map')}")
+    eye = marks = None
+    if args.eye:
+        import eye_check
+
+        eye = eye_check.Eye(out, intrinsics, args.eye, rung)
+        speed = eye_check.turn_speed(times, samples, delay, gazes)
+        marks = eye_check.moments(times, speed)
     import torch
     from mast3r_slam.config import config
 
@@ -341,6 +364,13 @@ def main():
             if source == "truth" and true_pose(index) is None:
                 now += 0.01
                 continue
+        shown = None
+        if marks and times[index] >= marks[0][0]:
+            # What the pilot is shown as this frame arrives: the scene before it.
+            live = (scene.keys >= 0) & (scene.records[:, 3, 3] != 1)
+            shown = scene.records[live].copy(), marks.pop(0)[1]
+            while marks and marks[0][0] <= times[index]:
+                marks.pop(0)
         tracked_before = backend.tracked
         realigned_before = getattr(backend, "realigned", 0)
         failures_before = getattr(backend, "failures", 0)
@@ -423,18 +453,38 @@ def main():
                 if covered.mean() > 0.05:
                     error = ((rendered[covered] - rgb[covered] / 255) ** 2).mean()
                     predictions.append((float(covered.mean()), float(-10 * np.log10(error))))
-                    if previews < 12 and len(predictions) % 10 == 1:
+                    if previews < 12 and len(predictions) % 10 == 1 and not eye:
                         side = np.concatenate((rgb / 255, rendered), axis=1)
                         Image.fromarray((side * 255).astype(np.uint8)).save(
                             out / f"predict-{previews:02d}.png"
                         )
                         previews += 1
             if not pending or now - pending[-1][0] + AHEAD > 0.5:
-                live = backend.keys >= 0
-                pending.append((now + AHEAD, backend.records.copy(), live.copy()))
-        backend.expire(now - start, np.inf)
-        # The live worker also publishes and sleeps between frames.
+                live = scene.keys >= 0
+                pending.append((now + AHEAD, scene.records.copy(), live.copy()))
+        if shown and (true := true_pose(index)) is not None:
+            from truth import align as first_frame
+
+            world = (
+                first_frame(estimates[0], truths[0]) if estimates else first_frame(estimate, true)
+            )
+            eye.shot(
+                times[index] - start,
+                shown[1],
+                rgb,
+                shown[0],
+                getattr(scene, "antialiased", False),
+                world @ true,
+                None if source == "truth" else estimate,
+            )
+        scene.expire(now - start, np.inf)
+        # The live worker also publishes and sleeps between frames; a map's own thread
+        # trains meanwhile.
+        if scene is not backend:
+            time.sleep(0.01)
         now += seconds + 0.01
+    if eye:
+        eye.finish()
     durations = np.array([p[2] for p in processed])
     ok = np.array([p[3] for p in processed])
     stamps = np.array([p[1] for p in processed])
