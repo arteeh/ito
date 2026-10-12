@@ -50,4 +50,5 @@ class MapAligner(Protocol):
     ) -> tuple[np.ndarray, np.ndarray, int] | None:
         """A frame's pose in the map's world, refined from `predicted` by comparing the map
         rendered there with the image: (world-from-camera, one sigma of its rotation vector
-        (rad) and translation (m), pixels that agreed); None where the map cannot say."""
+        (rad) and translation (m), pixels that agreed). None, a non-finite sigma or no
+        agreeing pixels: the map cannot say."""

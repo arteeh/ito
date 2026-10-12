@@ -149,8 +149,7 @@ class SLAMBackend(RGBDBackend):
             graph.solve_frame()
             if self.aligner is not None:
                 found = self.aligner.align(rgb, graph.pose(node), self.intrinsics)
-                if found is not None:
-                    graph.add_map(node, found[0], found[1])
+                if found is not None and found[2] > 0 and graph.add_map(node, *found[:2]):
                     graph.solve_frame()
                     self.aligned += 1
         poses, dropped = {}, []

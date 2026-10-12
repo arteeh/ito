@@ -69,6 +69,9 @@ DELAY_TURN = math.radians(20)
 DELAY_REACH = 0.05  # seconds either side of the current delay an observation may land
 DELAY_STEP = 0.001
 UP = np.array([0.0, 1.0, 0.0])
+# A map alignment's sigma is the photometric fit's own, linearised: it knows nothing of the
+# map's errors. Never tighter than this (rotation vector rad x3, translation m x3).
+MAP_FLOOR = np.repeat((math.radians(0.05), 0.005), 3)
 # Published poses kept for pose_at: at 10 Hz about as far back as a minute of motion reaches.
 PUBLISHED = 600
 
@@ -187,10 +190,16 @@ class PoseGraph:
 
     def add_map(self, node, pose, sigma):
         """Where a map aligner placed a node: world-from-camera, and the one-sigma rotation
-        vector (rad) and translation (m) of it."""
-        if node in self.nodes:
-            self.mapped[node] = (np.array(pose, float), np.asarray(sigma, float))
-            self.nodes[node].seen = True
+        vector (rad) and translation (m) of it, no tighter than MAP_FLOOR. False if the
+        answer says nothing."""
+        sigma = np.asarray(sigma, float)
+        if node not in self.nodes or sigma.shape != (6,) or not np.isfinite(sigma).all():
+            return False
+        if not np.isfinite(pose).all():
+            return False
+        self.mapped[node] = (np.array(pose, float), np.maximum(sigma, MAP_FLOOR))
+        self.nodes[node].seen = True
+        return True
 
     def _observe_delay(self, visual):
         """The delay at which the robot's rotation between a visual factor's two frames
