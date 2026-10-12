@@ -4,8 +4,10 @@ from .mapper import Keyframe
 from .mapper_online import OnlineMapper
 from .slam import SLAMBackend
 
-# The map aligns every tracked frame (fusion's map factor) unless tracking has an aligner.
-ALIGN = True
+# The map as tracking's aligner (fusion's map factor). Off: on the sim replays an online
+# map minutes old pulls poses off (tour rotation p95 3.3-5.2 deg against 1.6 without) and
+# costs 15-30% of the tracking rate; a pixel-accurate one (--align truth) gives 0.02 deg.
+ALIGN = False
 
 
 class MappedSLAMBackend(SLAMBackend):

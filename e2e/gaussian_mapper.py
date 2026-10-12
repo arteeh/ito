@@ -84,7 +84,7 @@ def main():
     initial = np.eye(4, dtype=np.float32)
     initial[0, 3] = 0.025
     began = time.perf_counter()
-    aligned, sigma, inliers = model.align(target, initial, i)
+    aligned, sigma, inliers = model.align(target, initial, i, downscale=2)  # a 96x72 view
     alignment_s = time.perf_counter() - began
     assert inliers > 128 and np.isfinite(sigma).all(), (sigma, inliers)
     assert np.linalg.norm(aligned[:3, 3]) < 0.025, aligned

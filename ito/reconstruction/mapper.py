@@ -56,6 +56,11 @@ FILTER = math.sqrt(0.2)  # Mip-Splatting 3D filter, in pixels of the closest tra
 ALIGN_PIXELS = 512  # opaque map pixels a view needs before alignment says anything
 ALIGN_STEP = 2e-3  # finite-difference step: rad and metres, ~0.5 px at 1/2 resolution
 ALIGN_HUBER = 0.05  # residual (0-1 colour) beyond which a pixel's weight falls off
+ALIGN_DOWNSCALE = 4
+ALIGN_ITERATIONS = 2
+# Neighbouring pixels' residuals are not independent (blur, a young map): sigma from them
+# as if they were is this many times too small.
+ALIGN_SIGMA_SCALE = 10.0
 
 
 @dataclass(frozen=True)
@@ -657,7 +662,7 @@ class GaussianMap:
 
     # -- map alignment (tracking's photometric factor) -----------------------------------
 
-    def align(self, rgb, pose0, intrinsics, *, iterations=3, downscale=2):
+    def align(self, rgb, pose0, intrinsics, *, iterations=None, downscale=None):
         """Return (world-from-camera, sigma[rotation rad, translation m], agreeing pixels).
 
         Gauss-Newton on the frozen map rendered at 1/downscale resolution, the 6-DoF
@@ -673,6 +678,8 @@ class GaussianMap:
         failure = (np.array(pose0, copy=True), np.full(6, np.inf), 0)
         if not self.count:
             return failure
+        iterations = ALIGN_ITERATIONS if iterations is None else iterations
+        downscale = ALIGN_DOWNSCALE if downscale is None else downscale
         i = intrinsics
         if downscale > 1:
             i = Intrinsics(
@@ -731,5 +738,5 @@ class GaussianMap:
             if agree < ALIGN_PIXELS or not torch.isfinite(H).all() or eigen[0] < eigen[-1] * 1e-8:
                 return failure
             variance = (r.double().square() * w).sum() / w.sum()
-            sigma = (torch.linalg.inv(H).diagonal() * variance).sqrt()
+            sigma = (torch.linalg.inv(H).diagonal() * variance).sqrt() * ALIGN_SIGMA_SCALE
             return ((base @ pose_delta(delta)).double().cpu().numpy(), sigma.cpu().numpy(), agree)
