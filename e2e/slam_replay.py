@@ -277,7 +277,8 @@ def main():
             report=messages.append,
             motion_noise=robot.motion_noise if robot else None,
             frame_delay=delay,
-            exposure=robot.cameras[0].exposure if robot else None,
+            # Only when known: older backends (another revision first on the path) lack it.
+            **({"exposure": exposure} if (exposure := camera_exposure(robot)) is not None else {}),
             oracle=None if source == "fused" else oracle,
             voxel_size=0.04,
             fade_seconds=0.5,
@@ -488,6 +489,10 @@ def main():
         + ")"
         + (" inferred" if report["restarts_inferred"] else "")
     )
+
+
+def camera_exposure(robot):
+    return robot.cameras[0].exposure if robot and robot.cameras else None
 
 
 def interpolate(t0, pose0, t1, pose1, t):
