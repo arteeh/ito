@@ -6,10 +6,13 @@ frames between them; a view is held relative to its keyframe and moves with it t
 
 Recipe (measured offline in docs/gsplat-gonogo.md, 30-33 dB on the sim recordings): seed
 sparse, faint Gaussians from the front end's metric points only where the map does not
-cover a new view yet; L1 + SSIM photometric loss on views, newest first; split/clone by
-image-plane gradient, prune transparent ones, under a hard Gaussian budget; Mip-Splatting
-3D filter from the closest view so the pilot's higher-resolution eyes do not alias. No
-opacity resets: the pilot watches the map while it trains.
+cover a new view yet; a new view's surface removes the Gaussians it sees through (the
+front end's depth wanders 10-35% between frames, and training alone is too slow to clear
+the ghosts that leaves); L1 + SSIM photometric loss on views, newest first; split/clone by
+image-plane gradient, prune transparent ones, under a hard Gaussian budget that drops the
+longest-unseen first (newest surroundings matter most); Mip-Splatting 3D filter from the
+closest view so the pilot's higher-resolution eyes do not alias. No opacity resets: the
+pilot watches the map while it trains.
 
 The engine has one owner (the background worker); rendering and align() are also used
 offline. SH degree 0: the live ring carries one RGB coefficient, and colour then needs no
@@ -33,8 +36,16 @@ VIEWS = 96  # training views kept (images on the GPU)
 RECENT = 2.0  # seconds: views this new get half the training steps
 SEED_COVERED = 0.5  # a new view seeds Gaussians where the map's alpha is below this
 SEED_NEARER = 0.8  # or where its points lie this much nearer than the map's surface
+# A view's surface replaces the Gaussians it sees through: those this much nearer than it
+# (relative) go, as the point map's carve. 0 keeps them for training to sort out.
+CARVE = 0.15
+CARVE_CELL = 4  # pixels per cell of the view's (nearest-surface) depth image
 SEED_MAX = 6000  # Gaussians seeded per keyframe
 SEED_OPACITY = 0.1
+# Under the budget, what goes: "stale" = the Gaussians no recent view saw (newest
+# surroundings matter most), "opacity" = the faintest.
+EVICT = "stale"
+RESERVE = 0.1  # stale eviction keeps this share of the budget free for densification
 REFINE_EVERY = 100  # steps
 GROW_GRAD2D = 0.0002  # mean image-plane gradient (gsplat's DefaultStrategy units)
 GROW_SCALE3D = 0.01  # of the scene scale: smaller ones clone, larger ones split
@@ -160,7 +171,6 @@ class GaussianMap:
         self.views = {}  # node -> View, oldest first
         self.changed = set()
         self.urgent = set()
-        self.structure_changed = False
         self.steps = 0
         self.scene_scale = None
         self.poses = torch.eye(4, device="cuda").repeat(anchors, 1, 1)
@@ -187,6 +197,7 @@ class GaussianMap:
             grad2d=torch.zeros(0, device="cuda"),
             count=torch.zeros(0, device="cuda"),
             filter=torch.zeros(0, device="cuda"),
+            seen=torch.zeros(0, device="cuda"),  # capture time of the newest view it was in
         )
 
     def tensor(self, value):
@@ -251,7 +262,6 @@ class GaussianMap:
         # Republished under key 0; its own key's records go.
         self.changed.update((WORLD, node))
         self.urgent.update((WORLD, node))
-        self.structure_changed = True
 
     def anchor_pose(self, slot):
         return self.slot_poses[slot]
@@ -300,10 +310,10 @@ class GaussianMap:
             exposure_optimizer=torch.optim.Adam([exposure], lr=0.001),
         )
         self.views[frame.node] = view
-        if anchor == frame.node and frame.points is not None:
-            self._seed(frame, slot, pose)
+        if frame.points is not None:
+            self._seed(frame, slot, pose, relative)
 
-    def _seed(self, frame, slot, pose):
+    def _seed(self, frame, slot, pose, relative):
         torch = self.torch
         points = torch.as_tensor(frame.points, device="cuda").detach().reshape(-1, 3).float()
         colors = torch.as_tensor(frame.colors, device="cuda").detach().reshape(-1, 3).float()
@@ -328,6 +338,8 @@ class GaussianMap:
         z = -points[:, 2]
         u = (i.fx * points[:, 0] / z + i.cx).long().clamp(0, i.width - 1)
         v = (i.cy - i.fy * points[:, 1] / z).long().clamp(0, i.height - 1)
+        if CARVE > 0 and self.count:
+            self._carve(pose, i, u, v, z)
         if self.count:
             with torch.no_grad():
                 _, depth, alpha, _ = self.render(pose, i)
@@ -347,17 +359,41 @@ class GaussianMap:
         distances = cKDTree(cpu).query(cpu, k=4)[0][:, 1:]
         scale = np.clip(np.sqrt((distances**2).mean(1)), 0.002, 0.08)
         self._enforce_budget(self.budget - n)
+        rotation = self.tensor(relative[:3, :3])
         values = dict(
-            means=points,
+            means=points @ rotation.T + self.tensor(relative[:3, 3]),
             scales=self.tensor(np.log(scale))[:, None].expand(-1, 3),
-            quats=torch.tensor([[1.0, 0, 0, 0]], device="cuda").expand(n, -1),
+            quats=self.tensor(rotation_quaternion(relative[:3, :3]))[None].expand(n, -1),
             opacities=torch.full((n,), math.log(SEED_OPACITY / (1 - SEED_OPACITY)), device="cuda"),
             sh0=((colors - 0.5) / C0)[:, None],
             owner=torch.full((n,), slot, device="cuda", dtype=torch.long),
         )
-        self._append(values, dict(filter=z / i.fx * FILTER))
-        self.changed.add(frame.node)
-        self.structure_changed = True
+        self._append(
+            values,
+            dict(filter=z / i.fx * FILTER, seen=torch.full((n,), frame.captured_at, device="cuda")),
+        )
+        self.changed.add(self.key(slot))
+
+    def _carve(self, pose, i, u, v, z):
+        """Drop Gaussians in front of the view's surface: it sees through them."""
+        torch = self.torch
+        cw, ch = -(-i.width // CARVE_CELL), -(-i.height // CARVE_CELL)
+        surface = torch.full((ch * cw,), float("inf"), device="cuda")
+        surface.scatter_reduce_(0, (v // CARVE_CELL) * cw + u // CARVE_CELL, z, "amin")
+        with torch.no_grad():
+            camera = torch.linalg.inv(self.tensor(pose))
+            means = self.world()["means"]
+            local = means @ camera[:3, :3].T + camera[:3, 3]
+            depth = -local[:, 2]
+            ahead = depth > 0.01
+            gu = i.fx * local[:, 0] / depth.clamp_min(0.01) + i.cx
+            gv = i.cy - i.fy * local[:, 1] / depth.clamp_min(0.01)
+            inside = ahead & (gu >= 0) & (gu < i.width) & (gv >= 0) & (gv < i.height)
+            cell = (gv.clamp(0, i.height - 1).long() // CARVE_CELL) * cw + (
+                gu.clamp(0, i.width - 1).long() // CARVE_CELL
+            )
+            seen = surface[cell]
+            self._remove(inside & torch.isfinite(seen) & (depth < seen * (1 - CARVE) - 0.02))
 
     def _append(self, values, state):
         torch = self.torch
@@ -376,19 +412,28 @@ class GaussianMap:
             extra = state.get(k, torch.zeros(n, device="cuda"))
             self.state[k] = torch.cat((v, extra))
 
+    def key(self, slot):
+        """The publication key of an anchor slot; None for a slot just forgotten."""
+        if slot == 0:
+            return WORLD
+        return next((n for n, a in self.anchors.items() if a["slot"] == slot), None)
+
     def _remove(self, mask):
         if mask.any():
+            slots = self.torch.unique(self.p["owner"][mask]).tolist()
             self.ops.remove(self.p, self.optimizers, self.state, mask)
-            self.structure_changed = True
-            self.changed.update(self.anchors)
-            self.changed.add(WORLD)
+            self.changed.update(k for k in map(self.key, slots) if k is not None)
 
     def _enforce_budget(self, budget):
-        """Least opaque first: they contribute least to any view."""
+        """Down to budget: the least recently seen (faintest first among equals), or the
+        faintest."""
         excess = self.count - max(0, budget)
         if excess > 0:
             torch = self.torch
-            weakest = torch.topk(self.p["opacities"].detach(), excess, largest=False).indices
+            score = self.p["opacities"].detach().sigmoid()
+            if EVICT == "stale":
+                score = self.state["seen"] + 1e-3 * score
+            weakest = torch.topk(score, excess, largest=False).indices
             mask = torch.zeros(self.count, dtype=torch.bool, device="cuda")
             mask[weakest] = True
             self._remove(mask)
@@ -480,7 +525,7 @@ class GaussianMap:
         loss.backward()
         if not torch.isfinite(loss):
             raise RuntimeError("non-finite Gaussian training loss")
-        self._accumulate(info)
+        self._accumulate(info, view.captured_at)
         for optimizer in self.optimizers.values():
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
@@ -494,17 +539,20 @@ class GaussianMap:
         self.changed.update(self.anchors)
         self.changed.add(WORLD)
 
-    def _accumulate(self, info):
+    def _accumulate(self, info, captured_at):
         grads = info["means2d"].grad.clone()
         grads[..., 0] *= info["width"] / 2.0
         grads[..., 1] *= info["height"] / 2.0
         seen = (info["radii"] > 0).all(-1)[0]
         self.state["grad2d"][seen] += grads[0][seen].norm(dim=-1)
         self.state["count"][seen] += 1
+        self.state["seen"][seen] = self.state["seen"][seen].clamp_min(captured_at)
 
     def _refine(self):
         torch = self.torch
         with torch.no_grad():
+            if EVICT == "stale" and self.count > self.budget * (1 - RESERVE / 2):
+                self._enforce_budget(int(self.budget * (1 - RESERVE)))
             grads = self.state["grad2d"] / self.state["count"].clamp_min(1)
             high = grads > GROW_GRAD2D
             room = self.budget - self.count
@@ -531,7 +579,6 @@ class GaussianMap:
             self.state["grad2d"].zero_()
             self.state["count"].zero_()
             self._update_filter()
-        self.structure_changed = True
         self.changed.update(self.anchors)
         self.changed.add(WORLD)
         torch.cuda.empty_cache()

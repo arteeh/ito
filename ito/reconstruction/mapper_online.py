@@ -20,12 +20,12 @@ DUTY = 0.25  # share of the time the optimiser may hold the GPU; tracking has th
 class OnlineMapper:
     antialiased = True
 
-    def __init__(self, budget, report, *, duty=DUTY):
+    def __init__(self, budget, report, *, duty=None):
         # Initialize before taking ownership of the scene, so missing CUDA/kernels can
         # select the point fallback without losing an existing map.
         self.engine = GaussianMap(budget)
         self.budget = min(budget, MAX_GAUSSIANS)
-        self.duty = duty
+        self.duty = DUTY if duty is None else duty
         self.report = report
         self.records = np.zeros((self.budget, 4, 4), np.float32)
         self.keys = np.full(self.budget, -1, np.int64)
@@ -40,6 +40,7 @@ class OnlineMapper:
         self.forgotten = set()
         self.output = {}
         self.node_slots = {}
+        self.published = {}  # key -> Gaussians last published under it (mapper thread)
         self.requested_budget = self.budget
         self.failure = None
         self.captured_at = 0.0
@@ -141,28 +142,31 @@ class OnlineMapper:
             self.dirty[slots] = True
 
     def _publish(self, newest_capture, cursor):
-        """Urgent nodes (corrected, forgotten), then round robin; everything after a
-        structural change, since splits and prunes touch every anchor."""
+        """Every key whose Gaussian count changed (so the published total never exceeds
+        the slots), then corrected ones, then round robin through the trained rest."""
         engine = self.engine
         keys = engine.keys()
-        urgent = [n for n in engine.urgent]
-        rotation = keys[cursor:] + keys[:cursor] if keys else []
-        selected, count = [], 0
         sizes = engine.sizes()
-        for node in dict.fromkeys(urgent + rotation):
-            if node not in engine.changed:
+        published = self.published
+        resized = [k for k in {*published, *sizes} if sizes.get(k, 0) != published.get(k, 0)]
+        rotation = keys[cursor:] + keys[:cursor] if keys else []
+        selected, count = list(resized), sum(sizes.get(k, 0) for k in resized)
+        for node in dict.fromkeys([*engine.urgent, *rotation]):
+            if node in resized or node not in engine.changed:
                 continue
+            if count >= PUBLISH_RECORDS and node not in engine.urgent:
+                break
             selected.append(node)
             count += sizes.get(node, 0)
-            if count >= PUBLISH_RECORDS and not engine.structure_changed:
-                break
         if not selected:
             return cursor
         records = engine.records_for(selected)
         for node in selected:
             engine.changed.discard(node)
             engine.urgent.discard(node)
-        engine.structure_changed = False
+            published[node] = len(records[node])
+            if not published[node]:
+                del published[node]
         with self.lock:
             self.output.update({n: (r, newest_capture) for n, r in records.items()})
         last = selected[-1]
