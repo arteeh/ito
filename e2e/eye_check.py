@@ -58,6 +58,23 @@ def turn_speed(times, samples, delay, gazes):
     return np.abs(np.gradient(gazes, times))
 
 
+def snapshot(path, scene, pose, first, index, offset):
+    """The scene as published after a frame, for e2e/eye_sheets.py (same layout as the
+    research/big-picture captures): live records, the frame's pose and the first tracked
+    frame's, frame indices and capture offset."""
+    live = scene.keys >= 0
+    np.savez_compressed(
+        path,
+        records=scene.records[live],
+        pose=pose,
+        first_index=first[0],
+        first_pose=first[1],
+        index=index,
+        offset=offset,
+        antialiased=getattr(scene, "antialiased", False),
+    )
+
+
 def rotation_degrees(a, b):
     cosine = (np.trace(a[:3, :3].T @ b[:3, :3]) - 1) / 2
     return math.degrees(math.acos(float(np.clip(cosine, -1, 1))))

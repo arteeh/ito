@@ -167,6 +167,9 @@ def main():
     parser.add_argument("--gaze-prior", action="store_true")
     parser.add_argument("--align", choices=("truth",), help="L4 with a truth map aligner")
     parser.add_argument("--eye", metavar="LABEL", help="eye-check PNGs (e2e/eye_check.py)")
+    parser.add_argument(
+        "--eye-at", default="", help="also save the scene after these seconds: 6,15,23"
+    )
     parser.add_argument("--mapper", action="store_true", help="the optimised Gaussian map")
     parser.add_argument("--unmeasured", action="store_true", help="hide the robot's heading")
     parser.add_argument("--measured", action="store_true", help="trust the recorded prior")
@@ -196,6 +199,8 @@ def main():
         parser.error("--align truth needs L4 and --truth")
     if args.eye and not args.truth:
         parser.error("--eye needs --truth")
+    if args.eye_at and not args.eye:
+        parser.error("--eye-at needs --eye")
     if args.poses_only and source not in ("receive", "source", "fused"):
         parser.error("--poses-only replays L2, L3 or L4")
     out = args.out or Path("e2e/out/slam-replay") / f"{args.recording.name}-{rung}"
@@ -313,6 +318,8 @@ def main():
         eye = eye_check.Eye(out, intrinsics, args.eye, rung)
         speed = eye_check.turn_speed(times, samples, delay, gazes)
         marks = eye_check.moments(times, speed)
+    snapshots = sorted(float(t) for t in args.eye_at.split(",") if t)
+    first = None  # the first tracked frame and its pose: e2e/eye_sheets.py aligns truth by it
     import torch
     from mast3r_slam.config import config
 
@@ -387,6 +394,17 @@ def main():
             backend.integrate(rgb, None, prior, now - start, captured=times[index])
         torch.cuda.synchronize()
         seconds = time.perf_counter() - began
+        if snapshots and backend.tracked:
+            first = first or (index, backend.camera_pose.copy())
+            if times[index] - start >= snapshots[0]:
+                eye_check.snapshot(
+                    out / f"snapshot-{snapshots.pop(0):g}.npz",
+                    scene,
+                    backend.camera_pose,
+                    first,
+                    index,
+                    times[index] - start,
+                )
         news = messages[before:]
         tracked = backend.tracked > tracked_before
         if getattr(backend, "realigned", 0) > realigned_before:
