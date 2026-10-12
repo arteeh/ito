@@ -159,8 +159,14 @@ class SLAMBackend(RGBDBackend):
         if cloud is not None:
             self.place(cloud, pose, now + clock.now() - started)
 
+    def pose_at(self, captured):
+        """World-from-camera for any recent frame stamped `captured` (pilot clock), tracked
+        or not: the robot's motion between the fused poses around it."""
+        return self.graph.pose_at(captured)
+
     def _publish(self, node):
         graph = self.graph
+        graph.publish(node)
         pose = graph.pose(node)
         self.camera_pose = pose.astype(np.float32)
         self.correction = graph.correction(node).astype(np.float32)

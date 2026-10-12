@@ -20,9 +20,12 @@ measured gaze, how well the scene seen so far predicts the camera image one seco
 frame-to-pose latency and, for L4, how fast fusion's corrections move the eye. With
 --truth (the virtual Microduck's microduck-sim --truth file of the same drive) it scores
 every pose: rotation p50/p95/max, translation after a fixed first-frame alignment, and the
-fraction of usable poses (within 2 degrees and 5 cm). --poses-only skips MASt3R, for L2, L3
-and L4 (fusion without vision) on a CPU. --gaze-prior builds the prior from the recorded
-telemetry gaze, for recordings of drivers that sent none.
+fraction of usable poses (within 2 degrees and 5 cm), and as "every_frame" every recorded
+frame's pose, tracked or not, once the next tracked frame is in: the backend's pose_at where
+it has one (the robot's motion between fused poses), else the published poses interpolated.
+--poses-only skips MASt3R, for L2, L3 and L4 (fusion without vision) on a CPU.
+--gaze-prior builds the prior from the recorded telemetry gaze, for recordings of drivers
+that sent none.
 
 To compare with another revision's backend, run this script with that checkout first on
 the path; a backend that does not count restarts itself has them inferred per frame:
@@ -279,6 +282,8 @@ def main():
     pending = []  # (due time, records, live) snapshots waiting for their future frame
     predictions = []
     estimates, truths, latencies, corrections = [], [], [], []
+    every_estimates, every_truths = [], []
+    scored, last_published = -1, None  # every recorded frame up to `scored` has been scored
     previews = 0
     inferred = dict(unmatched=0, heading=0, failure=0)  # For backends that do not count.
     origin = None
@@ -362,6 +367,22 @@ def main():
             if truth is not None and (true := true_pose(index)) is not None:
                 estimates.append(estimate)
                 truths.append(true)
+            if truth is not None:
+                for j in range(scored + 1, index + 1):
+                    if j == index:
+                        between = estimate
+                    elif source != "fused":
+                        between = oracle(times[j])
+                    elif hasattr(backend, "pose_at"):
+                        between = backend.pose_at(times[j])
+                    elif last_published is not None:
+                        between = interpolate(*last_published, times[index], estimate, times[j])
+                    else:
+                        continue
+                    if between is not None and (true := true_pose(j)) is not None:
+                        every_estimates.append(np.asarray(between, dtype=np.float64))
+                        every_truths.append(true)
+                scored, last_published = index, (times[index], estimate)
             if source == "fused":
                 corrections.append(
                     (backend.correction.astype(np.float64), times[index], estimate[:3, 3])
@@ -434,6 +455,7 @@ def main():
         heading_error_deg_p95=round(float(np.percentile(stray, 95)), 1) if len(stray) else None,
         heading_error_deg_max=round(float(stray.max()), 1) if len(stray) else None,
         truth=score_truth(estimates, truths) if truth else None,
+        every_frame=score_truth(every_estimates, every_truths) if truth else None,
         prediction_psnr_median=round(float(np.median([p[1] for p in predictions])), 2)
         if predictions
         else None,
@@ -451,6 +473,19 @@ def main():
         + ")"
         + (" inferred" if report["restarts_inferred"] else "")
     )
+
+
+def interpolate(t0, pose0, t1, pose1, t):
+    """Between two world-from-camera poses by time: slerp and lerp."""
+    from scipy.spatial.transform import Rotation
+
+    f = (t - t0) / (t1 - t0) if t1 > t0 else 1.0
+    ends = Rotation.from_matrix(np.array([pose0[:3, :3], pose1[:3, :3]]))
+    result = np.eye(4)
+    turn = (ends[0].inv() * ends[1]).as_rotvec()
+    result[:3, :3] = (ends[0] * Rotation.from_rotvec(turn * f)).as_matrix()
+    result[:3, 3] = pose0[:3, 3] * (1 - f) + pose1[:3, 3] * f
+    return result
 
 
 def score_truth(estimates, truths):

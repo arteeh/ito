@@ -39,6 +39,8 @@ SCALE_SIGMA = 0.2  # Log-scale prior per solve, around the last estimate.
 SCALE_MEMORY = 20
 TD_STEP = 0.01  # How far the frame delay may wander between keyframe solves, one sigma.
 UP = np.array([0.0, 1.0, 0.0])
+# Published poses kept for pose_at: at 10 Hz about as far back as a minute of motion reaches.
+PUBLISHED = 600
 
 
 @dataclass
@@ -82,6 +84,9 @@ class PoseGraph:
         self.anchor: np.ndarray | None = None  # pose prior on the oldest keyframe
         self.next_id = 0
         self.solves = 0
+        # (time, node id, pose) of every published node, oldest first; keyframes' follow
+        # their window solves while they are in the window.
+        self.published = deque(maxlen=PUBLISHED)
 
     # -- the window ---------------------------------------------------------------------
 
@@ -186,6 +191,42 @@ class PoseGraph:
         n = self.nodes[node]
         return n.pose @ np.linalg.inv(self.motion.at(n.time - self.td))
 
+    def publish(self, node):
+        """Remember a node's pose as the one a frame stamped at its time was given."""
+        n = self.nodes[node]
+        self.published.append((n.time, node, n.pose.copy()))
+
+    def pose_at(self, t):
+        """World-from-camera for any frame stamped t, tracked or not: the robot's motion at
+        its exposure, moved by fusion's correction interpolated between the published
+        poses around it (held past either end)."""
+        if not self.published:
+            return self.predict(t)
+        times = [entry[0] for entry in self.published]
+        after = int(np.searchsorted(times, t))
+        if after == 0 or after == len(times):
+            correction = self._published_correction(self.published[min(after, len(times) - 1)])
+        else:
+            (t0, *_), (t1, *_) = self.published[after - 1], self.published[after]
+            c0 = self._published_correction(self.published[after - 1])
+            c1 = self._published_correction(self.published[after])
+            f = (t - t0) / (t1 - t0) if t1 > t0 else 0.0
+            ends = Rotation.from_matrix(np.array([c0[:3, :3], c1[:3, :3]]))
+            turn = (ends[0].inv() * ends[1]).as_rotvec()
+            correction = np.eye(4)
+            correction[:3, :3] = (ends[0] * Rotation.from_rotvec(turn * f)).as_matrix()
+            correction[:3, 3] = c0[:3, 3] * (1 - f) + c1[:3, 3] * f
+        return correction @ self.motion.at(t - self.td)
+
+    def _published_correction(self, entry):
+        time, _, pose = entry
+        return pose @ np.linalg.inv(self.motion.at(time - self.td))
+
+    def _refresh_published(self):
+        for i, (time, node, _) in enumerate(self.published):
+            if node in self.nodes:
+                self.published[i] = (time, node, self.nodes[node].pose.copy())
+
     # -- solving ------------------------------------------------------------------------
 
     def solve_frame(self):
@@ -200,6 +241,7 @@ class PoseGraph:
         order = self.keyframes + ([self.current] if self.current is not None else [])
         if order:
             self._solve(order, frame_only=False)
+            self._refresh_published()
         return {k: self.nodes[k].pose for k in self.keyframes}
 
     def solve_scale(self):
