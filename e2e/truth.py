@@ -1,4 +1,9 @@
-"""Score a recorded drive's camera poses against the simulator's truth; for slam_replay.py.
+"""Score a recorded drive's camera poses against the simulator's truth.
+
+uv run python e2e/truth.py RECORDING TRUTH.jsonl CAMERA_POSES.jsonl
+
+slam_replay.py scores a replay with it; run alone, it scores the poses a live
+e2e/slam_drive.py --record drive showed the pilot (its camera-poses.jsonl).
 
 The virtual Microduck writes one line per rendered head-camera frame when started with
 --truth FILE (microduck-sim, drivers/microduck/sim.py): when it was taken on the driver's
@@ -122,5 +127,42 @@ def score(estimates, truths):
         translation_m=stats(translation, 3),
         camera_path_m=round(path, 2),
         drift_per_m=round(float(translation[-1]) / path, 3) if path > 0.2 else None,
+        end_error_m=round(float(translation[-1]), 3),
         usable_fraction=round(float(usable.mean()), 3),
     )
+
+
+def main():
+    import argparse
+    from pathlib import Path
+
+    from PIL import Image
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("recording", type=Path)
+    parser.add_argument("truth", type=Path)
+    parser.add_argument("poses", type=Path)
+    args = parser.parse_args()
+    lines = (args.recording / "motion.jsonl").read_text().splitlines()
+    truth = Truth(args.truth, [json.loads(line) for line in lines if line.strip()])
+    frames = {}
+    for line in (args.recording / "frames.jsonl").read_text().splitlines():
+        row = json.loads(line)
+        frames[row["captured"]] = row["name"]
+    estimates, truths, missing = [], [], 0
+    for line in args.poses.read_text().splitlines():
+        row = json.loads(line)
+        name = frames.get(row["captured"])
+        if name is None:
+            missing += 1
+            continue
+        rgb = np.asarray(Image.open(args.recording / name).convert("RGB"))
+        found = truth.match(rgb, row["captured"])
+        if found is not None:
+            estimates.append(np.array(row["camera"]).reshape(4, 4))
+            truths.append(found[1])
+    print(json.dumps(dict(score(estimates, truths), unrecorded=missing), indent=2))
+
+
+if __name__ == "__main__":
+    main()

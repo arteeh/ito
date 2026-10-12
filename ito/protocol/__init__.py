@@ -68,6 +68,14 @@ class Camera(Model):
         description="How long before its capture_time a frame was exposed, as the driver "
         "estimates it; robot-first tracking refines it against the robot's motion",
     )
+    exposure: Number | None = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description="How long the sensor integrates a frame, as the driver knows it; None if "
+        "it cannot say. Robot-first tracking measures nothing visually in a frame the camera "
+        "turned too far during",
+    )
 
 
 class DegreeOfFreedom(Model):
@@ -107,6 +115,9 @@ class MotionNoise(Model):
     is off by about hypot(rotation_deg, rotation_deg_per_s * dt) and the relative translation by
     translation_m + translation_fraction * d. Pitch and roll against gravity are off by at most
     gravity_deg at any time. A robot that is held or has fallen knows far less (MotionSample).
+    A sample's pose may hold at a time up to about time_s from its stamp, against the
+    exposures of the camera's frames (sensor read-out, a control loop's tick): a camera turning
+    at w is then off by a further w * time_s at either end.
     """
 
     rotation_deg: Number = Field(ge=0, le=90)
@@ -114,6 +125,7 @@ class MotionNoise(Model):
     translation_m: Number = Field(ge=0, le=10)
     translation_fraction: Number = Field(ge=0, le=10)
     gravity_deg: Number = Field(gt=0, le=90)
+    time_s: Number = Field(default=0, ge=0, le=0.1)
 
 
 class RobotDescription(Message):

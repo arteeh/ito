@@ -24,9 +24,14 @@ measured gaze, how well the scene seen so far predicts the camera image one seco
 frame-to-pose latency and, for L4, how fast fusion's corrections move the eye. With
 --truth (the virtual Microduck's microduck-sim --truth file of the same drive) it scores
 every pose: rotation p50/p95/max, translation after a fixed first-frame alignment, and the
-fraction of usable poses (within 2 degrees and 5 cm). --poses-only skips MASt3R, for L2, L3
-and L4 (fusion without vision) on a CPU. --gaze-prior builds the prior from the recorded
-telemetry gaze, for recordings of drivers that sent none.
+fraction of usable poses (within 2 degrees and 5 cm), and as "every_frame" every recorded
+frame's pose, tracked or not, once the next tracked frame is in: the backend's pose_at where
+it has one (the robot's motion between fused poses), else the published poses interpolated.
+--align truth gives L4 a map aligner that knows each frame's true pose (0.1 degree, 1 cm):
+what a pixel-accurate map alignment would make of fusion.
+--poses-only skips MASt3R, for L2, L3 and L4 (fusion without vision) on a CPU.
+--gaze-prior builds the prior from the recorded telemetry gaze, for recordings of drivers
+that sent none.
 
 To compare with another revision's backend, run this script with that checkout first on
 the path; a backend that does not count restarts itself has them inferred per frame:
@@ -198,6 +203,7 @@ def main():
     parser.add_argument("--budget", type=int, default=1_048_576)
     parser.add_argument("--limit", type=float, default=0, help="stop after this many seconds")
     parser.add_argument("--gaze-prior", action="store_true")
+    parser.add_argument("--align", choices=("truth",), help="L4 with a truth map aligner")
     parser.add_argument("--unmeasured", action="store_true", help="hide the robot's heading")
     parser.add_argument("--measured", action="store_true", help="trust the recorded prior")
     parser.add_argument(
@@ -210,6 +216,12 @@ def main():
     parser.add_argument(
         "--set", action="append", default=[], help="override MASt3R-SLAM config: tracking.Q_conf=2"
     )
+    parser.add_argument(
+        "--describe",
+        action="append",
+        default=[],
+        help="robot description override: cameras.exposure=0, motion_noise.time_s=0.006",
+    )
     args = parser.parse_args()
     source = RUNGS.get(args.pose, args.pose)
     if source not in RUNGS.values():
@@ -217,6 +229,8 @@ def main():
     rung = next(k for k, v in RUNGS.items() if v == source)
     if source == "truth" and not args.truth:
         parser.error("L1 needs --truth")
+    if args.align and (source != "fused" or not args.truth):
+        parser.error("--align truth needs L4 and --truth")
     if args.poses_only and source not in ("receive", "source", "fused"):
         parser.error("--poses-only replays L2, L3 or L4")
     out = args.out or Path("e2e/out/slam-replay") / f"{args.recording.name}-{rung}"
@@ -240,6 +254,14 @@ def main():
         if (args.recording / "robot.json").exists()
         else None
     )
+    for override in args.describe:
+        # Recordings from before a field existed replay as a driver sending it would.
+        name, value = override.split("=", 1)
+        part, key = name.split(".")
+        data = robot.model_dump()
+        for item in data[part] if part == "cameras" else [data[part]]:
+            item[key] = None if value == "none" else float(value)
+        robot = RobotDescription.model_validate(data)
     if source in ("source", "fused", "truth", "receive") and not args.poses_only and not motion:
         parser.error(f"{rung} needs a recording with the robot's Motion (motion.jsonl)")
     if source in ("source", "fused") and (not motion or robot is None or not robot.motion_noise):
@@ -286,6 +308,7 @@ def main():
             return priors[index]
         return buffer.at(captured - delay)
 
+    aligner = TruthAligner(true_pose, buffer, delay, times) if args.align else None
     if args.poses_only:
         return poses_only(args, out, rung, source, rows, times, oracle, buffer, delay, true_pose)
     messages = []
@@ -308,7 +331,10 @@ def main():
             report=messages.append,
             motion_noise=robot.motion_noise if robot else None,
             frame_delay=delay,
+            # Only when known: older backends (another revision first on the path) lack it.
+            **({"exposure": exposure} if (exposure := camera_exposure(robot)) is not None else {}),
             oracle=None if source == "fused" else oracle,
+            **({"aligner": aligner} if aligner else {}),
             voxel_size=0.04,
             fade_seconds=0.5,
         )
@@ -331,6 +357,8 @@ def main():
     pending = []  # (due time, records, live) snapshots waiting for their future frame
     predictions = []
     estimates, truths, latencies, corrections = [], [], [], []
+    every_estimates, every_truths = [], []
+    scored, last_published = -1, None  # every recorded frame up to `scored` has been scored
     previews = 0
     inferred = dict(unmatched=0, heading=0, failure=0)  # For backends that do not count.
     origin = None
@@ -376,6 +404,8 @@ def main():
                 rgb, None, prior, now - start, measured=measured and not args.unmeasured
             )
         else:
+            if aligner:
+                aligner.index = index
             backend.integrate(rgb, None, prior, now - start, captured=times[index])
         torch.cuda.synchronize()
         seconds = time.perf_counter() - began
@@ -414,6 +444,22 @@ def main():
             if truth is not None and (true := true_pose(index)) is not None:
                 estimates.append(estimate)
                 truths.append(true)
+            if truth is not None:
+                for j in range(scored + 1, index + 1):
+                    if j == index:
+                        between = estimate
+                    elif source != "fused":
+                        between = oracle(times[j])
+                    elif hasattr(backend, "pose_at"):
+                        between = backend.pose_at(times[j])
+                    elif last_published is not None:
+                        between = interpolate(*last_published, times[index], estimate, times[j])
+                    else:
+                        continue
+                    if between is not None and (true := true_pose(j)) is not None:
+                        every_estimates.append(np.asarray(between, dtype=np.float64))
+                        every_truths.append(true)
+                scored, last_published = index, (times[index], estimate)
             if source == "fused":
                 corrections.append(
                     (backend.correction.astype(np.float64), times[index], estimate[:3, 3])
@@ -473,7 +519,7 @@ def main():
         pose=source,
         measured=not args.unmeasured,
         prior_delay=args.prior_delay,
-        overrides=args.set,
+        overrides=args.set + args.describe,
         seconds=round(float(stamps[-1]), 1),
         frames_available=len(rows),
         frames_processed=len(processed),
@@ -486,6 +532,7 @@ def main():
         else None,
         lost_frames=int((~ok).sum()),
         matched_frames=getattr(backend, "matched", None),
+        aligned_frames=getattr(backend, "aligned", None),
         frame_delay_ms=round(backend.graph.td * 1000, 1) if hasattr(backend, "graph") else None,
         restarts=restarts,
         restarts_total=sum(restarts.values()),
@@ -499,6 +546,7 @@ def main():
         heading_error_deg_p95=round(float(np.percentile(stray, 95)), 1) if len(stray) else None,
         heading_error_deg_max=round(float(stray.max()), 1) if len(stray) else None,
         truth=score_truth(estimates, truths) if truth else None,
+        every_frame=score_truth(every_estimates, every_truths) if truth else None,
         prediction_psnr_median=round(float(np.median([p[1] for p in predictions])), 2)
         if predictions
         else None,
@@ -528,6 +576,46 @@ def main():
         + ")"
         + (" inferred" if report["restarts_inferred"] else "")
     )
+
+
+class TruthAligner:
+    """A map aligner that knows the true pose of the frame being integrated, in the robot's
+    world (truth turned and moved onto the robot's own pose at the first frame)."""
+
+    SIGMA = np.repeat((math.radians(0.1), 0.01), 3)
+
+    def __init__(self, true_pose, buffer, delay, times):
+        self.true_pose, self.buffer, self.delay, self.times = true_pose, buffer, delay, times
+        self.index = None
+        self.world = None
+
+    def align(self, rgb, predicted, intrinsics):
+        true = self.true_pose(self.index)
+        if true is None:
+            return None
+        if self.world is None:
+            from truth import align
+
+            robot = self.buffer.at(self.times[self.index] - self.delay)
+            self.world = align(robot, true)
+        return self.world @ true, self.SIGMA, rgb.shape[0] * rgb.shape[1]
+
+
+def camera_exposure(robot):
+    return getattr(robot.cameras[0], "exposure", None) if robot and robot.cameras else None
+
+
+def interpolate(t0, pose0, t1, pose1, t):
+    """Between two world-from-camera poses by time: slerp and lerp."""
+    from scipy.spatial.transform import Rotation
+
+    f = (t - t0) / (t1 - t0) if t1 > t0 else 1.0
+    ends = Rotation.from_matrix(np.array([pose0[:3, :3], pose1[:3, :3]]))
+    result = np.eye(4)
+    turn = (ends[0].inv() * ends[1]).as_rotvec()
+    result[:3, :3] = (ends[0] * Rotation.from_rotvec(turn * f)).as_matrix()
+    result[:3, 3] = pose0[:3, 3] * (1 - f) + pose1[:3, 3] * f
+    return result
 
 
 def score_truth(estimates, truths):
