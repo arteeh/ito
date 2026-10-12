@@ -39,7 +39,7 @@ The left panel is a new MuJoCo 3.3.7 render of the saved static room `work/truth
 
 The main maps contain only observations through the selected snapshot; they exclude retiring slots to inspect the persistent surface. Real publication queues, retirement fades and display timing are not reproduced. When L1/L4 capture schedules differ, both are rendered at the later camera instant, retaining each map's available snapshot. The largest mismatch is sweep's first L4 snapshot, frame 181 versus reference 215 (about 1.1 s); later mismatches are at most three frames. Consequently these are diagnostic comparisons, not a controlled L1-versus-L4 quality benchmark. Snapshot compression also perturbs replay scheduling, so their run times are not performance measurements.
 
-The offline models are final **180-second optimized, whole-recording** checkpoints, with roughly **1.0–1.33 million Gaussians**. They contain future observations relative to these screenshots and exceed the earlier 90 Hz budget. They show an achievable appearance bound, not a live result. Mesa llvmpipe rendered the sheets; per-view SH color was evaluated before upload to fit its buffer limit, retaining all SH terms. All graphics/SLAM jobs ran under `ceres.lock`; no shared environment was modified. The four replays used the existing Windows SLAM environment read-only; image generation used an isolated environment under `bigpic-out`.
+The offline models are final **180-second optimized, whole-recording** checkpoints, with roughly **1.0–1.33 million Gaussians**. They contain future observations relative to these screenshots and exceed the earlier 90 Hz budget. These selected frames are not a new held-out set and can overlap training views. They show an achievable appearance bound, not a live or novel-eye result. Mesa llvmpipe rendered the sheets; per-view SH color was evaluated before upload to fit its buffer limit, retaining all SH terms. Replay capture and comparison-sheet generation ran under `ceres.lock`; no shared environment was modified. The four replays used the existing Windows SLAM environment read-only; image generation used an isolated environment under `bigpic-out`.
 
 For orientation only, the full-frame diagnostic PSNRs against the new left panels are below. Do not compare these directly with the old covered-pixel replay scores, nor use their ordering to override the visible artifacts.
 
@@ -68,7 +68,7 @@ Main already predicts blur and skips visual work above eight pixels ([slam.py:12
 
 **ToF is valuable metric evidence, not dense depth.** ST specifies the VL53L5CX at up to **15 Hz in 8×8**, versus up to 60 Hz in 4×4, a 65° diagonal square FoV and ranges up to 4 m under specified conditions. An approximately 45° side spans about 5.6° per zone: roughly 52 source-camera pixels near the center, or 10 cm across at 1 m. Associate a range with its calibrated angular footprint and return quality; do not upsample 64 measurements into invented object boundaries. It can constrain scale and coarse surfaces, especially when the floor disappears. Coverage, occlusion and timing between ToF and RGB still matter. [ST datasheet](https://www.st.com/resource/en/datasheet/vl53l5cx.pdf)
 
-**Depth inconsistency is not merely a scalar.** The earlier investigation found a 4.7× scale error and 10–35% depth variation. `d91e443` corrected a major scale defect, not all shape disagreement. Neighboring frames can disagree about surfaces after global rescaling. Main's `floor_scale` searches a histogram of downward point heights and divides known camera height by its dominant mode ([slam.py:227](https://github.com/arteeh/ito/blob/fff0439/ito/reconstruction/slam.py#L227)). It does not independently identify a floor plane. A table, steps, sloped ground, an elevated platform, a held robot or no floor can invalidate the premise. The scale gauge of unconstrained monocular vision is fundamental; assigning arbitrary robot-world Y the meaning “height above a visible floor” is our fixable mistake.
+**Depth inconsistency is not merely a scalar.** The earlier gsplat investigation measured a 4.7× scale error; the coordinator's plan also reports 10–35% depth variation, a statistic I have not remeasured on `fff0439`. `d91e443` corrected a major scale defect, not all shape disagreement. Neighboring frames can disagree about surfaces after global rescaling. Main's `floor_scale` searches a histogram of downward point heights and divides known camera height by its dominant mode ([slam.py:227](https://github.com/arteeh/ito/blob/fff0439/ito/reconstruction/slam.py#L227)). It does not independently identify a floor plane. A table, steps, sloped ground, an elevated platform, a held robot or no floor can invalidate the premise. The scale gauge of unconstrained monocular vision is fundamental; assigning arbitrary robot-world Y the meaning “height above a visible floor” is our fixable mistake.
 
 ### Estimation: centimeter-level robotics accuracy can still be visibly wrong
 
@@ -78,7 +78,7 @@ A 1 cm lateral error at 1 m is **5.3 source pixels**. One degree of rotation is 
 
 Robot-first tracking is the right foundation: fuse a fast motion prior with visual evidence, rather than making the pilot wait for dense inference. It is not a license to treat odometry as truth, or to count raw IMU and an odometry estimate derived from that same IMU as independent information. Inertial/visual fusion remains useful for bias, velocity, metric scale under excitation, calibration and uncertainty—not just rotation.
 
-The `fix/pixel-poses` improvement is real but costly in the reported runs: rotation p95 fell from 3.85° to 2.06° on sweep, and every-frame tour error from 7.72° to roughly 1.6°, while pose throughput fell and capture-to-scene rose from 239 to 294 ms. Those are different measurements, not a single “better tracking” verdict. Also, [fusion.py:276](https://github.com/arteeh/ito/blob/fff0439/ito/reconstruction/fusion.py#L276) can interpolate between surrounding corrected poses and revise past keyframes. An every-frame retrospectively queried trajectory is not necessarily the trajectory the pilot had available at each deadline. Score both explicitly.
+The `fix/pixel-poses` improvement is real but costly in the reported runs: the [merge record](https://github.com/arteeh/ito/commit/fff0439) reports rotation p95 falling from 3.85° to 2.06° on live sweep, and every-frame tour error from 7.72° to 1.71°. I checked `work/pp-run/out/live-{m,p}-{sweep,tour}/summary.json`: published tracking rates fell **5.76 → 4.18/s** on sweep and **6.42 → 3.32/s** on tour; tour capture-to-scene median rose **238.65 → 294.51 ms**. Those are different measurements, not a single “better tracking” verdict. Also, [fusion.py:276](https://github.com/arteeh/ito/blob/fff0439/ito/reconstruction/fusion.py#L276) can interpolate between surrounding corrected poses and revise past keyframes. An every-frame retrospectively queried trajectory is not necessarily the trajectory the pilot had available at each deadline. Score both explicitly.
 
 ### Representation: the live map throws away the evidence needed to become sharp
 
@@ -180,3 +180,201 @@ Checked the repositories/model cards on the review date. The paper's publication
 | 2DGS / gsplat | Original [2DGS research-only Inria licence](https://github.com/hbb1/2d-gaussian-splatting/blob/main/LICENSE.md); [gsplat Apache-2.0](https://github.com/nerfstudio-project/gsplat/blob/main/LICENSE) provides a different implementation route. A renderer implementation licence and a paper's method are distinct. |
 
 My shortlist is therefore **gsplat for optimization; independent robot-aided tracking, with a CPU VIO baseline and DPVO challenger; DepthSplat-small/MVSplat as optional initializers**. It is an architectural selection, conditional on the shared-load experiments below, not a promise that installing three libraries produces Ito.
+
+## 4. Three serious iterations, ranked
+
+The ranking favors the current robot, visible gains on one consumer GPU, and a small maintainable system. These are **investment choices with falsifiable first experiments**, not three backends to implement simultaneously. Effort estimates are my engineering estimates for one experienced engineer, including integration and offline end-to-end validation; physical deployment and headset acceptance can extend them.
+
+### 1 — Independent state estimation, persistent optimized Gaussians, explicit display budget
+
+**Build this first.** Keep Ito's driver/link/render boundaries, but separate the fast state estimate from appearance learning and preserve enough observations to revise geometry correctly.
+
+```text
+Robot: calibrated RGB + source times + motion prior [+ raw IMU / range / depth]
+                                |
+                  bounded timestamped observations
+                       /                       \
+              STATE ESTIMATOR              MAP WORKER
+       propagate motion immediately      select useful keyframes
+       visual updates at input rate      metric, consistent geometry seed
+       delayed factors / bias / scale    optimize recent local Gaussians
+             |             |             refine/freeze stable surfaces
+             |        pose revisions ---------->|
+             |             |                    |
+             |       retained observations + anchored submaps
+             |                                  |
+             +-------- coherent pose/map revision ----+
+                                                     |
+Headset predicted pose --> DISPLAY, 90 Hz, last complete scene
+                            shared GPU budget; no waits on mapping
+```
+
+**Estimator.** Publish propagation from robot motion independently of dense reconstruction. Track image features/patches between observations, with metric priors and timing uncertainty; run expensive dense depth only on useful keyframes. Use current MASt3R to establish a transition baseline, then compare CPU visual-inertial tracking and DPVO rather than immediately committing to a DROID rewrite. Preserve the distinction between a current propagated pose and a retrospectively refined keyframe pose. If raw inertial input is absent, use the available pose/velocity prior honestly; do not pretend a VIO mode exists.
+
+**Map.** Fit genuine anisotropic Gaussians against multiple calibrated RGB observations: center, rotation, scale, opacity and color, with exposure handling and measured geometric constraints where available. Retain bounded source keyframes and support/uncertainty metadata. Existing static surfaces accumulate evidence; recent uncertain surfaces are provisional and get priority. Keyframe removal from the estimator must not erase useful room geometry: consolidate surfaces into persistent submap anchors before forgetting their source node. Marginalize/prune according to support, view contribution and resource cost, not simply “oldest keyframe dies.” Large optimizer deformations invalidate the affected region and trigger local refitting rather than publishing a sequence of visibly inconsistent partial revisions.
+
+**Publication.** One scene revision identifies its coordinate frame, compatible anchor transforms, observation age and completion fence. The renderer reads the most recent complete revision; superseded results cannot overwrite a newer world. Start with bounded shared-memory deltas and measure their cost. Introduce CUDA/GL interop only if it materially helps and remains robust on Windows. Keep the record boundary narrow enough for SH degree and anchor transforms to evolve; avoid copying an entire room every update.
+
+**Scheduling.** Render first, then admit estimator/mapping work according to measured remaining capacity. Use small local training batches, bounded queues and cancellation of obsolete requests. Measure longest GPU kernels and driver scheduling; CPU sleep-based duty control is inadequate. If dense inference cannot coexist with deadlines, reduce its frequency/size, replace it, or move the visual estimator to CPU. Do not silently lower display rate. Start experiments around 200–400k active Gaussians and adapt to measured screen coverage/overdraw; no fixed count is declared safe in advance. Train at camera-appropriate resolution and render at eye resolution. Persistent map quality can improve over seconds while current pose and recently observed hazards stay on the fast path.
+
+**Why it can beat the wall.** It preserves multi-view evidence instead of repeatedly replacing coarse blobs; isolates pose publication from slow optimization; and makes resource contention that can cause hitches an explicit admission decision. It uses the architectural lesson of Photo-SLAM without requiring Ito to inherit that entire codebase. The head remains responsive even if no map update is ready.
+
+**Risks/cost.** A bad initial depth field may still converge too slowly; a cheap tracker may fail on blur and featureless walls; Windows GPU scheduling may prevent the desired reservation with a particular model. Estimate **6–10 engineer-weeks** after the initial experiments, with the largest uncertainty in bounded optimization and correction publication. Reuse gsplat and an existing estimator; do not build a new generic SLAM framework.
+
+**First prove/kill experiment, 2–4 working days:** replay the two trajectories with **true poses and true sim depth**, no MASt3R, a fixed memory budget, and the actual renderer running a recorded 90 Hz stereo head trajectory on the same GPU. Deliver causal snapshots after 100 ms, 500 ms, 1 s and 2 s of observation. Continue only if books/poster boundaries are visibly sharper than current main, full-frame quality improves by at least **3 dB** on the fixed informative views after at most **1 s**, no extra holes appear on the common observed region, and display misses remain below **0.1%** at 90 Hz with **<8 GB** total Ito GPU residency. Failure with oracle inputs falsifies this mapper/scheduler configuration before spending weeks on tracking. Success does not yet validate mono inputs; replace truth depth and truth poses separately next.
+
+### 2 — A sensor-complete Microduck, using the same optimized map
+
+**Highest confidence in a higher ceiling if physical changes are acceptable.** Treat good sensing as part of Ito's product requirements rather than demanding that a learned prior compensate indefinitely for missing information. First characterize the existing camera/ToF/IMU; then compare a synchronized global-shutter stereo or compact RGB-D head and a rigidly calibrated head IMU. A second camera without usable baseline, synchronization or texture is not automatically an improvement.
+
+```text
+Synchronized camera pair / RGB-D + rigid head IMU + joint/motion prior
+                   |                    |
+           metric depth/confidence    metric pose estimator
+                   +---------+----------+
+                             |
+                 optimized Gaussian local mapper
+                 stable surfaces + recent changes
+                             |
+              same revision contract and 90 Hz renderer
+```
+
+**Why it can beat the wall.** Measured metric geometry attacks the scale/shape inconsistency directly, reducing both optimizer work and pose ambiguity. Global shutter and exposure control attack the input corruption before inference. GS-ICP-style geometric tracking becomes a realistic option; CPU stereo/VIO or device depth can free GPU time. Wider observed coverage reduces the frequency with which the pilot looks into unobserved space. This route can improve sharpness, freshness and compute simultaneously rather than exchange one for another.
+
+**Risks/cost.** Microduck's head mass, torque, power, minimum working distance, illumination, available interfaces and network bandwidth may rule out the best sensor on paper. Stereo fails on textureless/reflective regions; active depth has its own lighting/material failures. Preserve invalid masks and uncertainty. Proposed procurement cost is deliberately unspecified until those mechanical/electrical constraints are measured. Estimate **3–6 engineer-weeks of additional integration/calibration**, excluding hardware lead time and any mechanical redesign. Other robots benefit through optional sensor observations in the same contract; never make this sensor suite mandatory for all drivers.
+
+**First prove/kill experiment, 1–3 working days:** use sim truth depth/poses to establish the ceiling, then progressively restrict depth to noisy delayed 8×8 angular zones, realistic stereo-like depth, and no depth while retaining the same images, tracker and mapper. At near-field stereo eye poses, require **≥50% lower p95 disparity error** and **≥3 dB better full-frame quality** than the mono baseline, with no render/freshness regression. Visually inspect pot/ball occlusion, floor seams and bookshelf edges. If dense accurate depth does not help, a sensor purchase is not the immediate fix. If it does, a recorded hardware bench experiment must then demonstrate the input quality and packaging constraints; the synthetic intervention alone does not justify a specific device.
+
+This is ranked second because it changes the physical robot. If hardware flexibility is high, it may be the most effective first investment alongside proposal 1's oracle experiment.
+
+### 3 — Feed-forward Gaussian initialization, followed by bounded optimization
+
+**Research bet with a short, decisive trial.** Predict a useful local set of full Gaussian parameters from two to four overlapping, posed observations, rather than beginning every local region from isotropic point samples. Keep proposal 1's independent state estimate and publication policy. Optimize against observations after prediction; prevent uncertain predictions from becoming permanent geometry merely because they look plausible.
+
+```text
+Calibrated RGB window + robot-aided poses + optional metric constraints
+                                  |
+                   DepthSplat-small / MVSplat seed
+                   confidence + local Gaussians
+                                  |
+                bounded multi-view Gaussian optimization
+                merge supported surfaces into persistent map
+                                  |
+                  same local pose + 90 Hz stereo renderer
+```
+
+**Why it can beat the wall.** The failed online mapper spends its few available steps repairing a poor starting shape/appearance. A learned initializer can amortize that work across training scenes and start near a sharper solution. Joint multi-view inference can also be more consistent than independent single-frame depth. Recurrent systems such as Flash-Mono suggest a longer-term way to avoid rebuilding overlapping windows, but reproducibility and resource fit come first.
+
+**Risks/cost.** Small portrait views close to the floor, nearly pure rotation, blur and exposure changes differ from many training datasets. A model can produce convincing wrong surfaces. Consecutive windows can change scale, geometry or opacity and create popping when merged. An inference pass that is fast in isolation may still block VR; duplicating a large depth model, estimator and optimizer can exceed 8 GB. Select one model and share/reuse its outputs; do not run MASt3R, VGGT, DPVO and DepthSplat concurrently by default. Estimate **2–4 engineer-weeks to evaluate/port a chosen small model**, then **6–10 additional weeks** for persistent-map integration if it passes; retraining or recurrent-model development is a separate, larger research project.
+
+**First prove/kill experiment, 2–4 working days:** for 20 fixed windows spanning slow movement, turns and revisits, predict from **past/current views only** using true poses first, then own poses. Compare at held-out true stereo/head-offset poses after the same allowed GPU milliseconds of optimization. Require **≥2 dB full-frame improvement over the point-seeded optimizer**, ≥20% lower LPIPS on informative regions, no worse coverage/disparity, and at least a **2× reduction in time to the same visible sharpness**. Then run it beside the renderer; the whole path must pass the same <8 GB / 90 Hz limits. Kill this initializer if the gain vanishes under pure turns or own poses, requires future views, or depends on a large model that cannot meet the shared budget. This trial was **not run** in this review.
+
+### The experience all three must deliver
+
+“World rendered at 90 Hz” is necessary, but it is not a comfort certificate. There are separate clocks:
+
+| Information | What should be live | What can lag |
+|---|---|---|
+| Pilot head/eyes and controls | Current predicted display pose each frame; controls keep their independent sender | Never wait for scene optimization |
+| Robot anchor motion | Latest propagated, uncertainty-bounded motion; measure deliberate comfort filtering separately | Global loop corrections can be deferred/applied coherently |
+| New obstacles / moving objects / newly revealed space | First trustworthy observation as soon as transport and processing allow; initial target **≤150 ms p95 at 30 FPS**, measured from exposure | Fine appearance can converge later; a seconds-old obstacle is not “live” |
+| Previously observed static room | Stable geometry/color and smooth reprojection | Seconds of appearance refinement, and much longer persistence if not contradicted |
+
+The 150 ms figure is a proposed engineering target, not a measured result or human-safety threshold. At 5 FPS, the sampling interval alone is 200 ms; report that limit honestly and adapt the allowed motion/experience. Do not promise the same freshness at every input rate.
+
+Keep **one Gaussian representation with different evidence/lifetime policies**, rather than introducing a second mesh system. Newly observed geometry can be provisional while its parameters converge. Moving or contradictory regions must not be optimized into the permanent room: hold them in a short-lived local layer, expire them when unsupported, and restore the background only from valid observations. Distinguish physical opacity from confidence; fading an uncertain opaque obstacle into transparency can be misleading. A complete first implementation needs invalidation, age and failure behavior, not necessarily a learned deformable model for every object.
+
+For unobserved directions, show a consistent, neutral missing-region treatment and an age/coverage indication; keep valid static content stable in both eyes. Do not stretch the last image around the pilot or invent detailed geometry to hide holes. If tracking/coverage is inadequate, Ito already has the right class of fallback: a clearly framed camera panel in a stable VR environment, with stop/recenter available. Its latency must remain visible. This is an explicit degraded state, not the normal immersive view. Reacquisition should introduce verified scene regions coherently without a world jump.
+
+A stable local rendering frame should absorb coordinate-gauge changes applied equally to eye and map; actual corrected robot motion is a different event. Do not add the robot head rotation to the pilot's gaze twice. Preserve the owner's liked smooth waddling response as a tested preference; do not assume physically exact vertical acceleration is comfortable for everyone. Main's 2°/s and 5 cm/s correction limits cite redirected-walking research in a comment, but that does not establish imperceptibility for this seated, near-floor teleoperation setting. Headset checks must measure correction-induced world motion and comfort directly.
+
+## 5. Critique of the coordinator plan and the evidence process
+
+I reviewed `work/ARCHITECTURE-PLAN.md`, dated 12 October, SHA-256 `67e98984c1fb2e44d31db108d6eb3f8f3c2e2cbfdc9f06272aa33b1bd5f23712`. I have not modified it.
+
+| Keep | Change before treating it as the implementation plan |
+|---|---|
+| Robot motion fused with visual factors; every frame can receive a pose | Separate the immediate propagated pose from the delayed visual correction and reconstructed-surface update. Specify publication times and uncertainty. The current graph window is 30 keyframes, not the older 12-keyframe description in README. |
+| Optimized Gaussians, keyframe-local coordinates and asynchronous mapping | Make map lifetime independent of estimator window lifetime; retain observations, define consolidation, and publish coherent anchor/map revisions. “Background” alone does not specify a scheduling or consistency policy. |
+| Photometric refinement as a possible constraint | Remove **MAP ALIGNMENT** as the mandatory route to accurate poses. Gate it on mature, independently validated static geometry, sufficient texture and bounded correction; compare to frame-to-frame tracking. The measured aligner regression is evidence against using it as the default now. |
+| A budget sized for VR | Replace the isolated “~400k means GO at 90 Hz” conclusion with a shared-load frame-time experiment. The README's hardware default can be **1M** splats on ≥8 GB NVIDIA, which is also inconsistent with that asserted budget. Occupancy, allocated capacity and overdraw must all be recorded. |
+| Per-camera calibration, optional metric sensing, exposure correction | Implement source timing and actual frame semantics early. Do not postpone lens/rolling-shutter metadata when evaluating a physical rolling-shutter camera; unknown values must be explicitly unknown. Replace first-camera/floor-specific assumptions with named-frame observations as real drivers need them. |
+| Truth-backed replays and pilot feedback | Add matched stereo/head-offset views, temporal checks, deadline misses and event freshness. Keep the owner's feedback authoritative for the experience, but give them concrete visual evidence before asking them to spend a headset session discovering obvious blur or holes. |
+
+The “what we know” section needs versioned claims. Its 1.9 m “unexplained tracking drift” is the odometry quantity identified in the later investigation; it should not remain evidence of tracker divergence. Its ~10 Hz claim predates the more expensive `fix/pixel-poses` runs. The older true-pose 21 dB result is confounded by depth scale and renderer differences. “Inputs are now the wall” is too singular: the online mapper has not yet shown sufficiently fast convergence even with true poses, and joint display scheduling has not been demonstrated.
+
+The [PR #36 tracking study](https://github.com/arteeh/ito/blob/29a3adc/docs/research/tracking.md) correctly explains why replacing a jointly solved rotation after the fact can damage the rest of the estimate, and why a robot prior belongs inside fusion. Its categorical dismissal of classical VIO because the robot already knows rotation goes too far: raw inertial fusion also estimates bias, velocity, scale and timing. Its low DROID frontend memory figure is an estimate, not a reproduced budget. The [earlier representation study](https://github.com/arteeh/ito/blob/e0ae55e/docs/research/scene-representation.md) correctly distinguishes immediate observations from persistent memory. Its depth-mesh-first recommendation adds a second representation and still inherits timing/depth consistency problems; I would not reopen that rejected complexity before the optimized-Gaussian oracle experiment. Its “Photo-SLAM is GPL” shorthand also omits the separate Inria licence file.
+
+These proposed pass criteria are engineering decision aids, **not a new approval or merge policy**. This review changes no product code and makes no merge decision.
+
+### What current metrics miss
+
+1. **The renderer being scored is often not the pilot renderer.** Main's [replay preview](https://github.com/arteeh/ito/blob/fff0439/e2e/slam_replay.py#L59) draws nearest-depth, square point footprints with radii clamped to three pixels. It does not reproduce Gaussian alpha compositing, covariance, SH, stereo sorting or temporal fades. The mapper branch's different renderer further complicates historical comparisons. Use one production rendering path for decisions about appearance.
+2. **Coverage-conditioned scores reward hiding mistakes.** A method can delete difficult pixels and improve covered PSNR. Report full-frame PSNR/SSIM/LPIPS, an externally defined common visibility mask, and coverage separately. Treat newly exposed unknown space separately from holes in previously observed space; a truthful unknown region should not be scored as though hallucinating it were the only acceptable answer.
+3. **“Causal” must include all upstream evidence and runtime.** The earlier calibrated gsplat initialization uses triangulation pairs up to 60 frames ahead and interpolated scale. Its apparent streaming experiment also does not charge MASt3R/pose computation or competing display work. Every-eighth-frame held-out evaluation is useful for fit, but heavily correlated neighbors from the same static room make it an optimistic deployment test. Retain those results as upper bounds.
+4. **Pose error at capture is not pose available at display.** The current replay fills intermediate-frame estimates after processing a later frame ([replay:392](https://github.com/arteeh/ito/blob/fff0439/e2e/slam_replay.py#L392)). Log the estimate that existed at the original deadline as well as the retrospectively optimized one. A per-image photometric pose fit against a held-out image is an oracle analysis, not an online tracking result.
+5. **One freshness number conflates three things.** Record exposure-to-first-visible-observation, exposure-to-stable-sharp-surface, and pilot-motion-to-display separately. Scene delta timestamps do not necessarily date every visible surface: an old surface can be reoptimized and published now. Store last observed/validated age separately from optimization time.
+6. **Average FPS misses the uncomfortable frames.** Report display frame-time p50/p95/p99/p99.9, missed-deadline fraction, longest run of misses, upload stalls, and correction-induced screen motion under simultaneous tracking/training. Report visual factors/s and fresh geometry updates/s separately from propagated poses/s. Add stereo disparity and foreground-edge stability; PSNR alone does not see binocular disagreement.
+7. **The environment is too forgiving.** These recordings cannot validate real exposure, noise, sensor readout, moving objects or lens calibration. Use a recorded physical Microduck sequence and a public sensor dataset for transfer, plus controlled synthetic corruptions. Never quietly fit scale or calibration on evaluation targets and then label the result deployable.
+
+### The standard eye-check protocol
+
+For each candidate, save the same six reference moments used here plus one difficult moment selected **before** seeing that candidate's scores. Include turns, revisits, a near foreground object and a newly revealed edge. Render truth-left/candidate-right with the same calibrated camera; then do left-eye and right-eye offsets at actual headset IPD, and a small ±3 cm head translation. Save whole frames at 1:1 scale before adding crops. Both the camera-path and novel-eye tests matter: reconstructing the captured image does not prove correct stereo geometry.
+
+Save three short, synchronized clips: **frozen map with moving head**, **fixed head with map updates**, then **both together**. The first isolates renderer/sort/aliasing artifacts, the second exposes popping and world corrections, and the third is the actual experience. Add a moving foreground object crossing a known wall and a brief sensor dropout. Display frame IDs, source observation ages and actual display times in a diagnostic margin, not over the comparison region. Include speed-accurate playback and slow motion; stills cannot establish smoothness.
+
+Inspect blind A/B clips before opening scores. Record a short statement about book labels, floor grain, single versus doubled edges, holes, stereo disagreement and map transitions. Then examine metrics to explain disagreements. Use three repeated runs where scheduling or optimization is nondeterministic, identical input/frame availability schedules, and per-sequence/per-event results; do not average a failed tour into a successful sweep. The owner need only inspect the decisive sheets/clips, not every log. Headset acceptance remains necessary after offline checks, but no live drive was used for this review.
+
+For “plain improvements,” require a clear visual gain and no material regression in the comfort, freshness, coverage and resource measures. Define tolerances before a comparison and estimate run-to-run noise; a hundredth of a dB is not a product gain. A weighted aggregate score must not buy better texture by hiding holes or more missed display frames.
+
+## 6. Ordered next steps and decision criteria
+
+These are proposed gates, not claims that the current system passes. Use the same frozen reference recordings and actual GL renderer throughout. Every GPU experiment holds `ceres.lock`, stays below 8 GB, and ends within 20 minutes; split experiments into independent short jobs. Continue offline until headset inspection is deliberately scheduled by the owner.
+
+| Order | Concrete work | Visual pass criterion | Numeric pass criterion / decision |
+|---|---|---|---|
+| **1. Establish trustworthy measurement** | Add source frame identity and exposure/arrival/publication/display timestamps to the offline recording path; preserve camera model, exposure/readout status and coordinate revisions. Make identical causal frame schedules and true-pose GL evaluation reusable. | Static truth matches decoded input in geometry; matching thin edges do not jump because of timestamp selection. Both eye images have correct projection and orientation. | New sim recordings have **100% exact frame-ID matches**, no future observations in a prefix snapshot, and calibration reprojection residual **≤0.5 px median, ≤1 px p95** on the known static scene. Keep codec/render differences as a separately measured floor. If physical exposure time cannot be obtained, explicitly quantify delay/jitter instead of calling it exact. |
+| **2. Prove the shared compute envelope** | Run actual 90 Hz stereo rendering under controlled tracking and training load; sweep occupied count, allocated capacity and viewpoint. Trace long kernels, uploads and publication. | Frozen-map head sweeps remain smooth and stable; no shimmer bursts or black frames when training starts. | **<0.1% missed 11.11 ms deadlines**, no consecutive misses in the short reference runs, **<8 GB** aggregate Ito GPU residency. Record p99/p99.9 and longest stall. Select the cap/model schedule from this trace, not isolated FPS. A production headset/compositor check must later confirm it. |
+| **3. Isolate the mapping ceiling** | Under that budget, run the 2×2 intervention: true/estimated pose × true/estimated depth, with identical observations and prefix availability. Optimize real Gaussians and retain the input images. | Oracle inputs produce sharper book labels/poster edges, without a missing floor or moving walls. Stereo foreground silhouettes agree. | With true inputs, target **≥3 dB full-frame gain** over main on fixed informative views within **1 s**; common-observed-region holes do not increase by >**0.5 percentage point**. Meet step 2 simultaneously. Use each oracle replacement's marginal gain to choose whether depth, pose or optimization is next. |
+| **4. Fix the estimator's actual error budget** | Calibrate timing/extrinsics; compare current fusion, a sensor-aided feature/VIO baseline where raw IMU exists, and DPVO as a bounded challenger. Start without map alignment. Measure estimates as available at the time. | Static shelf/door edges stop sliding or doubling during turns; no apparent scale breathing when the floor exits view. | On both sequences, **halve causal p95 rotation error** from the frozen baseline, no increase in p95 translation error, and no added pose-publication delay. For sharp-map admission, require supported cross-view reprojection **≤2 px p95** or explicitly exclude uncertain measurements while retaining common-region coverage. Validate on an independent motion sequence; if timing uncertainty dominates, fix the source rather than retune visual weights. |
+| **5. Make optimization persistent and causal** | Combine the winning estimator with bounded local training, retained observations, submap consolidation, per-frame exposure and coherent publication. Add a revisit and intentional coordinate correction. | The first bookshelf remains sharp after its estimator keyframe retires; returning to it does not double it. No correction makes a stationary pilot's world jump. | Full-frame quality **≥2 dB above main on both complete recordings**, LPIPS improves on predefined textured regions, common-region coverage stays within **0.5 point**, and p95 first-visible freshness does not regress by >**10 ms**. Pass step 2 and keep steady memory bounded over a **10-minute offline loop**. Check that all visible changes carry the correct observation age. |
+| **6. Spend on the demonstrated bottleneck** | If initialization dominates, run proposal 3's 20-window feed-forward trial. If measured metric geometry dominates, run proposal 2's sensor degradation intervention and then plan a hardware recording. Do not begin both full integrations. | Improvement persists at near-eye offsets, on turns, and away from the floor; no plausible but wrong furniture or surfaces appear. | Apply the proposal-specific ≥2 dB/2× convergence or ≥50% disparity-error reduction gate, plus step 2. If neither passes, keep the measured baseline and reject the dependency/hardware change; do not ship a prettier offline-only result. |
+| **7. Establish live-world behavior** | Offline replay: a moving object, exposure change, blur/readout perturbations, 0.5 s input loss, no-floor interval, and reconnection/relocalization. Use a recorded physical Microduck sequence before release. | Moving subjects do not leave permanent ghosts; unknown regions are recognizable; loss/recovery keeps a stable fallback and returns without a world jump. | At **30 FPS**, aim for first reliable event depiction **≤150 ms p95** and no unsupported moving trace older than **0.5 s** after a visible removal. At lower rates, report the sampling-limited age explicitly. No tracking/training fault blocks controls or breaches step 2. Physical timing and scale must be validated, not borrowed from sim. |
+| **8. Pilot acceptance** | Present blinded candidate/main clips first; then, with the owner's authorization for that session, run the headset comparison including the liked smooth waddle. | Owner prefers sharpness and continuity without added discomfort; labels/edges remain readable during actual piloting and both eyes agree. | Meet the display/freshness gates under the real runtime; log identical routes and settings. Record subjective comfort separately from frame metrics. A visually worse or less comfortable result fails even if its mean PSNR improves. |
+
+**The immediate action is steps 1–3, not another wholesale tracker replacement.** They answer the missing question: with information and scheduling controlled, can an online optimized Gaussian map become sharp quickly enough for this pilot view? The results then determine whether Ito should spend its next month on estimation, initialization, sensor quality or the optimizer itself.
+
+## 7. Scope and reproducibility of this review
+
+Completed: code/history/plan audit; primary-source research and licence checks; four short current-main offline SLAM replays; six matched-camera visual sheets rendered through Ito GL; inspection of all six sheets and the historical online mapper example; extraction of historical mapper metrics with source hashes. The committed scripts are standalone offline diagnostic drivers, not unit tests or new product paths.
+
+Not established here: physical Microduck calibration/readout/exposure quality; shared-GPU 90 Hz headset performance; temporal popping measurements; an online optimized map trained with current `fff0439` poses; feed-forward initializer performance on these recordings; commercial clearance of every transitive dependency. These are identified experiments, not results silently assumed by the recommendations.
+
+To reproduce the capture procedure in this machine's existing Windows SLAM environment, from `work/bigpic` in WSL (models/environment are read-only):
+
+```sh
+export PYTHONPATH='C:\Users\me\Projects\ito\work\bigpic'
+export PYTHONUTF8=1 PYTHONDONTWRITEBYTECODE=1
+export CUPY_CACHE_DIR='C:\Users\me\Projects\ito\work\bigpic-out\cupy-cache'
+export WSLENV=PYTHONPATH:PYTHONUTF8:PYTHONDONTWRITEBYTECODE:CUPY_CACHE_DIR
+flock /mnt/c/Users/me/Projects/ito/ceres.lock \
+  /mnt/c/Users/me/Projects/ito/venv-slam/Scripts/python.exe \
+  e2e/big_picture_capture.py \
+  --models 'C:\Users\me\Projects\ito\work\pp\models' --at 6,15,23 \
+  C:/Users/me/Projects/ito/work/rf-run/out/sweep180/rec \
+  --out C:/Users/me/Projects/ito/work/bigpic-out/sweep180-L1 \
+  --pose L1 --truth C:/Users/me/Projects/ito/work/rf-run/out/sweep180/truth.jsonl \
+  --limit 24
+```
+
+Repeat for L4; for tour use `--at 12,50,76 --limit 78` and the tour recording/truth/output paths. The snapshot files record which frame actually crossed each target. The pinned baseline was `fff0439`; timing-dependent frame selection need not reproduce byte-identical snapshots.
+
+Then render the six sheets with the isolated image environment (NumPy, Pillow, MuJoCo 3.3.7, ModernGL, PyOpenGL, plyfile, SciPy and pydantic), using the unchanged recorded gsplat checkpoints:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 flock /mnt/c/Users/me/Projects/ito/ceres.lock \
+  ../bigpic-out/venv/bin/python e2e/big_picture_images.py \
+  --work /mnt/c/Users/me/Projects/ito/work --out docs/big-picture/img
+```
+
+The manifest records the saved room/checkpoint/snapshot hashes and software renderer. JPEG sheets are each below 1 MB; uncompressed pairs remain in `work/bigpic-out/rendered`. No shared recordings, mapper worktrees, model environments, simulator installations or running owner processes were modified.

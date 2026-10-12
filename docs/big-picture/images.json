@@ -245,5 +245,39 @@
     }
   ],
   "code_revision": "fff04390daa945af16ddf7f97b7afc0ae8118b88",
-  "method": "Static room, matched true camera, 360x640 centred projection; active main slots, no publication timing; final offline GS checkpoints; view-dependent SH evaluated before upload without dropping terms."
+  "method": "Static room, matched true camera, 360x640 centred projection; active main slots, no publication timing; final offline GS checkpoints; view-dependent SH evaluated before upload without dropping terms.",
+  "recordings": [
+    {
+      "run": "sweep180",
+      "intrinsics": {
+        "width": 360,
+        "height": 640,
+        "fx": 532.5694343521658,
+        "fy": 532.5694343521658,
+        "cx": 179.0,
+        "cy": 320.0
+      },
+      "source_sha256": {
+        "rf-run/out/sweep180/rec/camera.json": "ef68dab53d9fa7f1800351272d063e054c37fa1ad086b290c08d45ef5e6e3518",
+        "rf-run/out/sweep180/rec/frames.jsonl": "1fa44e219fbec9a08b325de9f0a94e464fd7b1e283c4b80ed94f2c11ffc9088f",
+        "gs/out/sweep180/data.npz": "75b4070ee9ece3bd5b793fccb9e3e1f0640a97917707960d390c7cb34b36eb92"
+      }
+    },
+    {
+      "run": "tour",
+      "intrinsics": {
+        "width": 360,
+        "height": 640,
+        "fx": 532.5694343521658,
+        "fy": 532.5694343521658,
+        "cx": 179.0,
+        "cy": 320.0
+      },
+      "source_sha256": {
+        "rf-run/out/tour/rec/camera.json": "ef68dab53d9fa7f1800351272d063e054c37fa1ad086b290c08d45ef5e6e3518",
+        "rf-run/out/tour/rec/frames.jsonl": "835a195cba4e45f0ffa2f9732c9a5e3c2ab97091397beb5c54cba1f42e111dd8",
+        "gs/out/tour/data.npz": "e90d8db2f65d04f93f0bb66b4c57b99e46476a92a90a2713ee06188a7b51b518"
+      }
+    }
+  ]
 }
