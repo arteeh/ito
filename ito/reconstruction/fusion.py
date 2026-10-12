@@ -56,6 +56,10 @@ ANCHOR_POSITION = 0.05
 # A visual factor whose whitened error is past this many sigmas counts less and less.
 CAUCHY = 2.0
 SCALE_SIGMA = 0.2  # Log-scale prior per solve, around the last estimate.
+# A visual translation's length is only as good as its keyframe's scale, which wanders
+# between keyframes: against the robot's travel, tour replay factors spread p10-p90 over
+# 1.1-1.7x. Its sigma grows by this fraction of its length.
+VISUAL_SCALE = 0.3
 # Scale observations kept: about two seconds of frames, as the front end's own scale drifts.
 SCALE_MEMORY = 20
 # Frame-delay observations kept, and the camera's turn between a visual rotation's two
@@ -171,14 +175,11 @@ class PoseGraph:
         """A front end's reference-from-frame pose (translation in its own units)."""
         if reference not in self.nodes or frame not in self.nodes or reference == frame:
             return
+        translation = np.array(relative[:3, 3], float)
+        sigma = np.array(sigma, float)
+        sigma[3:] = np.hypot(sigma[3:], VISUAL_SCALE * np.linalg.norm(translation))
         self.visual.append(
-            Visual(
-                reference,
-                frame,
-                np.array(relative[:3, :3], float),
-                np.array(relative[:3, 3], float),
-                np.asarray(sigma, float),
-            )
+            Visual(reference, frame, np.array(relative[:3, :3], float), translation, sigma)
         )
         self.nodes[frame].seen = True
         if self.estimate_td:
