@@ -6,6 +6,9 @@ from .slam import SLAMBackend
 
 
 class MappedSLAMBackend(SLAMBackend):
+    """Robot-first tracking feeding the optimised Gaussian map: keyframes seed and anchor
+    Gaussians, every other frame the front end placed trains them from its own view."""
+
     def __init__(self, *args, **kwargs):
         self.mapper = None
         super().__init__(*args, **kwargs)
@@ -32,8 +35,11 @@ class MappedSLAMBackend(SLAMBackend):
     def place(self, cloud, pose, when):
         if self.mapper is None:
             return super().place(cloud, pose, when)
-        node = self.graph.current
-        if node not in self.graph.keyframes:
+        # A frame the front end just made a keyframe was promoted out of "current".
+        keyframe = self.graph.current is None
+        anchor = self.graph.latest_keyframe()
+        node = anchor if keyframe else self.graph.current
+        if anchor is None:
             return
         self.mapper.submit(
             Keyframe(
@@ -41,10 +47,11 @@ class MappedSLAMBackend(SLAMBackend):
                 rgb=self.map_rgb,
                 pose=pose,
                 intrinsics=self.intrinsics,
-                points=cloud.points,
-                colors=cloud.colors,
-                confidence=cloud.valid,
+                points=cloud.points if keyframe else None,
+                colors=cloud.colors if keyframe else None,
+                confidence=cloud.valid if keyframe else None,
                 captured_at=self.map_captured,
+                anchor=anchor,
             )
         )
 

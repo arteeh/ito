@@ -41,7 +41,15 @@ class MappedRGBDBackend(RGBDBackend):
         valid = np.isfinite(depth) & (depth > 0) & (depth < 1000)
         self.mapper.submit(
             Keyframe(
-                self.node, rgb, camera, i, points, rgb.reshape(-1, 3), valid.ravel(), now, depth
+                self.node,
+                rgb,
+                camera,
+                i,
+                points,
+                rgb.reshape(-1, 3),
+                valid.ravel(),
+                clock.now() if captured is None else captured,
+                depth,
             )
         )
         self.node += 1

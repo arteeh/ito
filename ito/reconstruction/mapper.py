@@ -1,12 +1,23 @@
-"""Keyframe-local Gaussian map. Poses and points use Ito axes (+Y up, -Z forward).
+"""Keyframe-anchored Gaussian map, optimised online. Ito axes (+Y up, -Z forward).
 
-The engine is single-owner: the background worker calls add/correct/forget/step;
-tracking submits immutable Keyframes through OnlineMapper. Rendering and alignment
-are also exposed here for offline evaluation. SH degree 0 is intentional: the live
-ring has one RGB coefficient, and colour then needs no rotation on pose correction.
+Every Gaussian is stored in the frame of the keyframe that seeded it, so a pose correction
+moves it instead of leaving a doubled wall. Training views are keyframes and the tracked
+frames between them; a view is held relative to its keyframe and moves with it too.
+
+Recipe (measured offline in docs/gsplat-gonogo.md, 30-33 dB on the sim recordings): seed
+sparse, faint Gaussians from the front end's metric points only where the map does not
+cover a new view yet; L1 + SSIM photometric loss on views, newest first; split/clone by
+image-plane gradient, prune transparent ones, under a hard Gaussian budget; Mip-Splatting
+3D filter from the closest view so the pilot's higher-resolution eyes do not alias. No
+opacity resets: the pilot watches the map while it trains.
+
+The engine has one owner (the background worker); rendering and align() are also used
+offline. SH degree 0: the live ring carries one RGB coefficient, and colour then needs no
+rotation on pose correction.
 """
 
-from dataclasses import dataclass, replace
+import math
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -15,19 +26,40 @@ from ito.render.pose import validate_pose
 
 MAX_GAUSSIANS = 400_000
 C0 = 0.28209479177387814
+CV = np.diag([1.0, -1.0, -1.0, 1.0])  # Ito camera axes to OpenCV's (+Y down, +Z forward)
+
+ANCHORS = 128  # keyframe slots; slot 0 holds Gaussians whose keyframe aged out, in world
+VIEWS = 96  # training views kept (images on the GPU)
+RECENT = 2.0  # seconds: views this new get half the training steps
+SEED_COVERED = 0.5  # a new view seeds Gaussians where the map's alpha is below this
+SEED_NEARER = 0.8  # or where its points lie this much nearer than the map's surface
+SEED_MAX = 6000  # Gaussians seeded per keyframe
+SEED_OPACITY = 0.1
+REFINE_EVERY = 100  # steps
+GROW_GRAD2D = 0.0002  # mean image-plane gradient (gsplat's DefaultStrategy units)
+GROW_SCALE3D = 0.01  # of the scene scale: smaller ones clone, larger ones split
+PRUNE_OPACITY = 0.005
+PRUNE_SCALE3D = 0.1  # of the scene scale
+WORLD = 1 << 62  # publication key of slot 0 (node ids are tracking's, from 0)
+FILTER = math.sqrt(0.2)  # Mip-Splatting 3D filter, in pixels of the closest training view
 
 
 @dataclass(frozen=True)
 class Keyframe:
+    """A tracked frame for the map. points: metric camera-local, registered to colors and
+    confidence (zero excludes); empty for a view that only trains. anchor: the keyframe
+    node this view is held relative to (its own node for a keyframe)."""
+
     node: int
     rgb: np.ndarray  # uint8 camera-resolution H,W,3, owned by the caller until submit
     pose: np.ndarray  # world-from-camera
     intrinsics: Intrinsics
     points: object  # N,3 metric camera-local points (numpy or torch)
     colors: object  # N,3 uint8, registered to points
-    confidence: object  # N; zero excludes, positive finite values admit a point
+    confidence: object  # N
     captured_at: float
-    depth: np.ndarray | None = None  # optional registered axial metres
+    depth: np.ndarray | None = None  # optional registered axial metres (driver depth)
+    anchor: int | None = None
 
     def __post_init__(self):
         i = self.intrinsics
@@ -38,6 +70,19 @@ class Keyframe:
             raise ValueError("Keyframe capture time must be finite")
         if self.depth is not None and self.depth.shape != self.rgb.shape[:2]:
             raise ValueError("Keyframe depth must be registered to RGB")
+
+
+@dataclass
+class View:
+    slot: int  # anchor slot the view's pose is relative to
+    relative: np.ndarray  # anchor-from-camera
+    image: object  # H,W,3 uint8 on the GPU
+    intrinsics: Intrinsics
+    captured_at: float
+    depth: object = None
+    steps: int = 0
+    exposure: object = None  # per-view colour affine (log gain, offset), trained
+    exposure_optimizer: object = None
 
 
 def quaternion_product(a, b):
@@ -86,83 +131,93 @@ def ssim(x, y):
     ).mean()
 
 
+def rotation_quaternion(matrix):
+    from scipy.spatial.transform import Rotation
+
+    x, y, z, w = Rotation.from_matrix(matrix).as_quat()
+    return np.array([w, x, y, z])
+
+
 class GaussianMap:
-    def __init__(self, budget=MAX_GAUSSIANS, *, max_keyframes=48):
+    LEARNING_RATES = dict(means=0.00016, scales=0.005, quats=0.001, opacities=0.05, sh0=0.0025)
+
+    def __init__(self, budget=MAX_GAUSSIANS, *, anchors=ANCHORS, views=VIEWS, seed=0):
         import torch
 
         from .gaussian_runtime import prepare
 
         self.rasterize = prepare()
+        from gsplat.strategy import ops
+
+        self.ops = ops
         self.torch = torch
         self.budget = min(int(budget), MAX_GAUSSIANS)
-        if self.budget < 1 or max_keyframes < 1:
+        if self.budget < 1 or anchors < 2 or views < 1:
             raise ValueError("Mapper budgets must be positive")
-        self.max_keyframes = max_keyframes
-        self.anchors = {}
+        self.max_anchors, self.max_views = anchors, views
+        self.generator = np.random.default_rng(seed)
+        self.anchors = {}  # node -> dict(slot, pose_cpu); slot 0 is never a node's
+        self.views = {}  # node -> View, oldest first
         self.changed = set()
         self.urgent = set()
         self.structure_changed = False
-        self.steps = self.cursor = 0
-        self.p = torch.nn.ParameterDict()
-        self.optimizer = None
-        self.owners = torch.empty(0, device="cuda", dtype=torch.long)
-        self.poses = torch.eye(4, device="cuda").repeat(max_keyframes, 1, 1)
-        self.rotations = torch.zeros((max_keyframes, 4), device="cuda")
+        self.steps = 0
+        self.scene_scale = None
+        self.poses = torch.eye(4, device="cuda").repeat(anchors, 1, 1)
+        self.slot_poses = np.tile(np.eye(4), (anchors, 1, 1))
+        self.rotations = torch.zeros((anchors, 4), device="cuda")
         self.rotations[:, 0] = 1
+        empty = dict(
+            means=torch.empty((0, 3)),
+            scales=torch.empty((0, 3)),
+            quats=torch.empty((0, 4)),
+            opacities=torch.empty(0),
+            sh0=torch.empty((0, 1, 3)),
+        )
+        self.p = torch.nn.ParameterDict({k: torch.nn.Parameter(v.cuda()) for k, v in empty.items()})
+        self.p["owner"] = torch.nn.Parameter(
+            torch.empty(0, device="cuda", dtype=torch.long), requires_grad=False
+        )
+        self.optimizers = {
+            k: torch.optim.Adam([self.p[k]], lr=lr, eps=1e-15)
+            for k, lr in self.LEARNING_RATES.items()
+        }
+        # Per-Gaussian running state, kept in step with the parameters by gsplat's ops.
+        self.state = dict(
+            grad2d=torch.zeros(0, device="cuda"),
+            count=torch.zeros(0, device="cuda"),
+            filter=torch.zeros(0, device="cuda"),
+        )
 
     def tensor(self, value):
         return self.torch.as_tensor(value, device="cuda", dtype=self.torch.float32)
 
     @property
     def count(self):
-        return len(self.owners)
+        return len(self.p["means"])
 
-    def _install(self, values, origins, owners):
-        """Resize parameters and Adam moments together; new rows start with zero momentum."""
-        torch = self.torch
-        old = self.p
-        self.p = torch.nn.ParameterDict(
-            {k: torch.nn.Parameter(v.detach()) for k, v in values.items()}
-        )
-        if self.optimizer is None:
-            rates = dict(means=0.00016, scales=0.005, quats=0.001, opacities=0.05, colors=0.0025)
-            self.optimizer = torch.optim.Adam(
-                [{"params": [v], "lr": rates[k], "name": k} for k, v in self.p.items()], eps=1e-15
-            )
-        else:
-            for group in self.optimizer.param_groups:
-                k = group["name"]
-                state = self.optimizer.state.pop(old[k], {})
-                for name, value in state.items():
-                    if isinstance(value, torch.Tensor) and value.ndim:
-                        resized = value.new_zeros((len(origins), *value.shape[1:]))
-                        existing = origins >= 0
-                        resized[existing] = value[origins[existing]]
-                        state[name] = resized
-                group["params"] = [self.p[k]]
-                self.optimizer.state[self.p[k]] = state
-        self.owners = owners
+    # -- anchors and views ---------------------------------------------------------------
 
     def correct(self, poses):
-        from scipy.spatial.transform import Rotation
-
         for node, pose in poses.items():
-            if node not in self.anchors:
+            a = self.anchors.get(node)
+            if a is None:
                 continue
             pose = validate_pose(pose)
-            a = self.anchors[node]
-            if np.array_equal(a.get("pose_cpu"), pose):
+            if np.array_equal(a["pose_cpu"], pose):
                 continue
-            a["pose_cpu"] = np.array(pose, copy=True)
-            slot = a["slot"]
-            self.poses[slot] = self.tensor(pose)
-            q = Rotation.from_matrix(pose[:3, :3]).as_quat()
-            self.rotations[slot] = self.tensor(q[[3, 0, 1, 2]])
+            self._set_anchor(a["slot"], pose)
+            a["pose_cpu"] = np.array(pose, dtype=np.float64, copy=True)
             self.changed.add(node)
             self.urgent.add(node)
 
+    def _set_anchor(self, slot, pose):
+        self.slot_poses[slot] = pose
+        self.poses[slot] = self.tensor(pose)
+        self.rotations[slot] = self.tensor(rotation_quaternion(np.asarray(pose)[:3, :3]))
+
     def forget(self, nodes):
-        torch = self.torch
+        """Drop keyframes and their Gaussians (tracking says they were wrong or gone)."""
         slots = []
         for node in nodes:
             a = self.anchors.pop(node, None)
@@ -170,103 +225,211 @@ class GaussianMap:
                 slots.append(a["slot"])
                 self.changed.add(node)
                 self.urgent.add(node)
+        for node in [n for n, v in self.views.items() if v.slot in slots]:
+            del self.views[node]
         if slots:
-            keep = ~torch.isin(self.owners, torch.tensor(slots, device="cuda"))
-            origins = torch.where(keep)[0]
-            self._install({k: v[keep] for k, v in self.p.items()}, origins, self.owners[keep])
+            gone = self.torch.isin(self.p["owner"], self.torch.tensor(slots, device="cuda"))
+            self._remove(gone)
+
+    def _retire_oldest_anchor(self):
+        """Bake the oldest keyframe's Gaussians into world slot 0: kept, no longer moved."""
+        torch = self.torch
+        node = next(iter(self.anchors))
+        slot = self.anchors.pop(node)["slot"]
+        with torch.no_grad():
+            mine = self.p["owner"] == slot
+            pose = self.poses[slot]
+            self.p["means"][mine] = self.p["means"][mine] @ pose[:3, :3].T + pose[:3, 3]
+            self.p["quats"][mine] = quaternion_product(
+                self.rotations[slot : slot + 1], self.p["quats"][mine]
+            )
+            self.p["owner"][mine] = 0
+        for view in self.views.values():
+            if view.slot == slot:
+                view.relative = self.anchor_pose(slot) @ view.relative
+                view.slot = 0
+        # Republished under key 0; its own key's records go.
+        self.changed.update((WORLD, node))
+        self.urgent.update((WORLD, node))
+        self.structure_changed = True
+
+    def anchor_pose(self, slot):
+        return self.slot_poses[slot]
 
     def resize(self, budget):
         self.budget = min(int(budget), MAX_GAUSSIANS)
-        while self.count > self.budget:
-            self.forget([next(iter(self.anchors))])
+        self._enforce_budget(self.budget)
+
+    def view_pose(self, view):
+        return self.anchor_pose(view.slot) @ view.relative
 
     def add(self, frame):
+        """A view; a keyframe (anchor == node or None) also seeds where the map is thin."""
         torch = self.torch
-        if frame.node in self.anchors:
-            self.correct({frame.node: frame.pose})
+        anchor = frame.node if frame.anchor is None else frame.anchor
+        pose = validate_pose(frame.pose).astype(np.float64)
+        if anchor == frame.node:
+            if frame.node in self.anchors:
+                self.correct({frame.node: pose})
+                return
+            if len(self.anchors) >= self.max_anchors - 1:
+                self._retire_oldest_anchor()
+            used = {a["slot"] for a in self.anchors.values()}
+            slot = next(s for s in range(1, self.max_anchors) if s not in used)
+            self.anchors[frame.node] = dict(slot=slot, pose_cpu=pose.copy())
+            self._set_anchor(slot, pose)
+            relative = np.eye(4)
+        elif anchor in self.anchors:
+            slot = self.anchors[anchor]["slot"]
+            relative = np.linalg.inv(self.anchor_pose(slot)) @ pose
+        else:
+            slot, relative = 0, pose
+        if frame.node in self.views:
             return
-        points = self.tensor(frame.points).detach().reshape(-1, 3)
-        colors = self.tensor(frame.colors).detach().reshape(-1, 3) / 255
-        confidence = self.tensor(frame.confidence).detach().reshape(-1)
-        valid = (
-            torch.isfinite(points).all(-1)
-            & torch.isfinite(colors).all(-1)
-            & torch.isfinite(confidence)
-            & (confidence > 0)
-            & (points[:, 2] < -0.01)
-        )
-        points, colors = points[valid], colors[valid]
-        if not len(points):
-            return
-        n = min(len(points), 6000, self.budget)
-        ids = torch.linspace(0, len(points) - 1, n, device="cuda").long()
-        points, colors = points[ids], colors[ids]
-        while self.anchors and (
-            self.count + n > self.budget or len(self.anchors) >= self.max_keyframes
-        ):
-            self.forget([next(iter(self.anchors))])
-        used = {a["slot"] for a in self.anchors.values()}
-        slot = next(s for s in range(self.max_keyframes) if s not in used)
-        footprint = (-points[:, 2] / frame.intrinsics.fx * 2).clamp(0.0001, 0.2)
-        quats = torch.zeros((n, 4), device="cuda")
-        quats[:, 0] = 1
-        new = dict(
-            means=points.clone(),
-            scales=footprint[:, None].expand(-1, 3).log().clone(),
-            quats=quats,
-            opacities=torch.full((n,), 0.0, device="cuda"),
-            colors=colors,
-        )
-        values = {
-            k: torch.cat((self.p[k].detach(), v)) if k in self.p else v for k, v in new.items()
-        }
-        origins = torch.cat(
-            (
-                torch.arange(self.count, device="cuda"),
-                torch.full((n,), -1, device="cuda", dtype=torch.long),
-            )
-        )
-        owners = torch.cat((self.owners, torch.full((n,), slot, device="cuda", dtype=torch.long)))
-        self._install(values, origins, owners)
+        while len(self.views) >= self.max_views:
+            del self.views[next(iter(self.views))]
         exposure = torch.nn.Parameter(torch.zeros((2, 3), device="cuda"))
-        self.anchors[frame.node] = dict(
-            slot=slot,
+        view = View(
+            slot,
+            relative,
+            torch.as_tensor(frame.rgb, device="cuda").clone(),
+            frame.intrinsics,
+            float(frame.captured_at),
+            None if frame.depth is None else self.tensor(frame.depth),
             exposure=exposure,
             exposure_optimizer=torch.optim.Adam([exposure], lr=0.001),
-            frame=replace(frame, points=None, colors=None, confidence=None),
         )
-        self.correct({frame.node: frame.pose})
+        self.views[frame.node] = view
+        if anchor == frame.node and frame.points is not None:
+            self._seed(frame, slot, pose)
 
-    def world(self, train_node=None):
+    def _seed(self, frame, slot, pose):
         torch = self.torch
-        p = {k: v if train_node is not None else v.detach() for k, v in self.p.items()}
-        pose = self.poses[self.owners]
-        means = torch.bmm(p["means"][:, None], pose[:, :3, :3].transpose(1, 2))[:, 0]
-        return dict(
-            means=means + pose[:, :3, 3],
-            quats=quaternion_product(
-                self.rotations[self.owners], torch.nn.functional.normalize(p["quats"], dim=-1)
-            ),
-            scales=p["scales"].exp(),
-            opacities=p["opacities"].sigmoid(),
-            colors=p["colors"],
+        points = torch.as_tensor(frame.points, device="cuda").detach().reshape(-1, 3).float()
+        colors = torch.as_tensor(frame.colors, device="cuda").detach().reshape(-1, 3).float()
+        confidence = torch.as_tensor(frame.confidence, device="cuda").detach().reshape(-1)
+        valid = (
+            torch.isfinite(points).all(-1)
+            & torch.isfinite(confidence.float())
+            & (confidence.float() > 0)
+            & (points[:, 2] < -0.01)
         )
+        points, colors = points[valid], colors[valid] / 255
+        if len(points) < 4:
+            return
+        if self.scene_scale is None:
+            depth = -points[:, 2]
+            self.scene_scale = float(max(0.5, torch.quantile(depth[::7], 0.9)))
+            for k in ("means",):
+                for group in self.optimizers[k].param_groups:
+                    group["lr"] = self.LEARNING_RATES[k] * self.scene_scale
+        # Where does the map already explain this view? Project each point into it.
+        i = frame.intrinsics
+        z = -points[:, 2]
+        u = (i.fx * points[:, 0] / z + i.cx).long().clamp(0, i.width - 1)
+        v = (i.cy - i.fy * points[:, 1] / z).long().clamp(0, i.height - 1)
+        if self.count:
+            with torch.no_grad():
+                _, depth, alpha, _ = self.render(pose, i)
+            # Expected depth is already normalised by alpha.
+            fresh = (alpha[v, u] < SEED_COVERED) | (z < SEED_NEARER * depth[v, u])
+            points, colors, z = points[fresh], colors[fresh], z[fresh]
+        n = min(len(points), SEED_MAX, self.budget)
+        if n < 4:
+            return
+        ids = torch.as_tensor(
+            np.sort(self.generator.choice(len(points), n, replace=False)), device="cuda"
+        )
+        points, colors, z = points[ids], colors[ids], z[ids]
+        from scipy.spatial import cKDTree
 
-    def render(self, pose, intrinsics, delta=None, *, train_node=None, world=None):
-        """GPU colour, expected axial depth, alpha; differentiable in camera-local delta."""
+        cpu = points.cpu().numpy()
+        distances = cKDTree(cpu).query(cpu, k=4)[0][:, 1:]
+        scale = np.clip(np.sqrt((distances**2).mean(1)), 0.002, 0.08)
+        self._enforce_budget(self.budget - n)
+        values = dict(
+            means=points,
+            scales=self.tensor(np.log(scale))[:, None].expand(-1, 3),
+            quats=torch.tensor([[1.0, 0, 0, 0]], device="cuda").expand(n, -1),
+            opacities=torch.full((n,), math.log(SEED_OPACITY / (1 - SEED_OPACITY)), device="cuda"),
+            sh0=((colors - 0.5) / C0)[:, None],
+            owner=torch.full((n,), slot, device="cuda", dtype=torch.long),
+        )
+        self._append(values, dict(filter=z / i.fx * FILTER))
+        self.changed.add(frame.node)
+        self.structure_changed = True
+
+    def _append(self, values, state):
+        torch = self.torch
+        n = len(values["means"])
+
+        def param_fn(name, p):
+            return torch.nn.Parameter(
+                torch.cat((p.detach(), values[name].to(p.dtype))), requires_grad=p.requires_grad
+            )
+
+        def optimizer_fn(key, v):
+            return torch.cat((v, torch.zeros((n, *v.shape[1:]), device="cuda")))
+
+        self.ops._update_param_with_optimizer(param_fn, optimizer_fn, self.p, self.optimizers)
+        for k, v in self.state.items():
+            extra = state.get(k, torch.zeros(n, device="cuda"))
+            self.state[k] = torch.cat((v, extra))
+
+    def _remove(self, mask):
+        if mask.any():
+            self.ops.remove(self.p, self.optimizers, self.state, mask)
+            self.structure_changed = True
+            self.changed.update(self.anchors)
+            self.changed.add(WORLD)
+
+    def _enforce_budget(self, budget):
+        """Least opaque first: they contribute least to any view."""
+        excess = self.count - max(0, budget)
+        if excess > 0:
+            torch = self.torch
+            weakest = torch.topk(self.p["opacities"].detach(), excess, largest=False).indices
+            mask = torch.zeros(self.count, dtype=torch.bool, device="cuda")
+            mask[weakest] = True
+            self._remove(mask)
+
+    # -- rendering -----------------------------------------------------------------------
+
+    def world(self, train=False):
+        """World-space Gaussians with the 3D filter applied (scales and opacity)."""
+        torch = self.torch
+        p = {k: v if train else v.detach() for k, v in self.p.items()}
+        owner = p["owner"]
+        pose = self.poses[owner]
+        means = torch.bmm(pose[:, :3, :3], p["means"][:, :, None])[:, :, 0] + pose[:, :3, 3]
+        quats = quaternion_product(
+            self.rotations[owner], torch.nn.functional.normalize(p["quats"], dim=-1)
+        )
+        scale2 = p["scales"].exp().square()
+        filtered = scale2 + self.state["filter"][:, None].square()
+        opacity = p["opacities"].sigmoid() * torch.sqrt(scale2.prod(-1) / filtered.prod(-1))
+        return dict(means=means, quats=quats, scales=filtered.sqrt(), opacities=opacity)
+
+    def render(self, pose, intrinsics, delta=None, *, train=False, world=None):
+        """GPU colour, expected axial depth, alpha and gsplat's info; differentiable in a
+        camera-local pose delta and, with train, in the map."""
         torch = self.torch
         i = intrinsics
-        pose = self.tensor(pose)
+        pose = self.tensor(pose) if not torch.is_tensor(pose) else pose
         if delta is not None:
             pose = pose @ pose_delta(delta)
-        cv = torch.diag(self.tensor([1, -1, -1, 1]))
-        K = self.tensor([[i.fx, 0, i.cx], [0, i.fy, i.cy], [0, 0, 1]])
-        if not self.count and world is None:
+        if not self.count:
             zero = torch.zeros((i.height, i.width), device="cuda")
-            return zero[..., None].expand(-1, -1, 3), zero, zero
-        pred, alpha, _ = self.rasterize(
-            **(self.world(train_node) if world is None else world),
-            viewmats=torch.linalg.inv(pose @ cv)[None],
+            return zero[..., None].expand(-1, -1, 3), zero, zero, {}
+        if world is None:
+            world = self.world(train)
+        K = self.tensor([[i.fx, 0, i.cx], [0, i.fy, i.cy], [0, 0, 1]])
+        sh0 = self.p["sh0"] if train else self.p["sh0"].detach()
+        pred, alpha, info = self.rasterize(
+            **world,
+            colors=sh0,
+            sh_degree=0,
+            viewmats=torch.linalg.inv(pose @ self.tensor(CV))[None],
             Ks=K[None],
             width=i.width,
             height=i.height,
@@ -276,115 +439,212 @@ class GaussianMap:
             rasterize_mode="antialiased",
             render_mode="RGB+ED",
         )
-        return pred[0, ..., :3], pred[0, ..., 3], alpha[0, ..., 0]
+        return pred[0, ..., :3], pred[0, ..., 3], alpha[0, ..., 0], info
+
+    # -- training ------------------------------------------------------------------------
+
+    def _pick(self):
+        nodes = list(self.views)
+        newest = self.views[nodes[-1]]
+        if newest.steps < 5:
+            return nodes[-1]
+        recent = [n for n in nodes if self.views[n].captured_at > newest.captured_at - RECENT]
+        pool = recent if self.generator.random() < 0.5 else nodes
+        return pool[int(self.generator.integers(len(pool)))]
 
     def step(self):
-        if not self.count:
+        if not self.count or not self.views:
             return
         torch = self.torch
-        nodes = list(self.anchors)
-        node = nodes[-1] if self.steps % 3 else nodes[self.cursor % len(nodes)]
-        if self.steps % 3 == 0:
-            self.cursor += 1
-        a = self.anchors[node]
-        f = a["frame"]
-        target = self.tensor(f.rgb) / 255
-        pred, depth, _ = self.render(self.poses[a["slot"]], f.intrinsics, train_node=node)
-        corrected = pred * a["exposure"][0].exp() + a["exposure"][1]
-        loss = 0.8 * (corrected - target).abs().mean() + 0.01 * a["exposure"].square().mean()
+        node = self._pick()
+        view = self.views[node]
+        view.steps += 1
+        target = view.image.float() / 255
+        pose = self.poses[view.slot].double() @ torch.as_tensor(view.relative, device="cuda")
+        pred, depth, alpha, info = self.render(pose.float(), view.intrinsics, train=True)
+        info["means2d"].retain_grad()
+        corrected = pred * view.exposure[0].exp() + view.exposure[1]
+        loss = 0.8 * (corrected - target).abs().mean() + 0.01 * view.exposure.square().mean()
         if min(target.shape[:2]) >= 11:
             loss = loss + 0.2 * (1 - ssim(corrected, target))
-        if f.depth is not None:
-            measured = self.tensor(f.depth)
-            mask = torch.isfinite(measured) & (measured > 0)
+        if view.depth is not None:
+            mask = torch.isfinite(view.depth) & (view.depth > 0) & (alpha > 0.5)
             if mask.any():
                 loss = (
                     loss
                     + 0.05
-                    * ((depth[mask] - measured[mask]).abs() / measured[mask].clamp_min(0.1)).mean()
+                    * (
+                        (depth[mask] - view.depth[mask]).abs() / view.depth[mask].clamp_min(0.1)
+                    ).mean()
                 )
-        self.optimizer.zero_grad(set_to_none=True)
-        a["exposure_optimizer"].zero_grad(set_to_none=True)
         loss.backward()
         if not torch.isfinite(loss):
             raise RuntimeError("non-finite Gaussian training loss")
-        grad = self.p["means"].grad.detach().norm(dim=-1)
-        self.optimizer.step()
-        a["exposure_optimizer"].step()
+        self._accumulate(info)
+        for optimizer in self.optimizers.values():
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+        view.exposure_optimizer.step()
+        view.exposure_optimizer.zero_grad(set_to_none=True)
         with torch.no_grad():
-            self.p["scales"].clamp_(-10, 0)
-            self.p["opacities"].clamp_(-10, 10)
-            self.p["colors"].clamp_(0, 1)
-            self.p["quats"].copy_(torch.nn.functional.normalize(self.p["quats"], dim=-1))
-            a["exposure"].clamp_(-0.3, 0.3)
+            view.exposure.clamp_(-0.3, 0.3)
         self.steps += 1
-        if self.steps % 100 == 0:
-            self._refine(grad)
-        self.changed.update(nodes)
+        if self.steps % REFINE_EVERY == 0:
+            self._refine()
+        self.changed.update(self.anchors)
+        self.changed.add(WORLD)
 
-    def _refine(self, grad):
-        self.structure_changed = True
+    def _accumulate(self, info):
+        grads = info["means2d"].grad.clone()
+        grads[..., 0] *= info["width"] / 2.0
+        grads[..., 1] *= info["height"] / 2.0
+        seen = (info["radii"] > 0).all(-1)[0]
+        self.state["grad2d"][seen] += grads[0][seen].norm(dim=-1)
+        self.state["count"][seen] += 1
+
+    def _refine(self):
         torch = self.torch
         with torch.no_grad():
-            p = self.p
-            keep = p["opacities"].sigmoid() > 0.01
-            room = max(0, self.budget - int(keep.sum()))
-            n = min(room, max(1, len(grad) // 10))
-            candidates = torch.where(keep & (grad > 0.0002))[0]
-            ids = candidates[torch.topk(grad[candidates], min(n, len(candidates))).indices]
-            values = {k: torch.cat((v[keep], v[ids])).clone() for k, v in p.items()}
-            if len(ids):
-                values["means"][-len(ids) :] += torch.randn_like(p["means"][ids]) * (
-                    p["scales"][ids].exp() * 0.3
-                )
-                values["scales"][-len(ids) :] -= np.log(1.6)
-                values["opacities"][-len(ids) :] -= 0.7
-            origins = torch.cat((torch.where(keep)[0], torch.full_like(ids, -1)))
-            owners = torch.cat((self.owners[keep], self.owners[ids]))
-            self._install(values, origins, owners)
+            grads = self.state["grad2d"] / self.state["count"].clamp_min(1)
+            high = grads > GROW_GRAD2D
+            room = self.budget - self.count
+            if room <= 0:
+                high[:] = False
+            elif int(high.sum()) > room // 2:
+                # Under the budget the steepest grow first; a split adds one.
+                keep = torch.topk(torch.where(high, grads, -1.0), room // 2).indices
+                high[:] = False
+                high[keep] = True
+            small = self.p["scales"].exp().max(-1).values <= GROW_SCALE3D * self.scene_scale
+            clone = high & small
+            if clone.any():
+                self.ops.duplicate(self.p, self.optimizers, self.state, clone)
+            split = torch.cat(
+                (high & ~small, torch.zeros(int(clone.sum()), dtype=torch.bool, device="cuda"))
+            )
+            if split.any():
+                self.ops.split(self.p, self.optimizers, self.state, split)
+            prune = (self.p["opacities"].sigmoid() < PRUNE_OPACITY) | (
+                self.p["scales"].exp().max(-1).values > PRUNE_SCALE3D * self.scene_scale
+            )
+            self._remove(prune)
+            self.state["grad2d"].zero_()
+            self.state["count"].zero_()
+            self._update_filter()
+        self.structure_changed = True
+        self.changed.update(self.anchors)
+        self.changed.add(WORLD)
+        torch.cuda.empty_cache()
+
+    def _update_filter(self):
+        """Mip-Splatting: each Gaussian's smallest footprint over (a sample of) the views."""
+        torch = self.torch
+        world = self.world()["means"]
+        closest = torch.full((len(world),), float("inf"), device="cuda")
+        nodes = list(self.views)
+        for node in nodes[:: max(1, len(nodes) // 48)]:
+            view = self.views[node]
+            i = view.intrinsics
+            camera = np.linalg.inv(self.view_pose(view) @ CV)
+            local = world @ self.tensor(camera[:3, :3]).T + self.tensor(camera[:3, 3])
+            z = local[:, 2]
+            u = i.fx * local[:, 0] / z + i.cx
+            v = i.fy * local[:, 1] / z + i.cy
+            inside = (
+                (z > 0.01)
+                & (u > -0.15 * i.width)
+                & (u < 1.15 * i.width)
+                & (v > -0.15 * i.height)
+                & (v < 1.15 * i.height)
+            )
+            closest = torch.minimum(closest, torch.where(inside, z / i.fx, float("inf")))
+        seen = torch.isfinite(closest)
+        self.state["filter"] = torch.where(seen, closest * FILTER, self.state["filter"])
+
+    # -- publication ---------------------------------------------------------------------
+
+    def keys(self):
+        """Publication keys: anchor nodes, and WORLD for Gaussians whose keyframe aged out."""
+        return [WORLD, *self.anchors]
+
+    def sizes(self):
+        """Gaussians per publication key."""
+        counts = self.torch.bincount(self.p["owner"], minlength=self.max_anchors).tolist()
+        sizes = {node: counts[a["slot"]] for node, a in self.anchors.items()}
+        sizes[WORLD] = counts[0]
+        return sizes
+
+    def records_for(self, nodes):
+        """World-space ring records (filter baked in) per key; empty for a key that is gone."""
+        torch = self.torch
+        slots = {n: 0 if n == WORLD else self.anchors.get(n, {}).get("slot") for n in nodes}
+        wanted = [s for s in slots.values() if s is not None]
+        result = {n: np.empty((0, 4, 4), np.float32) for n in nodes}
+        if not wanted or not self.count:
+            return result
+        with torch.no_grad():
+            owner = self.p["owner"]
+            selected = torch.isin(owner, torch.tensor(wanted, device="cuda"))
+            order = torch.argsort(owner[selected], stable=True)
+            world = {k: v[selected][order] for k, v in self.world().items()}
+            r = torch.zeros((len(order), 4, 4), device="cuda")
+            r[:, 0, :3] = world["means"]
+            r[:, 0, 3] = world["opacities"]
+            r[:, 1, :3] = world["scales"]
+            r[:, 1, 3] = 1e30  # never fades
+            r[:, 2] = world["quats"]
+            r[:, 3, :3] = self.p["sh0"][selected][order][:, 0]
+            owners = owner[selected][order].cpu().numpy()
+            r = r.cpu().numpy()
+        for node, slot in slots.items():
+            if slot is not None:
+                lo, hi = np.searchsorted(owners, [slot, slot + 1])
+                result[node] = r[lo:hi]
+        return result
 
     def records(self, node):
-        torch = self.torch
-        if node not in self.anchors:
-            return np.empty((0, 4, 4), np.float32)
-        slot = self.anchors[node]["slot"]
-        with torch.no_grad():
-            selected = self.owners == slot
-            p = {k: v[selected] for k, v in self.p.items()}
-            pose = self.poses[slot]
-            r = torch.zeros((len(p["means"]), 4, 4), device="cuda")
-            r[:, 0, :3] = p["means"] @ pose[:3, :3].T + pose[:3, 3]
-            r[:, 0, 3] = p["opacities"].sigmoid()
-            r[:, 1, :3] = p["scales"].exp()
-            r[:, 1, 3] = 1e30
-            r[:, 2] = quaternion_product(self.rotations[slot : slot + 1], p["quats"])
-            r[:, 3, :3] = (p["colors"] - 0.5) / C0
-            return r.cpu().numpy()
+        return self.records_for([node])[node]
 
-    def align(self, rgb, pose0, intrinsics, *, steps=30):
+    # -- map alignment (tracking's photometric factor) -----------------------------------
+
+    def align(self, rgb, pose0, intrinsics, *, steps=30, downscale=2):
         """Return (world-from-camera, sigma[rotation rad, translation m], inlier pixels).
 
-        Frozen map, robust photometric fit. Degenerate/unsupported fits return the input
-        with infinite sigma and zero inliers. Sigma is a local linearized estimate,
-        not a calibrated sensor uncertainty; fusion must impose its own noise floor.
+        Frozen map, robust photometric fit at 1/downscale resolution. Degenerate or
+        unsupported fits return the input with infinite sigma and zero inliers. Sigma is
+        a local linearized estimate, not a calibrated sensor uncertainty; fusion must
+        impose its own noise floor.
         """
         torch = self.torch
+        import torch.nn.functional as F
+
         failure = (np.array(pose0, copy=True), np.full(6, np.inf), 0)
-        if not self.anchors:
+        if not self.count:
             return failure
+        i = intrinsics
+        if downscale > 1:
+            i = Intrinsics(
+                width=i.width // downscale,
+                height=i.height // downscale,
+                fx=i.fx / downscale,
+                fy=i.fy / downscale,
+                cx=i.cx / downscale,
+                cy=i.cy / downscale,
+            )
         world = self.world()
-        target = self.tensor(rgb) / 255
+        target = self.tensor(rgb).permute(2, 0, 1)[None] / 255
+        target = F.interpolate(target, (i.height, i.width), mode="area")[0].permute(1, 2, 0)
         base = self.tensor(validate_pose(pose0))
         delta = torch.zeros(6, device="cuda", requires_grad=True)
         optimizer = torch.optim.Adam([delta], lr=0.001)
         with torch.no_grad():
-            initial, _, alpha = self.render(base, intrinsics, world=world)
+            initial, _, alpha, _ = self.render(base, i, world=world)
             mask = alpha > 0.7
             if int(mask.sum()) < 128:
                 return failure
             initial_loss = (initial[mask] - target[mask]).abs().mean()
         for _ in range(steps):
-            pred, _, alpha = self.render(base, intrinsics, delta, world=world)
+            pred = self.render(base, i, delta, world=world)[0]
             residual = pred[mask] - target[mask]
             loss = (residual.square() + 0.01**2).sqrt().mean()
             optimizer.zero_grad(set_to_none=True)
@@ -394,7 +654,7 @@ class GaussianMap:
                 delta[:3].clamp_(-0.1, 0.1)
                 delta[3:].clamp_(-0.2, 0.2)
         with torch.no_grad():
-            pred, _, alpha = self.render(base, intrinsics, delta, world=world)
+            pred, _, alpha, _ = self.render(base, i, delta, world=world)
             residual = pred - target
             inliers = mask & (alpha > 0.7) & (residual.abs().mean(-1) < 0.1)
             n = int(inliers.sum())
@@ -407,7 +667,7 @@ class GaussianMap:
             for axis in range(6):
                 offset = delta.detach().clone()
                 offset[axis] += 0.0001
-                shifted = self.render(base, intrinsics, offset, world=world)[0]
+                shifted = self.render(base, i, offset, world=world)[0]
                 jac.append(((shifted - pred).reshape(-1, 3)[ids] / 0.0001).flatten())
             J = torch.stack(jac, dim=1).double()
             H = J.T @ J
