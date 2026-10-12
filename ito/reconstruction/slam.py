@@ -124,28 +124,36 @@ class SLAMBackend(RGBDBackend):
         if result.relative is not None:
             graph.add_visual(result.reference, node, result.relative, result.sigma)
             self.matched += 1
+        floor = None
         if cloud is not None:
             robot = self.motion.at(exposure)
-            scale = floor_scale(cloud, robot[:3, :3].T @ UP, float(robot[1, 3]))
-            if scale is not None:
-                graph.add_scale(math.log(scale), FLOOR_SIGMA)
+            floor = floor_scale(cloud, robot[:3, :3].T @ UP, float(robot[1, 3]))
+            if floor is not None:
+                graph.add_scale(math.log(floor), FLOOR_SIGMA)
         if oracle is not None:
             graph.nodes[node].pose = np.array(oracle, dtype=np.float64)
         else:
             graph.solve_frame()
+        poses, dropped = {}, []
         if result.keyframe:
             dropped = graph.promote()
             if oracle is None:
                 poses = graph.solve_window()
             else:
                 poses = {k: graph.pose(k) for k in graph.keyframes}
-                graph.solve_scale()
-            scale = graph.fold_scale()
+        window_solved = result.keyframe and oracle is None
+        if not window_solved and (floor is not None or result.keyframe):
+            # MASt3R's scale wanders from frame to frame (each tracked frame rewrites its
+            # keyframe's points), so the floor corrects it every frame it is seen.
+            graph.solve_scale()
+        scale = graph.fold_scale()
+        if poses or scale != 1.0:
             self.frontend.correct(poses, scale)
+        if dropped:
             self.frontend.forget(dropped)
-            if cloud is not None:
-                # This frame's points were measured in the units the fold just replaced.
-                cloud = cloud._replace(points=cloud.points * scale)
+        if cloud is not None and scale != 1.0:
+            # This frame's points were measured in the units the fold just replaced.
+            cloud = cloud._replace(points=cloud.points * scale)
         pose = self._publish(node)
         if cloud is not None:
             self.place(cloud, pose, now + clock.now() - started)

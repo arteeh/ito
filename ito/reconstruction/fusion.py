@@ -30,9 +30,9 @@ ANCHOR_ROTATION = math.radians(2)
 ANCHOR_POSITION = 0.05
 # A visual factor whose whitened error is past this many sigmas counts less and less.
 CAUCHY = 2.0
-SCALE_SIGMA = 0.2  # Log-scale prior per keyframe solve, around the last estimate.
-# Scale observations kept: a few seconds of frames, as the front end's own scale drifts.
-SCALE_MEMORY = 60
+SCALE_SIGMA = 0.2  # Log-scale prior per solve, around the last estimate.
+# Scale observations kept: about two seconds of frames, as the front end's own scale drifts.
+SCALE_MEMORY = 20
 TD_STEP = 0.01  # How far the frame delay may wander between keyframe solves, one sigma.
 UP = np.array([0.0, 1.0, 0.0])
 
@@ -199,11 +199,38 @@ class PoseGraph:
         return {k: self.nodes[k].pose for k in self.keyframes}
 
     def solve_scale(self):
-        """Refine the scale alone, every pose and the frame delay held (known poses)."""
-        if self.keyframes:
-            self._solve([], frame_only=False, estimate_td=False)
+        """Refine the scale alone, every pose held: per frame, or with known poses."""
+        visual = [v for v in self.visual if v.reference in self.nodes and v.frame in self.nodes]
+        if not visual and not self.scales:
+            return
+        observed = np.array(self.scales).reshape(-1, 2)
+        scale_prior = self.scale_known or not len(observed)
+        moved, units, sigma = (np.empty((0, 3)) for _ in range(3))
+        if visual:
+            pose = {n: self.nodes[n].pose for v in visual for n in (v.reference, v.frame)}
+            moved = np.array(
+                [
+                    pose[v.reference][:3, :3].T @ (pose[v.frame][:3, 3] - pose[v.reference][:3, 3])
+                    for v in visual
+                ]
+            )
+            units = np.array([v.translation for v in visual])
+            sigma = np.array([v.sigma[3:] for v in visual])
+        scale0 = self.log_scale
 
-    def _solve(self, free, frame_only, estimate_td=True):
+        def residuals(x):
+            blocks = [_cauchy((moved - math.exp(x[0]) * units) / sigma).ravel()]
+            blocks.append(_cauchy((x[0] - observed[:, :1]) / observed[:, 1:]).ravel())
+            if scale_prior:
+                blocks.append([(x[0] - scale0) / SCALE_SIGMA])
+            return np.concatenate(blocks)
+
+        result = least_squares(residuals, [scale0], method="trf", x_scale="jac", max_nfev=20)
+        if np.isfinite(result.x).all():
+            self.log_scale = float(result.x[0])
+            self.scale_known = self.scale_known or bool(len(observed))
+
+    def _solve(self, free, frame_only):
         window = self.keyframes + ([self.current] if self.current is not None else [])
         visual = [v for v in self.visual if v.reference in self.nodes and v.frame in self.nodes]
         if frame_only:
@@ -224,7 +251,7 @@ class PoseGraph:
         start_r = Rotation.from_matrix(np.array([start[n][:3, :3] for n in order]))
         start_p = np.array([start[n][:3, 3] for n in order])
         times = np.array([self.nodes[n].time for n in order])
-        estimate_td = estimate_td and self.estimate_td and not frame_only
+        estimate_td = self.estimate_td and not frame_only
         estimate_scale = not frame_only and bool(self.visual or self.scales)
         observed = np.array(self.scales if estimate_scale else np.empty((0, 2))).reshape(-1, 2)
         # The first observations set the scale freely; after that it drifts slowly.
@@ -311,7 +338,7 @@ class PoseGraph:
         scale_rows = len(observed) + int(scale_prior) if estimate_scale else 0
         sparsity = (
             None
-            if frame_only or not free
+            if frame_only
             else self._sparsity(
                 order,
                 free_index,
@@ -332,9 +359,8 @@ class PoseGraph:
         result = least_squares(
             residuals,
             x0,
-            # A frame's six unknowns, or the scale alone, differentiate faster densely than
-            # through sparse groups.
-            jac_sparsity=sparsity,
+            # A frame's six unknowns differentiate faster densely than through sparse groups.
+            jac_sparsity=None if frame_only else sparsity,
             bounds=(lower, upper),
             method="trf",
             x_scale="jac",
