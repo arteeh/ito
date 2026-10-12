@@ -492,7 +492,7 @@ def main():
 
 
 def camera_exposure(robot):
-    return robot.cameras[0].exposure if robot and robot.cameras else None
+    return getattr(robot.cameras[0], "exposure", None) if robot and robot.cameras else None
 
 
 def interpolate(t0, pose0, t1, pose1, t):
