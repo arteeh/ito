@@ -5,13 +5,17 @@ The robot measures where its camera points better than monocular vision does (en
 The world is the robot's odometry frame where it started, so there is no map to restart: a
 frame vision cannot use simply adds no visual factor, and its pose comes from the robot.
 
-Variables: one pose per node (the last WINDOW keyframes and the current frame), the frame
-delay td (a frame stamped t was exposed at t - td) and one log-scale between the visual
-front end's lengths and metres. Factors: the robot's relative motion between consecutive
-nodes, gravity (pitch and roll) per node, a weak prior holding the oldest node where the
-window last put it, visual relative poses and direct observations of the scale (the floor
-under a frame, slam.py), both with a Cauchy loss. Solved with scipy's least squares on a
-sparse Jacobian: per frame the current node alone, per keyframe the whole window.
+Variables: one pose per node (the last WINDOW keyframes and the current frame) and the
+frame delay td (a frame stamped t was exposed at t - td). Factors: the robot's relative
+motion between consecutive nodes, gravity (pitch and roll) per node, a weak prior holding
+the oldest node where the window last put it, and visual relative poses with a Cauchy loss.
+Solved with scipy's least squares on a sparse Jacobian: per frame the current node alone,
+per keyframe the whole window.
+
+The visual front end's lengths become metres through one log-scale, estimated apart from
+the poses, from direct observations of it (the floor under a frame, slam.py): the
+translations a front end seeded at the robot's prediction measures mostly echo the
+robot's travel, in whatever units its map has.
 """
 
 import math
@@ -91,8 +95,8 @@ class PoseGraph:
         return self.keyframes[-1] if self.keyframes else None
 
     def fold_scale(self):
-        """Hand the visual scale estimate to the front end: returns the factor its lengths
-        take, and restates the factors already held in the new units."""
+        """Hand the scale estimate to the front end: returns the factor its lengths take,
+        and restates the factors and observations already held in the new units."""
         factor = math.exp(self.log_scale)
         for v in self.visual:
             v.translation = v.translation * factor
@@ -192,43 +196,27 @@ class PoseGraph:
         return self.nodes[self.current].pose
 
     def solve_window(self):
-        """Refine every node, and the frame delay and scale with them."""
+        """Refine every node, and the frame delay with them."""
         order = self.keyframes + ([self.current] if self.current is not None else [])
         if order:
             self._solve(order, frame_only=False)
         return {k: self.nodes[k].pose for k in self.keyframes}
 
     def solve_scale(self):
-        """Refine the scale alone, every pose held: per frame, or with known poses."""
-        visual = [v for v in self.visual if v.reference in self.nodes and v.frame in self.nodes]
-        if not visual and not self.scales:
+        """The scale from its direct observations, each a little apart from the last."""
+        if not self.scales:
             return
-        observed = np.array(self.scales).reshape(-1, 2)
-        scale_prior = self.scale_known or not len(observed)
-        moved, units, sigma = (np.empty((0, 3)) for _ in range(3))
-        if visual:
-            pose = {n: self.nodes[n].pose for v in visual for n in (v.reference, v.frame)}
-            moved = np.array(
-                [
-                    pose[v.reference][:3, :3].T @ (pose[v.frame][:3, 3] - pose[v.reference][:3, 3])
-                    for v in visual
-                ]
-            )
-            units = np.array([v.translation for v in visual])
-            sigma = np.array([v.sigma[3:] for v in visual])
-        scale0 = self.log_scale
+        observed = np.array(self.scales)
+        scale0, prior = self.log_scale, self.scale_known
 
         def residuals(x):
-            blocks = [_cauchy((moved - math.exp(x[0]) * units) / sigma).ravel()]
-            blocks.append(_cauchy((x[0] - observed[:, :1]) / observed[:, 1:]).ravel())
-            if scale_prior:
-                blocks.append([(x[0] - scale0) / SCALE_SIGMA])
-            return np.concatenate(blocks)
+            error = _cauchy((x[0] - observed[:, :1]) / observed[:, 1:]).ravel()
+            return np.append(error, (x[0] - scale0) / SCALE_SIGMA) if prior else error
 
-        result = least_squares(residuals, [scale0], method="trf", x_scale="jac", max_nfev=20)
+        result = least_squares(residuals, [scale0], method="trf", max_nfev=20)
         if np.isfinite(result.x).all():
             self.log_scale = float(result.x[0])
-            self.scale_known = self.scale_known or bool(len(observed))
+            self.scale_known = True
 
     def _solve(self, free, frame_only):
         window = self.keyframes + ([self.current] if self.current is not None else [])
@@ -252,13 +240,9 @@ class PoseGraph:
         start_p = np.array([start[n][:3, 3] for n in order])
         times = np.array([self.nodes[n].time for n in order])
         estimate_td = self.estimate_td and not frame_only
-        estimate_scale = not frame_only and bool(self.visual or self.scales)
-        observed = np.array(self.scales if estimate_scale else np.empty((0, 2))).reshape(-1, 2)
-        # The first observations set the scale freely; after that it drifts slowly.
-        scale_prior = estimate_scale and (self.scale_known or not len(observed))
-        extra = int(estimate_td) + int(estimate_scale)
-        size = 6 * len(free) + extra
-        td0, scale0 = self.td, self.log_scale
+        size = 6 * len(free) + int(estimate_td)
+        td0 = self.td
+        units = math.exp(self.log_scale)  # solve_scale's
 
         rows = np.array([index[n] for n in free], dtype=int)
         start_q = start_r.as_quat()
@@ -287,14 +271,11 @@ class PoseGraph:
                 delta = x[: 6 * len(free)].reshape(-1, 6)
                 quats[rows] = (start_r[rows] * Rotation.from_rotvec(delta[:, :3])).as_quat()
                 positions[rows] += delta[:, 3:]
-            at = 6 * len(free)
-            td = x[at] if estimate_td else td0
-            at += int(estimate_td)
-            scale = x[at] if estimate_scale else scale0
-            return Rotation.from_quat(quats), positions, td, scale
+            td = x[6 * len(free)] if estimate_td else td0
+            return Rotation.from_quat(quats), positions, td
 
         def residuals(x):
-            rotations, positions, td, scale = unpack(x)
+            rotations, positions, td = unpack(x)
             robot_r, robot_p = self.motion.poses(times - td)
             blocks = []
             if len(ci):
@@ -317,39 +298,19 @@ class PoseGraph:
             if visual:
                 ri_inv = rotations[vi].inv()
                 rotation = (v_rotation_inv * ri_inv * rotations[vj]).as_rotvec()
-                moved = (
-                    ri_inv.apply(positions[vj] - positions[vi]) - math.exp(scale) * v_translation
-                )
+                moved = ri_inv.apply(positions[vj] - positions[vi]) - units * v_translation
                 blocks.append(_cauchy(np.hstack((rotation, moved)) / v_sigma).ravel())
             if estimate_td:
                 blocks.append(np.array([(td - td0) / TD_STEP]))
-            if len(observed):
-                error = (scale - observed[:, :1]) / observed[:, 1:]
-                blocks.append(_cauchy(error).ravel())
-            if scale_prior:
-                blocks.append(np.array([(scale - scale0) / SCALE_SIGMA]))
             return np.concatenate(blocks) if blocks else np.zeros(1)
 
         x0 = np.zeros(size)
         if estimate_td:
             x0[6 * len(free)] = td0
-        if estimate_scale:
-            x0[6 * len(free) + int(estimate_td)] = scale0
-        scale_rows = len(observed) + int(scale_prior) if estimate_scale else 0
         sparsity = (
             None
             if frame_only
-            else self._sparsity(
-                order,
-                free_index,
-                chain_nodes,
-                visual,
-                anchored,
-                estimate_td,
-                estimate_scale,
-                scale_rows,
-                size,
-            )
+            else self._sparsity(order, free_index, chain_nodes, visual, anchored, estimate_td, size)
         )
         lower = np.full(size, -np.inf)
         upper = np.full(size, np.inf)
@@ -368,31 +329,26 @@ class PoseGraph:
         )
         if not np.isfinite(result.x).all():
             return
-        rotations, positions, td, scale = unpack(result.x)
+        rotations, positions, td = unpack(result.x)
         matrices = rotations.as_matrix()
         for node, i in zip(free, rows, strict=True):
             pose = np.eye(4)
             pose[:3, :3] = matrices[i]
             pose[:3, 3] = positions[i]
             self.nodes[node].pose = pose
-        self.td, self.log_scale = float(td), float(scale)
-        self.scale_known = self.scale_known or bool(len(observed))
+        self.td = float(td)
         self.solves += 1
 
-    def _sparsity(
-        self, order, free_index, chain, visual, anchored, estimate_td, scale, scale_rows, size
-    ):
+    def _sparsity(self, order, free_index, chain, visual, anchored, estimate_td, size):
         rows = []
 
-        def block(count, nodes, uses_td=False, uses_scale=False):
+        def block(count, nodes, uses_td=False):
             columns = set()
             for node in nodes:
                 if node in free_index:
                     columns.update(range(6 * free_index[node], 6 * free_index[node] + 6))
             if uses_td and estimate_td:
                 columns.add(6 * len(free_index))
-            if uses_scale and scale:
-                columns.add(6 * len(free_index) + int(estimate_td))
             rows.extend([columns] * count)
 
         for a, b in chain:
@@ -402,10 +358,9 @@ class PoseGraph:
         if anchored:
             block(6, (order[0],))
         for v in visual:
-            block(6, (v.reference, v.frame), uses_scale=True)
+            block(6, (v.reference, v.frame))
         if estimate_td:
             block(1, (), uses_td=True)
-        block(scale_rows, (), uses_scale=True)
         matrix = lil_matrix((max(len(rows), 1), size), dtype=int)
         for r, columns in enumerate(rows):
             for c in columns:

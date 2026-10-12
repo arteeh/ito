@@ -7,9 +7,9 @@ from the robot, and the pilot's eye keeps moving. Each frame's points are placed
 fused pose, and the view it sees through replaces older splats there (carve).
 
 The points are in metres because the robot knows how high its camera is above the floor:
-where a frame sees the floor, its height in the frame's points measures the front end's
-scale. Fusion weighs that with the robot's own travel against vision's, and the front end's
-map takes the result at every keyframe.
+where a frame sees the floor, its depth below the camera in the frame's points measures the
+front end's scale. Fusion keeps a robust estimate over the last few seconds of frames for
+the front end's map, and a frame that saw the floor is placed by its own.
 
 The pilot side gets the fused camera pose and the correction (world-from-odometry) that
 turns the robot's newest pose into the eye; the renderer eases changes of that correction
@@ -129,7 +129,10 @@ class SLAMBackend(RGBDBackend):
             robot = self.motion.at(exposure)
             floor = floor_scale(cloud, robot[:3, :3].T @ UP, float(robot[1, 3]))
             if floor is not None:
+                # MASt3R's scale wanders from frame to frame (each tracked frame rewrites
+                # its keyframe's points): the floor corrects it every frame it is seen.
                 graph.add_scale(math.log(floor), FLOOR_SIGMA)
+                graph.solve_scale()
         if oracle is not None:
             graph.nodes[node].pose = np.array(oracle, dtype=np.float64)
         else:
@@ -141,19 +144,15 @@ class SLAMBackend(RGBDBackend):
                 poses = graph.solve_window()
             else:
                 poses = {k: graph.pose(k) for k in graph.keyframes}
-        window_solved = result.keyframe and oracle is None
-        if not window_solved and (floor is not None or result.keyframe):
-            # MASt3R's scale wanders from frame to frame (each tracked frame rewrites its
-            # keyframe's points), so the floor corrects it every frame it is seen.
-            graph.solve_scale()
         scale = graph.fold_scale()
         if poses or scale != 1.0:
             self.frontend.correct(poses, scale)
         if dropped:
             self.frontend.forget(dropped)
-        if cloud is not None and scale != 1.0:
-            # This frame's points were measured in the units the fold just replaced.
-            cloud = cloud._replace(points=cloud.points * scale)
+        if cloud is not None:
+            # The frame's points are in the units the fold just replaced; its own floor,
+            # where seen, places them better than the map's few seconds of floors.
+            cloud = cloud._replace(points=cloud.points * (scale if floor is None else floor))
         pose = self._publish(node)
         if cloud is not None:
             self.place(cloud, pose, now + clock.now() - started)
