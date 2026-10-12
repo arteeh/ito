@@ -5,17 +5,17 @@ The robot measures where its camera points better than monocular vision does (en
 The world is the robot's odometry frame where it started, so there is no map to restart: a
 frame vision cannot use simply adds no visual factor, and its pose comes from the robot.
 
-Variables: one pose per node (the last WINDOW keyframes and the current frame) and the
-frame delay td (a frame stamped t was exposed at t - td). Factors: the robot's relative
-motion between consecutive nodes, gravity (pitch and roll) per node, a weak prior holding
-the oldest node where the window last put it, and visual relative poses with a Cauchy loss.
-Solved with scipy's least squares on a sparse Jacobian: per frame the current node alone,
-per keyframe the whole window.
+Variables: one pose per node (the last WINDOW keyframes and the current frame), the frame
+delay td (a frame stamped t was exposed at t - td) and a log-scale for the visual
+translations. Factors: the robot's relative motion between consecutive nodes, gravity
+(pitch and roll) per node, a weak prior holding the oldest node where the window last put
+it, and visual relative poses with a Cauchy loss. Solved with scipy's least squares on a
+sparse Jacobian: per frame the current node alone, per keyframe the whole window.
 
-The visual front end's lengths become metres through one log-scale, estimated apart from
-the poses, from direct observations of it (the floor under a frame, slam.py): the
-translations a front end seeded at the robot's prediction measures mostly echo the
-robot's travel, in whatever units its map has.
+The front end's lengths become metres through one log-scale estimated apart from the poses,
+from direct observations of it (the floor under a frame, slam.py), not from the visual
+translations: a front end seeded at the robot's prediction mostly echoes the robot's travel
+in them, in whatever units its map has.
 """
 
 import math
@@ -238,9 +238,12 @@ class PoseGraph:
         start_p = np.array([start[n][:3, 3] for n in order])
         times = np.array([self.nodes[n].time for n in order])
         estimate_td = self.estimate_td and not frame_only
-        size = 6 * len(free) + int(estimate_td)
-        td0 = self.td
-        units = math.exp(self.log_scale)  # solve_scale's
+        # The visual translations' units float a little per solve, around the scale from the
+        # floor: they need not match it exactly, and are not handed to the front end.
+        estimate_scale = not frame_only and bool(self.visual)
+        extra = int(estimate_td) + int(estimate_scale)
+        size = 6 * len(free) + extra
+        td0, scale0 = self.td, self.log_scale
 
         rows = np.array([index[n] for n in free], dtype=int)
         start_q = start_r.as_quat()
@@ -269,11 +272,14 @@ class PoseGraph:
                 delta = x[: 6 * len(free)].reshape(-1, 6)
                 quats[rows] = (start_r[rows] * Rotation.from_rotvec(delta[:, :3])).as_quat()
                 positions[rows] += delta[:, 3:]
-            td = x[6 * len(free)] if estimate_td else td0
-            return Rotation.from_quat(quats), positions, td
+            at = 6 * len(free)
+            td = x[at] if estimate_td else td0
+            at += int(estimate_td)
+            scale = x[at] if estimate_scale else scale0
+            return Rotation.from_quat(quats), positions, td, scale
 
         def residuals(x):
-            rotations, positions, td = unpack(x)
+            rotations, positions, td, scale = unpack(x)
             robot_r, robot_p = self.motion.poses(times - td)
             blocks = []
             if len(ci):
@@ -296,19 +302,27 @@ class PoseGraph:
             if visual:
                 ri_inv = rotations[vi].inv()
                 rotation = (v_rotation_inv * ri_inv * rotations[vj]).as_rotvec()
-                moved = ri_inv.apply(positions[vj] - positions[vi]) - units * v_translation
+                moved = (
+                    ri_inv.apply(positions[vj] - positions[vi]) - math.exp(scale) * v_translation
+                )
                 blocks.append(_cauchy(np.hstack((rotation, moved)) / v_sigma).ravel())
             if estimate_td:
                 blocks.append(np.array([(td - td0) / TD_STEP]))
+            if estimate_scale:
+                blocks.append(np.array([(scale - scale0) / SCALE_SIGMA]))
             return np.concatenate(blocks) if blocks else np.zeros(1)
 
         x0 = np.zeros(size)
         if estimate_td:
             x0[6 * len(free)] = td0
+        if estimate_scale:
+            x0[6 * len(free) + int(estimate_td)] = scale0
         sparsity = (
             None
             if frame_only
-            else self._sparsity(order, free_index, chain_nodes, visual, anchored, estimate_td, size)
+            else self._sparsity(
+                order, free_index, chain_nodes, visual, anchored, estimate_td, estimate_scale, size
+            )
         )
         lower = np.full(size, -np.inf)
         upper = np.full(size, np.inf)
@@ -327,7 +341,7 @@ class PoseGraph:
         )
         if not np.isfinite(result.x).all():
             return
-        rotations, positions, td = unpack(result.x)
+        rotations, positions, td, scale = unpack(result.x)
         matrices = rotations.as_matrix()
         for node, i in zip(free, rows, strict=True):
             pose = np.eye(4)
@@ -337,16 +351,18 @@ class PoseGraph:
         self.td = float(td)
         self.solves += 1
 
-    def _sparsity(self, order, free_index, chain, visual, anchored, estimate_td, size):
+    def _sparsity(self, order, free_index, chain, visual, anchored, estimate_td, scale, size):
         rows = []
 
-        def block(count, nodes, uses_td=False):
+        def block(count, nodes, uses_td=False, uses_scale=False):
             columns = set()
             for node in nodes:
                 if node in free_index:
                     columns.update(range(6 * free_index[node], 6 * free_index[node] + 6))
             if uses_td and estimate_td:
                 columns.add(6 * len(free_index))
+            if uses_scale and scale:
+                columns.add(6 * len(free_index) + int(estimate_td))
             rows.extend([columns] * count)
 
         for a, b in chain:
@@ -356,9 +372,11 @@ class PoseGraph:
         if anchored:
             block(6, (order[0],))
         for v in visual:
-            block(6, (v.reference, v.frame))
+            block(6, (v.reference, v.frame), uses_scale=True)
         if estimate_td:
             block(1, (), uses_td=True)
+        if scale:
+            block(1, (), uses_scale=True)
         matrix = lil_matrix((max(len(rows), 1), size), dtype=int)
         for r, columns in enumerate(rows):
             for c in columns:
