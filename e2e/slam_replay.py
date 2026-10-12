@@ -14,6 +14,10 @@ camera pose of the tracking plan's oracle ladder (#36); MASt3R supplies depth on
   L4 fused     robot-first tracking (ito/reconstruction/slam.py)
   L5 vision    vision-only MASt3R-SLAM, today's main (the default)
 
+--mapper replays with the optimised Gaussian map (ito/reconstruction/mapper.py, CUDA) in
+its background thread instead of point splats; predictions then render its published
+Gaussians as the pilot's renderer does (antialiased), points render as dots.
+
 Reports SLAM rate, lost frames, map restarts by cause (vision only; robot-first has none),
 how long the pilot would see the flat feed, how far the heading strays from the robot's
 measured gaze, how well the scene seen so far predicts the camera image one second later,
@@ -78,6 +82,46 @@ def render(records, live, camera, intrinsics, size):
             image[index[nearest]] = color[inside][nearest]
     covered = np.isfinite(zbuffer)
     return image.reshape(height, width, 3), covered.reshape(height, width)
+
+
+def render_gaussians(records, live, camera, intrinsics, size):
+    """The published Gaussians (ring records, filter baked in) through gsplat, antialiased
+    like the pilot's renderer."""
+    import torch
+    from gsplat import rasterization
+
+    if not live.any():
+        return np.zeros((size[1], size[0], 3)), np.zeros((size[1], size[0]), bool)
+    r = torch.as_tensor(records[live], device="cuda")
+    i = intrinsics
+    view = np.linalg.inv(camera @ np.diag([1.0, -1.0, -1.0, 1.0]))
+    with torch.no_grad():
+        image, alpha, _ = rasterization(
+            means=r[:, 0, :3],
+            quats=r[:, 2],
+            scales=r[:, 1, :3],
+            opacities=r[:, 0, 3],
+            colors=r[:, 3:4, :3],
+            sh_degree=0,
+            viewmats=torch.as_tensor(view, device="cuda", dtype=torch.float32)[None],
+            Ks=torch.tensor([[[i.fx, 0, i.cx], [0, i.fy, i.cy], [0, 0, 1]]], device="cuda"),
+            width=size[0],
+            height=size[1],
+            rasterize_mode="antialiased",
+        )
+    covered = alpha[0, ..., 0] > 0.5
+    return image[0].clamp(0, 1).cpu().numpy(), covered.cpu().numpy()
+
+
+def ssim(x, y):
+    import torch
+
+    from ito.reconstruction.mapper import ssim as gpu_ssim
+
+    def gpu(a):
+        return torch.as_tensor(np.asarray(a, np.float32), device="cuda")
+
+    return float(gpu_ssim(gpu(x), gpu(y)))
 
 
 def rotation(q):
@@ -162,6 +206,7 @@ def main():
         default=0,
         help="seconds by which the recorded prior led its frame: use the prior recorded then",
     )
+    parser.add_argument("--mapper", action="store_true", help="optimised Gaussian map (CUDA)")
     parser.add_argument(
         "--set", action="append", default=[], help="override MASt3R-SLAM config: tracking.Q_conf=2"
     )
@@ -252,7 +297,10 @@ def main():
             args.budget, intrinsics, report=messages.append, voxel_size=0.04, fade_seconds=0.5
         )
     else:
-        from ito.reconstruction.slam import SLAMBackend
+        if args.mapper:
+            from ito.reconstruction.mapped_slam import MappedSLAMBackend as SLAMBackend
+        else:
+            from ito.reconstruction.slam import SLAMBackend
 
         backend = SLAMBackend(
             args.budget,
@@ -264,6 +312,10 @@ def main():
             voxel_size=0.04,
             fade_seconds=0.5,
         )
+    scene = getattr(backend, "scene", backend)
+    if args.mapper and scene is backend:
+        parser.error(f"--mapper: {getattr(backend, 'mapper_status', 'no Gaussian map')}")
+    draw = render_gaussians if args.mapper else render
     import torch
     from mast3r_slam.config import config
 
@@ -371,12 +423,20 @@ def main():
                 pending.remove((due, records, live))
                 if now - due > 0.5:
                     continue
-                rendered, covered = render(
+                rendered, covered = draw(
                     records, live, camera, intrinsics, (rgb.shape[1], rgb.shape[0])
                 )
                 if covered.mean() > 0.05:
                     error = ((rendered[covered] - rgb[covered] / 255) ** 2).mean()
-                    predictions.append((float(covered.mean()), float(-10 * np.log10(error))))
+                    full = ((rendered - rgb / 255) ** 2).mean()
+                    predictions.append(
+                        (
+                            float(covered.mean()),
+                            float(-10 * np.log10(error)),
+                            float(-10 * np.log10(full)),
+                            ssim(rendered, rgb / 255),
+                        )
+                    )
                     if previews < 12 and len(predictions) % 10 == 1:
                         side = np.concatenate((rgb / 255, rendered), axis=1)
                         Image.fromarray((side * 255).astype(np.uint8)).save(
@@ -384,10 +444,13 @@ def main():
                         )
                         previews += 1
             if not pending or now - pending[-1][0] + AHEAD > 0.5:
-                live = backend.keys >= 0
-                pending.append((now + AHEAD, backend.records.copy(), live.copy()))
-        backend.expire(now - start, np.inf)
-        # The live worker also publishes and sleeps between frames.
+                live = scene.keys >= 0
+                pending.append((now + AHEAD, scene.records[live].copy(), np.ones(live.sum(), bool)))
+        scene.expire(now - start, np.inf)
+        # The live worker also publishes and sleeps between frames; the map's thread
+        # trains meanwhile.
+        if scene is not backend:
+            time.sleep(0.01)
         now += seconds + 0.01
     durations = np.array([p[2] for p in processed])
     ok = np.array([p[3] for p in processed])
@@ -440,6 +503,15 @@ def main():
         prediction_coverage_median=round(float(np.median([p[0] for p in predictions])), 3)
         if predictions
         else None,
+        prediction_full_psnr_median=round(float(np.median([p[2] for p in predictions])), 2)
+        if predictions
+        else None,
+        prediction_ssim_median=round(float(np.median([p[3] for p in predictions])), 3)
+        if predictions
+        else None,
+        predictions=len(predictions),
+        gaussians=int(scene.count),
+        vram_mb_peak=round(torch.cuda.max_memory_allocated() / 2**20),
         messages=sorted({m.split(" | ")[0] for m in messages}),
     )
     (out / "frames.json").write_text(json.dumps(processed))
