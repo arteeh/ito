@@ -39,6 +39,7 @@ class GaussianRenderer:
         self.capacity = 0
         self.stride = 4
         self.degree = 0
+        self.antialiased = False
 
     def upload(self, scene: GaussianBuffer) -> None:
         """Consume a stable published snapshot. The producer may reuse it after return."""
@@ -61,6 +62,7 @@ class GaussianRenderer:
         self.scene_buffer, self.order = buffer, order
         self.count, self.capacity, self.stride = count, capacity, stride
         self.degree = scene.sh_degree
+        self.antialiased = scene.antialiased
         self.draw_count = count
         self.fade_seconds = 0.0
         self.uploaded_bytes += scene.records.nbytes
@@ -84,6 +86,7 @@ class GaussianRenderer:
                 self.order.release()
             self.scene_buffer, self.order = scene, order
             self.capacity, self.draw_count = capacity, required
+        self.antialiased = update.antialiased
         self.count = update.count
         self.stride, self.degree = 4, 0
         self.epoch, self.fade_seconds = update.epoch, update.fade_seconds
@@ -203,6 +206,7 @@ class GaussianRenderer:
         self.program["fade_seconds"] = self.fade_seconds
         self.program["stride"] = self.stride
         self.program["sh_degree"] = self.degree
+        self.program["antialiased"] = self.antialiased
         self.vao.render(mode=moderngl.TRIANGLE_STRIP, vertices=4, instances=self.draw_count)
 
     def close(self) -> None:

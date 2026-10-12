@@ -23,6 +23,7 @@ FloatArray = NDArray[np.float32]
 @dataclass(frozen=True)
 class GaussianBuffer:
     records: FloatArray
+    antialiased: bool = True
 
     def __post_init__(self) -> None:
         a = self.records

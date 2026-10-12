@@ -4,6 +4,7 @@ uniform float scene_time;
 uniform float fade_seconds;
 uniform uint stride;
 uniform int sh_degree;
+uniform bool antialiased;
 uniform mat4 view;
 uniform mat4 projection;
 uniform vec3 eye;
@@ -72,6 +73,9 @@ void main() {
     float a = dot(jx, covariance * jx) + 0.3;
     float b = dot(jx, covariance * jy);
     float c = dot(jy, covariance * jy) + 0.3;
+    // Mip-Splatting: preserve energy after the 0.3 pixel covariance dilation.
+    if (antialiased)
+        p.w *= sqrt(max(0.0, ((a-0.3)*(c-0.3)-b*b) / max(a*c-b*b, 1e-12)));
     float mid = 0.5*(a+c);
     float radius = length(vec2(0.5*(a-c), b));
     float major = sqrt(max(mid + radius, 0.3));

@@ -22,6 +22,7 @@ class SplatUpdate:
     epoch: float
     fade_seconds: float
     acknowledge: Callable[[], None] | None = None
+    antialiased: bool = False
 
 
 class UpdateRing:
@@ -37,7 +38,7 @@ class UpdateRing:
         self.acknowledged = context.RawValue("q", -1)
         self.ack_lock = context.Lock()
 
-    def publish(self, indices, records, capacity, count, revision, captured_at):
+    def publish(self, indices, records, capacity, count, revision, captured_at, antialiased=False):
         slot = self.write_position % self.slots
         if not self.locks[slot].acquire(False):
             return False
@@ -59,7 +60,7 @@ class UpdateRing:
                 count,
                 revision,
                 captured_at,
-                0,
+                int(antialiased),
             )
             self.ready[slot] = 1
             self.write_position += 1
@@ -89,7 +90,7 @@ class UpdateRing:
         try:
             if not self.ready[slot]:
                 return None
-            n, capacity, count, revision, captured_at, _ = np.frombuffer(self.headers).reshape(
+            n, capacity, count, revision, captured_at, antialiased = np.frombuffer(self.headers).reshape(
                 self.slots, 6
             )[slot]
             n = int(n)
@@ -115,6 +116,7 @@ class UpdateRing:
                 self.epoch,
                 self.fade_seconds,
                 lambda: self.acknowledge(int(revision)),
+                bool(antialiased),
             )
         finally:
             self.locks[slot].release()
