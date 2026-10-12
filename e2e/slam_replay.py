@@ -168,7 +168,7 @@ def main():
     parser.add_argument("--align", choices=("truth",), help="L4 with a truth map aligner")
     parser.add_argument("--eye", metavar="LABEL", help="eye-check PNGs (e2e/eye_check.py)")
     parser.add_argument(
-        "--eye-at", default="", help="also save the scene after these seconds: 6,15,23"
+        "--eye-at", default="", help="also save the scene after these frames: 215,453,693"
     )
     parser.add_argument("--mapper", action="store_true", help="the optimised Gaussian map")
     parser.add_argument("--unmeasured", action="store_true", help="hide the robot's heading")
@@ -318,7 +318,7 @@ def main():
         eye = eye_check.Eye(out, intrinsics, args.eye, rung)
         speed = eye_check.turn_speed(times, samples, delay, gazes)
         marks = eye_check.moments(times, speed)
-    snapshots = sorted(float(t) for t in args.eye_at.split(",") if t)
+    snapshots = sorted(int(f) for f in args.eye_at.split(",") if f)  # 1-based frame numbers
     first = None  # the first tracked frame and its pose: e2e/eye_sheets.py aligns truth by it
     import torch
     from mast3r_slam.config import config
@@ -396,9 +396,9 @@ def main():
         seconds = time.perf_counter() - began
         if snapshots and backend.tracked:
             first = first or (index, backend.camera_pose.copy())
-            if times[index] - start >= snapshots[0]:
+            if index + 1 >= snapshots[0]:
                 eye_check.snapshot(
-                    out / f"snapshot-{snapshots.pop(0):g}.npz",
+                    out / f"snapshot-{snapshots.pop(0)}.npz",
                     scene,
                     backend.camera_pose,
                     first,

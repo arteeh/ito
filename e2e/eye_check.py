@@ -59,9 +59,9 @@ def turn_speed(times, samples, delay, gazes):
 
 
 def snapshot(path, scene, pose, first, index, offset):
-    """The scene as published after a frame, for e2e/eye_sheets.py (same layout as the
-    research/big-picture captures): live records, the frame's pose and the first tracked
-    frame's, frame indices and capture offset."""
+    """The scene as published after a frame (the first tracked one at or past a chosen
+    frame), for e2e/eye_sheets.py in research/big-picture's capture layout: live records,
+    the frame's pose and the first tracked frame's, frame indices and capture offset."""
     live = scene.keys >= 0
     np.savez_compressed(
         path,

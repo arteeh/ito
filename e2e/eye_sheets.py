@@ -3,7 +3,7 @@
 python e2e/eye_sheets.py --work WORK --out OUT --column LABEL=PATTERN ... [--ito DIR]
 
 PATTERN is a folder under WORK with {run} and {rung} in it, holding the snapshot-*.npz a
-`slam_replay --eye LABEL --eye-at ...` (or research/big-picture's big_picture_capture.py)
+`slam_replay --eye LABEL --eye-at FRAMES` (or research/big-picture's big_picture_capture.py)
 saved: e.g. d91e443=eye/d91e443-{run}-{rung}. Per recording and rung it writes one sheet
 OUT/{run}-{rung}.jpg (under 1.5 MB) and one PNG per frame: the static room re-rendered by
 MuJoCo at the frame's true camera pose (research/big-picture's method, saved scene
