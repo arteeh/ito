@@ -18,6 +18,10 @@ rotation between the same two frames matches it only at the right delay. A delay
 milliseconds off turns every frame of a fast turn by the turn rate times the error, so it
 has to settle within the first turn, not over a window's slow keyframes.
 
+A map aligner (the Gaussian map rendered at a frame's pose and compared with its image)
+adds a map factor: the frame's pose in the world the map was built in, with its sigma,
+under the same Cauchy loss as a visual factor.
+
 Keyframes leaving the window that vision placed, and that look at the room from where no
 held keyframe does, stay as held keyframes: fixed, out of the solve, but still references
 the front end can track a frame against. Coming back to a view after a turn too fast to
@@ -106,6 +110,7 @@ class PoseGraph:
         self.held: list[int] = []  # keyframes out of the window, fixed, still references
         self.current: int | None = None
         self.visual: list[Visual] = []
+        self.mapped: dict[int, tuple[np.ndarray, np.ndarray]] = {}  # node: (pose, sigma 6)
         self.anchor: np.ndarray | None = None  # pose prior on the oldest keyframe
         self.next_id = 0
         self.solves = 0
@@ -178,6 +183,13 @@ class PoseGraph:
         self.nodes[frame].seen = True
         if self.estimate_td:
             self._observe_delay(self.visual[-1])
+
+    def add_map(self, node, pose, sigma):
+        """Where a map aligner placed a node: world-from-camera, and the one-sigma rotation
+        vector (rad) and translation (m) of it."""
+        if node in self.nodes:
+            self.mapped[node] = (np.array(pose, float), np.asarray(sigma, float))
+            self.nodes[node].seen = True
 
     def _observe_delay(self, visual):
         """The delay at which the robot's rotation between a visual factor's two frames
@@ -264,6 +276,7 @@ class PoseGraph:
 
     def _drop(self, node):
         del self.nodes[node]
+        self.mapped.pop(node, None)
         if node in self.held:
             self.held.remove(node)
         self.visual = [v for v in self.visual if node not in (v.reference, v.frame)]
@@ -393,6 +406,14 @@ class PoseGraph:
             v_translation = np.array([v.translation for v in visual])
             v_sigma = np.array([v.sigma for v in visual])
         anchor_r = Rotation.from_matrix(self.anchor[:3, :3]).inv()
+        mapped = [n for n in free if n in self.mapped]
+        mi = np.array([index[n] for n in mapped], dtype=int)
+        if mapped:
+            m_rotation_inv = Rotation.from_matrix(
+                np.array([self.mapped[n][0][:3, :3] for n in mapped])
+            ).inv()
+            m_position = np.array([self.mapped[n][0][:3, 3] for n in mapped])
+            m_sigma = np.array([self.mapped[n][1] for n in mapped])
 
         def unpack(x):
             positions = start_p.copy()
@@ -431,6 +452,10 @@ class PoseGraph:
                     ri_inv.apply(positions[vj] - positions[vi]) - math.exp(scale) * v_translation
                 )
                 blocks.append(_cauchy(np.hstack((rotation, moved)) / v_sigma).ravel())
+            if mapped:
+                rotation = (m_rotation_inv * rotations[mi]).as_rotvec()
+                moved = positions[mi] - m_position
+                blocks.append(_cauchy(np.hstack((rotation, moved)) / m_sigma).ravel())
             if estimate_scale:
                 blocks.append(np.array([(scale - scale0) / SCALE_SIGMA]))
             return np.concatenate(blocks) if blocks else np.zeros(1)
@@ -441,7 +466,9 @@ class PoseGraph:
         sparsity = (
             None
             if frame_only
-            else self._sparsity(order, free_index, chain_nodes, visual, anchored, estimate_scale)
+            else self._sparsity(
+                order, free_index, chain_nodes, visual, mapped, anchored, estimate_scale
+            )
         )
         result = least_squares(
             residuals,
@@ -463,7 +490,7 @@ class PoseGraph:
             self.nodes[node].pose = pose
         self.solves += 1
 
-    def _sparsity(self, order, free_index, chain, visual, anchored, scale):
+    def _sparsity(self, order, free_index, chain, visual, mapped, anchored, scale):
         rows = []
         size = 6 * len(free_index) + int(scale)
 
@@ -484,6 +511,8 @@ class PoseGraph:
             block(6, (order[0],))
         for v in visual:
             block(6, (v.reference, v.frame), uses_scale=True)
+        for node in mapped:
+            block(6, (node,))
         if scale:
             block(1, (), uses_scale=True)
         matrix = lil_matrix((max(len(rows), 1), size), dtype=int)

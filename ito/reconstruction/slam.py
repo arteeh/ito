@@ -51,6 +51,7 @@ SCALE_STEP = 0.01  # Between keyframes the front end takes a new scale past this
 class SLAMBackend(RGBDBackend):
     """frame_delay: the driver's estimate of how long before its capture_time a frame was
     exposed; exposure: how long the sensor integrates one, None if the driver cannot say.
+    aligner: a tracking.MapAligner, the map's say in every tracked frame's pose.
     oracle: replaces fusion's pose with a known one (e2e/slam_replay's rungs)."""
 
     def __init__(
@@ -63,6 +64,7 @@ class SLAMBackend(RGBDBackend):
         frame_delay=0.0,
         exposure=None,
         frontend=None,
+        aligner=None,
         oracle=None,
         **options,
     ):
@@ -74,6 +76,9 @@ class SLAMBackend(RGBDBackend):
         super().__init__(capacity, intrinsics, **options)
         self.report = report
         self.frontend = frontend
+        self.aligner = aligner
+        self.intrinsics = intrinsics
+        self.aligned = 0  # frames the map aligner placed
         self.oracle = oracle
         # A keyframe needs the robot's motion back to its exposure; a minute outlasts any
         # look around the room.
@@ -142,6 +147,12 @@ class SLAMBackend(RGBDBackend):
             graph.nodes[node].pose = np.array(oracle, dtype=np.float64)
         else:
             graph.solve_frame()
+            if self.aligner is not None:
+                found = self.aligner.align(rgb, graph.pose(node), self.intrinsics)
+                if found is not None:
+                    graph.add_map(node, found[0], found[1])
+                    graph.solve_frame()
+                    self.aligned += 1
         poses, dropped = {}, []
         if result.keyframe:
             dropped = graph.promote()

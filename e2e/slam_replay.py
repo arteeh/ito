@@ -23,6 +23,8 @@ every pose: rotation p50/p95/max, translation after a fixed first-frame alignmen
 fraction of usable poses (within 2 degrees and 5 cm), and as "every_frame" every recorded
 frame's pose, tracked or not, once the next tracked frame is in: the backend's pose_at where
 it has one (the robot's motion between fused poses), else the published poses interpolated.
+--align truth gives L4 a map aligner that knows each frame's true pose (0.1 degree, 1 cm):
+what a pixel-accurate map alignment would make of fusion.
 --poses-only skips MASt3R, for L2, L3 and L4 (fusion without vision) on a CPU.
 --gaze-prior builds the prior from the recorded telemetry gaze, for recordings of drivers
 that sent none.
@@ -157,6 +159,7 @@ def main():
     parser.add_argument("--budget", type=int, default=1_048_576)
     parser.add_argument("--limit", type=float, default=0, help="stop after this many seconds")
     parser.add_argument("--gaze-prior", action="store_true")
+    parser.add_argument("--align", choices=("truth",), help="L4 with a truth map aligner")
     parser.add_argument("--unmeasured", action="store_true", help="hide the robot's heading")
     parser.add_argument("--measured", action="store_true", help="trust the recorded prior")
     parser.add_argument(
@@ -181,6 +184,8 @@ def main():
     rung = next(k for k, v in RUNGS.items() if v == source)
     if source == "truth" and not args.truth:
         parser.error("L1 needs --truth")
+    if args.align and (source != "fused" or not args.truth):
+        parser.error("--align truth needs L4 and --truth")
     if args.poses_only and source not in ("receive", "source", "fused"):
         parser.error("--poses-only replays L2, L3 or L4")
     out = args.out or Path("e2e/out/slam-replay") / f"{args.recording.name}-{rung}"
@@ -258,6 +263,7 @@ def main():
             return priors[index]
         return buffer.at(captured - delay)
 
+    aligner = TruthAligner(true_pose, buffer, delay, times) if args.align else None
     if args.poses_only:
         return poses_only(args, out, rung, source, rows, times, oracle, buffer, delay, true_pose)
     messages = []
@@ -280,6 +286,7 @@ def main():
             # Only when known: older backends (another revision first on the path) lack it.
             **({"exposure": exposure} if (exposure := camera_exposure(robot)) is not None else {}),
             oracle=None if source == "fused" else oracle,
+            **({"aligner": aligner} if aligner else {}),
             voxel_size=0.04,
             fade_seconds=0.5,
         )
@@ -345,6 +352,8 @@ def main():
                 rgb, None, prior, now - start, measured=measured and not args.unmeasured
             )
         else:
+            if aligner:
+                aligner.index = index
             backend.integrate(rgb, None, prior, now - start, captured=times[index])
         torch.cuda.synchronize()
         seconds = time.perf_counter() - began
@@ -458,6 +467,7 @@ def main():
         else None,
         lost_frames=int((~ok).sum()),
         matched_frames=getattr(backend, "matched", None),
+        aligned_frames=getattr(backend, "aligned", None),
         frame_delay_ms=round(backend.graph.td * 1000, 1) if hasattr(backend, "graph") else None,
         restarts=restarts,
         restarts_total=sum(restarts.values()),
@@ -489,6 +499,29 @@ def main():
         + ")"
         + (" inferred" if report["restarts_inferred"] else "")
     )
+
+
+class TruthAligner:
+    """A map aligner that knows the true pose of the frame being integrated, in the robot's
+    world (truth turned and moved onto the robot's own pose at the first frame)."""
+
+    SIGMA = np.repeat((math.radians(0.1), 0.01), 3)
+
+    def __init__(self, true_pose, buffer, delay, times):
+        self.true_pose, self.buffer, self.delay, self.times = true_pose, buffer, delay, times
+        self.index = None
+        self.world = None
+
+    def align(self, rgb, predicted, intrinsics):
+        true = self.true_pose(self.index)
+        if true is None:
+            return None
+        if self.world is None:
+            from truth import align
+
+            robot = self.buffer.at(self.times[self.index] - self.delay)
+            self.world = align(robot, true)
+        return self.world @ true, self.SIGMA, rgb.shape[0] * rgb.shape[1]
 
 
 def camera_exposure(robot):
