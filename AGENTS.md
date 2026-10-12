@@ -31,18 +31,10 @@ not "operator", not "user" when the pilot is meant.
 
 ## Commits
 
-Every commit says who made it:
-
-- Author and committer: `Eris <339081058+eris-shaped@users.noreply.github.com>`.
-- `Co-authored-by: arteeh <35239587+arteeh@users.noreply.github.com>` on every commit: the project
-  owner.
-- One more `Co-authored-by` per coding agent that actually wrote part of the change:
-  `Claude Opus 5.5 <noreply@anthropic.com>` or `Codex <noreply@openai.com>`. Never for a tool that
-  did not contribute.
-
-GitHub noreply addresses only; never a personal email or an internal host name. A local
-`commit-msg` hook adds the trailers (the agent's from `ITO_AGENT_COAUTHOR`), so agents leave them
-out of their commit messages. Never bypass it (`--no-verify`, `core.hooksPath`).
+Every commit, by a person or a coding agent, has one identity as both author and committer:
+`arteeh <35239587+arteeh@users.noreply.github.com>`. No `Co-authored-by` or other attribution
+trailers. GitHub noreply address only; never a personal email or an internal host name. The
+repository's local git config sets the identity; never override it.
 
 ## Architecture
 
