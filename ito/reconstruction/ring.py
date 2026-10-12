@@ -90,9 +90,9 @@ class UpdateRing:
         try:
             if not self.ready[slot]:
                 return None
-            n, capacity, count, revision, captured_at, antialiased = np.frombuffer(self.headers).reshape(
-                self.slots, 6
-            )[slot]
+            n, capacity, count, revision, captured_at, antialiased = np.frombuffer(
+                self.headers
+            ).reshape(self.slots, 6)[slot]
             n = int(n)
             records = (
                 np.frombuffer(self.data, np.float32)

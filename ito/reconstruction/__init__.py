@@ -12,7 +12,6 @@ from ito import clock
 from ito.protocol import Intrinsics
 from ito.render.pose import validate_pose
 
-from .rgbd import RGBDBackend
 from .ring import MotionRing, SplatUpdate, UpdateRing
 from .slam_vision import RESTART_CAUSES
 
@@ -26,7 +25,7 @@ STOP_WAIT = 0.5
 def default_budget(renderer: str = "", video_memory_mb: int = 0) -> int:
     if any(name in renderer.lower() for name in ("llvmpipe", "softpipe", "software")):
         return 16_384
-    return 1_048_576 if video_memory_mb >= 8192 else 262_144
+    return 400_000 if video_memory_mb >= 8192 else 262_144
 
 
 def _run(recon):
@@ -34,7 +33,7 @@ def _run(recon):
         robot_first = recon.backend == "slam" and recon.tracking_mode == "robot"
         if robot_first:
             try:
-                from .slam import SLAMBackend
+                from .mapped_slam import MappedSLAMBackend as SLAMBackend
             except ImportError as exc:
                 raise RuntimeError("Robot-first tracking needs Ito's SLAM components") from exc
 
@@ -56,7 +55,12 @@ def _run(recon):
                 **recon.options,
             )
         else:
-            backend = RGBDBackend(recon.budget.value, recon.intrinsics, **recon.options)
+            from .mapped_rgbd import MappedRGBDBackend
+
+            backend = MappedRGBDBackend(
+                recon.budget.value, recon.intrinsics, report=recon.report, **recon.options
+            )
+        scene = getattr(backend, "scene", backend)
         sequence = 0
         # ITO_TIMELINE names a file for one line per frame the worker took: what became of it.
         timeline = os.environ.get("ITO_TIMELINE")
@@ -69,9 +73,11 @@ def _run(recon):
         parent = mp.parent_process()
         while not recon.stopped.value and parent.is_alive():
             now = clock.now() - recon.epoch
-            backend.expire(now, recon.ring.last_acknowledged())
+            scene.expire(now, recon.ring.last_acknowledged())
             if backend.budget != recon.budget.value:
                 backend.resize(recon.budget.value, now)
+                if scene is not backend:
+                    scene.resize(recon.budget.value, now)
             if robot_first:
                 rows, motion_cursor = recon.motion_ring.read(motion_cursor)
                 backend.add_motion(rows)
@@ -94,7 +100,7 @@ def _run(recon):
                     before = (
                         getattr(backend, "tracked", 0),
                         sum(getattr(backend, "restarts", {}).values()),
-                        backend.count,
+                        scene.count,
                     )
                     began = clock.now()
                 if robot_first:
@@ -102,7 +108,7 @@ def _run(recon):
                 elif recon.backend == "slam":
                     backend.integrate(*frame, now, measured=measured)
                 else:
-                    backend.integrate(*frame, now)
+                    backend.integrate(*frame, now, captured=captured)
                 recon.integrated.value += 1
                 if timeline:
                     done = clock.now()
@@ -127,8 +133,8 @@ def _run(recon):
                         else "unmatched"
                         if since is not None
                         else "skipped",
-                        splats=int(backend.count),
-                        splats_delta=int(backend.count) - before[2],
+                        splats=int(scene.count),
+                        splats_delta=int(scene.count) - before[2],
                         recalls=getattr(backend, "recalls", None),
                         matched=getattr(backend, "matched", None),
                         blurred=getattr(backend, "blurred", None),
@@ -153,24 +159,25 @@ def _run(recon):
                         recon.output_lock.release()
             # Bound work per turn; dirty slots coalesce while the display is behind.
             for _ in range(recon.ring.slots):
-                dirty = np.flatnonzero(backend.dirty)
+                dirty = np.flatnonzero(scene.dirty)
                 start = np.searchsorted(dirty, cursor)
                 indices = np.concatenate((dirty[start:], dirty[:start]))[: recon.ring.batch]
                 if not len(indices):
                     break
                 if not recon.ring.publish(
                     indices,
-                    backend.records[indices],
-                    len(backend.keys),
-                    backend.count,
+                    scene.records[indices],
+                    len(scene.keys),
+                    scene.count,
                     revision,
-                    captured,
+                    getattr(scene, "captured_at", captured),
+                    getattr(scene, "antialiased", False),
                 ):
                     break
-                retiring = indices[backend.retiring[indices]]
-                backend.retire_revision[retiring] = revision
-                cursor = (int(indices[-1]) + 1) % len(backend.keys)
-                backend.dirty[indices] = False
+                retiring = indices[scene.retiring[indices]]
+                scene.retire_revision[retiring] = revision
+                cursor = (int(indices[-1]) + 1) % len(scene.keys)
+                scene.dirty[indices] = False
                 revision += 1
             time.sleep(0.01)
     except Exception as exc:
@@ -179,6 +186,8 @@ def _run(recon):
         message = str(exc) if recon.backend == "slam" else f"Reconstruction failed: {exc}"
         recon.errors.send(message[:2000])
     finally:
+        if "backend" in locals() and hasattr(backend, "close"):
+            backend.close()
         recon.errors.close()
 
 
