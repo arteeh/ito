@@ -206,17 +206,15 @@ class PoseGraph:
         """The scale from its direct observations, each a little apart from the last."""
         if not self.scales:
             return
-        observed = np.array(self.scales)
-        scale0, prior = self.log_scale, self.scale_known
-
-        def residuals(x):
-            error = _cauchy((x[0] - observed[:, :1]) / observed[:, 1:]).ravel()
-            return np.append(error, (x[0] - scale0) / SCALE_SIGMA) if prior else error
-
-        result = least_squares(residuals, [scale0], method="trf", max_nfev=20)
-        if np.isfinite(result.x).all():
-            self.log_scale = float(result.x[0])
-            self.scale_known = True
+        values, sigmas = np.array(self.scales).T
+        prior = 1 / SCALE_SIGMA**2 if self.scale_known else 0.0
+        scale = float(np.median(values)) if not self.scale_known else self.log_scale
+        # One unknown: iteratively reweighted least squares under the Cauchy loss.
+        for _ in range(8):
+            weights = 1 / (sigmas**2 + ((scale - values) / CAUCHY) ** 2)
+            scale = (weights @ values + prior * self.log_scale) / (weights.sum() + prior)
+        self.log_scale = float(scale)
+        self.scale_known = True
 
     def _solve(self, free, frame_only):
         window = self.keyframes + ([self.current] if self.current is not None else [])

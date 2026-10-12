@@ -45,6 +45,7 @@ FLOOR_SHARE = 0.1
 FLOOR_HEIGHT = 0.05
 FLOOR_LEVEL = 0.05  # log half-width of the floor's level
 FLOOR_SIGMA = 0.15  # one frame's log-scale from it, one sigma (MASt3R bends near depths)
+SCALE_STEP = 0.01  # Between keyframes the front end takes a new scale past this log-change.
 
 
 class SLAMBackend(RGBDBackend):
@@ -144,8 +145,9 @@ class SLAMBackend(RGBDBackend):
                 poses = graph.solve_window()
             else:
                 poses = {k: graph.pose(k) for k in graph.keyframes}
-        scale = graph.fold_scale()
-        if poses or scale != 1.0:
+        scale = 1.0
+        if poses or abs(graph.log_scale) > SCALE_STEP:
+            scale = graph.fold_scale()
             self.frontend.correct(poses, scale)
         if dropped:
             self.frontend.forget(dropped)
