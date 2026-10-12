@@ -6,15 +6,20 @@ The world is the robot's odometry frame where it started, so there is no map to 
 frame vision cannot use simply adds no visual factor, and its pose comes from the robot.
 
 Variables: one pose per node (the last WINDOW keyframes and the current frame), the frame
-delay td (a frame stamped t was exposed at t - td) and one log-scale between the visual
-front end's translations and metres. Factors: the robot's relative motion between
-consecutive nodes, gravity (pitch and roll) per node, a weak prior holding the oldest node
-where the window last put it, and visual relative poses with a Cauchy loss. Solved with
-scipy's least squares on a sparse Jacobian: per frame the current node alone, per keyframe
-the whole window.
+delay td (a frame stamped t was exposed at t - td) and a log-scale for the visual
+translations. Factors: the robot's relative motion between consecutive nodes, gravity
+(pitch and roll) per node, a weak prior holding the oldest node where the window last put
+it, and visual relative poses with a Cauchy loss. Solved with scipy's least squares on a
+sparse Jacobian: per frame the current node alone, per keyframe the whole window.
+
+The front end's lengths become metres through one log-scale estimated apart from the poses,
+from direct observations of it (the floor under a frame, slam.py), not from the visual
+translations: a front end seeded at the robot's prediction mostly echoes the robot's travel
+in them, in whatever units its map has.
 """
 
 import math
+from collections import deque
 from dataclasses import dataclass
 
 import numpy as np
@@ -29,7 +34,9 @@ ANCHOR_ROTATION = math.radians(2)
 ANCHOR_POSITION = 0.05
 # A visual factor whose whitened error is past this many sigmas counts less and less.
 CAUCHY = 2.0
-SCALE_SIGMA = 0.2  # Log-scale prior per keyframe solve, around the last estimate.
+SCALE_SIGMA = 0.2  # Log-scale prior per solve, around the last estimate.
+# Scale observations kept: about two seconds of frames, as the front end's own scale drifts.
+SCALE_MEMORY = 20
 TD_STEP = 0.01  # How far the frame delay may wander between keyframe solves, one sigma.
 UP = np.array([0.0, 1.0, 0.0])
 
@@ -64,6 +71,10 @@ class PoseGraph:
         self.td_bounds = td_bounds
         self.estimate_td = estimate_td
         self.log_scale = 0.0
+        # (log metres per front-end unit, sigma), newest last; until the first is solved the
+        # front end's scale is unknown, and nothing holds it near its start.
+        self.scales = deque(maxlen=SCALE_MEMORY)
+        self.scale_known = False
         self.nodes: dict[int, Node] = {}
         self.keyframes: list[int] = []  # oldest first
         self.current: int | None = None
@@ -84,13 +95,20 @@ class PoseGraph:
         return self.keyframes[-1] if self.keyframes else None
 
     def fold_scale(self):
-        """Hand the visual scale estimate to the front end: returns the factor its lengths
-        take, and restates the factors already held in the new units."""
+        """Hand the scale estimate to the front end: returns the factor its lengths take,
+        and restates the factors and observations already held in the new units."""
         factor = math.exp(self.log_scale)
         for v in self.visual:
             v.translation = v.translation * factor
+        self.scales = deque(
+            ((value - self.log_scale, sigma) for value, sigma in self.scales), SCALE_MEMORY
+        )
         self.log_scale = 0.0
         return factor
+
+    def add_scale(self, log_scale, sigma):
+        """An observation of the front end's scale: log metres per front-end unit."""
+        self.scales.append((float(log_scale), float(sigma)))
 
     def predict(self, t):
         """World-from-camera for a frame stamped t: the newest node moved on by the robot."""
@@ -178,11 +196,25 @@ class PoseGraph:
         return self.nodes[self.current].pose
 
     def solve_window(self):
-        """Refine every node, and the frame delay and scale with them."""
+        """Refine every node, and the frame delay with them."""
         order = self.keyframes + ([self.current] if self.current is not None else [])
         if order:
             self._solve(order, frame_only=False)
         return {k: self.nodes[k].pose for k in self.keyframes}
+
+    def solve_scale(self):
+        """The scale from its direct observations, each a little apart from the last."""
+        if not self.scales:
+            return
+        values, sigmas = np.array(self.scales).T
+        prior = 1 / SCALE_SIGMA**2 if self.scale_known else 0.0
+        scale = float(np.median(values)) if not self.scale_known else self.log_scale
+        # One unknown: iteratively reweighted least squares under the Cauchy loss.
+        for _ in range(8):
+            weights = 1 / (sigmas**2 + ((scale - values) / CAUCHY) ** 2)
+            scale = (weights @ values + prior * self.log_scale) / (weights.sum() + prior)
+        self.log_scale = float(scale)
+        self.scale_known = True
 
     def _solve(self, free, frame_only):
         window = self.keyframes + ([self.current] if self.current is not None else [])
@@ -206,6 +238,8 @@ class PoseGraph:
         start_p = np.array([start[n][:3, 3] for n in order])
         times = np.array([self.nodes[n].time for n in order])
         estimate_td = self.estimate_td and not frame_only
+        # The visual translations' units float a little per solve, around the scale from the
+        # floor: they need not match it exactly, and are not handed to the front end.
         estimate_scale = not frame_only and bool(self.visual)
         extra = int(estimate_td) + int(estimate_scale)
         size = 6 * len(free) + extra
@@ -314,7 +348,7 @@ class PoseGraph:
             pose[:3, :3] = matrices[i]
             pose[:3, 3] = positions[i]
             self.nodes[node].pose = pose
-        self.td, self.log_scale = float(td), float(scale)
+        self.td = float(td)
         self.solves += 1
 
     def _sparsity(self, order, free_index, chain, visual, anchored, estimate_td, scale, size):
