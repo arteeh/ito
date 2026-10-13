@@ -156,7 +156,11 @@ class GaussianRenderer:
         self.update["count"] = n
         self.update.run(group_x=(n + 255) // 256)
         GL.glMemoryBarrier(GL.GL_SHADER_STORAGE_BARRIER_BIT)
-        self.staging_fences[slot] = GL.glFenceSync(GL.GL_SYNC_GPU_COMMANDS_COMPLETE, 0)
+        # PyOpenGL casts opaque pointer arguments through ctypes, creating a
+        # self-referencing ownership dictionary per fence. Keep its address:
+        # the driver still owns the sync, without triggering full Python GC
+        # scans in display calls after thousands of packets.
+        self.staging_fences[slot] = GL.glFenceSync(GL.GL_SYNC_GPU_COMMANDS_COMPLETE, 0).address
         self.staging_cursor = (slot + 1) % len(self.staging)
         if update.acknowledge is not None:
             update.acknowledge()

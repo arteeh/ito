@@ -5,6 +5,7 @@ ITO_GPU_ENTRY=e2e/gpu_upload_trace.py bash e2e/gpu_budget.sh OUTPUT --load both 
 Diagnostic timings are excluded from reference acceptance.
 """
 
+import gc
 import json
 import os
 import time
@@ -19,8 +20,43 @@ from ito.render.renderer import GaussianRenderer
 
 packets = []
 display_calls = []
+collections = []
+monitor_calls = []
 current = None
 original_apply = GaussianRenderer.apply
+collection_start = None
+
+
+def collection(phase, info):
+    global collection_start
+    if phase == "start":
+        collection_start = time.perf_counter()
+    elif collection_start is not None:
+        collections.append(
+            dict(
+                start=collection_start,
+                ms=(time.perf_counter() - collection_start) * 1000,
+                generation=info["generation"],
+                collected=info["collected"],
+            )
+        )
+
+
+gc.callbacks.append(collection)
+original_check_output = gpu_budget.subprocess.check_output
+
+
+def check_output(command, *args, **kwargs):
+    if not isinstance(command, list) or not str(command[0]).endswith("nvidia-smi.exe"):
+        return original_check_output(command, *args, **kwargs)
+    began = time.perf_counter()
+    try:
+        return original_check_output(command, *args, **kwargs)
+    finally:
+        monitor_calls.append(dict(start=began, ms=(time.perf_counter() - began) * 1000))
+
+
+gpu_budget.subprocess.check_output = check_output
 
 
 def apply(renderer, update):
@@ -120,3 +156,5 @@ if __name__ == "__main__":
     finally:
         (output / "upload-calls.json").write_text(json.dumps(packets, indent=2))
         (output / "display-calls.json").write_text(json.dumps(display_calls, indent=2))
+        (output / "gc-calls.json").write_text(json.dumps(collections, indent=2))
+        (output / "monitor-calls.json").write_text(json.dumps(monitor_calls, indent=2))
