@@ -54,7 +54,8 @@ def main():
             assert torch.equal(actual[0], expected[0][:, :shorter])
     torch.cuda.synchronize()
     print(
-        f"PASS: exact native outputs across query/batch boundaries; {admission.chunks.value} fenced chunks"
+        "PASS: exact native outputs across query/batch boundaries; "
+        f"{admission.chunks.value} fenced chunks"
     )
 
 
