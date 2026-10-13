@@ -31,13 +31,16 @@ for capacity in 524288 1048576; do
     run "full-sort-$capacity" --occupied 262144 --capacity "$capacity" --frames 900
 done
 run unregulated --load both --frames 1800 --incremental --updates
-run trace --load slam --frames 900 --profile --warm-prefix 1500
+run trace --load slam --frames 900 --profile --warm-prefix 1560
+run trace-admitted --load slam --frames 2700 --profile --warm-prefix 1560 --admit
 for repeat in 1 2 3; do
     for sequence in sweep180 tour; do
+        prefix=12
+        if [[ "$sequence" == tour ]]; then prefix=1560; fi
         run "$sequence-$repeat" --sequence "$sequence" --load both --frames 6000 \
-            --admit --incremental --updates --capacity 524288
+            --admit --incremental --updates --capacity 524288 --warm-prefix "$prefix"
         run "$sequence-full-$repeat" --sequence "$sequence" --load both --frames 6000 \
-            --admit --incremental --updates --capacity 524288 \
+            --admit --incremental --updates --capacity 524288 --warm-prefix "$prefix" \
             --eye-size 2160x2160 --target-format f1
    done
 done

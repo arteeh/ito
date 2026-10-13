@@ -163,8 +163,11 @@ def main():
     for repeat in quality["comparisons"]:
         if repeat["png_identical"] != 35 or any(repeat["max_absolute_score_delta"].values()):
             failures.append(f"Baseline repeat {repeat['repeat']}: image/score change")
-    trace = cuda_trace(args.output / "trace/cuda-trace.json")
-    if trace["dropped"] or not trace["kernels"]:
+    trace = {
+        name: cuda_trace(args.output / name / "cuda-trace.json")
+        for name in ("trace", "trace-admitted")
+    }
+    if any(t["dropped"] or not t["kernels"] for t in trace.values()):
         failures.append("Missing or incomplete CUDA trace")
     fingerprints = {r["source_fingerprint"] for r in cases.values()}
     if len(fingerprints) != 1:

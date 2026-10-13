@@ -14,6 +14,7 @@ GUARD_SECONDS = 0.002
 PUBLICATION_PACKETS = 2
 CHUNK_OPERATIONS = 64
 CHUNK_ENQUEUE_SECONDS = 0.001
+MATCH_QUERIES = 4096
 
 
 class Wake:
@@ -280,3 +281,49 @@ def bind_model(model, admission):
         )
 
     return handles
+
+
+def bind_matching(admission):
+    """Bound upstream's native kernels, which bypass Torch's dispatch hooks.
+
+    Each query is independent. Preserve the full descriptor/ray image, process
+    one batch member and 4096 queries at a time, and retain identical outputs.
+    The binding is process-local: Ito owns one reconstruction backend per worker.
+    """
+    import mast3r_slam_backends as native
+    import torch
+
+    for name in ("iter_proj", "refine_matches"):
+        original = getattr(native, name)
+
+        def bounded(image, queries, initial, *options, original=original, name=name):
+            if not admission.enabled.value:
+                return original(image, queries, initial, *options)
+            outputs = None
+            for member in range(initial.shape[0]):
+                for start in range(0, initial.shape[1], MATCH_QUERIES):
+                    end = min(start + MATCH_QUERIES, initial.shape[1])
+                    with admission.cuda_chunk(torch.cuda.synchronize, kind=name):
+                        # Upstream launches 16-thread blocks without a tail guard.
+                        # Image-sized queries are divisible by 16; pad any shorter tail.
+                        q = queries[member : member + 1, start:end]
+                        p = initial[member : member + 1, start:end]
+                        padding = (-len(p[0])) % 16
+                        if padding:
+                            q = torch.cat((q, q[:, -1:].expand(-1, padding, -1)), dim=1)
+                            p = torch.cat((p, p[:, -1:].expand(-1, padding, -1)), dim=1)
+                        result = original(image[member : member + 1], q, p, *options)
+                        if outputs is None:
+                            outputs = [
+                                torch.empty(
+                                    (*initial.shape[:2], *r.shape[2:]),
+                                    dtype=r.dtype,
+                                    device=r.device,
+                                )
+                                for r in result
+                            ]
+                        for output, part in zip(outputs, result, strict=True):
+                            output[member : member + 1, start:end].copy_(part[:, : end - start])
+            return outputs
+
+        setattr(native, name, bounded)

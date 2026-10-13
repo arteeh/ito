@@ -116,14 +116,15 @@ def load_worker(args, ready, start, stop, admission):
             if admission.stopped.value:
                 break
             raise
+        finally:
+            if profiler:
+                map_scope.__exit__(None, None, None)
+                profiler.__exit__(None, None, None)
+                report = profiler.report()
+                report["host_scopes"] = map_trace.report()
+                (args.out / "cuda-trace.json").write_text(json.dumps(report, indent=2))
         torch.cuda.synchronize()
         costs.append((time.perf_counter() - began) * 1000)
-        if profiler:
-            map_scope.__exit__(None, None, None)
-            profiler.__exit__(None, None, None)
-            report = profiler.report()
-            report["host_scopes"] = map_trace.report()
-            (args.out / "cuda-trace.json").write_text(json.dumps(report, indent=2))
         if torch.cuda.memory_reserved() >= 7 * 1024**3:
             raise RuntimeError("Tracking reservation exceeds 7 GiB; stopping before 8 GiB")
         if index == args.warm_prefix:
@@ -274,6 +275,7 @@ def main():
     if args.frames < 1 or args.occupied < 0 or args.capacity < 0 or args.warm_prefix % 6:
         parser.error("Positive frame count, nonnegative sizes and six-frame warm prefix required")
     args.out.mkdir(parents=True, exist_ok=True)
+    source_fingerprint = fingerprint()
     index = 692 if args.sequence == "sweep180" else 2283
     snap = np.load(args.work / f"m1-out/verified/repeat-1/{args.sequence}/snapshot-{index:06d}.npz")
     intrinsics = Intrinsics.model_validate_json(
@@ -590,8 +592,10 @@ def main():
         (args.out / "memory-coverage.json").write_text(json.dumps(residency.coverage, indent=2))
         if not residency.owned:
             raise RuntimeError("No complete WDDM memory sample; see memory-coverage.json")
+        if fingerprint() != source_fingerprint:
+            raise RuntimeError("Source changed during measurement; discard this run")
         report = dict(
-            source_fingerprint=fingerprint(),
+            source_fingerprint=source_fingerprint,
             arguments={
                 key: str(value) if isinstance(value, Path) else value
                 for key, value in vars(args).items()
