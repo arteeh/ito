@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+from PIL import Image
 
 
 def digest(path):
@@ -67,6 +68,8 @@ def cuda_trace(path):
 def baseline(candidate, original):
     fields = ("psnr_db", "ssim", "lpips", "coverage", "previously_seen_holes")
     reports = []
+    canonical = original / "repeat-1"  # Also supplies the frozen shared-load maps.
+    fixed_rows = json.loads((canonical / "metrics.json").read_text())["moments"]
     for repeat in (1, 2, 3):
         folder = candidate / f"repeat-{repeat}"
         reference = original / f"repeat-{repeat}"
@@ -77,10 +80,26 @@ def baseline(candidate, original):
             return r["run"], r["frame"], r["view"]
 
         old = {key(r): r for r in before}
+        fixed = {key(r): r for r in fixed_rows}
         assert set(old) == {key(r) for r in after}
         scores = {field: max(abs(r[field] - old[key(r)][field]) for r in after) for field in fields}
         images = sorted(folder.glob("*.png"))
         assert len(images) == 35
+        pixel_changes = []
+        for image in images:
+            previous = reference / image.name
+            if digest(image) != digest(previous):
+                difference = np.abs(
+                    np.asarray(Image.open(image)).astype(np.int16)
+                    - np.asarray(Image.open(previous)).astype(np.int16)
+                )
+                pixel_changes.append(
+                    dict(
+                        name=image.name,
+                        max_channel_difference=int(difference.max()),
+                        changed_pixels=int(np.count_nonzero(difference.max(axis=2))),
+                    )
+                )
         reports.append(
             dict(
                 repeat=repeat,
@@ -88,6 +107,14 @@ def baseline(candidate, original):
                 max_absolute_score_delta=scores,
                 png_compared=len(images),
                 png_identical=sum(digest(p) == digest(reference / p.name) for p in images),
+                paired_pixel_changes=pixel_changes,
+                canonical_png_identical=sum(
+                    digest(p) == digest(canonical / p.name) for p in images
+                ),
+                canonical_max_absolute_score_delta={
+                    field: max(abs(r[field] - fixed[key(r)][field]) for r in after)
+                    for field in fields
+                },
                 camera_moments=[
                     {field: r[field] for field in ("run", "frame", "prefix_frame", *fields)}
                     for r in after
@@ -99,6 +126,7 @@ def baseline(candidate, original):
     source = json.loads((candidate / "source/summary.json").read_text())
     return dict(
         comparisons=reports,
+        canonical_reference_repeat=1,
         audit=audit,
         source=source,
         product_identity=(candidate / "product-identity.txt").read_text().splitlines(),
@@ -184,7 +212,9 @@ def main():
         failures.append("Native CUDA equivalence checks failed")
     quality = baseline(args.output / "baseline", args.original)
     for repeat in quality["comparisons"]:
-        if repeat["png_identical"] != 35 or any(repeat["max_absolute_score_delta"].values()):
+        if repeat["canonical_png_identical"] != 35 or any(
+            repeat["canonical_max_absolute_score_delta"].values()
+        ):
             failures.append(f"Baseline repeat {repeat['repeat']}: image/score change")
     trace = {
         name: cuda_trace(args.output / name / "cuda-trace.json")
