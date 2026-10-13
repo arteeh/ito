@@ -2,6 +2,12 @@
 # Offline oracle/added-value gates only. No mono inference after a failed gate.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+cached=false
+case "${1:-}" in
+    --cached-only) cached=true ;;
+    '') ;;
+    *) echo "Usage: bash e2e/viewcache_run.sh [--cached-only]" >&2; exit 2 ;;
+esac
 root="$(realpath -m ../p48-out)"
 work="$(realpath ..)"
 mkdir -p "$root/logs" "$root/reference"
@@ -11,10 +17,12 @@ python="$root/venv/bin/python"
 "$python" e2e/measure.py --work "$work" --out "$root/reference" --prepare \
     > "$root/logs/reference.log" 2>&1
 # Mesa is the portable rerun; the archived hardware captures used viewcache_gpu.sh.
+if ! "$cached"; then
 "$python" e2e/viewcache_render.py --work "$work" --out "$root" \
     > "$root/logs/oracle-render.log" 2>&1
 "$python" e2e/viewcache_score.py "$root/rendered/truth-oracle" \
     > "$root/logs/oracle-score.log" 2>&1
+fi
 "$python" - "$root" "$work" <<'PY'
 import json, sys
 from pathlib import Path
@@ -32,10 +40,12 @@ for run in ('sweep180','tour'):
         raise SystemExit(f'STOP at stage 1: {run}, {psnr:.2f} dB / {lpips:.1%} LPIPS gain')
 print('Stage 1 numeric gate passes; inspect camera/eyes sheets for sharpness')
 PY
+if ! "$cached"; then
 "$python" e2e/viewcache_clips.py --work "$work" --out "$root" \
     > "$root/logs/oracle-clips-render.log" 2>&1
 "$python" e2e/viewcache_clip_score.py "$root/clips/truth-oracle" --work "$work" \
     > "$root/logs/oracle-clips-score.log" 2>&1
+fi
 "$python" e2e/viewcache_audit.py --work "$work" --root "$root" \
     > "$root/logs/audit.log" 2>&1
 bash e2e/viewcache_viewer.sh > "$root/logs/viewer-e2e.log" 2>&1

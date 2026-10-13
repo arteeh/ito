@@ -30,7 +30,7 @@ def main():
     baseline = json.loads((args.work / "m1-out/verified/repeat-1/metrics.json").read_text())
     mesh = json.loads((args.work / "p47-out/rendered/truth-oracle-cap64/metrics.json").read_text())
     for path, expected in oracle["inputs"].items():
-        with (args.work / path).open("rb") as f:
+        with (args.work / path.replace("\\", "/")).open("rb") as f:
             if hashlib.file_digest(f, "sha256").hexdigest() != expected:
                 raise AssertionError(f"Frozen input changed: {path}")
     snapshots, deadlines, observations = 0, 0, 0
@@ -71,8 +71,8 @@ def main():
             lpips_improvement_over_main=perceptual,
             psnr_gain_over_mesh_db=cache["psnr_db"] - reference["psnr_db"],
         )
-    # Pool the synchronized per-frame changes across the three already-observed
-    # modes. The all-black frozen hard-turn clip cannot earn a stability gain.
+    # Keep each already-observed mode visible. A static-camera improvement cannot
+    # compensate for new head-motion shimmer. All-black clips earn no gain.
     temporal = {}
     for run in ("sweep180", "tour"):
         rows = [
@@ -87,8 +87,45 @@ def main():
             )
             for r in rows
         }
+    stability = {}
+    stage2 = True
+    for run in ("sweep180", "tour"):
+        rows = [
+            r
+            for r in clips["clips"]
+            if r["run"] == run and (run != "sweep180" or r["clip"].startswith("bookshelf-"))
+        ]
+        stability[run] = {}
+        for key in ("residual_change", "edge_changed_fraction"):
+            a, b = [
+                float(np.mean([r["metrics"][name][key]["p95"] for r in rows]))
+                for name in ("mesh", "cache")
+            ]
+            stability[run][key] = dict(
+                mesh_mean_clip_p95=a, cache_mean_clip_p95=b, improvement=1 - b / a if a else None
+            )
+        c = comparisons[run]
+        quality = (
+            c["psnr_gain_over_mesh_db"] >= -0.5
+            and c["cache"]["previously_seen_holes"] <= c["mesh"]["previously_seen_holes"] + 0.005
+        )
+        stability[run]["quality_retained"] = quality
+        benefit = any(
+            v["improvement"] is not None and v["improvement"] >= 0.2
+            for k, v in stability[run].items()
+            if k != "quality_retained"
+        )
+        stage2 &= benefit and quality
     report = dict(
         stage1="PASS" if stage1 else "FAIL",
+        stage2="PASS" if stage2 else "FAIL",
+        stage3="SKIPPED: stop at the first failed gate",
+        stage4="SKIPPED: stop at the first failed gate",
+        verdict="Reject this configuration: no retained added value over #47"
+        if not stage2
+        else "Added-value numeric gate passes; eye acceptance required",
+        freshness="Unmeasured; identical #47 virtual publication schedule, no flow fast path",
+        stability=stability,
         comparisons=comparisons,
         temporal=temporal,
         audit=dict(
@@ -101,7 +138,9 @@ def main():
         ),
         oracle=oracle,
         clips=clips,
-        later_stages="Unassessed until the stage-2 decision; no mono/timing claim",
+        later_stages=(
+            "Not run after stage-2 failure; robot-pose/mono, full causality and timing unassessed"
+        ),
     )
     (args.root / "results.json").write_text(json.dumps(report, indent=2) + "\n")
     print(

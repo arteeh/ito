@@ -194,7 +194,7 @@ def main():
             capture(snapshot)
             snapshot = next(pending, None)
         for path in used_paths:
-            report["inputs"][str(path.relative_to(args.work))] = digest(path)
+            report["inputs"][path.relative_to(args.work).as_posix()] = digest(path)
         cache.close()
         target.release()
     (out / "render.json").write_text(json.dumps(report, indent=2) + "\n")
