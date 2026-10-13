@@ -17,7 +17,7 @@ from ito.reconstruction import SplatUpdate, default_budget
 from ito.reconstruction.admission import PUBLICATION_PACKETS
 from ito.render import GaussianRenderer, SceneSource, current_context, perspective, pose
 from ito.render.anchor import AnchorGlide, CorrectionEase
-from ito.render.gpu import GPU, MAX_SLOT_COUNT, slot_budget
+from ito.render.gpu import GPU, MAX_SLOT_COUNT
 from ito.render.performance import Performance
 from ito.render.scene import FloatArray
 from ito.render.video import VideoPanel
@@ -96,31 +96,15 @@ class DesktopWindow:
                 name in self.context.info["GL_RENDERER"].lower()
                 for name in ("llvmpipe", "softpipe", "software")
             )
-            buffer_limit = self.context.info["GL_MAX_SHADER_STORAGE_BLOCK_SIZE"]
             self.gpu = GPU() if "nvidia" in self.context.info["GL_VENDOR"].lower() else None
-            free_bytes = self.gpu.free if self.gpu and self.gpu.library else None
-            if "GL_NVX_gpu_memory_info" in self.context.extensions:
-                available = int(GL.glGetIntegerv(0x9049)) * 1024
-                free_bytes = available if free_bytes is None else min(available, free_bytes)
-            self.splat_limit = (
-                16_384
-                if software
-                else max(1, slot_budget(free_bytes, buffer_limit))
-                if free_bytes is not None
-                else min(MAX_SLOT_COUNT, buffer_limit // 64, 262_144)
-            )
-            self.renderer = GaussianRenderer(self.context, live_capacity=self.splat_limit)
+            # Only OpenGL's buffer size is fixed; the worker fits splats to free VRAM live.
+            buffer_limit = self.context.info["GL_MAX_SHADER_STORAGE_BLOCK_SIZE"]
+            self.splat_limit = 16_384 if software else min(MAX_SLOT_COUNT, buffer_limit // 64)
+            self.renderer = GaussianRenderer(self.context)
             self.video_panel = VideoPanel(self.context)
             self.max_splats = min(
                 self.splat_limit,
-                max_splats
-                or load_budget(
-                    default_budget(
-                        self.context.info["GL_RENDERER"],
-                        free_bytes=free_bytes,
-                        buffer_limit=buffer_limit,
-                    )
-                ),
+                max_splats or load_budget(default_budget(self.context.info["GL_RENDERER"])),
             )
             if self.gpu is not None:
                 self.gpu.start()
@@ -307,6 +291,7 @@ class DesktopWindow:
                 flat_video=current.flat_video,
                 reconstruction_status=current.status.reconstruction,
                 link=current.status.link,
+                vram=self.gpu.used() if self.gpu is not None else None,
             )
             performance = self.performance.completed(
                 now,

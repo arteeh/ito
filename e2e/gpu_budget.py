@@ -391,14 +391,6 @@ def main():
                 )
             )
         view = View(eye_intrinsics)
-        if args.incremental:
-            from ito.render.renderer import GaussianRenderer
-
-            with view.context:
-                view.renderer.close()
-                view.renderer = GaussianRenderer(
-                    view.context, live_capacity=max(524288, args.capacity)
-                )
         if args.target_format != "f4":
             with view.context:
                 view.target.release()

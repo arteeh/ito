@@ -13,7 +13,7 @@ from .scene import FloatArray, GaussianBuffer
 
 
 class GaussianRenderer:
-    def __init__(self, context: moderngl.Context, *, live_capacity=0):
+    def __init__(self, context: moderngl.Context):
         if context.version_code < 430:
             raise RuntimeError("Ito needs OpenGL 4.3 compute shaders (Mesa llvmpipe is supported)")
         self.context = context
@@ -42,9 +42,6 @@ class GaussianRenderer:
         self.capacity = 0
         self.slot_capacity = 0
         self.live = None
-        self.live_capacity = live_capacity
-        if live_capacity:
-            self._allocate_live(live_capacity, keep=False)
         self.stride = 4
         self.degree = 0
 
@@ -74,8 +71,8 @@ class GaussianRenderer:
         self.fade_seconds = 0.0
         self.uploaded_bytes += scene.records.nbytes
 
-    def _allocate_live(self, required, *, keep):
-        capacity = max(required, self.live_capacity)
+    def _allocate_live(self, capacity, *, keep):
+        """Exactly the producer's slots: it grows them on demand and gives them back."""
         sort_capacity = max(1024, 1 << max(0, capacity - 1).bit_length())
         limit = self.context.info["GL_MAX_SHADER_STORAGE_BLOCK_SIZE"]
         if max(capacity * 64, sort_capacity * 8) > limit:
@@ -90,14 +87,18 @@ class GaussianRenderer:
         live = np.zeros(capacity, dtype=bool)
         if self.scene_buffer is not None:
             if keep:
-                self.context.copy_buffer(scene, self.scene_buffer, size=self.slot_capacity * 64)
-                live[: self.slot_capacity] = self.live
+                kept = min(capacity, self.slot_capacity)
+                self.context.copy_buffer(scene, self.scene_buffer, size=kept * 64)
+                live[:kept] = self.live[:kept]
             self.scene_buffer.release()
             self.order.release()
         self.scene_buffer, self.order, self.live = scene, order, live
         self.slot_capacity = capacity
         if not keep:
             self.draw_count = 0
+        elif self.draw_count > capacity:
+            occupied = np.flatnonzero(live)
+            self.draw_count = int(occupied[-1]) + 1 if len(occupied) else 0
         self.capacity = max(1024, 1 << max(0, self.draw_count - 1).bit_length())
 
     def apply(self, update) -> bool:
@@ -117,7 +118,7 @@ class GaussianRenderer:
             self.staging_fences[slot] = None
         required = update.capacity
         new_scene = self.epoch != update.epoch
-        if self.live is None or required > self.slot_capacity:
+        if self.live is None or required != self.slot_capacity:
             self._allocate_live(required, keep=bool(self.fade_seconds and not new_scene))
         elif not self.fade_seconds or new_scene:
             self.scene_buffer.clear()

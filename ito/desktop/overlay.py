@@ -144,11 +144,16 @@ class Overlay:
                 ("Reconstruction", "scene_hz", "frames/s"),
                 ("Capture to visible", "capture_to_visible_ms", "ms"),
                 ("GPU busy", "gpu_busy_pct", "%"),
-                ("Slot pool", "slot_fill_pct", "%"),
             ):
                 value = values.get(key)
                 text = "--" if value is None else f"{value:.1f}"
                 imgui.text(f"{label}: {text} {unit}")
+            # Splats in the scene of the limit now: Max splats, or less if VRAM is short.
+            used, limit = values.get("slot_count"), values.get("splat_limit")
+            splats = "--" if used is None or limit is None else f"{used:,} / {limit:,}"
+            vram = values.get("vram")
+            memory = "--" if vram is None else f"{vram[0] / 2**30:.1f} / {vram[1] / 2**30:.1f} GiB"
+            imgui.text(f"Splats: {splats} | VRAM {memory}")
         if xr_mode:
             imgui.text("Aim + trigger to select | stick to drive")
             imgui.text("B e-stop | X stop | A resume | Y recenter")

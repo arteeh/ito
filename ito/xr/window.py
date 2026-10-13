@@ -437,6 +437,7 @@ class XRWindow(DesktopWindow):
                         link=current.status.link,
                         xr_frame_interval_ms=dt * 1000,
                         display_period_ms=period * 1000,
+                        vram=self.gpu.used() if self.gpu is not None else None,
                     )
                     performance = self.performance.completed(
                         now,

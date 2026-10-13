@@ -10,15 +10,15 @@ at most a quarter-period; clean frames release it. Persistent lateness cannot re
 a pause longer than the frame period and starve reconstruction. CUDA priority cannot preempt an executing kernel or reserve
 resources against GL, WDDM or a headset compositor.
 
-At startup, dedicated free VRAM sizes scene storage, subject to GL buffer limits:
-1/32 of free memory after **`GPU_HEADROOM_BYTES = 1,500,000,000`**, accounting for
-records and sort storage. Software rendering retains its small scene. Saved/manual
-budgets may choose fewer slots. After render allocation and model loading, remaining
-free VRAM sizes Torch/CuPy caching pools (80/20 for SLAM). CUDA free-memory readings
-are bounded by NVML's dedicated free memory when available. Pool limits prevent Ito's
-allocators from spilling into WDDM shared memory; external allocations after startup
-can still consume that allowance. Unused caches are released under memory pressure.
-There is no fixed 6 GB or 524,288-slot ceiling.
+No fixed VRAM shares or pool limits. The worker builds its backend (MASt3R's weights
+first), then twice a second reads free VRAM (CUDA, bounded by NVML's dedicated free
+memory). Below a 512 MiB margin it releases Torch/CuPy cached blocks; if still short,
+it lowers the splat limit, fading the least recently seen splats, moves the rest below
+the new limit and gives the slots back, so the GL buffer shrinks too. With more than
+twice the margin free, the limit grows again. Slots are allocated on demand, doubling
+up to the limit. The limit is the pilot's Max splats (default 524,288, which also bounds
+per-frame sorting and drawing) or less when VRAM is short; GL's buffer size is the only
+fixed ceiling. Releases and shrinks are logged.
 
 Slot pressure fades the oldest observations, reserves space for incoming detail and
 prioritizes eviction packets so acknowledgements release victims. Pressure victims
@@ -30,14 +30,14 @@ logs expose dirty-slot count and the oldest pending capture age.
 
 The overlay and motion-sheet headers show only visible reconstruction frames/s,
 latest capture-to-visible ms, whole-device GPU busy % (NVML, otherwise unavailable),
-and occupied slot %. A frame counts once its first changed packet completes on GL,
+and one memory line: splats in the scene of the current limit, and device VRAM in use. A frame counts once its first changed packet completes on GL,
 with its actual source timestamp; pose-only calls and evictions do not count. This
 measures GL completion, not physical scanout or complete publication of every slot.
 `ITO_TIMELINE` adds `backend_frame`, `display_statistics` and `run_summary` events.
 `--metrics` keeps frame JSONL and writes `<stem>.summary.json`; `ITO_RECORD` retains
 snapshots in `pilot/frames.jsonl` and the full summary in `summary.json`. Logs include
 latency p50/p95, render p99/deadline misses, matched %, input age/skips, CUDA scope
-calls/time, pool limits/peaks and cooldown state. Rolling percentiles cover 10 seconds;
+calls/time, pool peaks, splat limit, allocated slots and cooldown state. Rolling percentiles cover 10 seconds;
 scene rate covers 5 seconds. Whole-run histograms report their bin precision. CUDA
 scope intervals include host launch gaps and contention; they are not GPU utilization.
 Desktop deadlines include wake lateness; XR completion timing starts after runtime
