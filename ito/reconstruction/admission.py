@@ -51,7 +51,6 @@ class Admission:
         self.pause_until = context.RawValue("d", 0)
         self.last_progress = context.RawValue("d", 0)
         self.memory_peak = context.RawValue("Q", 0)
-        self.memory_limit = context.RawValue("Q", 0)
         self.gpu_busy = context.RawValue("d", -1)
         self.memory_pressure = context.RawValue("b", False)
         self.active_seconds = context.RawValue("d", 0)
@@ -65,8 +64,6 @@ class Admission:
         self.cooldown = 0.0
         self.recovered_at = 0.0
         self.stream = self.torch_stream = None
-        self.gpu = self.xp = self.torch = None
-        self.next_memory_check = 0.0
 
     def completed(self, began, period):
         """After both eyes and UI complete on GL; no render-side lock or CUDA wait."""
@@ -100,13 +97,8 @@ class Admission:
         """Startup transfers finish once before changing streams; never during display."""
         import sys
 
-        from .memory import configure_pools
-
-        self.xp = xp
         xp.cuda.get_current_stream().synchronize()
-        torch = self.torch = sys.modules.get("torch")
-        self.gpu, torch_limit, cupy_limit = configure_pools(xp, torch)
-        self.memory_limit.value = torch_limit + cupy_limit
+        torch = sys.modules.get("torch")
         if torch is not None:
             torch.cuda.synchronize()
             self.torch_stream = torch.cuda.Stream(priority=0)
@@ -118,21 +110,6 @@ class Admission:
         if self.memory_used is not None:
             used = self.memory_used()
             self.memory_peak.value = max(used, self.memory_peak.value)
-        if self.xp is not None and clock.now() >= self.next_memory_check:
-            from ito.render.gpu import GPU_HEADROOM_BYTES
-
-            from .memory import free_memory
-
-            self.next_memory_check = clock.now() + 0.5
-            free, _ = self.xp.cuda.runtime.memGetInfo()
-            free = free_memory(free, self.gpu)
-            self.gpu_busy.value = -1 if self.gpu.busy is None else self.gpu.busy
-            self.memory_pressure.value = free < GPU_HEADROOM_BYTES
-            if self.memory_pressure.value:
-                # Cached, unused blocks can be returned without dropping live geometry.
-                self.xp.get_default_memory_pool().free_all_blocks()
-                if self.torch is not None:
-                    self.torch.cuda.empty_cache()
 
     def collect(self):
         while self.pending and event_done(self.pending[0][1]):

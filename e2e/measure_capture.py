@@ -69,6 +69,7 @@ def main():
         voxel_size=0.04,
         fade_seconds=0.5,
     )
+    backend.grow(args.budget)  # Every slot up front: snapshots compare whole arrays.
     import torch
 
     start = rows[0]["captured"]

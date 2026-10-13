@@ -4,13 +4,14 @@ import json
 import logging
 import multiprocessing as mp
 import os
+import sys
 import traceback
 
 import numpy as np
 
 from ito import clock
 from ito.protocol import Intrinsics
-from ito.render.gpu import MAX_SLOT_COUNT, slot_budget
+from ito.render.gpu import MAX_SLOT_COUNT
 from ito.render.pose import validate_pose
 
 from .admission import GPU_STAGES, Admission
@@ -23,22 +24,19 @@ __all__ = ["Reconstruction", "SplatUpdate", "default_budget"]
 log = logging.getLogger(__name__)
 # A worker gets this long to see the stop flag; one busy in a step that never ends is killed.
 STOP_WAIT = 0.5
+# Max splats also bounds sorting and drawing per frame: 2^19 kept 90 Hz stereo on an
+# RTX 4070 Ti with a full scene. VRAM may hold fewer; the worker budgets that live.
+DEFAULT_MAX_SPLATS = 524_288
 
 
-def default_budget(
-    renderer: str = "",
-    *,
-    free_bytes=None,
-    buffer_limit=1 << 27,
-) -> int:
+def default_budget(renderer: str = "") -> int:
     if any(name in renderer.lower() for name in ("llvmpipe", "softpipe", "software")):
         return 16_384
-    if free_bytes is not None:
-        return max(1, slot_budget(free_bytes, buffer_limit))
-    return 262_144
+    return DEFAULT_MAX_SPLATS
 
 
 def _run(recon):
+    vram = None
     try:
         robot_first = recon.backend == "slam" and recon.tracking_mode == "robot"
         if robot_first:
@@ -68,6 +66,10 @@ def _run(recon):
         else:
             backend = RGBDBackend(recon.budget.value, recon.intrinsics, **recon.options)
         backend.bind_admission(recon.admission)
+        if backend.xp is not np:
+            from .memory import VRAM
+
+            vram = VRAM(backend.xp, sys.modules.get("torch"), recon.notes.send)
         sequence = 0
         # ITO_TIMELINE names a file for one line per frame the worker took: what became of it.
         timeline = os.environ.get("ITO_TIMELINE")
@@ -75,6 +77,7 @@ def _run(recon):
         cursor = 0
         motion_cursor = 0
         revision = 0
+        published_slots = len(backend.keys)
         captured = recon.epoch
         published_capture = recon.epoch
         # A pilot app that died without closing it would otherwise leave it holding the GPU.
@@ -82,8 +85,22 @@ def _run(recon):
         while not recon.stopped.value and parent.is_alive():
             now = clock.now() - recon.epoch
             backend.expire(now, recon.ring.last_acknowledged())
-            if backend.budget != recon.budget.value:
-                backend.resize(recon.budget.value, now)
+            limit = recon.budget.value
+            if vram is not None:
+                fit = vram.check(len(backend.keys), len(backend.keys) <= backend.budget)
+                limit = limit if fit is None else min(limit, fit)
+                recon.admission.memory_pressure.value = vram.pressure
+                recon.admission.gpu_busy.value = -1 if vram.gpu.busy is None else vram.gpu.busy
+            if limit != backend.budget:
+                retired = backend.resize(limit, now)
+                recon.splat_limit.value = limit
+                if retired:
+                    recon.notes.send(
+                        f"Splat limit {limit:,}: the {retired:,} least recently seen fade out"
+                    )
+            if len(backend.keys) > backend.budget and backend.compact():
+                recon.notes.send(f"Splat slots shrunk to {len(backend.keys):,}")
+            recon.slot_capacity.value = len(backend.keys)
             if robot_first:
                 rows, motion_cursor = recon.motion_ring.read(motion_cursor)
                 backend.add_motion(rows)
@@ -163,7 +180,8 @@ def _run(recon):
                         backend_calls=recon.integrated.value,
                         dirty_slots=recon.dirty_slots.value,
                         retiring_slots=recon.retiring_slots.value,
-                        slot_capacity=recon.budget.value,
+                        slot_capacity=len(backend.keys),
+                        splat_limit=backend.budget,
                         cuda_scope_seconds=recon.admission.active_seconds.value,
                         cuda_stages={
                             name: dict(
@@ -173,7 +191,6 @@ def _run(recon):
                             for i, name in enumerate(GPU_STAGES)
                         },
                         cuda_memory_peak_bytes=recon.admission.memory_peak.value,
-                        cuda_pool_limit_bytes=recon.admission.memory_limit.value,
                         gpu_busy_pct=recon.admission.gpu_busy.value,
                         memory_pressure=bool(recon.admission.memory_pressure.value),
                         render_backoffs=recon.admission.overruns.value,
@@ -209,7 +226,8 @@ def _run(recon):
                 indices = np.concatenate((ordered[eviction], ordered[~eviction]))[
                     : recon.ring.batch
                 ]
-                if not len(indices):
+                # A changed slot count must reach GL even with nothing dirty.
+                if not len(indices) and len(backend.keys) == published_slots:
                     break
                 contributing = backend.sequences[indices] > 0
                 packet_capture = max(
@@ -229,10 +247,12 @@ def _run(recon):
                     backend.captures[indices],
                 ):
                     break
+                published_slots = len(backend.keys)
                 published_capture = packet_capture
                 retiring = indices[backend.retiring[indices]]
                 backend.retire_revision[retiring] = revision
-                cursor = (int(indices[-1]) + 1) % len(backend.keys)
+                if len(indices):
+                    cursor = (int(indices[-1]) + 1) % len(backend.keys)
                 backend.dirty[indices] = False
                 revision += 1
             recon.scene_slots.value = backend.count
@@ -254,9 +274,10 @@ def _run(recon):
         cause = "".join(traceback.format_exception(exc))
         recon.errors.send(message.splitlines()[0][:500] + "\n" + cause[-6000:])
     finally:
-        if recon.admission.gpu is not None:
-            recon.admission.gpu.close()
+        if vram is not None:
+            vram.close()
         recon.errors.close()
+        recon.notes.close()
 
 
 class Reconstruction:
@@ -337,17 +358,23 @@ class Reconstruction:
         self.captured = context.RawValue("d", 0)
         self.measured = context.RawValue("b", False)
         self.sequence = context.RawValue("Q", 0)
-        self.budget = context.RawValue("I", max_splats)
+        self.budget = context.RawValue("I", max_splats)  # The pilot's Max splats.
+        self.splat_limit = context.RawValue("I", max_splats)  # What also fits in VRAM.
+        self.slot_capacity = context.RawValue("I", 0)
         self.input_lock = context.Lock()
         self.stopped = context.RawValue("b", False)
         self.admission = Admission(context, self.stopped)
         reader, self.errors = context.Pipe(duplex=False)
+        # The worker has no log file of its own; what it notes goes to the pilot's.
+        notes, self.notes = context.Pipe(duplex=False)
         self.process = None
         process = context.Process(target=_run, args=(self,), name="ito-reconstruction")
         process.start()
         self.process = process
         self.errors.close()
         self.errors = reader
+        self.notes.close()
+        self.notes = notes
         self.closed = False
 
     def statistics(self):
@@ -360,8 +387,10 @@ class Reconstruction:
             else None,
             blurred_frames=self.blurred.value,
             slot_count=self.scene_slots.value,
-            slot_capacity=self.budget.value,
-            slot_fill_pct=100 * self.scene_slots.value / max(1, self.budget.value),
+            slot_capacity=self.slot_capacity.value,
+            splat_limit=self.splat_limit.value,
+            max_splats=self.budget.value,
+            slot_fill_pct=100 * self.scene_slots.value / max(1, self.splat_limit.value),
             retiring_slots=self.retiring_slots.value,
             dirty_slots=self.dirty_slots.value,
             oldest_dirty_age_ms=(clock.now() - self.oldest_dirty_capture.value) * 1000
@@ -379,7 +408,6 @@ class Reconstruction:
             },
             cuda_completed_chunks=self.admission.chunks.value,
             cuda_memory_peak_bytes=self.admission.memory_peak.value,
-            cuda_pool_limit_bytes=self.admission.memory_limit.value,
             memory_pressure=bool(self.admission.memory_pressure.value),
             render_backoffs=self.admission.overruns.value,
             throttle_remaining_ms=max(0, self.admission.pause_until.value - clock.now()) * 1000,
@@ -505,6 +533,11 @@ class Reconstruction:
             message = "Reconstruction process exited unexpectedly"
         if message is not None:
             raise RuntimeError(message)
+        try:
+            while self.notes.poll():
+                log.info("Reconstruction: %s", self.notes.recv())
+        except (EOFError, OSError):
+            pass
         if not self.process.is_alive():
             raise RuntimeError(f"Reconstruction process exited ({self.process.exitcode})")
         return self.ring.poll()
@@ -528,6 +561,7 @@ class Reconstruction:
                 if self.process.is_alive():
                     log.error("Reconstruction process %d did not exit", self.process.pid)
             self.errors.close()
+            self.notes.close()
 
     def __enter__(self):
         return self

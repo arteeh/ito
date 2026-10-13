@@ -3,10 +3,6 @@
 import ctypes as ct
 import threading
 
-GPU_HEADROOM_BYTES = 1_500_000_000
-# Scene + power-of-two sort storage. Leave most memory for inference, not slots.
-GRAPHICS_MEMORY_SHARE = 1 / 32
-SLOT_GPU_BYTES = 80
 MAX_SLOT_COUNT = (1 << 31) - 1  # ImGui's signed count; slot IDs on the wire are uint32.
 
 
@@ -61,6 +57,12 @@ class GPU:
         except RuntimeError:
             self.busy = None
 
+    def used(self):
+        """Device-wide (used, total) bytes as last sampled; None without NVML."""
+        if self.library is None or not self.total:
+            return None
+        return self.total - self.free, self.total
+
     def start(self):
         if self.library is not None and self.thread is None:
             self.thread = threading.Thread(target=self._sample, name="ito-gpu", daemon=True)
@@ -83,9 +85,3 @@ class GPU:
         if self.library is not None:
             self.library.nvmlShutdown()
             self.library = None
-
-
-def slot_budget(free_bytes, buffer_limit):
-    memory = max(0, free_bytes - GPU_HEADROOM_BYTES) * GRAPHICS_MEMORY_SHARE
-    limit = min(MAX_SLOT_COUNT, buffer_limit // 64, int(memory // SLOT_GPU_BYTES))
-    return 1 << (limit.bit_length() - 1) if limit else 0

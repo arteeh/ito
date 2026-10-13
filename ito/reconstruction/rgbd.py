@@ -11,12 +11,30 @@ import numpy as np
 
 LEVELS = 32  # Power-of-two cell sizes from 2^-16 to 2^15 world units.
 KEEP = 1e30  # Fade deadline of a splat nothing has evicted: never.
+# Slots are allocated on demand, doubling up to the budget: the GL buffer holds a scene's
+# own splats, not its limit.
+FIRST_SLOTS = 65_536
+# A key no voxel has (voxel keys use bits 0-61): a moved splat's fading original.
+MOVED = 1 << 62
+# Per-slot state: type, value in an empty slot, shape per slot.
+SLOT_FIELDS = {
+    "records": (np.float32, 0, (4, 4)),
+    "keys": (np.int64, -1, ()),
+    "seen": (np.float64, -np.inf, ()),
+    "retiring": (bool, False, ()),
+    "pressure_victims": (bool, False, ()),
+    "dirty": (bool, False, ()),
+    "retire_revision": (np.float64, np.inf, ()),
+    "release_after": (np.float64, np.inf, ()),
+    "sequences": (np.uint64, 0, ()),
+    "captures": (np.float64, 0, ()),
+}
 
 
 class RGBDBackend:
     def __init__(
         self,
-        capacity,
+        budget,
         intrinsics,
         *,
         voxel_size=0.04,
@@ -45,19 +63,12 @@ class RGBDBackend:
                 raise RuntimeError("CUDA reconstruction needs an NVIDIA CUDA device")
         self.intrinsics = intrinsics
         self.voxel_size, self.fade = voxel_size, fade_seconds
-        self.records = np.zeros((capacity, 4, 4), np.float32)
-        self.keys = np.full(capacity, -1, np.int64)
-        self.seen = np.full(capacity, -np.inf)
-        self.retiring = np.zeros(capacity, bool)
-        self.pressure_victims = np.zeros(capacity, bool)
-        self.dirty = np.zeros(capacity, bool)
-        self.retire_revision = np.full(capacity, np.inf)
-        self.release_after = np.full(capacity, np.inf)
+        for name, (dtype, _, shape) in SLOT_FIELDS.items():
+            setattr(self, name, np.zeros((0, *shape), dtype))
+        self.grow(min(budget, FIRST_SLOTS))
         self.source_sequence = 0
         self.source_captured = 0.0
-        self.sequences = np.zeros(capacity, np.uint64)
-        self.captures = np.zeros(capacity)
-        self.budget = capacity
+        self.budget = budget
         self.refreshed = 0
         xp = self.xp
         y, x = xp.mgrid[: intrinsics.height, : intrinsics.width]
@@ -94,24 +105,46 @@ class RGBDBackend:
     def count(self):
         return int(np.count_nonzero(self.keys >= 0))
 
+    def grow(self, slots):
+        for name, (dtype, empty, shape) in SLOT_FIELDS.items():
+            extra = np.full((slots - len(self.keys), *shape), empty, dtype)
+            setattr(self, name, np.concatenate((getattr(self, name), extra)))
+
     def resize(self, budget, now):
-        if budget > len(self.keys):
-            extra = budget - len(self.keys)
-            self.records = np.pad(self.records, ((0, extra), (0, 0), (0, 0)))
-            self.keys = np.pad(self.keys, (0, extra), constant_values=-1)
-            self.seen = np.pad(self.seen, (0, extra), constant_values=-np.inf)
-            self.retiring = np.pad(self.retiring, (0, extra))
-            self.pressure_victims = np.pad(self.pressure_victims, (0, extra))
-            self.sequences = np.pad(self.sequences, (0, extra))
-            self.captures = np.pad(self.captures, (0, extra))
-            self.dirty = np.pad(self.dirty, (0, extra))
-            self.retire_revision = np.pad(self.retire_revision, (0, extra), constant_values=np.inf)
-            self.release_after = np.pad(self.release_after, (0, extra), constant_values=np.inf)
+        """A new splat limit; returns how many of the longest-unseen splats it retires.
+
+        Slots grow on demand; a smaller budget gives its slots back through compact().
+        """
         self.budget = budget
         excess = max(0, self.count - budget - int(self.retiring.sum()))
         candidates = np.flatnonzero((self.keys >= 0) & ~self.retiring)
         if excess:
             self.retire(self.oldest(candidates, excess), pressure=True)
+        return excess
+
+    def compact(self):
+        """Move live splats from slots past the budget into free ones below it; once the
+        rest has faded, drop those slots. Returns whether the slot count changed."""
+        high = np.arange(self.budget, len(self.keys))
+        movers = high[(self.keys[high] >= 0) & ~self.retiring[high]]
+        free = np.flatnonzero(self.keys[: self.budget] < 0)
+        moved = min(len(movers), len(free))
+        if moved:
+            source, target = movers[:moved], free[:moved]
+            for name in SLOT_FIELDS:
+                array = getattr(self, name)
+                array[target] = array[source]
+            self.sequences[target] = 0  # A move is no new observation.
+            self.dirty[target] = True
+            # The original fades out under its copy, never matched again: observations
+            # refresh only the copy.
+            self.keys[source] = MOVED + source
+            self.retire(source, pressure=True)
+        if (self.keys[self.budget :] >= 0).any():
+            return False
+        for name in SLOT_FIELDS:
+            setattr(self, name, getattr(self, name)[: self.budget].copy())
+        return True
 
     def oldest(self, candidates, n):
         # A partial selection: a full budget is too many slots to sort every frame.
@@ -253,9 +286,13 @@ class RGBDBackend:
         self.records[slots, 3, 3] = 0
         self.refreshed += len(slots)
         refreshed_slots, previous_seen = slots.copy(), self.seen[slots].copy()
-        free = np.flatnonzero(self.keys < 0)
-        room = max(0, self.budget - self.count)
         new = np.flatnonzero(~matched)
+        # Keep the same spare as the pressure rule below, so growth comes before eviction.
+        needed = self.count + len(new) + self.budget // 8
+        if len(self.keys) < min(needed, self.budget):
+            self.grow(min(self.budget, max(needed, 2 * len(self.keys))))
+        free = np.flatnonzero(self.keys[: self.budget] < 0)
+        room = max(0, self.budget - self.count)
         admitted = min(len(new), len(free), room)
         # Spread admissions over the image instead of favoring one sorted spatial edge.
         selected = new[np.linspace(0, len(new) - 1, admitted, dtype=int)] if admitted else new[:0]
