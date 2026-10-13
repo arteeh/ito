@@ -100,7 +100,7 @@ class MASt3RFrontend:
         self.keyframe_count = 0
 
     def bind_admission(self, admission):
-        from .admission import bind_native, bind_model
+        from .admission import bind_model, bind_native
 
         self.admission_hooks = bind_model(self.model, admission)
         bind_native(admission)

@@ -73,7 +73,7 @@ class Keyframes(list):
 
 class VisionSLAMBackend(RGBDBackend):
     def bind_admission(self, admission):
-        from .admission import bind_native, bind_model
+        from .admission import bind_model, bind_native
 
         super().bind_admission(admission)
         self.admission_hooks = bind_model(self.model, admission)
