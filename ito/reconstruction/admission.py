@@ -135,7 +135,7 @@ class Admission:
                     self.torch.cuda.empty_cache()
 
     def collect(self):
-        while self.pending and self.pending[0][1].query():
+        while self.pending and event_done(self.pending[0][1]):
             start, end, elapsed, kind = self.pending.popleft()
             seconds = elapsed(start, end) / 1000
             self.active_seconds.value += seconds
@@ -194,6 +194,12 @@ class Admission:
                 self.collect()
                 self.check_memory()
                 self.last_progress.value = clock.now()
+
+
+def event_done(event):
+    """Torch CUDA events expose query(); CuPy events expose the done property."""
+    query = getattr(event, "query", None)
+    return query() if query is not None else event.done
 
 
 def bind_model(model, admission):
