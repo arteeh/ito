@@ -144,3 +144,24 @@ def _write_recent(entries):
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def runtime_path():
+    return settings_path().parent / "openxr-runtime.json"
+
+
+def xr_runtime():
+    """The OpenXR runtime manifest the pilot last flew with, or None."""
+    try:
+        return str(json.loads(runtime_path().read_text())["manifest"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def remember_xr_runtime(manifest):
+    try:
+        path = runtime_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"manifest": manifest}) + "\n")
+    except OSError as exc:
+        logging.getLogger(__name__).warning("Cannot save the OpenXR runtime: %s", exc)
