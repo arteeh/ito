@@ -91,6 +91,9 @@ def _run(recon):
                 limit = limit if fit is None else min(limit, fit)
                 recon.admission.memory_pressure.value = vram.pressure
                 recon.admission.gpu_busy.value = -1 if vram.gpu.busy is None else vram.gpu.busy
+                recon.vram_free.value = vram.free_bytes
+                recon.vram_cached.value = vram.cached_bytes
+                recon.cache_releases.value = vram.releases
             if limit != backend.budget:
                 retired = backend.resize(limit, now)
                 recon.splat_limit.value = limit
@@ -142,6 +145,7 @@ def _run(recon):
                     else:
                         backend.integrate(*frame, now)
                 recon.work_seconds.value = clock.now() - began
+                recon.work_total.value += recon.work_seconds.value
                 recon.integrated.value += 1
                 recon.matched.value = getattr(backend, "matched", getattr(backend, "tracked", 0))
                 recon.blurred.value = getattr(backend, "blurred", 0)
@@ -336,6 +340,10 @@ class Reconstruction:
         self.dirty_slots = context.RawValue("I", 0)
         self.oldest_dirty_capture = context.RawValue("d", 0)
         self.work_seconds = context.RawValue("d", 0)
+        self.work_total = context.RawValue("d", 0)  # Seconds integrating, for per-second means.
+        self.vram_free = context.RawValue("Q", 0)
+        self.vram_cached = context.RawValue("Q", 0)  # Torch/CuPy blocks held for reuse.
+        self.cache_releases = context.RawValue("Q", 0)
         self.input_age_seconds = context.RawValue("d", 0)
         self.skipped_inputs = context.RawValue("Q", 0)
         self.tracking = context.RawValue("b", False)
@@ -397,6 +405,10 @@ class Reconstruction:
             if self.oldest_dirty_capture.value
             else None,
             backend_work_ms=self.work_seconds.value * 1000,
+            backend_work_total_s=self.work_total.value,
+            vram_free_mib=self.vram_free.value / 2**20,
+            vram_cached_mib=self.vram_cached.value / 2**20,
+            cache_releases=self.cache_releases.value,
             input_age_ms=self.input_age_seconds.value * 1000,
             skipped_input_frames=self.skipped_inputs.value,
             cuda_scope_seconds=self.admission.active_seconds.value,
