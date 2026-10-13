@@ -297,6 +297,8 @@ def main():
         parser.error("Allocated capacity must hold the occupied records")
     if args.capacity and not args.incremental:
         records = np.pad(records, ((0, args.capacity - occupied), (0, 0), (0, 0)))
+        records[occupied:, 1, :3] = 1
+        records[occupied:, 2, 0] = 1
     from scipy.spatial.transform import Rotation, Slerp
 
     pilot_rows = [
