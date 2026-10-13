@@ -6,6 +6,7 @@ Diagnostic timings are excluded from reference acceptance.
 """
 
 import json
+import os
 import time
 from copy import copy
 from pathlib import Path
@@ -17,6 +18,7 @@ from OpenGL import GL
 from ito.render.renderer import GaussianRenderer
 
 packets = []
+display_calls = []
 current = None
 original_apply = GaussianRenderer.apply
 
@@ -59,13 +61,42 @@ for owner, names in (
     for name in names:
         timed(owner, name)
 
+
+def display_call(owner, name):
+    original = getattr(owner, name)
+
+    def call(*args, **kwargs):
+        began, cpu = time.perf_counter(), time.thread_time()
+        try:
+            return original(*args, **kwargs)
+        finally:
+            elapsed = (time.perf_counter() - began) * 1000
+            if elapsed > 2:
+                display_calls.append(
+                    dict(
+                        call=name, start=began, ms=elapsed, cpu_ms=(time.thread_time() - cpu) * 1000
+                    )
+                )
+
+    setattr(owner, name, call)
+
+
+for owner, name in (
+    (GaussianRenderer, "sort"),
+    (GaussianRenderer, "draw"),
+    (moderngl.Context, "finish"),
+):
+    display_call(owner, name)
+
+
 original_worker = gpu_budget.load_worker
 
 
 def profiled_worker(args, *events):
     from gpu_cupti import Cupti
 
-    trace = Cupti(apis=True, allocations_only=True)
+    kernels = bool(os.environ.get("ITO_GPU_TRACE_KERNELS"))
+    trace = Cupti(apis=not kernels, allocations_only=not kernels)
     args = copy(args)
     args.profile = False
     with trace:
@@ -76,6 +107,10 @@ def profiled_worker(args, *events):
 if __name__ == "__main__":
     import sys
 
+    if "--kernels" in sys.argv:
+        sys.argv.remove("--kernels")
+        os.environ["ITO_GPU_TRACE_KERNELS"] = "1"
+        gpu_budget.load_worker = profiled_worker
     if "--apis" in sys.argv:
         sys.argv.remove("--apis")
         gpu_budget.load_worker = profiled_worker
@@ -84,3 +119,4 @@ if __name__ == "__main__":
         gpu_budget.main()
     finally:
         (output / "upload-calls.json").write_text(json.dumps(packets, indent=2))
+        (output / "display-calls.json").write_text(json.dumps(display_calls, indent=2))

@@ -100,10 +100,10 @@ class MASt3RFrontend:
         self.keyframe_count = 0
 
     def bind_admission(self, admission):
-        from .admission import bind_matching, bind_model
+        from .admission import bind_native, bind_model
 
         self.admission_hooks = bind_model(self.model, admission)
-        bind_matching(admission)
+        bind_native(admission)
 
     # -- poses between MASt3R's Sim3 map and Ito ----------------------------------------
 

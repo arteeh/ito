@@ -159,6 +159,12 @@ def main():
     }
     if len(visuals) != 2 or any(v["differing_frames"] for v in visuals.values()):
         failures.append("Frozen-image comparison missing or changed")
+    fuzz = {
+        name: json.loads((args.output / name / f"{name}.json").read_text())
+        for name in ("matching-fuzz", "solver-fuzz")
+    }
+    if fuzz["matching-fuzz"]["exact_comparisons"] != 24 or fuzz["solver-fuzz"]["exact_solves"] < 1:
+        failures.append("Native CUDA equivalence checks failed")
     quality = baseline(args.output / "baseline", args.original)
     for repeat in quality["comparisons"]:
         if repeat["png_identical"] != 35 or any(repeat["max_absolute_score_delta"].values()):
@@ -177,6 +183,7 @@ def main():
         pooled=pooled(references, args.output),
         baseline=quality,
         cuda_trace=trace,
+        native_fuzz=fuzz,
         visual=visuals,
         failures=failures,
         scope="offscreen production stereo GL, warmed shared load; no scanout/compositor",

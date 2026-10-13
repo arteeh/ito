@@ -12,12 +12,18 @@ def main():
     from pathlib import Path
 
     from ito.reconstruction import mast3r_runtime
-    from ito.reconstruction.admission import Admission, bind_matching
+    from ito.reconstruction.admission import Admission, bind_native
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--models", type=Path, required=True)
+    parser.add_argument("--models", type=Path)
+    parser.add_argument("--work", type=Path)
+    parser.add_argument("--out", type=Path)
+    parser.add_argument("--linux-work")
+    parser.add_argument("--distro")
     args = parser.parse_args()
-    mast3r_runtime.MODELS = args.models
+    if args.models is None and args.work is None:
+        parser.error("Provide --models or --work")
+    mast3r_runtime.MODELS = args.models or args.work / "pp/models"
     mast3r_runtime.prepare(print)
     import mast3r_slam_backends as native
     import torch
@@ -26,7 +32,7 @@ def main():
     original = {name: getattr(native, name) for name in ("iter_proj", "refine_matches")}
     context = mp.get_context("spawn")
     admission = Admission(context, context.RawValue("b", False))
-    bind_matching(admission)
+    bind_native(admission)
     admission.enabled.value = True
     from ito import clock
 
@@ -53,6 +59,18 @@ def main():
             expected = original["refine_matches"](image, queries, initial, 2, 3)
             assert torch.equal(actual[0], expected[0][:, :shorter])
     torch.cuda.synchronize()
+    if args.out:
+        import json
+
+        (args.out / "matching-fuzz.json").write_text(
+            json.dumps(
+                dict(
+                    exact_comparisons=24,
+                    fenced_chunks=admission.chunks.value,
+                    torch_peak_reserved_bytes=torch.cuda.max_memory_reserved(),
+                )
+            )
+        )
     print(
         "PASS: exact native outputs across query/batch boundaries; "
         f"{admission.chunks.value} fenced chunks"

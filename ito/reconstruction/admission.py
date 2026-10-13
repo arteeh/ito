@@ -12,8 +12,8 @@ MAX_SPLATS = 524_288
 MAX_CUDA_BYTES = 6_000_000_000
 GUARD_SECONDS = 0.002
 PUBLICATION_PACKETS = 2
-CHUNK_OPERATIONS = 64
-CHUNK_ENQUEUE_SECONDS = 0.001
+CHUNK_OPERATIONS = 8
+CHUNK_ENQUEUE_SECONDS = 0.00025
 MATCH_QUERIES = 4096
 
 
@@ -283,7 +283,7 @@ def bind_model(model, admission):
     return handles
 
 
-def bind_matching(admission):
+def bind_native(admission):
     """Bound upstream's native kernels, which bypass Torch's dispatch hooks.
 
     Each query is independent. Preserve the full descriptor/ray image, process
@@ -327,3 +327,22 @@ def bind_matching(admission):
             return outputs
 
         setattr(native, name, bounded)
+
+    for name in ("gauss_newton_points", "gauss_newton_rays", "gauss_newton_calib"):
+        original = getattr(native, name)
+
+        def solve(*args, original=original, name=name):
+            if not admission.enabled.value or args[-2] < 1:
+                return original(*args)
+            # Native solvers mutate poses and stop on the norm of their returned
+            # increment. Retain that rule while yielding between iterations.
+            result = None
+            for _ in range(args[-2]):
+                with admission.cuda_chunk(torch.cuda.synchronize, kind=name):
+                    result = original(*args[:-2], 1, args[-1])
+                    converged = torch.linalg.vector_norm(result[0]).item() < args[-1]
+                if converged:
+                    break
+            return result
+
+        setattr(native, name, solve)

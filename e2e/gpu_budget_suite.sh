@@ -23,6 +23,8 @@ PYTHON
     bash e2e/gpu_budget.sh "$out/$name" "$@" > "$out/$name.log" 2>&1
     cp "$out/$name-request.json" "$out/$name-complete.json"
 }
+ITO_GPU_ENTRY=e2e/gpu_matching.py run matching-fuzz
+ITO_GPU_ENTRY=e2e/gpu_solver_fuzz.py run solver-fuzz --load slam --admit --frames 2700 --warm-prefix 1560
 for count in 131072 262144 524288; do
     run "occupied-$count" --occupied "$count" --capacity 524288 --incremental --frames 900
 done
