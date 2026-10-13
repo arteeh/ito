@@ -61,9 +61,7 @@ def main():
     world.close()
     target.release()
     ctx.release()
-    print(
-        "PASS: real GL projection, full-resolution texture, free-space retirement, cap, invalid inputs"
-    )
+    print("PASS: GL projection, texture, free-space retirement, eviction, invalid inputs")
 
 
 if __name__ == "__main__":
