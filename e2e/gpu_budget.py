@@ -31,6 +31,7 @@ def fingerprint():
             "gpu_budget.py",
             "gpu_training.py",
             "gpu_memory.ps1",
+            "gpu_memory.py",
             "gpu_cupti.py",
             "gpu_trace.py",
         )
@@ -189,6 +190,7 @@ class Residency:
         self.samples = []
         self.owned = []
         self.coverage = []
+        self.query_ms = []
         self.pids = pids
         self.error = None
         self.stopped = threading.Event()
@@ -210,32 +212,27 @@ class Residency:
         self.thread.start()
 
     def run(self):
-        while not self.stopped.is_set():
-            try:
-                value = subprocess.check_output(
-                    [
-                        "C:/Windows/System32/nvidia-smi.exe",
-                        "--query-gpu=memory.used",
-                        "--format=csv,noheader,nounits",
-                        "--id=0",
-                    ],
-                    text=True,
-                    timeout=5,
-                )
-                self.samples.append((time.perf_counter(), int(value.strip())))
-                owned = self.process.stdout.readline()
-                if not owned:
-                    if self.stopped.is_set():
-                        return
-                    raise RuntimeError(self.process.stderr.read())
-                sample = json.loads(owned)
-                self.coverage.append(sample)
-                if sample["valid"] and all(pid in sample["found"] for pid in sample["targets"]):
-                    self.owned.append((time.perf_counter(), sample["bytes"]))
-            except Exception as exc:
-                self.error = str(exc)
-                return
-            self.stopped.wait(0.5)
+        from gpu_memory import device_memory
+
+        try:
+            with device_memory() as used_mib:
+                while not self.stopped.is_set():
+                    began = time.perf_counter()
+                    value = used_mib()
+                    self.query_ms.append((time.perf_counter() - began) * 1000)
+                    self.samples.append((time.perf_counter(), value))
+                    owned = self.process.stdout.readline()
+                    if not owned:
+                        if self.stopped.is_set():
+                            return
+                        raise RuntimeError(self.process.stderr.read())
+                    sample = json.loads(owned)
+                    self.coverage.append(sample)
+                    if sample["valid"] and all(pid in sample["found"] for pid in sample["targets"]):
+                        self.owned.append((time.perf_counter(), sample["bytes"]))
+                    self.stopped.wait(0.5)
+        except Exception as exc:
+            self.error = str(exc)
 
     def close(self):
         self.stopped.set()
@@ -608,7 +605,10 @@ def main():
                 if args.visual
                 else "90 Hz offscreen stereo GL completion; no compositor or scanout"
             ),
-            gpu_memory_scope="total device used MiB including non-Ito processes (conservative)",
+            gpu_memory_scope="persistent NVML total device use, including non-Ito processes",
+            gpu_memory_query_ms={
+                f"p{p:g}": float(np.percentile(residency.query_ms, p)) for p in (50, 99, 100)
+            },
             gpu_memory_peak_mib=max(v for _, v in residency.samples),
             gpu_memory_samples=residency.samples,
             ito_dedicated_peak_bytes=max(v for _, v in residency.owned),
