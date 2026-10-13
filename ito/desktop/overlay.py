@@ -125,8 +125,12 @@ class Overlay:
             | imgui.WindowFlags_.no_move
             | imgui.WindowFlags_.no_collapse,
         )
-        imgui.text(f"{status.link} | {status.robot}")
+        latency = "--" if status.latency_ms is None else f"{status.latency_ms:.0f} ms"
+        imgui.text(f"{status.link} | RTT {latency} | {fps:.0f} fps | {status.robot}")
         imgui.text_colored((1, 0.45, 0.4, 1) if status.e_stop else (0.85, 0.9, 0.95, 1), safety)
+        if not live:
+            scene_age = "file" if age is None else f"{age:.1f} s old"
+            imgui.text(f"{count:,} splats | scene {scene_age}")
         if live:
             values = performance or {}
             for label, key, unit in (
