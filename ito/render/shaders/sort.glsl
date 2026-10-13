@@ -1,12 +1,12 @@
 #version 430
-// Bitonic merges: distant pairs use SSBOs, each final 256-key merge stays local.
-layout(local_size_x = 256) in;
+// Bitonic merges: distant pairs use SSBOs, each final 1024-key merge stays local.
+layout(local_size_x = 1024) in;
 layout(std430, binding = 0) buffer Order { uvec2 order[]; };
 uniform uint capacity;
 uniform uint stage;
 uniform uint distance;
 uniform bool local_merge;
-shared uvec2 tile[256];
+shared uvec2 tile[1024];
 bool before(uvec2 a, uvec2 b) {
     return a.x > b.x || (a.x == b.x && a.y < b.y);
 }

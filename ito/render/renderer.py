@@ -18,7 +18,7 @@ class GaussianRenderer:
             raise RuntimeError("Ito needs OpenGL 4.3 compute shaders (Mesa llvmpipe is supported)")
         self.context = context
         shaders = files("ito.render").joinpath("shaders")
-        self.keys = context.compute_shader(shaders.joinpath("keys.glsl").read_text())
+        self.keys = context.compute_shader(shaders.joinpath("presort.glsl").read_text())
         self.sort_program = context.compute_shader(shaders.joinpath("sort.glsl").read_text())
         self.program = context.program(
             vertex_shader=shaders.joinpath("splat.vert").read_text(),
@@ -43,7 +43,7 @@ class GaussianRenderer:
     def upload(self, scene: GaussianBuffer) -> None:
         """Consume a stable published snapshot. The producer may reuse it after return."""
         count, stride, _ = scene.records.shape
-        capacity = max(256, 1 << max(0, count - 1).bit_length())
+        capacity = max(1024, 1 << max(0, count - 1).bit_length())
         limit = self.context.info["GL_MAX_SHADER_STORAGE_BLOCK_SIZE"]
         if max(count * stride * 16, capacity * 8) > limit:
             raise ValueError(f"Scene with {count:,} Gaussians exceeds OpenGL buffer limits")
@@ -70,7 +70,7 @@ class GaussianRenderer:
         required = update.capacity
         new_scene = self.epoch != update.epoch
         if self.fade_seconds == 0 or new_scene or required > self.draw_count:
-            capacity = max(256, 1 << max(0, required - 1).bit_length())
+            capacity = max(1024, 1 << max(0, required - 1).bit_length())
             limit = self.context.info["GL_MAX_SHADER_STORAGE_BLOCK_SIZE"]
             if max(required * 64, capacity * 8) > limit:
                 raise ValueError("Splat budget exceeds OpenGL buffer limits")
@@ -123,22 +123,21 @@ class GaussianRenderer:
         self.order.bind_to_storage_buffer(0)
         self.keys["view"].write(view.T.copy())
         self.keys["count"] = self.draw_count
-        self.keys["capacity"] = self.capacity
         self.keys["stride"] = self.stride
-        self.keys.run(group_x=self.capacity // 256)
+        self.keys.run(group_x=self.capacity // 1024)
         # A software GPU can block inside a barrier. ctypes releases the GIL so
         # tracking and the deadman sender keep running while the GPU catches up.
         GL.glMemoryBarrier(GL.GL_SHADER_STORAGE_BARRIER_BIT)
         self.sort_program["capacity"] = self.capacity
-        stage = 2
+        stage = 2048
         while stage <= self.capacity:
             self.sort_program["stage"] = stage
             distance = stage // 2
             while distance:
-                local = distance < 256
+                local = distance < 1024
                 self.sort_program["distance"] = distance
                 self.sort_program["local_merge"] = local
-                self.sort_program.run(group_x=self.capacity // 256)
+                self.sort_program.run(group_x=self.capacity // 1024)
                 GL.glMemoryBarrier(GL.GL_SHADER_STORAGE_BARRIER_BIT)
                 distance = 0 if local else distance // 2
             stage *= 2
