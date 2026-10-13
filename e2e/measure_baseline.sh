@@ -39,5 +39,12 @@ for repeat in 1 2 3; do
     done
     "$python" e2e/measure.py --work "$work" --out "$run_out" --ipd "${ITO_MEASURE_IPD:-0.064}" > "$run_out/images.log" 2>&1
 done
+for repeat in 1 2 3; do
+    env PYTHONPATH="$(wslpath -w "$root")" PYTHONUTF8=1 \
+        WSLENV=PYTHONPATH:PYTHONUTF8:PYTHONDONTWRITEBYTECODE \
+        flock "$work/../ceres.lock" timeout 1100 "$slam_python" e2e/measure_display.py \
+        "$(wslpath -w "$output/repeat-$repeat")" --work "$(wslpath -w "$work")" \
+        --ipd "${ITO_MEASURE_IPD:-0.064}" > "$output/repeat-$repeat/display.log" 2>&1
+done
 "$python" e2e/measure_audit.py "$output"
 echo "Baseline complete: $output"

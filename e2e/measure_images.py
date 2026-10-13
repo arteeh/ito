@@ -244,6 +244,9 @@ def evaluate(work, out, ipd):
             report["moments"][-1]["stereo"] = stereo
         if run == "sweep180":
             report["clips"] = clips(out, run, poses, room, view)
+            report["clips"] += clips(
+                out, run, poses, room, view, camera_index=452, prefix="bookshelf-"
+            )
         report[f"{run}_draw"] = timing(view.draw_ms)
         report[f"{run}_upload_ms"] = percentiles(view.upload_ms)
         view.close()
@@ -325,7 +328,7 @@ def stereo_error(left, right, i, ipd):
     )
 
 
-def clips(out, run, poses, room, view):
+def clips(out, run, poses, room, view, camera_index=525, prefix=""):
     import imageio.v2 as imageio
     from truth import align
 
@@ -334,6 +337,8 @@ def clips(out, run, poses, room, view):
     world = align(snaps[0]["first_pose"], poses[int(snaps[0]["first_index"])])
     results = []
     for kind in ("frozen-map-moving-head", "fixed-head-map-updates", "both"):
+        mode = kind
+        kind = prefix + kind
         path = out / f"{kind}.mp4"
         writer = imageio.get_writer(path, fps=30, macro_block_size=1)
         slow = imageio.get_writer(out / f"{kind}-slow.mp4", fps=10, macro_block_size=1)
@@ -342,11 +347,11 @@ def clips(out, run, poses, room, view):
         head_completion = []
         for n in range(61):
             k = min(n // 6, len(snaps) - 1)
-            snap = snaps[0] if kind == "frozen-map-moving-head" else snaps[k]
-            if n == 0 or (n % 6 == 0 and kind != "frozen-map-moving-head"):
+            snap = snaps[0] if mode == "frozen-map-moving-head" else snaps[k]
+            if n == 0 or (n % 6 == 0 and mode != "frozen-map-moving-head"):
                 view.upload(snap["records"])
-            camera = poses[525].copy()
-            if kind != "fixed-head-map-updates":
+            camera = poses[camera_index].copy()
+            if mode != "fixed-head-map-updates":
                 camera[:3, 3] += camera[:3, 0] * (0.03 * np.sin(n / 60 * 2 * np.pi))
             truth = room.draw(camera)
             began = time.perf_counter()
