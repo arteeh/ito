@@ -5,6 +5,7 @@ stream. Completed display frames feed a short cooldown when rendering runs late;
 stream priority is a scheduling hint, never a reservation or kernel preemption.
 """
 
+import time
 from collections import deque
 from contextlib import contextmanager
 
@@ -90,7 +91,9 @@ class Admission:
         while not self.stopped.value and (parent is None or parent.is_alive()):
             if self.available():
                 return True
-            self.wake.wait(min(0.005, max(0, self.pause_until.value - clock.now())))
+            # Sleep, not a semaphore timeout: on Windows a 1 ms semaphore wait
+            # takes ~10 ms (timer tick), which turns a 2 ms render backoff into 10.
+            time.sleep(min(0.002, max(0.0005, self.pause_until.value - clock.now())))
         return False
 
     def bind_stream(self, xp):
@@ -127,10 +130,13 @@ class Admission:
         self.collect()
         # Queue a few units ahead to hide launch overhead, without an entire model
         # already enqueued when a render miss asks us to back off. Query, don't fence.
+        # When full, wait on the oldest chunk itself (about a millisecond of GPU work)
+        # rather than polling: a polled 1 ms wait sleeps ~10 ms on Windows, leaving
+        # the GPU idle for reconstruction most of the time.
         while len(self.pending) >= MAX_PENDING_CHUNKS:
             if not self.acquire():
                 raise InterruptedError("Reconstruction stopped")
-            self.wake.wait(0.001)
+            self.pending[0][1].synchronize()
             self.collect()
         if not self.acquire():
             raise InterruptedError("Reconstruction stopped")
