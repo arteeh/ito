@@ -37,6 +37,8 @@ class GaussianRenderer:
         self.order = None
         self.count = 0
         self.capacity = 0
+        self.slot_capacity = 0
+        self.live = None
         self.stride = 4
         self.degree = 0
 
@@ -61,7 +63,8 @@ class GaussianRenderer:
         self.scene_buffer, self.order = buffer, order
         self.count, self.capacity, self.stride = count, capacity, stride
         self.degree = scene.sh_degree
-        self.draw_count = count
+        self.draw_count = self.slot_capacity = count
+        self.live = None
         self.fade_seconds = 0.0
         self.uploaded_bytes += scene.records.nbytes
 
@@ -69,7 +72,7 @@ class GaussianRenderer:
         """Scatter a bounded incremental packet on GPU; never read back the scene."""
         required = update.capacity
         new_scene = self.epoch != update.epoch
-        if self.fade_seconds == 0 or new_scene or required > self.draw_count:
+        if self.fade_seconds == 0 or new_scene or required > self.slot_capacity:
             capacity = max(1024, 1 << max(0, required - 1).bit_length())
             limit = self.context.info["GL_MAX_SHADER_STORAGE_BLOCK_SIZE"]
             if max(required * 64, capacity * 8) > limit:
@@ -79,17 +82,32 @@ class GaussianRenderer:
             order = self.context.buffer(reserve=capacity * 8)
             if self.scene_buffer is not None:
                 if self.fade_seconds and not new_scene:
-                    self.context.copy_buffer(scene, self.scene_buffer, size=self.draw_count * 64)
+                    self.context.copy_buffer(scene, self.scene_buffer, size=self.slot_capacity * 64)
                 self.scene_buffer.release()
                 self.order.release()
             self.scene_buffer, self.order = scene, order
-            self.capacity, self.draw_count = capacity, required
+            live = np.zeros(required, dtype=bool)
+            if self.fade_seconds and not new_scene:
+                live[: self.slot_capacity] = self.live
+            else:
+                self.draw_count = 0
+            self.live = live
+            self.slot_capacity = required
+            self.capacity = max(1024, 1 << max(0, self.draw_count - 1).bit_length())
         self.count = update.count
         self.stride, self.degree = 4, 0
         self.epoch, self.fade_seconds = update.epoch, update.fade_seconds
         n = len(update.indices)
         if not n:
             return
+        # Slot IDs are already CPU metadata. Bound sorting by the highest resident
+        # slot, not reserved capacity; holes remain valid stable IDs on the GPU.
+        self.live[update.indices] = update.records[:, 0, 3] > 0
+        self.draw_count = max(self.draw_count, int(update.indices.max()) + 1)
+        if not self.live[self.draw_count - 1]:
+            occupied = np.flatnonzero(self.live[: self.draw_count])
+            self.draw_count = int(occupied[-1]) + 1 if len(occupied) else 0
+        self.capacity = max(1024, 1 << max(0, self.draw_count - 1).bit_length())
         # Orphan staging storage so queued GPU reads never fence the next CPU upload.
         self.changes.orphan(max(self.changes.size, n * 64))
         self.slots.orphan(max(self.slots.size, n * 4))

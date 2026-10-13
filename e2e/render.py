@@ -105,6 +105,18 @@ def main():
         )
         stale = np.frombuffer(renderer.scene_buffer.read(size=64), np.float32).reshape(4, 4)
         assert stale[1, 3] == -1, "Delayed eviction revived expired geometry"
+        # Large reservations and tail eviction must not keep sorting empty slots.
+        renderer.apply(
+            SplatUpdate(np.array([12], np.uint32), live[:1], 1048576, 2, 4, epoch, epoch, 0.5)
+        )
+        renderer.draw(pose(), pose(), projection, target)
+        assert renderer.slot_capacity == 1048576
+        assert renderer.draw_count == 13 and renderer.capacity == 1024
+        renderer.apply(
+            SplatUpdate(np.array([12], np.uint32), removed, 1048576, 1, 5, epoch, epoch, 0.5)
+        )
+        renderer.draw(pose(), pose(), projection, target)
+        assert renderer.draw_count == 1
         print("Sparse GPU append/evict and capacity growth preserve resident splats")
 
         for degree in (0, 1, 2, 3):
