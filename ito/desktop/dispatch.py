@@ -106,7 +106,8 @@ class DisplayDispatch:
             try:
                 self.bind(self.context)
                 imgui.set_current_context(self.window.overlay.imgui)
-                draw()
+                with clock.display_priority():
+                    draw()
             except BaseException as exc:
                 self.failure = exc
             finally:

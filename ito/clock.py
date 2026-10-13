@@ -6,11 +6,12 @@ and CLOCK_MONOTONIC on Linux. Python 3.12's Windows time.monotonic ticks every 1
 
 import asyncio
 import contextlib
+import logging
 import sys
 from time import perf_counter as now
 from time import perf_counter_ns as now_ns
 
-__all__ = ["fine_timers", "now", "now_ns", "sleep_until"]
+__all__ = ["display_priority", "fine_timers", "now", "now_ns", "sleep_until"]
 
 
 @contextlib.contextmanager
@@ -49,6 +50,38 @@ def fine_timers():
     finally:
         if fine:
             winmm.timeEndPeriod(1)
+
+
+@contextlib.contextmanager
+def display_priority():
+    """Give the display thread Windows' multimedia CPU scheduling while it draws.
+
+    GPU grants alone do not protect a display thread from CPU scheduling delays.
+    MMCSS retains a CPU allowance for other tasks; no process-wide realtime class.
+    """
+    if sys.platform != "win32":
+        yield "default"
+        return
+    import ctypes as c
+
+    avrt = c.WinDLL("avrt", use_last_error=True)
+    avrt.AvSetMmThreadCharacteristicsW.argtypes = (c.c_wchar_p, c.POINTER(c.c_uint32))
+    avrt.AvSetMmThreadCharacteristicsW.restype = c.c_void_p
+    avrt.AvSetMmThreadPriority.argtypes = (c.c_void_p, c.c_int)
+    avrt.AvRevertMmThreadCharacteristics.argtypes = (c.c_void_p,)
+    task = c.c_uint32()
+    handle = avrt.AvSetMmThreadCharacteristicsW("Games", c.byref(task))
+    active = handle and avrt.AvSetMmThreadPriority(handle, 1)  # AVRT_PRIORITY_HIGH
+    if not active:
+        logging.getLogger(__name__).warning(
+            "Display MMCSS scheduling unavailable: %s", c.get_last_error()
+        )
+    try:
+        with fine_timers():
+            yield "MMCSS Games/high" if active else "default"
+    finally:
+        if handle:
+            avrt.AvRevertMmThreadCharacteristics(handle)
 
 
 async def sleep_until(deadline):

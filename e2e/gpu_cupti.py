@@ -53,12 +53,26 @@ class Copy(c.Structure):
     ]
 
 
+class API(c.Structure):
+    _fields_ = [
+        ("kind", c.c_uint32),
+        ("callback", c.c_uint32),
+        ("start", c.c_uint64),
+        ("end", c.c_uint64),
+        *[(name, c.c_uint32) for name in ("process", "thread", "correlation", "result")],
+    ]
+
+
 class Cupti:
-    def __init__(self):
+    def __init__(self, *, apis=False, allocations_only=False):
         import torch
 
         path = Path(torch.__file__).parent / "lib/cupti64_2024.1.0.dll"
         self.dll = c.CDLL(str(path))
+        self.apis = apis
+        self.allocations_only = allocations_only
+        self.api_names = {}
+        self.kinds = (4, 5) if allocations_only else (10, 1) + ((4, 5) if apis else ())
         self.buffers = {}
         self.rows = []
         self.errors = []
@@ -122,6 +136,30 @@ class Cupti:
                             stream=value.stream,
                         )
                     )
+                elif kind in (4, 5):
+                    value = API.from_address(record.value)
+                    key = (kind, value.callback)
+                    if key not in self.api_names:
+                        name = c.c_char_p()
+                        self.check(
+                            self.dll.cuptiGetCallbackName(
+                                1 if kind == 4 else 2, value.callback, c.byref(name)
+                            )
+                        )
+                        self.api_names[key] = name.value.decode()
+                    name = self.api_names[key]
+                    if not self.allocations_only or any(
+                        word in name.lower() for word in ("alloc", "free")
+                    ):
+                        self.rows.append(
+                            dict(
+                                kind="api",
+                                name=name,
+                                start_ns=value.start,
+                                end_ns=value.end,
+                                correlation=value.correlation,
+                            )
+                        )
                 elif kind == 1:
                     value = Copy.from_address(record.value)
                     self.rows.append(
@@ -146,8 +184,13 @@ class Cupti:
             self.buffers.pop(buffer, None)
 
     def __enter__(self):
-        self.check(self.dll.cuptiActivityEnable(10))
-        self.check(self.dll.cuptiActivityEnable(1))
+        import time
+
+        timestamp = c.c_uint64()
+        self.check(self.dll.cuptiGetTimestamp(c.byref(timestamp)))
+        self.anchor = dict(cupti_ns=timestamp.value, perf_ns=time.perf_counter_ns())
+        for kind in self.kinds:
+            self.check(self.dll.cuptiActivityEnable(kind))
         return self
 
     def __exit__(self, *_):
@@ -155,8 +198,8 @@ class Cupti:
 
         torch.cuda.synchronize()
         self.check(self.dll.cuptiActivityFlushAll(1))
-        self.check(self.dll.cuptiActivityDisable(10))
-        self.check(self.dll.cuptiActivityDisable(1))
+        for kind in self.kinds:
+            self.check(self.dll.cuptiActivityDisable(kind))
         if self.errors or self.dropped:
             raise RuntimeError(
                 f"Incomplete CUPTI trace: errors={self.errors}, dropped={self.dropped}"
@@ -167,6 +210,7 @@ class Cupti:
             scope="CUPTI concurrent kernel and memcpy activities; hardware timestamps; "
             "diagnostic run, not acceptance timings",
             api_version=self.version,
+            clock_anchor=self.anchor,
             dropped=self.dropped,
             activities=self.rows,
         )

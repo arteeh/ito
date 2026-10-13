@@ -466,7 +466,9 @@ def main():
             view.upload(records)
         (args.out / "memory-pids.json").write_text(json.dumps(residency.pids))
         durations, lateness = [], []
-        with view.context:
+        from ito import clock
+
+        with view.context, clock.display_priority() as scheduling:
             right = view.context.simple_framebuffer(
                 view.size, components=4, dtype=args.target_format
             )
@@ -629,6 +631,7 @@ def main():
             sequence=args.sequence,
             load=args.load,
             renderer=view.device,
+            scheduling=scheduling,
             occupied=occupied,
             allocated=view.renderer.slot_capacity,
             sorted_slot_extent=view.renderer.draw_count,
@@ -684,7 +687,7 @@ def main():
             if training.returncode:
                 cleanup_errors.append(f"Training exited {training.returncode}")
         if worker:
-            worker.join(10)
+            worker.join(45 if args.profile else 10)
             if worker.is_alive():
                 worker.kill()
                 worker.join()
