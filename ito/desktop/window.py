@@ -13,6 +13,7 @@ from OpenGL import GL
 
 from ito import clock, diagnostics
 from ito.reconstruction import SplatUpdate, default_budget
+from ito.reconstruction.admission import MAX_SPLATS, PUBLICATION_PACKETS
 from ito.render import GaussianRenderer, SceneSource, current_context, perspective, pose
 from ito.render.anchor import AnchorGlide, CorrectionEase
 from ito.render.scene import FloatArray
@@ -83,13 +84,22 @@ class DesktopWindow:
             pygame.display.set_caption("Ito — Desktop pilot")
             self.screen = self.context.screen
             self.size = size
-            self.renderer = GaussianRenderer(self.context)
+            self.renderer = GaussianRenderer(
+                self.context,
+                live_capacity=(
+                    16_384
+                    if "llvmpipe" in self.context.info["GL_RENDERER"].lower()
+                    else min(
+                        MAX_SPLATS, self.context.info["GL_MAX_SHADER_STORAGE_BLOCK_SIZE"] // 64
+                    )
+                ),
+            )
             self.video_panel = VideoPanel(self.context)
             memory_mb = 0
             if "GL_NVX_gpu_memory_info" in self.context.extensions:
                 memory_mb = int(GL.glGetIntegerv(0x9048)) // 1024
             self.splat_limit = min(
-                4_194_304, self.context.info["GL_MAX_SHADER_STORAGE_BLOCK_SIZE"] // 64
+                MAX_SPLATS, self.context.info["GL_MAX_SHADER_STORAGE_BLOCK_SIZE"] // 64
             )
             self.max_splats = min(
                 self.splat_limit,
@@ -150,6 +160,7 @@ class DesktopWindow:
             self.overlay.max_splats = source.max_splats
         pacing = pygame.time.Clock()
         revision = None
+        pending = None
         captured_at = None
         visible_capture = None
         capture_to_visible_ms = None
@@ -175,14 +186,17 @@ class DesktopWindow:
                 )
                 log.info("Command: %s", pilot.commands[-1])
             # A bounded drain never lets a fast producer take over the display loop.
-            for _ in range(4):
-                frame = source.poll()
+            for _ in range(PUBLICATION_PACKETS):
+                frame = pending if pending is not None else source.poll()
                 if frame is None:
                     break
                 if isinstance(frame, SplatUpdate):
-                    self.renderer.apply(frame)
+                    if not self.renderer.apply(frame):
+                        pending = frame
+                        break
                 elif frame.revision != revision:
                     self.renderer.upload(frame.gaussians)
+                pending = None
                 revision, captured_at = frame.revision, frame.captured_at
             current = self.glided(state(), now, pilot.head)
             size = pygame.display.get_window_size()
@@ -220,6 +234,9 @@ class DesktopWindow:
                     capture = str(self._capture())
                 except OSError as exc:
                     log.error("Could not save capture: %s", exc)
+            if hasattr(source, "display_completed"):
+                self.context.finish()
+                source.display_completed(now, 1 / self.fps)
             pygame.display.flip()
             if captured_at is not None and captured_at != visible_capture:
                 visible_capture = captured_at

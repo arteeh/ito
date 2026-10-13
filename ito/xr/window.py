@@ -14,6 +14,7 @@ from xr.utils import GraphicsAPI, Matrix4x4f
 from ito import clock, diagnostics
 from ito.desktop import DesktopWindow
 from ito.reconstruction import SplatUpdate
+from ito.reconstruction.admission import PUBLICATION_PACKETS
 from ito.render import pose
 
 from .dispatch import XRDispatch
@@ -103,6 +104,7 @@ class XRWindow(DesktopWindow):
 
     def _run(self, source, state, on_input, max_frames, metrics, dispatch):
         revision = captured_at = None
+        pending = None
         frames = 0
         request = None
         previous = clock.now()
@@ -129,14 +131,17 @@ class XRWindow(DesktopWindow):
                     request = f"{commands[-1].replace('_', '-').upper()} requested"
                     log.info("Command: %s", commands[-1])
                 current = self.glided(state(), now, value.head)
-                for _ in range(4):
-                    update = source.poll()
+                for _ in range(PUBLICATION_PACKETS):
+                    update = pending if pending is not None else source.poll()
                     if update is None:
                         break
                     if isinstance(update, SplatUpdate):
-                        self.renderer.apply(update)
+                        if not self.renderer.apply(update):
+                            pending = update
+                            break
                     elif update.revision != revision:
                         self.renderer.upload(update.gaussians)
+                    pending = None
                     revision, captured_at = update.revision, update.captured_at
                 captures = []
                 rendered = False
@@ -293,6 +298,9 @@ class XRWindow(DesktopWindow):
                                 size=xr.Extent2Df(1.05, 1.05 * 440 / 768),
                             )
                         )
+                if rendered and hasattr(source, "display_completed"):
+                    self.context.finish()
+                    source.display_completed(now, frame.predicted_display_period / 1e9)
                 frames += 1
                 diagnostics.event(
                     "display_frame",

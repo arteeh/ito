@@ -163,7 +163,8 @@ def verify_fade(window, source, anchor):
             if step == 5:
                 source.set_max_splats(1)
             while (packet := source.poll()) is not None:
-                window.renderer.apply(packet)
+                while not window.renderer.apply(packet):
+                    window.context.finish()
             window.renderer.draw(anchor, pose(), projection, target, clear=(0, 0, 0, 1))
             pixels = np.frombuffer(target.read(components=3), np.uint8)
             energies.append(int(pixels.sum()))

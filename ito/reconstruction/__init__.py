@@ -4,7 +4,6 @@ import json
 import logging
 import multiprocessing as mp
 import os
-import time
 
 import numpy as np
 
@@ -12,6 +11,7 @@ from ito import clock
 from ito.protocol import Intrinsics
 from ito.render.pose import validate_pose
 
+from .admission import MAX_SPLATS, Admission
 from .rgbd import RGBDBackend
 from .ring import MotionRing, SplatUpdate, UpdateRing
 from .slam_vision import RESTART_CAUSES
@@ -26,7 +26,7 @@ STOP_WAIT = 0.5
 def default_budget(renderer: str = "", video_memory_mb: int = 0) -> int:
     if any(name in renderer.lower() for name in ("llvmpipe", "softpipe", "software")):
         return 16_384
-    return 1_048_576 if video_memory_mb >= 8192 else 262_144
+    return MAX_SPLATS if video_memory_mb >= 8192 else 262_144
 
 
 def _run(recon):
@@ -58,6 +58,7 @@ def _run(recon):
             )
         else:
             backend = RGBDBackend(recon.budget.value, recon.intrinsics, **recon.options)
+        backend.bind_admission(recon.admission)
         sequence = 0
         # ITO_TIMELINE names a file for one line per frame the worker took: what became of it.
         timeline = os.environ.get("ITO_TIMELINE")
@@ -77,7 +78,10 @@ def _run(recon):
                 rows, motion_cursor = recon.motion_ring.read(motion_cursor)
                 backend.add_motion(rows)
             frame = None
-            if recon.input_lock.acquire(False):
+            take = recon.sequence.value != sequence and (
+                backend.xp is np or recon.admission.available()
+            )
+            if take and recon.input_lock.acquire(False):
                 try:
                     if recon.sequence.value != sequence:
                         sequence = recon.sequence.value
@@ -98,10 +102,12 @@ def _run(recon):
                         backend.count,
                     )
                     began = clock.now()
-                if robot_first:
-                    backend.integrate(*frame, now, captured=captured)
-                elif recon.backend == "slam":
-                    backend.integrate(*frame, now, measured=measured)
+                if recon.backend == "slam":
+                    with recon.admission.torch_chunks():
+                        if robot_first:
+                            backend.integrate(*frame, now, captured=captured)
+                        else:
+                            backend.integrate(*frame, now, measured=measured)
                 else:
                     backend.integrate(*frame, now)
                 recon.integrated.value += 1
@@ -173,7 +179,10 @@ def _run(recon):
                 cursor = (int(indices[-1]) + 1) % len(backend.keys)
                 backend.dirty[indices] = False
                 revision += 1
-            time.sleep(0.01)
+            recon.admission.wake.wait(0.01)
+    except InterruptedError:
+        if not recon.stopped.value:
+            recon.errors.send("GPU admission stopped")
     except Exception as exc:
         # The pilot sees one plain line; the log keeps the cause for whoever debugs it.
         log.exception("Reconstruction stopped")
@@ -201,8 +210,8 @@ class Reconstruction:
         """tracking: for SLAM, "robot" fuses the robot's Motion with vision (it needs the
         robot's motion_noise); "vision" is MASt3R-SLAM alone, steered by the pose prior
         each frame carries."""
-        if not 1 <= max_splats <= 4_194_304:
-            raise ValueError("Max splats must be between 1 and 4,194,304")
+        if not 1 <= max_splats <= MAX_SPLATS:
+            raise ValueError(f"Max splats must be between 1 and {MAX_SPLATS:,}")
         if not all(np.isfinite(v) and v > 0 for v in (voxel_size, fade_seconds)):
             raise ValueError("Voxel size and fade must be finite and positive")
         if backend not in ("rgbd", "slam"):
@@ -255,6 +264,7 @@ class Reconstruction:
         self.budget = context.RawValue("I", max_splats)
         self.input_lock = context.Lock()
         self.stopped = context.RawValue("b", False)
+        self.admission = Admission(context, self.stopped)
         reader, self.errors = context.Pipe(duplex=False)
         self.process = None
         process = context.Process(target=_run, args=(self,), name="ito-reconstruction")
@@ -264,13 +274,16 @@ class Reconstruction:
         self.errors = reader
         self.closed = False
 
+    def display_completed(self, began, period):
+        self.admission.completed(began, period)
+
     @property
     def max_splats(self):
         return self.budget.value
 
     def set_max_splats(self, value):
-        if not 1 <= value <= 4_194_304:
-            raise ValueError("Max splats must be between 1 and 4,194,304")
+        if not 1 <= value <= MAX_SPLATS:
+            raise ValueError(f"Max splats must be between 1 and {MAX_SPLATS:,}")
         self.budget.value = value
 
     def report(self, message):
@@ -366,6 +379,7 @@ class Reconstruction:
             self.captured.value = captured_at
             self.measured.value = measured
             self.sequence.value += 1
+            self.admission.wake.notify()
             return True
         finally:
             self.input_lock.release()

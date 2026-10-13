@@ -99,6 +99,11 @@ class MASt3RFrontend:
         self.tracked_against = None
         self.keyframe_count = 0
 
+    def bind_admission(self, admission):
+        from .admission import bind_model
+
+        self.admission_hooks = bind_model(self.model, admission)
+
     # -- poses between MASt3R's Sim3 map and Ito ----------------------------------------
 
     def placed(self, transform):
