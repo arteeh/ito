@@ -33,7 +33,7 @@ class XRDispatch(DisplayDispatch):
         changed_space = owner.space_changed and at >= owner.space_changed
         keyboard_center = any(e.type == pygame.KEYDOWN and e.key == pygame.K_HOME for e in events)
         if not window.centered or self.recenter or keyboard_center or changed_space:
-            if owner.recenter(at):
+            if owner.recenter(at, self.state().robot_heading):
                 window.centered = True
                 window.recenters += 1
                 self.recenter = False

@@ -370,7 +370,11 @@ class Pilot:
         looks, but those turns never rotate the view: the pilot is never turned by the robot.
         """
         self.camera_pose = camera
-        self.state = replace(self.state, robot_camera=pose(camera[:3, 3]))
+        self.state = replace(
+            self.state,
+            robot_camera=pose(camera[:3, 3]),
+            robot_heading=math.atan2(float(camera[0, 2]), float(camera[2, 2])),
+        )
 
     async def _session(self, peer):
         self.description = description = peer.description

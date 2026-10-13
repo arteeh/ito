@@ -266,14 +266,19 @@ class Session:
                 xr.destroy_space(self.space)
             self.space = self.base
 
-    def recenter(self, at):
+    def recenter(self, at, heading=0.0):
+        """Re-anchor the view so the pilot's gaze now is the robot's view, heading (yaw).
+
+        The pilot's head is the robot's look target in its world, so centring the gaze on
+        the robot's own heading leaves the robot looking where it already looks.
+        """
         from .input import VALID, matrix
 
         location = xr.locate_space(self.head, self.base, at)
         if location.location_flags & VALID != VALID:
             return False
         head = matrix(location.pose)
-        yaw = math.atan2(float(head[0, 2]), float(head[2, 2]))
+        yaw = math.atan2(float(head[0, 2]), float(head[2, 2])) - heading
         centered = xr.create_reference_space(
             self.session,
             xr.ReferenceSpaceCreateInfo(

@@ -41,6 +41,9 @@ class DesktopState:
     flat_video: bool = False
     # Fusion's world-from-odometry: the eye is drawn at correction @ robot_camera, eased in.
     correction: FloatArray = field(default_factory=pose)
+    # Yaw of the robot camera's view in its odometry world, positive to the left: where
+    # recentering turns the pilot's view, so the robot keeps looking where it looks.
+    robot_heading: float = 0.0
 
 
 class DesktopWindow:

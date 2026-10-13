@@ -117,7 +117,14 @@ class Overlay:
             if status.link == "CONNECTED"
             else "E-STOP: unavailable offline"
         )
-        imgui.set_next_window_pos((12, 12), imgui.Cond_.always)
+        if xr_mode:
+            # The VR quad hangs centred ahead of the pilot: centre the window on it. A steady
+            # minimum width keeps the controls from shifting as status text changes length.
+            width, _ = imgui.get_io().display_size
+            imgui.set_next_window_pos((width / 2, 12), imgui.Cond_.always, (0.5, 0))
+            imgui.set_next_window_size_constraints((min(580, width - 24), 0), (width - 24, 1e9))
+        else:
+            imgui.set_next_window_pos((12, 12), imgui.Cond_.always)
         imgui.set_next_window_bg_alpha(0.9)
         imgui.begin(
             "Ito",

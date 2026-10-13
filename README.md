@@ -57,7 +57,8 @@ or the link down) so it says why, or when pinned with a left stick click. A trig
 begins on the panel never reaches the robot. The companion window has the same controls. Left
 stick drives; on Touch controllers A resumes, B e-stops, X stops and Y recenters. Other
 controllers can use the panel (right menu also e-stops).
-Home or the panel recenters position and yaw and stops motion; resume explicitly afterward.
+Home or the panel recenters: your gaze becomes the robot's current view, and motion stops;
+resume explicitly afterward.
 Tracking/focus loss disarms input. E-stop and link loss pulse the controllers.
 Role-assigned Vive trackers are sent when the runtime supports `XR_HTCX_vive_tracker_interaction`.
 F12 saves left-eye, right-eye and panel images. On Linux, `XR_RUNTIME_JSON` selects a runtime.
