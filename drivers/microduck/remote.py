@@ -94,7 +94,9 @@ class Remote:
         self.check()
         self.channel.send(json.dumps({"jsonrpc": "2.0", "method": method, "params": params}))
 
-    async def call(self, method, params=None, deadline=0.5):
+    async def call(self, method, params=None, deadline=0.5, then=()):
+        """Ask and wait for the answer. `then` holds (method, params) notifications sent right
+        behind the request on the same ordered channel: robotd applies them after it."""
         self.check()
         self.sequence += 1
         sequence = self.sequence
@@ -111,6 +113,8 @@ class Remote:
                     }
                 )
             )
+            for name, values in then:
+                self.notify(name, values)
             async with asyncio.timeout(deadline):
                 return await future
         except TimeoutError as exc:

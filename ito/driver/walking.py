@@ -5,7 +5,7 @@ far enough for the head to reach the view direction.
 """
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ito.protocol import PilotState
 
@@ -24,6 +24,8 @@ class Walking:
     turn: float
     pan: float  # Within the head's pan range.
     tilt: float
+    # The pilot's head roll, left ear down positive; a head without a roll joint ignores it.
+    roll: float = 0.0
 
 
 class Walker:
@@ -53,13 +55,14 @@ class Walker:
         return (direction * (pan - limit) + span) % (2 * math.pi) - span
 
     def __call__(self, state: PilotState, body_yaw: float) -> Walking:
-        yaw = pitch = 0.0
+        yaw = pitch = roll = 0.0
         if state.head:
             x, y, z, w = state.head.orientation
             norm = math.sqrt(x * x + y * y + z * z + w * w)
             x, y, z, w = (v / norm for v in (x, y, z, w))
             yaw = math.atan2(2 * (x * z + y * w), 1 - 2 * (x * x + y * y))
             pitch = math.asin(max(-1, min(1, 2 * (x * w - y * z))))
+            roll = math.atan2(2 * (x * y + z * w), 1 - 2 * (x * x + z * z))
         pan = math.remainder(yaw - body_yaw, 2 * math.pi)
         forward = state.axes.get("move_y", 0.0)
         right = state.axes.get("move_x", 0.0) + state.axes.get("strafe", 0.0)
@@ -67,10 +70,10 @@ class Walker:
         forward, right = forward / norm, right / norm
         moving = math.hypot(forward, right) >= 1e-6
         if state.deadman and state.head and not moving:
-            return self._stand(pan, pitch)
+            return replace(self._stand(pan, pitch), roll=roll)
         self.following = 0
         if not state.deadman or not moving:
-            return Walking(0, 0, 0, self._reach(pan), pitch)
+            return Walking(0, 0, 0, self._reach(pan), pitch, roll)
         c, s = math.cos(pan), math.sin(pan)
         vx, vy = forward * c + right * s, forward * s - right * c
         error = pan
@@ -85,7 +88,7 @@ class Walker:
         else:
             # Scale both components together so asymmetric gait limits preserve direction.
             scale = min(self.speed, self.lateral_speed / max(abs(vy), 1e-9))
-        return Walking(vx * scale, vy * scale, self._turn(error), self._reach(pan), pitch)
+        return Walking(vx * scale, vy * scale, self._turn(error), self._reach(pan), pitch, roll)
 
     def _stand(self, pan: float, pitch: float) -> Walking:
         excess = {d: self._excess(pan, d) for d in (1, -1)}
