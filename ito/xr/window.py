@@ -16,6 +16,7 @@ from ito.desktop import DesktopWindow
 from ito.reconstruction import SplatUpdate
 from ito.reconstruction.admission import PUBLICATION_PACKETS
 from ito.render import pose
+from ito.render.performance import Performance
 
 from .dispatch import XRDispatch
 from .input import Actions
@@ -93,6 +94,7 @@ class XRWindow(DesktopWindow):
         metrics=None,
         save_settings=None,
     ):
+        self.performance = Performance()
         try:
             dispatch = XRDispatch(self, state)
             dispatch.run(
@@ -101,6 +103,8 @@ class XRWindow(DesktopWindow):
             )
         except xr.XrException as exc:
             raise RuntimeError(f"OpenXR session failed: {type(exc).__name__}: {exc}") from exc
+        finally:
+            self.performance.close(metrics)
 
     def _run(self, source, state, on_input, max_frames, metrics, dispatch):
         revision = captured_at = None
@@ -131,6 +135,7 @@ class XRWindow(DesktopWindow):
                     request = f"{commands[-1].replace('_', '-').upper()} requested"
                     log.info("Command: %s", commands[-1])
                 current = self.glided(state(), now, value.head)
+                applied = []
                 for _ in range(PUBLICATION_PACKETS):
                     update = pending if pending is not None else source.poll()
                     if update is None:
@@ -141,6 +146,8 @@ class XRWindow(DesktopWindow):
                             break
                     elif update.revision != revision:
                         self.renderer.upload(update.gaussians)
+                    if isinstance(update, SplatUpdate):
+                        applied.append(update)
                     pending = None
                     revision, captured_at = update.revision, update.captured_at
                 captures = []
@@ -260,6 +267,7 @@ class XRWindow(DesktopWindow):
                             live=True,
                             target=target,
                             xr_mode=True,
+                            performance=self.performance.last,
                             driving=any(value.movement),
                         )
                         if budget is not None:
@@ -298,9 +306,33 @@ class XRWindow(DesktopWindow):
                                 size=xr.Extent2Df(1.05, 1.05 * 440 / 768),
                             )
                         )
-                if rendered and hasattr(source, "display_completed"):
+                performance = self.performance.last
+                if rendered:
                     self.context.finish()
-                    source.display_completed(now, frame.predicted_display_period / 1e9)
+                    period = frame.predicted_display_period / 1e9
+                    if hasattr(source, "display_completed"):
+                        source.display_completed(now, period)
+                    statistics = self.performance.worker_statistics | (
+                        source.statistics() if hasattr(source, "statistics") else {}
+                    )
+                    statistics.update(
+                        camera_hz=current.status.rates[1],
+                        pilot_input_hz=current.status.rates[0],
+                        flat_video=current.flat_video,
+                        reconstruction_status=current.status.reconstruction,
+                        link=current.status.link,
+                        xr_frame_interval_ms=dt * 1000,
+                        display_period_ms=period * 1000,
+                    )
+                    performance = self.performance.completed(
+                        now,
+                        now,
+                        period,
+                        applied,
+                        scene=not current.flat_video,
+                        statistics=statistics,
+                        gpu_busy=self.gpu.busy if self.gpu is not None else None,
+                    )
                 frames += 1
                 diagnostics.event(
                     "display_frame",
@@ -312,6 +344,7 @@ class XRWindow(DesktopWindow):
                     predicted_display_time=at,
                     should_render=bool(frame.should_render),
                     rendered=rendered,
+                    performance=performance,
                 )
                 if metrics:
                     metrics.write(
@@ -323,6 +356,8 @@ class XRWindow(DesktopWindow):
                                 "predicted_display_time": at,
                                 "should_render": bool(frame.should_render),
                                 "rendered": rendered,
+                                "performance": performance,
+                                "capture_to_splat_visible_ms": self.performance.latest_latency,
                                 "head": value.head.tolist(),
                                 "head_flags": self.actions.head_flags,
                                 "eyes": eye_poses,

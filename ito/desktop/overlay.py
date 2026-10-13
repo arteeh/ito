@@ -20,8 +20,7 @@ class PilotStatus:
     robot_state: str = ""  # The driver's last reported state; "active" means it obeys input.
     detail: str = ""
     input_latency_ms: float | None = None
-    # Live rates: pilot poses applied by the robot, camera frames handed to reconstruction,
-    # reconstruction updates reaching the scene. None: not measured on this link.
+    # Logged rates: pilot poses, joined camera frames, backend calls (including pose-only).
     rates: tuple[float | None, float | None, float | None] = (None, None, None)
     motion_hz: float | None = None  # The robot's own camera motion; None: it sends none.
     reconstruction: str = ""
@@ -104,15 +103,13 @@ class Overlay:
         request: str | None,
         *,
         live=False,
-        capture_latency_ms: float | None = None,
+        performance: dict | None = None,
         target: moderngl.Framebuffer | None = None,
         xr_mode: bool = False,
         driving: bool = False,
     ) -> int | None:
         if target is not None:
             target.use()
-        latency = "--" if status.latency_ms is None else f"{status.latency_ms:.0f} ms"
-        scene_age = "file" if age is None else f"{age:.1f} s old"
         safety = (
             "E-STOP LATCHED"
             if status.e_stop
@@ -128,9 +125,23 @@ class Overlay:
             | imgui.WindowFlags_.no_move
             | imgui.WindowFlags_.no_collapse,
         )
-        imgui.text(f"{status.link} | RTT {latency} | {status.robot}")
+        latency = "--" if status.latency_ms is None else f"{status.latency_ms:.0f} ms"
+        imgui.text(f"{status.link} | RTT {latency} | {fps:.0f} fps | {status.robot}")
         imgui.text_colored((1, 0.45, 0.4, 1) if status.e_stop else (0.85, 0.9, 0.95, 1), safety)
-        imgui.text(f"{count:,} splats | {fps:.0f} fps | scene {scene_age}")
+        if not live:
+            scene_age = "file" if age is None else f"{age:.1f} s old"
+            imgui.text(f"{count:,} splats | scene {scene_age}")
+        if live:
+            values = performance or {}
+            for label, key, unit in (
+                ("Reconstruction", "scene_hz", "frames/s"),
+                ("Capture to visible", "capture_to_visible_ms", "ms"),
+                ("GPU busy", "gpu_busy_pct", "%"),
+                ("Slot pool", "slot_fill_pct", "%"),
+            ):
+                value = values.get(key)
+                text = "--" if value is None else f"{value:.1f}"
+                imgui.text(f"{label}: {text} {unit}")
         if xr_mode:
             imgui.text("Aim + trigger to select | stick to drive")
             imgui.text("B e-stop | X stop | A resume | Y recenter")
@@ -139,16 +150,17 @@ class Overlay:
             imgui.text("Tab release mouse" if captured else "Click scene / Tab for mouse-look")
             imgui.text("Space stop | E e-stop | R resume | F12 capture | Esc release mouse")
         selected = None
-        if live:
+        if live and imgui.tree_node("Scene settings"):
             imgui.set_next_item_width(160)
             _, self.max_splats = imgui.input_int("Max splats", self.max_splats, 1024, 16384)
             imgui.same_line()
             if imgui.button("Apply"):
-                if 1 <= self.max_splats <= 4_194_304:
+                if 1 <= self.max_splats <= (1 << 31) - 1:
                     selected = self.max_splats
                     self.error = None
                 else:
-                    self.error = "Choose between 1 and 4,194,304 splats"
+                    self.error = "Choose a positive signed 32-bit slot count"
+            imgui.tree_pop()
         controls = [("Stop", "stop"), ("E-stop", "e_stop"), ("Resume", "resume")]
         if xr_mode:
             controls.append(("Recenter", "recenter"))
@@ -181,21 +193,10 @@ class Overlay:
             imgui.text(request)
         if status.detail:
             imgui.text(status.detail)
-        if status.reconstruction:
+        if status.reconstruction and "tracking |" not in status.reconstruction:
             imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + 550)
             imgui.text_wrapped(status.reconstruction)
             imgui.pop_text_wrap_pos()
-        if status.link == "CONNECTED":
-            pose_hz, camera_hz, scene_hz = ("--" if r is None else f"{r:.1f}" for r in status.rates)
-            imgui.text(
-                f"Pose->robot {pose_hz} Hz | camera->recon {camera_hz}/s"
-                f" | recon->scene {scene_hz}/s"
-                + ("" if status.motion_hz is None else f" | motion {status.motion_hz:.0f} Hz")
-            )
-        if status.input_latency_ms is not None:
-            imgui.text(f"Pilot input -> robot: {status.input_latency_ms:.1f} ms")
-        if capture_latency_ms is not None:
-            imgui.text(f"Camera capture -> splat visible: {capture_latency_ms:.1f} ms")
         if self.error:
             imgui.text_colored((1, 0.45, 0.4, 1), self.error)
         imgui.end()

@@ -34,9 +34,6 @@ def main():
     admission = Admission(context, context.RawValue("b", False))
     bind_native(admission)
     admission.enabled.value = True
-    from ito import clock
-
-    admission.deadline.value = clock.now() + 120
     for members in (1, 3):
         for count in (16, 4096, 4112, 8192):
             image = torch.randn(members, 32, 32, 24, device="cuda", dtype=torch.float16)
@@ -59,6 +56,7 @@ def main():
             expected = original["refine_matches"](image, queries, initial, 2, 3)
             assert torch.equal(actual[0], expected[0][:, :shorter])
     torch.cuda.synchronize()
+    admission.collect()
     if args.out:
         import json
 
@@ -66,14 +64,14 @@ def main():
             json.dumps(
                 dict(
                     exact_comparisons=24,
-                    fenced_chunks=admission.chunks.value,
+                    completed_chunks=admission.chunks.value,
                     torch_peak_reserved_bytes=torch.cuda.max_memory_reserved(),
                 )
             )
         )
     print(
         "PASS: exact native outputs across query/batch boundaries; "
-        f"{admission.chunks.value} fenced chunks"
+        f"{admission.chunks.value} completed chunks"
     )
 
 

@@ -9,9 +9,10 @@ import numpy as np
 
 from ito import clock
 from ito.protocol import Intrinsics
+from ito.render.gpu import MAX_SLOT_COUNT, slot_budget
 from ito.render.pose import validate_pose
 
-from .admission import MAX_SPLATS, Admission
+from .admission import GPU_STAGES, Admission
 from .rgbd import RGBDBackend
 from .ring import MotionRing, SplatUpdate, UpdateRing
 from .slam_vision import RESTART_CAUSES
@@ -23,10 +24,17 @@ log = logging.getLogger(__name__)
 STOP_WAIT = 0.5
 
 
-def default_budget(renderer: str = "", video_memory_mb: int = 0) -> int:
+def default_budget(
+    renderer: str = "",
+    *,
+    free_bytes=None,
+    buffer_limit=1 << 27,
+) -> int:
     if any(name in renderer.lower() for name in ("llvmpipe", "softpipe", "software")):
         return 16_384
-    return MAX_SPLATS if video_memory_mb >= 8192 else 262_144
+    if free_bytes is not None:
+        return max(1, slot_budget(free_bytes, buffer_limit))
+    return 262_144
 
 
 def _run(recon):
@@ -67,6 +75,7 @@ def _run(recon):
         motion_cursor = 0
         revision = 0
         captured = recon.epoch
+        published_capture = recon.epoch
         # A pilot app that died without closing it would otherwise leave it holding the GPU.
         parent = mp.parent_process()
         while not recon.stopped.value and parent.is_alive():
@@ -78,12 +87,11 @@ def _run(recon):
                 rows, motion_cursor = recon.motion_ring.read(motion_cursor)
                 backend.add_motion(rows)
             frame = None
-            take = recon.sequence.value != sequence and (
-                backend.xp is np or recon.admission.available()
-            )
+            take = recon.sequence.value != sequence and recon.admission.available()
             if take and recon.input_lock.acquire(False):
                 try:
                     if recon.sequence.value != sequence:
+                        previous_sequence = sequence
                         sequence = recon.sequence.value
                         frame = (
                             np.frombuffer(recon.rgb, np.uint8).reshape(recon.shape + (3,)).copy(),
@@ -95,6 +103,9 @@ def _run(recon):
                 finally:
                     recon.input_lock.release()
             if frame is not None:
+                began = clock.now()
+                recon.input_age_seconds.value = max(0, began - captured)
+                recon.skipped_inputs.value += max(0, sequence - previous_sequence - 1)
                 if timeline:
                     before = (
                         getattr(backend, "tracked", 0),
@@ -102,21 +113,31 @@ def _run(recon):
                         backend.count,
                     )
                     began = clock.now()
-                if recon.backend == "slam":
-                    with recon.admission.torch_chunks():
+                backend.source_sequence = sequence
+                backend.source_captured = captured
+                with recon.admission.integration():
+                    if recon.backend == "slam":
                         if robot_first:
                             backend.integrate(*frame, now, captured=captured)
                         else:
                             backend.integrate(*frame, now, measured=measured)
-                else:
-                    backend.integrate(*frame, now)
+                    else:
+                        backend.integrate(*frame, now)
+                recon.work_seconds.value = clock.now() - began
                 recon.integrated.value += 1
+                recon.matched.value = getattr(backend, "matched", getattr(backend, "tracked", 0))
+                recon.blurred.value = getattr(backend, "blurred", 0)
+                recon.scene_slots.value = backend.count
+                recon.retiring_slots.value = int(backend.retiring.sum())
+                recon.dirty_slots.value = int(backend.dirty.sum())
                 if timeline:
                     done = clock.now()
                     restarted = sum(getattr(backend, "restarts", {}).values()) - before[1]
                     tracked = getattr(backend, "tracked", 0) - before[0]
                     since = getattr(backend, "unmatched_since", None)
                     row = dict(
+                        event="backend_frame",
+                        worker_epoch=recon.epoch,
                         seq=sequence,
                         captured=round(captured, 4),
                         began=round(began, 4),
@@ -138,6 +159,24 @@ def _run(recon):
                         splats_delta=int(backend.count) - before[2],
                         recalls=getattr(backend, "recalls", None),
                         matched=getattr(backend, "matched", None),
+                        backend_calls=recon.integrated.value,
+                        dirty_slots=recon.dirty_slots.value,
+                        retiring_slots=recon.retiring_slots.value,
+                        slot_capacity=recon.budget.value,
+                        cuda_scope_seconds=recon.admission.active_seconds.value,
+                        cuda_stages={
+                            name: dict(
+                                seconds=recon.admission.stage_seconds[i],
+                                calls=recon.admission.stage_calls[i],
+                            )
+                            for i, name in enumerate(GPU_STAGES)
+                        },
+                        cuda_memory_peak_bytes=recon.admission.memory_peak.value,
+                        cuda_pool_limit_bytes=recon.admission.memory_limit.value,
+                        gpu_busy_pct=recon.admission.gpu_busy.value,
+                        memory_pressure=bool(recon.admission.memory_pressure.value),
+                        render_backoffs=recon.admission.overruns.value,
+                        input_frames_skipped=max(0, sequence - previous_sequence - 1),
                         blurred=getattr(backend, "blurred", None),
                         frame_delay_ms=round(backend.graph.td * 1000, 1)
                         if hasattr(backend, "graph")
@@ -162,24 +201,48 @@ def _run(recon):
             for _ in range(recon.ring.slots):
                 dirty = np.flatnonzero(backend.dirty)
                 start = np.searchsorted(dirty, cursor)
-                indices = np.concatenate((dirty[start:], dirty[:start]))[: recon.ring.batch]
+                ordered = np.concatenate((dirty[start:], dirty[:start]))
+                # Fades must reach GL and be acknowledged even under a stream of
+                # refreshed slots; otherwise a full pool can never release victims.
+                eviction = backend.sequences[ordered] == 0
+                indices = np.concatenate((ordered[eviction], ordered[~eviction]))[
+                    : recon.ring.batch
+                ]
                 if not len(indices):
                     break
+                contributing = backend.sequences[indices] > 0
+                packet_capture = max(
+                    published_capture,
+                    float(backend.captures[indices[contributing]].max())
+                    if contributing.any()
+                    else published_capture,
+                )
                 if not recon.ring.publish(
                     indices,
                     backend.records[indices],
                     len(backend.keys),
                     backend.count,
                     revision,
-                    captured,
+                    packet_capture,
+                    backend.sequences[indices],
+                    backend.captures[indices],
                 ):
                     break
+                published_capture = packet_capture
                 retiring = indices[backend.retiring[indices]]
                 backend.retire_revision[retiring] = revision
                 cursor = (int(indices[-1]) + 1) % len(backend.keys)
                 backend.dirty[indices] = False
                 revision += 1
-            recon.admission.wake.wait(0.01)
+            recon.scene_slots.value = backend.count
+            recon.retiring_slots.value = int(backend.retiring.sum())
+            recon.dirty_slots.value = int(backend.dirty.sum())
+            pending_captures = backend.captures[backend.dirty & (backend.sequences > 0)]
+            recon.oldest_dirty_capture.value = (
+                float(pending_captures.min()) if len(pending_captures) else 0
+            )
+            if recon.sequence.value == sequence or not recon.admission.available():
+                recon.admission.wake.wait(0.005)
     except InterruptedError:
         if not recon.stopped.value:
             recon.errors.send("GPU admission stopped")
@@ -189,6 +252,8 @@ def _run(recon):
         message = str(exc) if recon.backend == "slam" else f"Reconstruction failed: {exc}"
         recon.errors.send(message[:2000])
     finally:
+        if recon.admission.gpu is not None:
+            recon.admission.gpu.close()
         recon.errors.close()
 
 
@@ -210,8 +275,8 @@ class Reconstruction:
         """tracking: for SLAM, "robot" fuses the robot's Motion with vision (it needs the
         robot's motion_noise); "vision" is MASt3R-SLAM alone, steered by the pose prior
         each frame carries."""
-        if not 1 <= max_splats <= MAX_SPLATS:
-            raise ValueError(f"Max splats must be between 1 and {MAX_SPLATS:,}")
+        if not 1 <= max_splats <= MAX_SLOT_COUNT:
+            raise ValueError(f"Max splats must be between 1 and {MAX_SLOT_COUNT:,}")
         if not all(np.isfinite(v) and v > 0 for v in (voxel_size, fade_seconds)):
             raise ValueError("Voxel size and fade must be finite and positive")
         if backend not in ("rgbd", "slam"):
@@ -240,7 +305,16 @@ class Reconstruction:
         self.motion_ring = MotionRing(context)
         self.output_captured = context.RawValue("d", 0)
         self.tracked = context.RawValue("Q", 0)
-        self.integrated = context.RawValue("Q", 0)  # frames integrated into the scene
+        self.integrated = context.RawValue("Q", 0)  # backend calls, including pose-only frames
+        self.matched = context.RawValue("Q", 0)
+        self.blurred = context.RawValue("Q", 0)
+        self.scene_slots = context.RawValue("I", 0)
+        self.retiring_slots = context.RawValue("I", 0)
+        self.dirty_slots = context.RawValue("I", 0)
+        self.oldest_dirty_capture = context.RawValue("d", 0)
+        self.work_seconds = context.RawValue("d", 0)
+        self.input_age_seconds = context.RawValue("d", 0)
+        self.skipped_inputs = context.RawValue("Q", 0)
         self.tracking = context.RawValue("b", False)
         self.restart_counts = context.RawArray("Q", len(RESTART_CAUSES))
         self.report(
@@ -274,6 +348,41 @@ class Reconstruction:
         self.errors = reader
         self.closed = False
 
+    def statistics(self):
+        tracked = self.tracked.value
+        return dict(
+            worker_epoch=self.epoch,
+            backend_calls=self.integrated.value,
+            matched_pct=100 * self.matched.value / tracked
+            if tracked and self.tracking_mode == "robot"
+            else None,
+            blurred_frames=self.blurred.value,
+            slot_count=self.scene_slots.value,
+            slot_capacity=self.budget.value,
+            slot_fill_pct=100 * self.scene_slots.value / max(1, self.budget.value),
+            retiring_slots=self.retiring_slots.value,
+            dirty_slots=self.dirty_slots.value,
+            oldest_dirty_age_ms=(clock.now() - self.oldest_dirty_capture.value) * 1000
+            if self.oldest_dirty_capture.value
+            else None,
+            backend_work_ms=self.work_seconds.value * 1000,
+            input_age_ms=self.input_age_seconds.value * 1000,
+            skipped_input_frames=self.skipped_inputs.value,
+            cuda_scope_seconds=self.admission.active_seconds.value,
+            cuda_stages={
+                name: dict(
+                    seconds=self.admission.stage_seconds[i], calls=self.admission.stage_calls[i]
+                )
+                for i, name in enumerate(GPU_STAGES)
+            },
+            cuda_completed_chunks=self.admission.chunks.value,
+            cuda_memory_peak_bytes=self.admission.memory_peak.value,
+            cuda_pool_limit_bytes=self.admission.memory_limit.value,
+            memory_pressure=bool(self.admission.memory_pressure.value),
+            render_backoffs=self.admission.overruns.value,
+            throttle_remaining_ms=max(0, self.admission.pause_until.value - clock.now()) * 1000,
+        )
+
     def display_completed(self, began, period):
         self.admission.completed(began, period)
 
@@ -282,8 +391,8 @@ class Reconstruction:
         return self.budget.value
 
     def set_max_splats(self, value):
-        if not 1 <= value <= MAX_SPLATS:
-            raise ValueError(f"Max splats must be between 1 and {MAX_SPLATS:,}")
+        if not 1 <= value <= MAX_SLOT_COUNT:
+            raise ValueError(f"Max splats must be between 1 and {MAX_SLOT_COUNT:,}")
         self.budget.value = value
 
     def report(self, message):

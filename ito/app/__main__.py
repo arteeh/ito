@@ -191,6 +191,7 @@ def pilot_window(window, args, overrides, metrics, choice, on_frame):
         Pilot(
             choice.address or sim.address,
             defaults=Settings(max_splats=window.max_splats),
+            splat_limit=window.splat_limit,
             overrides=overrides,
             camera=args.camera,
             cameras=args.cameras,

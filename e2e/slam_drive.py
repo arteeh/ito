@@ -617,6 +617,9 @@ def main():
     base_end = pilot and [pilot.telemetry.get(k) for k in ("base_x", "base_y")]
     base_end = None if not base_end or None in base_end else base_end
     report = dict(
+        performance=json.loads((out / "metrics.summary.json").read_text())
+        if (out / "metrics.summary.json").exists()
+        else None,
         result=result,
         error=error,
         startup_s=None if ready_at is None else round(ready_at - began, 1),

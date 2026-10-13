@@ -210,6 +210,30 @@ def compile_extensions(cache, work):
         shutil.copy2(module.__file__, target)
         native[name] = target.relative_to(cache).as_posix()
 
+    # Upstream launches on stream 0. Every allocation and launch must follow
+    # Torch's current stream for Ito's nonblocking reconstruction stream to be safe.
+    kernels = [
+        lie / "lietorch/src/lietorch_gpu.cu",
+        *(slam / "mast3r_slam/backend/src").glob("*.cu"),
+        slam / "thirdparty/mast3r/dust3r/croco/models/curope/kernels.cu",
+    ]
+    for path in kernels:
+        code = path.read_text(encoding="utf-8")
+        launches = re.findall(r"<<<([^<>]+)>>>", code)
+        if not launches:
+            raise RuntimeError(f"No CUDA launches to adapt in {path}")
+
+        def current_stream(match, *, path=path):
+            launch = match[1]
+            arguments = len(launch.split(","))
+            if arguments not in (2, 3):
+                raise RuntimeError(f"Unexpected CUDA launch in {path}: {launch}")
+            shared = ", 0" if arguments == 2 else ""
+            return f"<<<{launch}{shared}, at::cuda::getCurrentCUDAStream()>>>"
+
+        code = re.sub(r"<<<([^<>]+)>>>", current_stream, code)
+        path.write_text("#include <ATen/cuda/CUDAContext.h>\n" + code, encoding="utf-8")
+
     backend = slam / "mast3r_slam/backend"
     build(
         "lietorch_backends",
@@ -324,7 +348,8 @@ def main():
         "Unmodified safetensors weights. CC BY-NC-SA 4.0; see LICENSE, NOTICE and "
         "CHECKPOINTS_NOTICE for attribution and training-dataset restrictions.\n"
         "Ito source adaptations: lazy retrieval import, fixed-width CUDA indices, "
-        "distinct lietorch CPU kernel symbols, and a pose prior in the frame tracker.\n",
+        "distinct lietorch CPU kernel symbols, current-stream CUDA launches, "
+        "and a pose prior in the frame tracker.\n",
         encoding="utf-8",
     )
     # Never carry kernels from a different Python/platform through a skipped build.

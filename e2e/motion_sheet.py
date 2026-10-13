@@ -31,7 +31,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 SHEET_W, SHEET_H = 1500, 1400
 LABEL_W = 230
-HEADER_H = 124
+HEADER_H = 166
 CAPTION_H = 22
 PAD = 6
 BG = (24, 24, 24)
@@ -163,6 +163,15 @@ def sample(runs, step, start, end):
                 yaw_step=yaw_delta(meta.get("yaw"), prev.get("yaw")),
                 capture_age_ms=meta.get("capture_age_ms"),
                 gaussians=meta.get("gaussians"),
+                performance={
+                    key: meta.get("performance", {}).get(key)
+                    for key in (
+                        "scene_hz",
+                        "capture_to_visible_ms",
+                        "gpu_busy_pct",
+                        "slot_fill_pct",
+                    )
+                },
                 flat_video=meta.get("flat_video"),
                 change=None,
                 prev_pilot=prev.get("pilot"),
@@ -223,6 +232,24 @@ def render_sheet(runs, rows, number, total, step_ms, path):
         font=F_SMALL,
         fill=DIM,
     )
+    for index, run in enumerate(runs):
+        values = rows[-1]["runs"][index].get("performance", {})
+        parts = []
+        for label, key, unit in (
+            ("recon", "scene_hz", "frames/s"),
+            ("capture to visible", "capture_to_visible_ms", "ms"),
+            ("GPU busy", "gpu_busy_pct", "%"),
+            ("pool", "slot_fill_pct", "%"),
+        ):
+            value = values.get(key)
+            text = "--" if value is None else f"{value:.1f}"
+            parts.append(f"{label} {text} {unit}")
+        draw.text(
+            (PAD, 105 + index * 18),
+            f"{run.label or run.folder.name}: " + " | ".join(parts),
+            font=F_SMALL,
+            fill=AMBER,
+        )
     y = HEADER_H - 19
     for c, (_kind, _r, heading) in enumerate(columns):
         draw.text((lefts[c], y), heading, font=F_SMALL, fill=AMBER)
@@ -237,10 +264,6 @@ def render_sheet(runs, rows, number, total, step_ms, path):
             lines.append(f"yaw {lead['yaw']:.1f} deg" + ("" if step is None else f" ({step:+.1f})"))
         if lead["head_yaw"]:
             lines.append(f"pilot look {lead['head_yaw']:+.1f} deg")
-        if lead["capture_age_ms"] is not None:
-            lines.append(f"scene age {lead['capture_age_ms']:.0f} ms")
-        if lead["gaussians"]:
-            lines.append(f"{lead['gaussians']:,} splats")
         if lead["flat_video"]:
             lines.append("FLAT CAMERA FALLBACK")
         for i, line in enumerate(lines):
@@ -322,6 +345,15 @@ def facts(run):
         camera_frames=len(cam),
         camera_fps=round(len(cam) / length, 1) if length and len(cam) else 0,
         flat_fallback_frames=sum(1 for row in run.pilot.rows if row.get("flat_video")),
+        performance={
+            key: run.pilot.rows[-1].get("performance", {}).get(key)
+            for key in (
+                "scene_hz",
+                "capture_to_visible_ms",
+                "gpu_busy_pct",
+                "slot_fill_pct",
+            )
+        },
     )
 
 
