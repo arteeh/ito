@@ -1,4 +1,4 @@
-"""Build dist/ito-windows-x64.zip: unzip anywhere, run ito.exe. Developer-only.
+"""Build dist/ito: copy the folder anywhere, run ito.exe. Developer-only.
 
 From a VS 2022 x64 developer shell with CUDA 12.4 (the toolchain ito.build needs):
 
@@ -25,13 +25,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import zipfile
 from pathlib import Path
 
 from ito.reconstruction.mast3r_runtime import BUNDLE_VERSION, abi
 
 ROOT = Path(__file__).resolve().parents[1]
-NAME = "ito-windows-x64"
 
 
 def run(*command, **options):
@@ -207,7 +205,7 @@ def _read(path):
 
 
 def check(stage):
-    """The unzipped app must import everything from its own folder, ignoring this shell."""
+    """The built app must import everything from its own folder, ignoring this shell."""
     env = {k: v for k, v in os.environ.items() if not k.startswith(("PYTHON", "VIRTUAL_ENV"))}
     run(
         stage / "runtime/python.exe", "-I", "-c",
@@ -220,22 +218,6 @@ def check(stage):
         "assert torch.version.cuda, 'torch without CUDA'\n",
         stage, env=env, cwd=stage,
     )  # fmt: skip
-
-
-def archive(stage, path):
-    print(f"Writing {path}", flush=True)
-    partial = path.with_suffix(".part")
-    with zipfile.ZipFile(partial, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as bundle:
-        for file in sorted(stage.rglob("*")):
-            if file.is_file():
-                # Weights do not compress; storing them saves minutes and costs nothing.
-                stored = file.suffix == ".safetensors"
-                bundle.write(
-                    file,
-                    Path("ito") / file.relative_to(stage),
-                    zipfile.ZIP_STORED if stored else zipfile.ZIP_DEFLATED,
-                )
-    partial.replace(path)
 
 
 def main():
@@ -262,9 +244,8 @@ def main():
     )
     print(f"THIRD_PARTY_NOTICES.txt: {count} components", flush=True)
     check(stage)
-    archive(stage, args.dist / f"{NAME}.zip")
-    size = (args.dist / f"{NAME}.zip").stat().st_size
-    print(f"Release ready: {args.dist / NAME}.zip ({size / 1e9:.2f} GB)")
+    size = sum(p.stat().st_size for p in stage.rglob("*") if p.is_file())
+    print(f"Release ready: {stage} ({size / 1e9:.2f} GB)")
 
 
 if __name__ == "__main__":

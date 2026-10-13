@@ -1,9 +1,9 @@
-"""Unzip the Windows release on a clean environment and pilot it like a user would.
+"""Copy the Windows release into a clean environment and pilot it like a user would.
 
 From a checkout on the Windows PC, inside the logged-in desktop session (the windows
 must be real), with output redirected to a file:
 
-    uv run python e2e/release.py [--zip dist\\ito-windows-x64.zip] [--target DIR] > log 2>&1
+    uv run python e2e/release.py [--release dist\\ito] [--target DIR] > log 2>&1
 
 No Python, uv, venv or CUDA Toolkit is visible to the app. It checks: ito.exe opens the
 connect screen without a console; "Try simulated robot" shows a live RGB-D room; an
@@ -20,7 +20,6 @@ import shutil
 import socket
 import subprocess
 import time
-import zipfile
 from ctypes import wintypes
 from pathlib import Path
 
@@ -221,8 +220,8 @@ def live(rows, *, flat, after=0.0):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--zip", type=Path, default=ROOT / "dist/ito-windows-x64.zip")
-    parser.add_argument("--target", type=Path, default=OUT / "unzipped")
+    parser.add_argument("--release", type=Path, default=ROOT / "dist/ito")
+    parser.add_argument("--target", type=Path, default=OUT / "installed")
     parser.add_argument("--slam-timeout", type=float, default=600)
     args = parser.parse_args()
     # A double-clicked ito.exe has no console to attach to; neither will ours.
@@ -232,10 +231,9 @@ def main():
     OUT.mkdir(parents=True, exist_ok=True)
     if args.target.exists():
         shutil.rmtree(args.target)
-    log(f"Unzipping {args.zip} into {args.target}")
-    with zipfile.ZipFile(args.zip) as archive:
-        archive.extractall(args.target)
     folder = args.target / "ito"
+    log(f"Copying {args.release} into {folder}")
+    shutil.copytree(args.release, folder)
     assert {p.name for p in folder.iterdir()} == {
         "ito.exe",
         "runtime",
@@ -356,7 +354,7 @@ def pilot(folder, args, env):
         robot.wait(10)
     log(json.dumps(results, indent=2))
     (OUT / "summary.json").write_text(json.dumps(results, indent=2) + "\n")
-    log("PASS: unzipped release, connect screen, simulated RGB-D room, bundled SLAM, missing model")
+    log("PASS: copied release, connect screen, simulated RGB-D room, bundled SLAM, missing model")
 
 
 if __name__ == "__main__":

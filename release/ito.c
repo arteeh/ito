@@ -1,4 +1,4 @@
-/* ito.exe: runs Ito on the Python runtime unzipped beside it, wherever that folder is.
+/* ito.exe: runs Ito on the Python runtime beside it, wherever that folder is.
 
    A GUI-subsystem program, so a double-click opens no console window: the app runs on
    runtime\pythonw.exe and reports problems in its own window. Started from a terminal,
@@ -34,7 +34,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR arguments, int
              console ? L"python.exe" : L"pythonw.exe");
     if (GetFileAttributesW(python) == INVALID_FILE_ATTRIBUTES) {
         swprintf(message, LONGEST,
-                 L"Ito is incomplete: %ls is missing.\n\nUnzip the whole ito folder and "
+                 L"Ito is incomplete: %ls is missing.\n\nCopy the whole ito folder and "
                  L"start ito.exe from there.", python);
         MessageBoxW(NULL, message, L"Ito", MB_ICONERROR);
         return 1;
