@@ -24,8 +24,9 @@ from . import settings
 from .frames import FrameJoin, camera_matrix
 
 log = logging.getLogger(__name__)
-# SLAM's 3D view drops to the flat feed after this long without tracking, and returns only
-# once tracking has run this steadily, so the view does not flicker at the edge of tracking.
+# SLAM's 3D view drops to the flat feed after this long without tracking (robot-first: without
+# the robot's motion), and returns only once it has run this steadily, so the view does not
+# flicker at the edge of tracking.
 TRACKING_LOST = 2.0
 TRACKING_STEADY = 1.0
 TRACKING_GAP = 0.5
@@ -459,6 +460,7 @@ class Pilot:
         self.armed = self.focus_hold = self.stalled = False
         previous_fresh = None
         last_fresh = None  # Capture time of the newest sample that held the deadman.
+        motion_since = None  # When the robot's motion last began arriving without gaps.
 
         def disarm(reason):
             nonlocal last_fresh
@@ -528,19 +530,31 @@ class Pilot:
                                 self.last_tracking = now
                             self.tracked_frames = count
                         self._log_restarts(self.worker.restarts())
-                        # Dense vision can be deliberately paused by admission while
-                        # the robot's fresh motion still supplies the current eye pose.
-                        # Keep the complete scene through that pause; faults, lost
-                        # tracking and a worker with no GPU progress still fall back.
-                        budget_active = (
-                            self.robot_first
-                            and now - self.motion_time < 0.25
-                            and self.worker.admission.enabled.value
-                            and now - self.worker.admission.last_progress.value < TRACKING_GAP
-                        )
-                        live = self.tracking and (
-                            now - self.last_tracking < TRACKING_LOST or budget_active
-                        )
+                        if self.robot_first:
+                            # The eye rides the robot's own 50 Hz motion; vision only
+                            # corrects it and grows the scene. However slowly frames are
+                            # mapped, or while admission holds vision back for the display,
+                            # the scene stays up: the pilot keeps the last good scene, and
+                            # only motion that stops (or a failed worker) shows the feed.
+                            # Gating on vision's progress flashed the raw camera for a few
+                            # milliseconds whenever a mapped frame was late.
+                            if now - self.motion_time >= TRACKING_GAP:
+                                motion_since = None
+                            elif motion_since is None:
+                                motion_since = now
+                            live = self.tracking and now - self.motion_time < TRACKING_LOST
+                            steady = (
+                                live
+                                and motion_since is not None
+                                and now - motion_since >= TRACKING_STEADY
+                            )
+                        else:
+                            live = self.tracking and now - self.last_tracking < TRACKING_LOST
+                            steady = (
+                                live
+                                and now - self.last_tracking < TRACKING_GAP
+                                and now - self.tracking_steady_since >= TRACKING_STEADY
+                            )
                         if live and tracked and self.robot_first:
                             correction = self.worker.correction()
                             if correction is not None:
@@ -551,12 +565,16 @@ class Pilot:
                             self.reconstruction_status = (
                                 "SLAM tracking paused; showing flat camera feed"
                             )
-                        steady = (
-                            live
-                            and (now - self.last_tracking < TRACKING_GAP or budget_active)
-                            and now - self.tracking_steady_since >= TRACKING_STEADY
-                        )
-                        self.slam_view = live if self.slam_view else steady
+                        view = live if self.slam_view else steady
+                        if view != self.slam_view:
+                            diagnostics.event(
+                                "slam_view",
+                                shown=view,
+                                tracking=self.tracking,
+                                tracking_age_ms=(now - self.last_tracking) * 1000,
+                                motion_age_ms=(now - self.motion_time) * 1000,
+                            )
+                        self.slam_view = view
                         self.state = replace(self.state, flat_video=not self.slam_view)
                 if self.failure:
                     self.reconstruction_status = self.failure + "; showing flat camera feed"

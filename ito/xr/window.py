@@ -2,6 +2,7 @@
 
 import json
 import logging
+import math
 import time
 
 import numpy as np
@@ -17,13 +18,75 @@ from ito.reconstruction import SplatUpdate
 from ito.reconstruction.admission import PUBLICATION_PACKETS
 from ito.render import pose
 from ito.render.performance import Performance
+from ito.render.pose import quaternion
 
 from .dispatch import XRDispatch
-from .input import Actions
-from .session import Session
+from .input import VALID, Actions
+from .session import HEADSET_POLL, HEADSET_WAIT, Session
 
 log = logging.getLogger(__name__)
 PANEL_LINGER = 0.5  # The panel stays this long after the controller stops pointing at it.
+# The panel hangs this far in front of the pilot's eyes, this far below their gaze, facing
+# them, so it is centred and readable with a glance down but never covers the scene ahead.
+PANEL_DISTANCE = 1.2
+PANEL_DROP = math.radians(25)
+PANEL_SIZE = (1.05, 1.05 * 440 / 768)
+# It follows the head lazily: it starts to follow once the gaze leaves it by SLACK, glides
+# with time constant FOLLOW until it is centred again (within SETTLED), and holds still while
+# a controller points at a control on it. A glance down at it, a pitch of up to the drop,
+# stays within the pitch slack, so the panel never slides away from a pilot reading it.
+PANEL_FOLLOW = 0.25
+PANEL_SLACK = (math.radians(20), math.radians(32))  # yaw, pitch
+PANEL_SETTLED = math.radians(2)
+PANEL_PITCH = (math.radians(-45), math.radians(40))  # Where the anchor may point.
+
+
+class PanelFollow:
+    """Where the VR panel hangs: an anchor (eye position, yaw, pitch) eased after the head."""
+
+    def __init__(self):
+        self.position = None
+        self.angles = [0.0, 0.0]
+        self.following = [False, False]
+
+    @staticmethod
+    def gaze(head):
+        """(yaw, pitch) of the head's forward axis; yaw is None looking straight up or down."""
+        forward = -head[:3, 2]
+        flat = math.hypot(forward[0], forward[2])
+        yaw = math.atan2(-forward[0], -forward[2]) if flat > 0.1 else None
+        return yaw, math.asin(max(-1.0, min(1.0, float(forward[1]))))
+
+    def update(self, head, dt, *, snap=False, hold=False):
+        yaw, pitch = self.gaze(head)
+        target = (yaw, min(PANEL_PITCH[1], max(PANEL_PITCH[0], pitch)))
+        if self.position is None or snap:
+            self.position = head[:3, 3].astype(np.float64)
+            self.angles = [yaw if yaw is not None else self.angles[0], target[1]]
+            self.following = [False, False]
+        elif not hold:
+            ease = 1 - math.exp(-max(dt, 0.0) / PANEL_FOLLOW)
+            self.position += ease * (head[:3, 3] - self.position)
+            for axis in (0, 1):
+                if target[axis] is None:
+                    continue
+                error = math.remainder(target[axis] - self.angles[axis], math.tau)
+                if abs(error) > PANEL_SLACK[axis]:
+                    self.following[axis] = True
+                elif abs(error) < PANEL_SETTLED:
+                    self.following[axis] = False
+                if self.following[axis]:
+                    self.angles[axis] += ease * error
+        return self.matrix()
+
+    def matrix(self):
+        """The panel's pose in the reference space; its +Z faces the anchor's eye point."""
+        if self.position is None:
+            return pose((0, -0.15, -1.2))
+        yaw, pitch = self.angles
+        result = pose(yaw=yaw, pitch=pitch - PANEL_DROP)
+        result[:3, 3] = self.position - PANEL_DISTANCE * result[:3, 2]
+        return result
 
 
 class XRWindow(DesktopWindow):
@@ -31,7 +94,7 @@ class XRWindow(DesktopWindow):
         self.xr = None
         super().__init__(*args, **kwargs)
         try:
-            self.xr = Session(self.context, reference_space)
+            self.xr = Session(self.context, reference_space, waiting=self._waiting)
             self.actions = Actions(self.xr)
             self.input.translate = False
             self.centered = False
@@ -39,6 +102,8 @@ class XRWindow(DesktopWindow):
             self.panel_until = 0.0
             self.panel_visible = True
             self.panel_hovered = False  # ImGui hovers a control under the aim (last frame).
+            self.panel = PanelFollow()
+            self.panel_pose = self.panel.matrix()  # As last submitted; the pointer aims at it.
             pygame.display.set_caption("Ito — XR pilot controls")
         except xr.XrException as exc:
             self.close()
@@ -49,22 +114,57 @@ class XRWindow(DesktopWindow):
             self.close()
             raise
 
+    def _waiting(self, runtime, waited):
+        """The companion window while the runtime has no headset yet; False on Cancel."""
+        pygame.display.set_caption("Ito — waiting for the headset")
+        until = time.monotonic() + HEADSET_POLL
+        while time.monotonic() < until:
+            events = pygame.event.get()
+            if any(
+                e.type == pygame.QUIT or (e.type == pygame.KEYDOWN and e.key == pygame.K_ESCAPE)
+                for e in events
+            ):
+                return False
+            size = pygame.display.get_window_size()
+            self.overlay.begin(events, size, False)
+            imgui.set_next_window_pos((size[0] / 2, size[1] / 2), imgui.Cond_.always, (0.5, 0.5))
+            imgui.begin(
+                "Ito",
+                flags=imgui.WindowFlags_.always_auto_resize
+                | imgui.WindowFlags_.no_move
+                | imgui.WindowFlags_.no_collapse,
+            )
+            imgui.text(f"Waiting for a headset on {runtime}")
+            imgui.text_disabled("Connect it: Steam Link, Virtual Desktop or its cable.")
+            imgui.text_disabled(f"{waited:.0f} of {HEADSET_WAIT:.0f} s")
+            cancel = imgui.button("Cancel", (380, 0))
+            imgui.end()
+            self.context.screen.use()
+            self.context.viewport = (0, 0, *size)
+            self.context.clear(0.05, 0.06, 0.07)
+            self.overlay.render()
+            pygame.display.flip()
+            if cancel:
+                return False
+            time.sleep(1 / 30)
+        return True
+
     def aiming_hand(self):
         """Right aim takes precedence; without a tracked controller nothing points."""
         return next((hand for hand in ("right", "left") if hand in self.actions.aims), None)
 
     def _pointer(self):
-        panel = pose((0, -0.15, -1.2))
         hand = self.aiming_hand()
         if hand is None:
             return (-10000, -10000, False)
-        aim = self.actions.aims[hand]
-        origin, direction = aim[:3, 3] - panel[:3, 3], -aim[:3, 2]
+        # The aim ray in the panel's own frame, where the quad spans x and y and faces +z.
+        aim = np.linalg.inv(self.panel_pose) @ self.actions.aims[hand]
+        origin, direction = aim[:3, 3], -aim[:3, 2]
         if direction[2] >= -1e-5:
             return (-10000, -10000, False)
         distance = -origin[2] / direction[2]
         hit = origin + distance * direction
-        x, y = (hit[0] / 1.05 + 0.5) * 768, (0.5 - hit[1] / (1.05 * 440 / 768)) * 440
+        x, y = (hit[0] / PANEL_SIZE[0] + 0.5) * 768, (0.5 - hit[1] / PANEL_SIZE[1]) * 440
         inside = distance > 0 and 0 <= x < 768 and 0 <= y < 440
         return (
             (float(x), float(y), self.actions.triggers.get(hand, False))
@@ -113,6 +213,7 @@ class XRWindow(DesktopWindow):
         request = None
         previous = clock.now()
         mouse_until = 0.0
+        recenters = self.recenters
         while not max_frames or frames < max_frames:
             self.xr.poll()
             if self.xr.exiting:
@@ -243,12 +344,22 @@ class XRWindow(DesktopWindow):
                     status = current.status
                     if self.panel_hovered or status.robot_state != "active":
                         self.panel_until = now + PANEL_LINGER
+                    shown = self.panel_visible
                     self.panel_visible = (
                         self.actions.panel_pinned
                         or now < self.panel_until
                         or status.link != "CONNECTED"
                         or status.e_stop
                     )
+                    # Hidden, the panel stays where it would appear: low ahead of the gaze.
+                    if self.actions.head_flags & VALID == VALID:
+                        self.panel_pose = self.panel.update(
+                            value.head,
+                            dt,
+                            snap=not shown or recenters != self.recenters,
+                            hold=self.panel_hovered,
+                        )
+                        recenters = self.recenters
                     if pointer[0] >= 0:
                         imgui.get_foreground_draw_list().add_circle_filled(
                             (pointer[0], pointer[1]), 4, 0xFFFFFFFF
@@ -302,8 +413,11 @@ class XRWindow(DesktopWindow):
                                 space=space,
                                 eye_visibility=xr.EyeVisibility.BOTH,
                                 sub_image=self.xr.panel.sub_image,
-                                pose=xr.Posef(position=xr.Vector3f(0, -0.15, -1.2)),
-                                size=xr.Extent2Df(1.05, 1.05 * 440 / 768),
+                                pose=xr.Posef(
+                                    orientation=xr.Quaternionf(*quaternion(self.panel_pose)),
+                                    position=xr.Vector3f(*map(float, self.panel_pose[:3, 3])),
+                                ),
+                                size=xr.Extent2Df(*PANEL_SIZE),
                             )
                         )
                 performance = self.performance.last

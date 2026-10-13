@@ -65,6 +65,10 @@ MOTION_NOISE = MotionNoise(
     gravity_deg=0.66,
     time_s=0.006,
 )
+# robot.look's IK aims with head pitch and yaw and keeps head_roll level. The pilot's head
+# roll goes to head_roll, the last joint, turning about the camera's own axis, so it leaves
+# the aim alone. Rolls within the dead band are the pilot's posture, not a gesture.
+ROLL_DEAD_BAND = math.radians(3)
 # A head-IMU sample this close to a robot.state tick turns the camera at that tick.
 HEAD_IMU_MATCH = 0.025
 # Odometry speeds that count as walking or turning in a motion sample's state.
@@ -183,6 +187,7 @@ class MicroduckAdapter(Adapter):
         self._look_ms = deque(maxlen=50)
         self._measured_at = None
         self._neutral_done = asyncio.Event()
+        self._gaze = None  # The joints robot.look chose last, which roll rides on.
 
     def _exposure(self):
         """The simulator renders a frame at an instant (or averages --blur renders); the
@@ -351,12 +356,25 @@ class MicroduckAdapter(Adapter):
             )
             # robot.look answers with the IK's joints; one in flight at a time, always the
             # newest gaze. A stop arriving meanwhile is sent as soon as it answers.
+            # robot.look levels head_roll, so a rolled pilot's robot.head goes right behind
+            # it, on the joints the last look chose: robotd applies both in one go, never
+            # a level head between them, and the aim trails by one look at most.
+            low, high = HEAD_LIMITS["head_roll"]
+            excess = abs(move.roll) - ROLL_DEAD_BAND
+            roll = min(high, max(low, math.copysign(excess, move.roll))) if excess > 0 else 0.0
+            rolled = ()
+            if roll and self._gaze is not None:
+                rolled = (("robot.head", self._gaze | {"head_roll": roll}),)
             sent = clock.now()
-            await self.remote.call(
+            answer = await self.remote.call(
                 "robot.look",
                 {"x": x, "y": y, "z": z, "neck_pitch": 0.0},
                 deadline=self.input_timeout,
+                then=rolled,
             )
+            head = answer.get("head") if isinstance(answer, dict) else None
+            if isinstance(head, dict) and set(head) >= set(HEAD_LIMITS):
+                self._gaze = {name: float(head[name]) for name in HEAD_LIMITS}
             self._looks.tick()
             self._look_ms.append((clock.now() - sent) * 1000)
             # The gait and the tilt aimed at, trim included, show how the trim follows the
@@ -367,6 +385,8 @@ class MicroduckAdapter(Adapter):
                 gait=gait,
                 pilot_tilt=move.tilt,
                 aimed_tilt=aim,
+                pilot_roll=move.roll,
+                aimed_roll=roll if rolled else 0.0,
             )
 
     async def _health(self):
