@@ -35,6 +35,13 @@ done
 run unregulated --load both --frames 1800 --incremental --updates
 run trace --load slam --frames 900 --profile --warm-prefix 1560
 run trace-admitted --load slam --frames 2700 --profile --warm-prefix 1560 --admit
+for count in 131072 262144 524288; do
+    frames=900
+    if [[ "$count" == 524288 ]]; then frames=6000; fi
+    run "loaded-occupied-$count" --sequence tour --occupied "$count" --capacity 524288 \
+        --incremental --updates --load both --admit --frames "$frames" --warm-prefix 1560 \
+        --eye-size 2160x2160 --target-format f1
+done
 for repeat in 1 2 3; do
     for sequence in sweep180 tour; do
         prefix=12

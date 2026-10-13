@@ -500,11 +500,11 @@ def main():
             reference_hashes, reference_images, loaded_images = [], [], []
             selected = set(np.linspace(0, args.frames - 1, 8, dtype=int))
             if args.visual:
-                for n in range(90, args.frames + 90):
+                for n in range(args.frames + 90):
                     stereo(n)
                     rgb = pixels()
                     reference_hashes.append(hashlib.sha256(rgb).hexdigest())
-                    if n - 90 in selected:
+                    if n >= 90 and n - 90 in selected:
                         reference_images.append(rgb)
             admission.enabled.value = args.admit
             start.set()
@@ -549,11 +549,11 @@ def main():
                         grants.send(grant)
                         if grants.error:
                             raise RuntimeError("Training grant pipe failed: " + grants.error)
-                if args.visual and n >= 90:
+                if args.visual:
                     rgb = pixels()
-                    if hashlib.sha256(rgb).hexdigest() != reference_hashes[n - 90]:
-                        raise RuntimeError(f"Frozen image changed under load at frame {n - 90}")
-                    if n - 90 in selected:
+                    if hashlib.sha256(rgb).hexdigest() != reference_hashes[n]:
+                        raise RuntimeError(f"Frozen image changed under load at frame {n}")
+                    if n >= 90 and n - 90 in selected:
                         loaded_images.append(rgb)
                 if n >= 90:
                     durations.append((done - began) * 1000)
@@ -578,7 +578,8 @@ def main():
             (args.out / "visual.json").write_text(
                 json.dumps(
                     dict(
-                        stereo_frames=args.frames,
+                        stereo_frames=args.frames + 90,
+                        startup_frames=90,
                         differing_frames=0,
                         scope="all stereo RGB bytes compared at identical recorded pilot poses; "
                         "readback run is excluded from deadline acceptance",

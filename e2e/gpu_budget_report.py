@@ -154,10 +154,27 @@ def main():
             failures.append(name + ": no admitted work")
     if len(references) != 12:
         failures.append(f"Expected 12 reference runs, found {len(references)}")
+    occupied_load = {
+        key: value for key, value in cases.items() if key.startswith("loaded-occupied-")
+    }
+    if len(occupied_load) != 3:
+        failures.append("Missing shared-load occupied-count sweep")
+    for name, result in occupied_load.items():
+        expected = 6000 if result["occupied"] == 524288 else 900
+        if result["frames"] != expected or result["missed_fraction"] >= 0.001:
+            failures.append(name + ": deadline fraction")
+        if result["longest_miss_run"] > 1:
+            failures.append(name + ": consecutive misses")
+        if result["ito_residency_upper_bound_bytes"] >= 8_000_000_000:
+            failures.append(name + ": residency")
+        if result["load"].get("integrated", 0) < 1 or result["training"].get("steps", 0) <= 10:
+            failures.append(name + ": no admitted work")
     visuals = {
         p.parent.name: json.loads(p.read_text()) for p in args.output.glob("visual-*/visual.json")
     }
-    if len(visuals) != 2 or any(v["differing_frames"] for v in visuals.values()):
+    if len(visuals) != 2 or any(
+        v["differing_frames"] or v.get("startup_frames") != 90 for v in visuals.values()
+    ):
         failures.append("Frozen-image comparison missing or changed")
     fuzz = {
         name: json.loads((args.output / name / f"{name}.json").read_text())
