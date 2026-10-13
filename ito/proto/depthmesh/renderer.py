@@ -130,6 +130,7 @@ class MeshWorld:
         if cap < 1 or min(grid) < 2:
             raise ValueError("Patch cap must be positive and grid dimensions at least two")
         self.ctx, self.i, self.cap = context, intrinsics, cap
+        self.grid = grid
         self.jump, self.tolerance, self.carve = jump, tolerance, carve
         self.patches = deque()
         self.program = context.program(
@@ -157,7 +158,11 @@ class MeshWorld:
 
     def add(self, rgb, depth, pose, *, frame, captured):
         i, ctx = self.i, self.ctx
-        if rgb.shape != (i.height, i.width, 3) or depth.shape != rgb.shape[:2]:
+        if (
+            rgb.shape != (i.height, i.width, 3)
+            or depth.shape != rgb.shape[:2]
+            or rgb.dtype != np.uint8
+        ):
             raise ValueError("RGB/depth shape differs from camera calibration")
         pose = np.asarray(pose, dtype="f4")
         if (
@@ -165,8 +170,11 @@ class MeshWorld:
             or not np.isfinite(pose).all()
             or not np.allclose(pose[3], (0, 0, 0, 1), atol=1e-5)
             or not np.allclose(pose[:3, :3].T @ pose[:3, :3], np.eye(3), atol=1e-3)
+            or np.linalg.det(pose[:3, :3]) < 0.99
         ):
             raise ValueError("Camera pose must be a finite rigid transform")
+        if not np.isfinite(captured) or frame < 0:
+            raise ValueError("Patch frame and capture timestamp must be valid")
         if self.patches and (
             frame <= self.patches[-1].frame or captured < self.patches[-1].captured
         ):
@@ -219,6 +227,9 @@ class MeshWorld:
         i = self.i
         np.savez_compressed(
             path,
+            grid=self.grid,
+            jump=self.jump,
+            tolerance=self.tolerance,
             calibration=np.array([i.width, i.height, i.fx, i.fy, i.cx, i.cy]),
             frames=[p.frame for p in self.patches],
             captured=[p.captured for p in self.patches],
@@ -242,6 +253,43 @@ class MeshWorld:
                 ]
             ),
         )
+
+    @classmethod
+    def load(cls, context, path):
+        from ito.protocol import Intrinsics
+
+        with np.load(path, allow_pickle=False) as data:
+            w, h, fx, fy, cx, cy = data["calibration"]
+            i = Intrinsics(width=int(w), height=int(h), fx=fx, fy=fy, cx=cx, cy=cy)
+            world = cls(
+                context,
+                i,
+                cap=len(data["frames"]),
+                carve=False,
+                grid=tuple(data["grid"]) if "grid" in data else (90, 160),
+                jump=tuple(data["jump"]) if "jump" in data else (0.02, 0.08),
+                tolerance=tuple(data["tolerance"]) if "tolerance" in data else (0.02, 0.03),
+            )
+            try:
+                for frame, captured, pose, rgb, depth, active in zip(
+                    data["frames"],
+                    data["captured"],
+                    data["poses"],
+                    data["rgb"],
+                    data["depth"],
+                    data["active"],
+                    strict=True,
+                ):
+                    if not world.add(rgb, depth, pose, frame=int(frame), captured=captured):
+                        raise ValueError("Saved patch contains no valid depth")
+                    if active.shape != depth.shape:
+                        raise ValueError("Saved retirement mask has the wrong shape")
+                    world.patches[-1].active.write(np.ascontiguousarray(active, "u1").tobytes())
+            except Exception:
+                world.close()
+                raise
+            world.carve = True
+            return world
 
     def close(self):
         while self.patches:

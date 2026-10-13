@@ -29,6 +29,11 @@ def digest(path):
 
 
 def prepare(work, out):
+    from measure import prepare as freeze_inputs
+
+    reference = out.parent / "reference"
+    reference.mkdir(parents=True, exist_ok=True)
+    freeze_inputs(work, reference)
     manifest = {
         "sequences": {},
         "arrival": "legacy capture timestamps, as in frozen baseline",

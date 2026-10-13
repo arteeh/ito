@@ -9,7 +9,7 @@ uv pip install --python "$root/venv/bin/python" torch==2.5.1 torchvision==0.20.1
     --index-url https://download.pytorch.org/whl/cu124
 uv pip install --python "$root/venv/bin/python" -e . pillow scipy scikit-image \
     imageio imageio-ffmpeg opencv-python-headless 'mujoco==3.3.7' ruff einops \
-    huggingface-hub timm matplotlib lpips
+    huggingface-hub timm matplotlib lpips easydict
 clone() {
     if [[ ! -d "$root/$1/.git" ]]; then
         git clone "$2" "$root/$1"
