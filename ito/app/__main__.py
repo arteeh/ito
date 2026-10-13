@@ -111,9 +111,6 @@ def main(argv=None, *, on_frame=None):
             from ito.xr import XRWindow
 
             window_type = XRWindow
-            if choice.runtime:
-                # The OpenXR loader reads this when it next creates an instance.
-                os.environ["XR_RUNTIME_JSON"] = choice.runtime
             options["reference_space"] = args.reference_space
         return window_type(
             args.size,

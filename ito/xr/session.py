@@ -3,6 +3,7 @@
 import ctypes as ct
 import logging
 import math
+import os
 import threading
 import time
 from contextlib import ExitStack, contextmanager
@@ -13,13 +14,19 @@ from OpenGL import GL
 from xr.utils.gl import OpenGLGraphics
 
 from ito import clock
+from ito.app import settings
+
+from . import runtimes
 
 log = logging.getLogger(__name__)
 # A runtime reports a headset that is not connected yet (SteamVR before Steam Link or the
-# cable brings one, a headset asleep) as unavailable, and the spec says to ask again. The
-# pilot gets this long to connect it, and can give up sooner.
+# cable brings one, a headset asleep) as unavailable, and the spec says to ask again. Ito
+# asks every installed runtime in turn; the pilot gets this long to connect the headset, and
+# can give up sooner.
 HEADSET_WAIT = 90.0
 HEADSET_POLL = 0.5
+# Each round asks every runtime once; starting a runtime can take seconds (SteamVR).
+ROUND_PAUSE = 2.0
 
 
 class SDLContext:
@@ -95,30 +102,8 @@ class Session:
         self.retired_space = None
         self.clock = None
         try:
-            try:
-                available = {
-                    p.extension_name.decode() for p in xr.enumerate_instance_extension_properties()
-                }
-            except xr.XrException as exc:
-                raise RuntimeError(
-                    "No OpenXR runtime is available. Start SteamVR/Virtual Desktop or Monado, "
-                    "select it as the active OpenXR runtime (XR_RUNTIME_JSON on Linux), and retry."
-                ) from exc
-            if "XR_KHR_opengl_enable" not in available:
-                raise RuntimeError("The active OpenXR runtime does not support OpenGL")
-            self.extensions = ["XR_KHR_opengl_enable"]
-            if "XR_HTCX_vive_tracker_interaction" in available:
-                self.extensions.append("XR_HTCX_vive_tracker_interaction")
-            self.instance = xr.create_instance(
-                xr.InstanceCreateInfo(
-                    application_info=xr.ApplicationInfo(application_name="Ito"),
-                    enabled_extension_names=self.extensions,
-                )
-            )
+            self.instance, self.system = self._headset(waiting)
             self.resources.callback(xr.destroy_instance, self.instance)
-            self.runtime = runtime_name(self.instance)
-            log.info("OpenXR runtime: %s", self.runtime)
-            self.system = self._headset(waiting)
             self.graphics = OpenGLGraphics(self.instance, self.system, SDLContext())
             requirements = self.graphics.graphics_requirements
             version = xr.Version(context.version_code // 100, context.version_code % 100 // 10, 0)
@@ -181,29 +166,87 @@ class Session:
             raise
 
     def _headset(self, waiting):
+        """The first runtime that has a headset: its instance and system, kept by the caller."""
+        candidates = runtimes.installed() or [runtimes.Runtime("OpenXR", None)]
+        names = " or ".join(c.name for c in candidates)
         started = clock.now()
         logged = -math.inf
+        problems = {}
         while True:
-            try:
-                return xr.get_system(
-                    self.instance,
-                    xr.SystemGetInfo(form_factor=xr.FormFactor.HEAD_MOUNTED_DISPLAY),
+            for candidate in candidates:
+                found = self._ask(candidate, problems)
+                if found:
+                    if candidate.manifest and not runtimes.PINNED:
+                        settings.remember_xr_runtime(candidate.manifest)
+                    return found
+            if len(problems) == len(candidates):
+                # Every runtime failed outright, so waiting cannot help.
+                raise RuntimeError(
+                    "No OpenXR runtime could start: "
+                    + "; ".join(f"{name}: {why}" for name, why in problems.items())
                 )
-            except xr.FormFactorUnavailableError:
+            pause_until = clock.now() + ROUND_PAUSE
+            while True:
                 waited = clock.now() - started
                 if waited >= HEADSET_WAIT:
                     raise RuntimeError(
-                        f"{self.runtime} found no headset in {HEADSET_WAIT:.0f} s. Connect "
-                        "the headset first (Steam Link, Virtual Desktop or its cable), make "
-                        "sure it is awake, and try again."
-                    ) from None
+                        f"No headset found on {names} in {HEADSET_WAIT:.0f} s. Connect the "
+                        "headset first (Steam Link, Virtual Desktop or its cable), make sure it "
+                        "is awake, and try again."
+                    )
                 if waited - logged >= 10:
-                    log.info("Waiting for %s to find a headset (%.0f s)", self.runtime, waited)
+                    log.info("Waiting for a headset on %s (%.0f s)", names, waited)
                     logged = waited
                 if waiting is None:
                     time.sleep(HEADSET_POLL)
-                elif not waiting(self.runtime, waited):
-                    raise RuntimeError(f"Stopped waiting for a headset on {self.runtime}") from None
+                elif not waiting(names, waited):
+                    raise RuntimeError("Stopped waiting for a headset")
+                if clock.now() >= pause_until:
+                    break
+
+    def _ask(self, candidate, problems):
+        """(instance, system) when this runtime has a headset; otherwise None, with the
+        runtime unloaded again so the next one can load."""
+        # The loader reads this whenever it loads a runtime, and unloads it with the instance.
+        if candidate.manifest:
+            os.environ["XR_RUNTIME_JSON"] = candidate.manifest
+        instance = None
+        try:
+            available = {
+                p.extension_name.decode() for p in xr.enumerate_instance_extension_properties()
+            }
+            extensions = ["XR_KHR_opengl_enable"]
+            if "XR_HTCX_vive_tracker_interaction" in available:
+                extensions.append("XR_HTCX_vive_tracker_interaction")
+            opengl = "XR_KHR_opengl_enable" in available
+            # Created even without OpenGL: destroying the instance is what unloads the runtime.
+            instance = xr.create_instance(
+                xr.InstanceCreateInfo(
+                    application_info=xr.ApplicationInfo(application_name="Ito"),
+                    enabled_extension_names=extensions if opengl else [],
+                )
+            )
+            name = runtime_name(instance)
+            if not opengl:
+                problems[candidate.name] = "no OpenGL support"
+                xr.destroy_instance(instance)
+                return None
+            system = xr.get_system(
+                instance, xr.SystemGetInfo(form_factor=xr.FormFactor.HEAD_MOUNTED_DISPLAY)
+            )
+        except xr.FormFactorUnavailableError:
+            problems.pop(candidate.name, None)
+            xr.destroy_instance(instance)
+            return None
+        except xr.XrException as exc:
+            problems[candidate.name] = f"{type(exc).__name__}: {exc}"
+            if instance is not None:
+                xr.destroy_instance(instance)
+            return None
+        problems.pop(candidate.name, None)
+        self.extensions, self.runtime = extensions, name
+        log.info("OpenXR runtime with a headset: %s (%s)", name, candidate.manifest or "system")
+        return instance, system
 
     def reference(self, kind):
         space = xr.create_reference_space(
