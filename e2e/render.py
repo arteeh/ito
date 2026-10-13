@@ -1,6 +1,7 @@
 """Drive the real GL renderer with randomized scenes: xvfb-run -a uv run python e2e/render.py."""
 
 import argparse
+import gc
 import math
 from pathlib import Path
 
@@ -105,7 +106,41 @@ def main():
         )
         stale = np.frombuffer(renderer.scene_buffer.read(size=64), np.float32).reshape(4, 4)
         assert stale[1, 3] == -1, "Delayed eviction revived expired geometry"
+        # Large reservations and tail eviction must not keep sorting empty slots.
+        renderer.apply(
+            SplatUpdate(np.array([12], np.uint32), live[:1], 1048576, 2, 4, epoch, epoch, 0.5)
+        )
+        renderer.draw(pose(), pose(), projection, target)
+        assert renderer.slot_capacity == 1048576
+        assert renderer.draw_count == 13 and renderer.capacity == 1024
+        renderer.apply(
+            SplatUpdate(np.array([12], np.uint32), removed, 1048576, 1, 5, epoch, epoch, 0.5)
+        )
+        renderer.draw(pose(), pose(), projection, target)
+        assert renderer.draw_count == 1
         print("Sparse GPU append/evict and capacity growth preserve resident splats")
+
+        # Exercise real fence creation, polling and destruction long enough to
+        # expose ctypes ownership cycles, without relying on GC to hide growth.
+        update = SplatUpdate(np.array([0], np.uint32), live[:1], 1048576, 1, 6, epoch, epoch, 0.5)
+        for _ in range(8):
+            assert renderer.apply(update)
+            context.finish()
+        gc.collect()
+        enabled = gc.isenabled()
+        gc.disable()
+        try:
+            before = len(gc.get_objects())
+            for _ in range(2048):
+                assert renderer.apply(update)
+                context.finish()
+            growth = len(gc.get_objects()) - before
+            assert growth < 128, f"Upload fences accumulate cyclic Python objects: {growth}"
+        finally:
+            if enabled:
+                gc.enable()
+        assert context.error == "GL_NO_ERROR"
+        print(f"2048 real upload/fence cycles: tracked Python object growth {growth}")
 
         for degree in (0, 1, 2, 3):
             for ascii_ply in (False, True):

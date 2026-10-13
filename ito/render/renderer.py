@@ -13,12 +13,12 @@ from .scene import FloatArray, GaussianBuffer
 
 
 class GaussianRenderer:
-    def __init__(self, context: moderngl.Context):
+    def __init__(self, context: moderngl.Context, *, live_capacity=0):
         if context.version_code < 430:
             raise RuntimeError("Ito needs OpenGL 4.3 compute shaders (Mesa llvmpipe is supported)")
         self.context = context
         shaders = files("ito.render").joinpath("shaders")
-        self.keys = context.compute_shader(shaders.joinpath("keys.glsl").read_text())
+        self.keys = context.compute_shader(shaders.joinpath("presort.glsl").read_text())
         self.sort_program = context.compute_shader(shaders.joinpath("sort.glsl").read_text())
         self.program = context.program(
             vertex_shader=shaders.joinpath("splat.vert").read_text(),
@@ -26,8 +26,11 @@ class GaussianRenderer:
         )
         self.vao = context.vertex_array(self.program, [])
         self.update = context.compute_shader(shaders.joinpath("update.glsl").read_text())
-        self.changes = context.buffer(reserve=4096 * 64)
-        self.slots = context.buffer(reserve=4096 * 4)
+        self.staging = [
+            (context.buffer(reserve=4096 * 64), context.buffer(reserve=4096 * 4)) for _ in range(4)
+        ]
+        self.staging_fences = [None] * len(self.staging)
+        self.staging_cursor = 0
         self.epoch = 0.0
         self.fade_seconds = 0.0
         self.uploaded_bytes = 0
@@ -37,13 +40,18 @@ class GaussianRenderer:
         self.order = None
         self.count = 0
         self.capacity = 0
+        self.slot_capacity = 0
+        self.live = None
+        self.live_capacity = live_capacity
+        if live_capacity:
+            self._allocate_live(live_capacity, keep=False)
         self.stride = 4
         self.degree = 0
 
     def upload(self, scene: GaussianBuffer) -> None:
         """Consume a stable published snapshot. The producer may reuse it after return."""
         count, stride, _ = scene.records.shape
-        capacity = max(256, 1 << max(0, count - 1).bit_length())
+        capacity = max(1024, 1 << max(0, count - 1).bit_length())
         limit = self.context.info["GL_MAX_SHADER_STORAGE_BLOCK_SIZE"]
         if max(count * stride * 16, capacity * 8) > limit:
             raise ValueError(f"Scene with {count:,} Gaussians exceeds OpenGL buffer limits")
@@ -61,54 +69,102 @@ class GaussianRenderer:
         self.scene_buffer, self.order = buffer, order
         self.count, self.capacity, self.stride = count, capacity, stride
         self.degree = scene.sh_degree
-        self.draw_count = count
+        self.draw_count = self.slot_capacity = count
+        self.live = None
         self.fade_seconds = 0.0
         self.uploaded_bytes += scene.records.nbytes
 
-    def apply(self, update) -> None:
-        """Scatter a bounded incremental packet on GPU; never read back the scene."""
+    def _allocate_live(self, required, *, keep):
+        capacity = max(required, self.live_capacity)
+        sort_capacity = max(1024, 1 << max(0, capacity - 1).bit_length())
+        limit = self.context.info["GL_MAX_SHADER_STORAGE_BLOCK_SIZE"]
+        if max(capacity * 64, sort_capacity * 8) > limit:
+            raise ValueError("Splat budget exceeds OpenGL buffer limits")
+        scene = self.context.buffer(reserve=capacity * 64)
+        try:
+            scene.clear()
+            order = self.context.buffer(reserve=sort_capacity * 8)
+        except Exception:
+            scene.release()
+            raise
+        live = np.zeros(capacity, dtype=bool)
+        if self.scene_buffer is not None:
+            if keep:
+                self.context.copy_buffer(scene, self.scene_buffer, size=self.slot_capacity * 64)
+                live[: self.slot_capacity] = self.live
+            self.scene_buffer.release()
+            self.order.release()
+        self.scene_buffer, self.order, self.live = scene, order, live
+        self.slot_capacity = capacity
+        if not keep:
+            self.draw_count = 0
+        self.capacity = max(1024, 1 << max(0, self.draw_count - 1).bit_length())
+
+    def apply(self, update) -> bool:
+        """Scatter one packet; False retains it at the caller until staging is free."""
+        n = len(update.indices)
+        if n > 4096:
+            raise ValueError("Splat updates are limited to 4096 records per packet")
+        slot = self.staging_cursor
+        fence = self.staging_fences[slot]
+        if n and fence is not None:
+            status = GL.glClientWaitSync(fence, GL.GL_SYNC_FLUSH_COMMANDS_BIT, 0)
+            if status == GL.GL_TIMEOUT_EXPIRED:
+                return False
+            if status == GL.GL_WAIT_FAILED:
+                raise RuntimeError("Could not check the Gaussian upload fence")
+            GL.glDeleteSync(fence)
+            self.staging_fences[slot] = None
         required = update.capacity
         new_scene = self.epoch != update.epoch
-        if self.fade_seconds == 0 or new_scene or required > self.draw_count:
-            capacity = max(256, 1 << max(0, required - 1).bit_length())
-            limit = self.context.info["GL_MAX_SHADER_STORAGE_BLOCK_SIZE"]
-            if max(required * 64, capacity * 8) > limit:
-                raise ValueError("Splat budget exceeds OpenGL buffer limits")
-            scene = self.context.buffer(reserve=required * 64)
-            scene.clear()
-            order = self.context.buffer(reserve=capacity * 8)
-            if self.scene_buffer is not None:
-                if self.fade_seconds and not new_scene:
-                    self.context.copy_buffer(scene, self.scene_buffer, size=self.draw_count * 64)
-                self.scene_buffer.release()
-                self.order.release()
-            self.scene_buffer, self.order = scene, order
-            self.capacity, self.draw_count = capacity, required
+        if self.live is None or required > self.slot_capacity:
+            self._allocate_live(required, keep=bool(self.fade_seconds and not new_scene))
+        elif not self.fade_seconds or new_scene:
+            self.scene_buffer.clear()
+            self.live.fill(False)
+            self.draw_count = 0
+            self.capacity = 1024
         self.count = update.count
         self.stride, self.degree = 4, 0
         self.epoch, self.fade_seconds = update.epoch, update.fade_seconds
-        n = len(update.indices)
         if not n:
-            return
-        # Orphan staging storage so queued GPU reads never fence the next CPU upload.
-        self.changes.orphan(max(self.changes.size, n * 64))
-        self.slots.orphan(max(self.slots.size, n * 4))
+            if update.acknowledge is not None:
+                update.acknowledge()
+            return True
+        # Slot IDs are already CPU metadata. Bound sorting by the highest resident
+        # slot, not reserved capacity; holes remain valid stable IDs on the GPU.
+        self.live[update.indices] = update.records[:, 0, 3] > 0
+        self.draw_count = max(self.draw_count, int(update.indices.max()) + 1)
+        if not self.live[self.draw_count - 1]:
+            occupied = np.flatnonzero(self.live[: self.draw_count])
+            self.draw_count = int(occupied[-1]) + 1 if len(occupied) else 0
+        self.capacity = max(1024, 1 << max(0, self.draw_count - 1).bit_length())
+        # Reuse fenced staging instead of orphaning storage on each packet:
+        # driver allocation can stall a display frame even for a 256 KB upload.
+        changes, slots = self.staging[slot]
         records = update.records.copy()
         retiring = records[:, 3, 3] == 1
         records[retiring, 1, 3] = np.minimum(
             records[retiring, 1, 3], clock.now() - self.epoch + self.fade_seconds
         )
-        self.changes.write(records)
-        self.slots.write(update.indices)
+        changes.write(records)
+        slots.write(update.indices)
         self.uploaded_bytes += update.records.nbytes + update.indices.nbytes
         self.scene_buffer.bind_to_storage_buffer(1)
-        self.changes.bind_to_storage_buffer(2)
-        self.slots.bind_to_storage_buffer(3)
+        changes.bind_to_storage_buffer(2)
+        slots.bind_to_storage_buffer(3)
         self.update["count"] = n
         self.update.run(group_x=(n + 255) // 256)
         GL.glMemoryBarrier(GL.GL_SHADER_STORAGE_BARRIER_BIT)
+        # PyOpenGL casts opaque pointer arguments through ctypes, creating a
+        # self-referencing ownership dictionary per fence. Keep its address:
+        # the driver still owns the sync, without triggering full Python GC
+        # scans in display calls after thousands of packets.
+        self.staging_fences[slot] = GL.glFenceSync(GL.GL_SYNC_GPU_COMMANDS_COMPLETE, 0).address
+        self.staging_cursor = (slot + 1) % len(self.staging)
         if update.acknowledge is not None:
             update.acknowledge()
+        return True
 
     def sort(self, robot_camera: FloatArray, head: FloatArray) -> None:
         """Order splats back to front for this viewpoint on the GPU.
@@ -123,22 +179,21 @@ class GaussianRenderer:
         self.order.bind_to_storage_buffer(0)
         self.keys["view"].write(view.T.copy())
         self.keys["count"] = self.draw_count
-        self.keys["capacity"] = self.capacity
         self.keys["stride"] = self.stride
-        self.keys.run(group_x=self.capacity // 256)
+        self.keys.run(group_x=self.capacity // 1024)
         # A software GPU can block inside a barrier. ctypes releases the GIL so
         # tracking and the deadman sender keep running while the GPU catches up.
         GL.glMemoryBarrier(GL.GL_SHADER_STORAGE_BARRIER_BIT)
         self.sort_program["capacity"] = self.capacity
-        stage = 2
+        stage = 2048
         while stage <= self.capacity:
             self.sort_program["stage"] = stage
             distance = stage // 2
             while distance:
-                local = distance < 256
+                local = distance < 1024
                 self.sort_program["distance"] = distance
                 self.sort_program["local_merge"] = local
-                self.sort_program.run(group_x=self.capacity // 256)
+                self.sort_program.run(group_x=self.capacity // 1024)
                 GL.glMemoryBarrier(GL.GL_SHADER_STORAGE_BARRIER_BIT)
                 distance = 0 if local else distance // 2
             stage *= 2
@@ -206,6 +261,12 @@ class GaussianRenderer:
         self.vao.render(mode=moderngl.TRIANGLE_STRIP, vertices=4, instances=self.draw_count)
 
     def close(self) -> None:
+        for fence in self.staging_fences:
+            if fence is not None:
+                GL.glDeleteSync(fence)
+        for changes, slots in self.staging:
+            changes.release()
+            slots.release()
         for resource in (
             self.vao,
             self.program,
@@ -214,8 +275,6 @@ class GaussianRenderer:
             self.scene_buffer,
             self.order,
             self.update,
-            self.changes,
-            self.slots,
         ):
             if resource is not None:
                 resource.release()

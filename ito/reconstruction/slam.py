@@ -101,6 +101,11 @@ class SLAMBackend(RGBDBackend):
         self.waiting = False
         report("MASt3R ready; waiting for camera and robot motion")
 
+    def bind_admission(self, admission):
+        super().bind_admission(admission)
+        if hasattr(self.frontend, "bind_admission"):
+            self.frontend.bind_admission(admission)
+
     def add_motion(self, rows):
         self.motion.extend(rows)
 

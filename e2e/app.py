@@ -79,10 +79,11 @@ def main():
     first_position = None
     reached_stop = False
     stall = False
-    last_revisions = 0
+    last_video = 0.0
     worker = None
     first_camera = None
     new_surfaces = 0
+    turn_released = False
     stalled_input_ages = []
     release_latency_ms = None
     estop_latency_ms = None
@@ -92,8 +93,8 @@ def main():
 
     def drive(app, window, value):
         nonlocal stage, changed, previous, robot, killed, restarted, first_position
-        nonlocal reached_stop, stall, last_revisions, worker, resume
-        nonlocal first_camera, new_surfaces
+        nonlocal reached_stop, stall, last_video, worker, resume
+        nonlocal first_camera, new_surfaces, turn_released
         nonlocal release_latency_ms, estop_latency_ms, tested_input_stall
         nonlocal steady_start, steady_end, worker_restart_s
         now = clock.now()
@@ -241,6 +242,13 @@ def main():
             points = records[records[:, 0, 3] > 0, 0, :3]
             local = (points - first_camera[:3, 3]) @ first_camera[:3, :3]
             new_surfaces = int(np.count_nonzero(np.abs(local[:, 0]) > -local[:, 2] * 0.78))
+            if not turn_released:
+                pygame.event.post(pygame.event.Event(pygame.KEYUP, key=pygame.K_w))
+                turn_released = True
+            # Check coverage after the turn's exact RGB-D observation, not against
+            # an old depth frame while moving/metadata backpressure is still high.
+            if new_surfaces <= 100 and now - changed < 6:
+                return
             assert new_surfaces > 100, "Turning did not reconstruct beyond the first camera view"
             key(pygame.K_F12)
             key(pygame.K_e)
@@ -255,14 +263,14 @@ def main():
             worker.suspend()
             resume = threading.Timer(2, worker.resume)
             resume.start()
-            last_revisions = app.matched_frames
+            last_video = app.state.video_time
             stall = True
             stage, changed = 4, now
         elif stage == 4 and now - changed > 1.5:
             resume.cancel()
             worker.resume()
             stall = False
-            assert app.matched_frames > last_revisions
+            assert app.state.video_time > last_video, "A stalled worker blocked the camera feed"
             # A crashed RGB-D worker leaves the link up, shows flat video and starts again.
             worker.kill()
             stage, changed = "worker killed", now

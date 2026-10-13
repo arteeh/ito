@@ -23,6 +23,15 @@ def digest(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+def product_digest():
+    root = Path(__file__).resolve().parents[1]
+    value = hashlib.sha256()
+    for path in sorted(p for p in (root / "ito").rglob("*") if p.suffix in (".py", ".glsl")):
+        value.update(path.relative_to(root).as_posix().encode())
+        value.update(path.read_bytes())
+    return value.hexdigest()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("recording", type=Path)
@@ -204,6 +213,8 @@ def main():
         peak_cuda_allocated_bytes=torch.cuda.max_memory_allocated(),
         peak_cuda_reserved_bytes=torch.cuda.max_memory_reserved(),
         capture_script_sha256=digest(Path(__file__)),
+        product_sha256=product_digest(),
+        budget=args.budget,
         baseline="316a556",
         timing="fixed admissions, measured serial completion; no concurrent display",
         retrospective="first subsequent integration, separate from deadline-available pose",

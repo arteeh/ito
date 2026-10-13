@@ -73,7 +73,9 @@ Comfort and input preferences are saved per driver address and robot name: `--fo
 `--sensitivity 0.0025`, `--invert-y` / `--no-invert-y`, `--move-x move_x`, `--move-y move_y`.
 `--camera NAME --cameras N` selects a camera from a driver with N video tracks.
 The ImGui panel saves the robot's maximum splat count; lowering it fades excess splats first.
-Defaults are 16K for software rendering, 256K for hardware, or 1M with at least 8 GB NVIDIA VRAM.
+Defaults are 16K for software rendering, 256K for hardware, or 512K with at least 8 GB NVIDIA VRAM.
+Live reconstruction is capped at 512K; [the shared GPU budget](docs/gpu-budget.md) reserves the
+display first and admits reconstruction between completed frames.
 `ito-desktop scene.ply` remains a local scene viewer with WASD and Page Up/Down free flight.
 
 `ito.reconstruction.Reconstruction(intrinsics, max_splats=window.max_splats)` accepts synchronized

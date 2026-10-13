@@ -164,6 +164,7 @@ def main():
         )
 
     try:
+        assert reader.poll(20), "Shared-memory producer failed to start"
         with (
             (OUTPUT / "metrics.jsonl").open("w") as metrics,
             DesktopWindow((800, 600), fps=60, capture_dir=OUTPUT) as window,

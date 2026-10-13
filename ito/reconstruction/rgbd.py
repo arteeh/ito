@@ -4,6 +4,9 @@ Splats stay until the budget needs their slots: the scene builds up into one roo
 can look back at, and only the longest-unseen surfaces fade out, together, under pressure.
 """
 
+import sys
+from contextlib import nullcontext
+
 import numpy as np
 
 LEVELS = 32  # Power-of-two cell sizes from 2^-16 to 2^15 world units.
@@ -20,6 +23,7 @@ class RGBDBackend:
         fade_seconds=0.5,
         device="auto",
     ):
+        self.admission = None
         self.xp = np
         if device not in ("auto", "cpu", "cuda"):
             raise ValueError("Reconstruction device must be auto, cpu or cuda")
@@ -59,6 +63,26 @@ class RGBDBackend:
                 -xp.ones_like(x),
             ),
             axis=-1,
+        )
+
+    def bind_admission(self, admission):
+        self.admission = admission
+        if self.xp is not np:
+            admission.memory_used = self.cuda_memory_bytes
+
+    def cuda_memory_bytes(self):
+        torch = sys.modules.get("torch")
+        return self.xp.get_default_memory_pool().total_bytes() + (
+            torch.cuda.memory_reserved() if torch is not None else 0
+        )
+
+    def gpu_chunk(self, kind="map"):
+        if self.admission is None or self.xp is np or not self.admission.enabled.value:
+            return nullcontext()
+        return self.admission.cuda_chunk(
+            self.xp.cuda.get_current_stream().synchronize,
+            (self.xp.cuda.Event(), self.xp.cuda.Event(), self.xp.cuda.get_elapsed_time),
+            kind=kind,
         )
 
     @property
@@ -120,36 +144,45 @@ class RGBDBackend:
         live = np.flatnonzero((self.keys >= 0) & ~self.retiring & (self.seen < now))
         if not len(live):
             return
-        centers = xp.asarray(self.records[live, 0, :3])
-        size = xp.asarray(self.records[live, 1, 0])
-        camera = xp.asarray(camera, dtype=xp.float32)
-        local = (centers - camera[:3, 3]) @ camera[:3, :3]
-        z = -local[:, 2]
-        ahead = z > 1e-6
-        safe = xp.where(ahead, z, 1)
-        u = xp.rint(cx + fx * local[:, 0] / safe).astype(xp.int64)
-        v = xp.rint(cy - fy * local[:, 1] / safe).astype(xp.int64)
-        height, width = depth.shape
-        seen = ahead & (u >= 0) & (u < width) & (v >= 0) & (v < height)
-        observed = xp.zeros(len(live), xp.float32)
-        observed[seen] = depth[v[seen], u[seen]]
-        # On or in front of the seen surface, within depth noise and the splat's size.
-        stale = (observed > 0) & (z < observed * 1.1 + 2 * size)
-        if xp is not np:
-            stale = xp.asnumpy(stale)
-        if stale.any():
-            self.retire(live[stale])
+        batch_size = (
+            32_768 if self.admission is not None and self.admission.enabled.value else len(live)
+        )
+        for offset in range(0, len(live), batch_size):
+            batch = live[offset : offset + batch_size]
+            with self.gpu_chunk("carve"):
+                centers = xp.asarray(self.records[batch, 0, :3])
+                size = xp.asarray(self.records[batch, 1, 0])
+                camera = xp.asarray(camera, dtype=xp.float32)
+                local = (centers - camera[:3, 3]) @ camera[:3, :3]
+                z = -local[:, 2]
+                ahead = z > 1e-6
+                safe = xp.where(ahead, z, 1)
+                u = xp.rint(cx + fx * local[:, 0] / safe).astype(xp.int64)
+                v = xp.rint(cy - fy * local[:, 1] / safe).astype(xp.int64)
+                height, width = depth.shape
+                seen = ahead & (u >= 0) & (u < width) & (v >= 0) & (v < height)
+                observed = xp.zeros(len(batch), xp.float32)
+                observed[seen] = depth[v[seen], u[seen]]
+                # On or in front of the seen surface, within depth noise and the splat's size.
+                stale = (observed > 0) & (z < observed * 1.1 + 2 * size)
+                if xp is not np:
+                    stale = xp.asnumpy(stale)
+            if stale.any():
+                self.retire(batch[stale])
 
     def integrate(self, rgb, depth, camera, now):
         xp = self.xp
-        z = xp.asarray(depth)
-        valid = xp.isfinite(z) & (z > 0) & (z < 1000)
-        points = self.rays[valid] * z[valid, None]
-        transform = xp.asarray(camera)
-        points = points @ transform[:3, :3].T + transform[:3, 3]
-        self.integrate_points(points, xp.asarray(rgb)[valid], now)
+        with self.gpu_chunk("project"):
+            z = xp.asarray(depth)
+            valid = xp.isfinite(z) & (z > 0) & (z < 1000)
+            points = self.rays[valid] * z[valid, None]
+            transform = xp.asarray(camera)
+            points = points @ transform[:3, :3].T + transform[:3, 3]
+            colors = xp.asarray(rgb)[valid]
+            observed = xp.where(valid, z, 0).astype(xp.float32)
+        self.integrate_points(points, colors, now)
         i = self.intrinsics
-        self.carve(camera, i.fx, i.fy, i.cx, i.cy, xp.where(valid, z, 0).astype(xp.float32), now)
+        self.carve(camera, i.fx, i.fy, i.cx, i.cy, observed, now)
 
     def integrate_points(self, points, colors, now, sizes=None):
         """Fuse world-space dense points through the same budget, fade and eviction policy.
@@ -159,37 +192,40 @@ class RGBDBackend:
         instead of one fixed voxel that is either huge or needlessly fine.
         """
         xp = self.xp
-        valid = xp.all(xp.isfinite(points), axis=1)
-        points, colors = points[valid], colors[valid]
-        # Cell edges stay float64: a float32 4 cm voxel is not 4 cm, and surfaces on
-        # exact voxel multiples would then flip between cells every frame.
-        if sizes is None:
-            levels = xp.zeros(len(points), xp.int64)
-            cell = xp.full(len(points), self.voxel_size)
-        else:
-            levels = xp.clip(xp.ceil(xp.log2(sizes[valid])), -LEVELS // 2, LEVELS // 2 - 1)
-            levels = levels.astype(xp.int64)
-            cell = 2.0**levels
-            levels += LEVELS // 2
-        cells = xp.floor(points / cell[:, None]).astype(xp.int64)
-        bounded = xp.all((cells >= -(1 << 18)) & (cells < (1 << 18)), axis=1)
-        cells, points, cell = cells[bounded] + (1 << 18), points[bounded], cell[bounded]
-        colors, levels = colors[bounded], levels[bounded]
-        keys = (levels << 57) | (cells[:, 0] << 38) | (cells[:, 1] << 19) | cells[:, 2]
-        keys, unique = xp.unique(keys, return_index=True)
-        points, colors, cell = points[unique], colors[unique], cell[unique]
-        # Match against the live slots where the keys are: sorting a full budget of
-        # keys on the CPU costs more than a dense frame's whole GPU pass.
-        occupied = np.flatnonzero(self.keys >= 0)
-        stored = xp.asarray(self.keys[occupied])
-        order = xp.argsort(stored)
-        stored = stored[order]
-        locations = xp.minimum(xp.searchsorted(stored, keys), max(len(stored) - 1, 0))
-        matched = stored[locations] == keys if len(stored) else xp.zeros(len(keys), bool)
-        if xp is not np:
-            keys, points, colors, cell, locations, matched, order = map(
-                xp.asnumpy, (keys, points, colors, cell, locations, matched, order)
-            )
+        with self.gpu_chunk("voxelize"):
+            valid = xp.all(xp.isfinite(points), axis=1)
+            points, colors = points[valid], colors[valid]
+            # Cell edges stay float64: a float32 4 cm voxel is not 4 cm, and surfaces on
+            # exact voxel multiples would then flip between cells every frame.
+            if sizes is None:
+                levels = xp.zeros(len(points), xp.int64)
+                cell = xp.full(len(points), self.voxel_size)
+            else:
+                levels = xp.clip(xp.ceil(xp.log2(sizes[valid])), -LEVELS // 2, LEVELS // 2 - 1)
+                levels = levels.astype(xp.int64)
+                cell = 2.0**levels
+                levels += LEVELS // 2
+            cells = xp.floor(points / cell[:, None]).astype(xp.int64)
+            bounded = xp.all((cells >= -(1 << 18)) & (cells < (1 << 18)), axis=1)
+            cells, points, cell = cells[bounded] + (1 << 18), points[bounded], cell[bounded]
+            colors, levels = colors[bounded], levels[bounded]
+            keys = (levels << 57) | (cells[:, 0] << 38) | (cells[:, 1] << 19) | cells[:, 2]
+            keys, unique = xp.unique(keys, return_index=True)
+            points, colors, cell = points[unique], colors[unique], cell[unique]
+            # Match against the live slots where the keys are: sorting a full budget of
+            # keys on the CPU costs more than a dense frame's whole GPU pass.
+        with self.gpu_chunk("match"):
+            occupied = np.flatnonzero(self.keys >= 0)
+            stored = xp.asarray(self.keys[occupied])
+            order = xp.argsort(stored)
+            stored = stored[order]
+            locations = xp.minimum(xp.searchsorted(stored, keys), max(len(stored) - 1, 0))
+            matched = stored[locations] == keys if len(stored) else xp.zeros(len(keys), bool)
+        with self.gpu_chunk("readback"):
+            if xp is not np:
+                keys, points, colors, cell, locations, matched, order = map(
+                    xp.asnumpy, (keys, points, colors, cell, locations, matched, order)
+                )
         slots = occupied[order[locations[matched]]]
         # A new observation rescues a pressure victim unless the pilot is shrinking the budget.
         refresh = ~self.retiring[slots] | (self.count <= self.budget)

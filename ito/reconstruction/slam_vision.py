@@ -72,6 +72,13 @@ class Keyframes(list):
 
 
 class VisionSLAMBackend(RGBDBackend):
+    def bind_admission(self, admission):
+        from .admission import bind_model, bind_native
+
+        super().bind_admission(admission)
+        self.admission_hooks = bind_model(self.model, admission)
+        bind_native(admission)
+
     def __init__(self, capacity, intrinsics, *, report, **options):
         from .mast3r_runtime import load_model, prepare
 

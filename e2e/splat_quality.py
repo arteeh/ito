@@ -161,7 +161,8 @@ def main():
                     reconstruction.submit(rgb, depth, camera)
                     next_frame += 1 / args.rate
                 while (packet := reconstruction.poll()) is not None:
-                    renderer.apply(packet)
+                    while not renderer.apply(packet):
+                        context.finish()
                     counts.append((round(elapsed, 2), packet.count))
                 pygame.time.wait(5)
 
@@ -176,7 +177,8 @@ def main():
                     turned[:3, :3] = np.array(((c, 0, s_), (0, 1, 0), (-s_, 0, c))) @ camera[:3, :3]
                     reconstruction.submit(rgb, depth, turned)
                     while (packet := reconstruction.poll()) is not None:
-                        renderer.apply(packet)
+                        while not renderer.apply(packet):
+                            context.finish()
                         counts.append((round(clock.now() - began, 2), packet.count))
                     pygame.time.wait(int(1000 / args.rate))
 

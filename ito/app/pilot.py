@@ -17,6 +17,7 @@ from ito.link.audio import Audio
 from ito.protocol import Command, FrameMetadata, Motion, Paired, PilotState, Pose, Status
 from ito.rates import CounterRate, Rate
 from ito.reconstruction import Reconstruction
+from ito.reconstruction.admission import MAX_SPLATS
 from ito.render import pose
 from ito.render.pose import quaternion
 
@@ -158,6 +159,15 @@ class Pilot:
             with contextlib.suppress(RuntimeError):  # The link loop has just closed.
                 loop.call_soon_threadsafe(arrived.set)
 
+    def display_completed(self, began, period):
+        if not self.worker_lock.acquire(False):
+            return
+        try:
+            if self.worker is not None and not self.failure:
+                self.worker.display_completed(began, period)
+        finally:
+            self.worker_lock.release()
+
     def poll(self):
         if not self.worker_lock.acquire(False):
             return None
@@ -270,6 +280,10 @@ class Pilot:
             self._anchor(camera)
         if self.worker is None or self.failure:
             return
+        # Frame metadata only uses an idle link; RGB may arrive without depth.
+        # Keep the last complete scene until another posed RGB-D observation arrives.
+        if self.backend == "rgbd" and (depth is None or camera is None):
+            return
         measured = False
         if self.backend == "slam":
             # SLAM places the camera itself; it needs only the driver's best guess of
@@ -358,6 +372,8 @@ class Pilot:
             raise ValueError("Driver has no selected camera")
         selected = settings.load(self.address, description.name, self.defaults)
         self.settings = settings.Settings.model_validate(selected.model_dump() | self.overrides)
+        if self.settings.max_splats > MAX_SPLATS:
+            self.settings = self.settings.model_copy(update={"max_splats": MAX_SPLATS})
         self.overrides = {}
         self.settings_revision += 1
         paired = peer.credential_received.is_set()
@@ -501,7 +517,19 @@ class Pilot:
                                 self.last_tracking = now
                             self.tracked_frames = count
                         self._log_restarts(self.worker.restarts())
-                        live = self.tracking and now - self.last_tracking < TRACKING_LOST
+                        # Dense vision can be deliberately paused by admission while
+                        # the robot's fresh motion still supplies the current eye pose.
+                        # Keep the complete scene through that pause; faults, lost
+                        # tracking and a worker with no GPU progress still fall back.
+                        budget_active = (
+                            self.robot_first
+                            and now - self.motion_time < 0.25
+                            and self.worker.admission.enabled.value
+                            and now - self.worker.admission.last_progress.value < TRACKING_GAP
+                        )
+                        live = self.tracking and (
+                            now - self.last_tracking < TRACKING_LOST or budget_active
+                        )
                         if live and tracked and self.robot_first:
                             correction = self.worker.correction()
                             if correction is not None:
@@ -514,7 +542,7 @@ class Pilot:
                             )
                         steady = (
                             live
-                            and now - self.last_tracking < TRACKING_GAP
+                            and (now - self.last_tracking < TRACKING_GAP or budget_active)
                             and now - self.tracking_steady_since >= TRACKING_STEADY
                         )
                         self.slam_view = live if self.slam_view else steady
