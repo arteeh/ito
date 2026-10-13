@@ -1,5 +1,6 @@
 """Drive the real GL renderer with randomized scenes: xvfb-run -a uv run python e2e/render.py."""
 
+import argparse
 import math
 from pathlib import Path
 
@@ -20,14 +21,24 @@ from ito.render import (
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--egl", action="store_true", help="offscreen; set PYOPENGL_PLATFORM=egl")
+    args = parser.parse_args()
     output = Path("e2e/out/render")
     output.mkdir(parents=True, exist_ok=True)
-    pygame.display.init()
-    pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MAJOR_VERSION, 4)
-    pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MINOR_VERSION, 3)
-    pygame.display.gl_set_attribute(pygame.GL_CONTEXT_PROFILE_MASK, pygame.GL_CONTEXT_PROFILE_CORE)
-    pygame.display.set_mode((320, 240), pygame.OPENGL | pygame.DOUBLEBUF)
-    context = current_context()
+    if args.egl:
+        import moderngl
+
+        context = moderngl.create_standalone_context(require=430, backend="egl")
+    else:
+        pygame.display.init()
+        pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MAJOR_VERSION, 4)
+        pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MINOR_VERSION, 3)
+        pygame.display.gl_set_attribute(
+            pygame.GL_CONTEXT_PROFILE_MASK, pygame.GL_CONTEXT_PROFILE_CORE
+        )
+        pygame.display.set_mode((320, 240), pygame.OPENGL | pygame.DOUBLEBUF)
+        context = current_context()
     renderer = GaussianRenderer(context)
     target = context.simple_framebuffer((320, 240))
     projection = perspective(math.radians(70), 4 / 3)

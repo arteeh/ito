@@ -63,7 +63,13 @@ class Metrics:
         with self.torch.inference_mode():
             perceptual = float(self.lpips(tensor(truth), tensor(candidate)).item())
         reference_edges = edges(truth)
-        edge_distance = distance_transform_edt(~edges(candidate))[reference_edges]
+        candidate_edges = edges(candidate)
+        distance = (
+            distance_transform_edt(~candidate_edges)
+            if candidate_edges.any()
+            else np.full(covered.shape, np.hypot(*covered.shape))
+        )
+        edge_distance = distance[reference_edges]
         return dict(
             psnr_db=float(-10 * np.log10(max(mse, 1e-15))),
             ssim=float(structural_similarity(truth, candidate, channel_axis=2, data_range=1)),
@@ -174,6 +180,7 @@ def evaluate(work, out, ipd):
         view = View(i)
         report["gl_renderer"] = view.device
         poses = np.load(work / f"gs/out/{run}/data.npz")["poses"]
+        report[f"{run}_poses"] = pose_scores(out / run, poses)
         plan = json.loads((out / f"{run}-schedule.json").read_text())
         history, history_frame = [], -1
         for index in sorted(moments):
@@ -203,6 +210,16 @@ def evaluate(work, out, ipd):
                 seen = room.seen(camera, depth, history)
                 candidate, covered = view.draw(world @ camera, sort=label not in {"left", "right"})
                 values = metrics.score(truth, candidate, covered, seen)
+                foreground = (depth < 2) & (
+                    np.hypot(sobel(depth, axis=0), sobel(depth, axis=1)) > 0.1
+                )
+                candidate_edges = edges(candidate)
+                distance = (
+                    distance_transform_edt(~candidate_edges)
+                    if candidate_edges.any()
+                    else np.full(depth.shape, np.hypot(*depth.shape))
+                )
+                values["foreground_edge_distance_px"] = percentiles(distance[foreground])
                 row = dict(
                     run=run,
                     frame=index + 1,
@@ -213,6 +230,12 @@ def evaluate(work, out, ipd):
                 report["moments"].append(row)
                 caption = f"{run} #{index + 1} {label} | truth / main | {values['psnr_db']:.2f} dB"
                 name = f"{run}-{index + 1:04d}-{label}"
+                Image.fromarray(
+                    (np.concatenate((truth, candidate), axis=1) * 255)
+                    .round()
+                    .clip(0, 255)
+                    .astype(np.uint8)
+                ).save(out / f"{name}.png")
                 pair(truth, candidate, caption).save(out / f"{name}.jpg", quality=90)
                 np.savez_compressed(out / f"{name}-mask.npz", seen=seen, covered=covered)
                 eye_images[label] = (truth, candidate, depth)
@@ -226,6 +249,55 @@ def evaluate(work, out, ipd):
         view.close()
         room.renderer.close()
     (out / "metrics.json").write_text(json.dumps(report, indent=2) + "\n")
+    contact_sheets(out)
+
+
+def contact_sheets(out):
+    groups = {
+        "sweep-reference": [f"sweep180-{f:04d}-camera" for f in (215, 453, 693)],
+        "tour-reference": [f"tour-{f:04d}-camera" for f in (363, 1501, 2284)],
+        "tour-stereo": [f"tour-2284-{eye}" for eye in ("left", "right")],
+    }
+    for label, names in groups.items():
+        panels = [Image.open(out / f"{name}.jpg").convert("RGB") for name in names]
+        sheet = Image.new("RGB", (panels[0].width, sum(p.height for p in panels)))
+        y = 0
+        for panel in panels:
+            sheet.paste(panel, (0, y))
+            y += panel.height
+        for quality in (90, 80, 70, 60):
+            sheet.save(out / f"{label}.jpg", quality=quality)
+            if (out / f"{label}.jpg").stat().st_size < 1_000_000:
+                break
+
+
+def pose_scores(folder, truth):
+    from truth import align
+
+    publications = [json.loads(s) for s in (folder / "publications.jsonl").read_text().splitlines()]
+    first = next(p for p in publications if p["pose"] is not None)
+    world = align(np.array(first["pose"]).reshape(4, 4), truth[first["frame"]])
+    rows = [json.loads(s) for s in (folder / "poses.jsonl").read_text().splitlines()]
+    result = {}
+    for key in ("available_pose", "retrospective_pose"):
+        rotations, translations = [], []
+        for row in rows:
+            if row[key] is None:
+                continue
+            pose = np.array(row[key]).reshape(4, 4)
+            target = world @ truth[row["frame"]]
+            if not np.isfinite(pose).all():
+                continue
+            cosine = (np.trace(pose[:3, :3].T @ target[:3, :3]) - 1) / 2
+            rotations.append(float(np.degrees(np.arccos(np.clip(cosine, -1, 1)))))
+            translations.append(float(np.linalg.norm(pose[:3, 3] - target[:3, 3])))
+        result[key] = dict(
+            rotation_deg=percentiles(rotations),
+            translation_m=percentiles(translations),
+            frames=len(rotations),
+            unavailable=len(rows) - len(rotations),
+        )
+    return result
 
 
 def stereo_error(left, right, i, ipd):
@@ -266,6 +338,7 @@ def clips(out, run, poses, room, view):
         writer = imageio.get_writer(path, fps=30, macro_block_size=1)
         slow = imageio.get_writer(out / f"{kind}-slow.mp4", fps=10, macro_block_size=1)
         residuals, edge_changes, previous = [], [], None
+        trace = []
         head_completion = []
         for n in range(61):
             k = min(n // 6, len(snaps) - 1)
@@ -278,18 +351,36 @@ def clips(out, run, poses, room, view):
             truth = room.draw(camera)
             began = time.perf_counter()
             candidate, _ = view.draw(world @ camera)
-            head_completion.append((time.perf_counter() - began) * 1000)
+            complete = time.perf_counter()
+            head_completion.append((complete - began) * 1000)
             residual = candidate - truth
             if previous is not None:
                 residuals.append(float(np.abs(residual - previous[0]).mean()))
                 edge_changes.append(float(np.mean(edges(candidate) != previous[1])))
             previous = residual, edges(candidate)
-            caption = f"{kind} #{frames[k] + 1} deadline {float(snap['deadline']):.3f}s"
+            deadline = float(snaps[0]["deadline"]) + n / 30
+            source_age = deadline - float(np.max(snap["last_observed_capture"]))
+            caption = (
+                f"{kind} obs #{int(snap['index']) + 1} age {source_age:.3f}s "
+                f"draw {(complete - began) * 1000:.1f}ms"
+            )
+            trace.append(
+                dict(
+                    frame=n,
+                    deadline=float(snaps[0]["deadline"]) + n / 30,
+                    observation_frame=int(snap["index"]) + 1,
+                    observation_age_s=source_age,
+                    head_sample=began,
+                    display_complete=complete,
+                    publication=float(snap["published"]),
+                )
+            )
             image = np.asarray(pair(truth, candidate, caption))
             writer.append_data(image)
             slow.append_data(image)
         writer.close()
         slow.close()
+        (out / f"{kind}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in trace))
         results.append(
             dict(
                 file=path.name,

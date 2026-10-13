@@ -5,6 +5,7 @@ See docs/measure.md for the complete one-command run on this machine.
 """
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -57,6 +58,9 @@ def prepare(work, out):
     manifest["files"][str(scene.relative_to(work))] = digest(scene)
     path = out / "inputs.json"
     encoded = json.dumps(manifest, indent=2) + "\n"
+    reference = json.loads(Path(__file__).with_name("measure_reference.json").read_text())
+    if hashlib.sha256(encoded.encode()).hexdigest() != reference["inputs_sha256"]:
+        raise ValueError("Inputs differ from the committed baseline fingerprint")
     if path.exists() and path.read_text() != encoded:
         raise ValueError("Frozen reference input changed")
     path.write_text(encoded)

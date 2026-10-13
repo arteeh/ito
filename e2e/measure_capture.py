@@ -74,6 +74,8 @@ def main():
     latest_pose = None
     latest_frame = -1
     max_arrival = None
+    observed_frame = np.full(args.budget, -1, np.int64)
+    source_times = np.array([r["captured"] - start for r in rows])
 
     def save(until):
         nonlocal target
@@ -102,7 +104,9 @@ def main():
                     observation_indices=np.array(admitted),
                     max_observation_arrival=max_arrival,
                     coordinate_revision=0,
-                    last_observed=backend.seen[live],
+                    last_surface_update=backend.seen[live],
+                    observation_frame_indices=observed_frame[live],
+                    last_observed_capture=source_times[np.maximum(observed_frame[live], 0)],
                 )
             target = next(snapshots, None)
 
@@ -132,12 +136,15 @@ def main():
             captured=row["captured"],
         )
         torch.cuda.synchronize()
+        if torch.cuda.memory_reserved() >= 8 * 1024**3:
+            raise RuntimeError("Replay exceeded the 8 GiB CUDA reservation limit")
         cost = time.perf_counter() - began
         done = began_at + cost
         new_records, new_keys, new_seen = backend.records, backend.keys, backend.seen
         backend.records, backend.keys, backend.seen = old_records, old_keys, old_seen
         save(done)
         backend.records, backend.keys, backend.seen = new_records, new_keys, new_seen
+        observed_frame[(new_seen != old_seen) & (new_keys >= 0)] = index
         available = done
         admitted.append(index)
         max_arrival = arrival
@@ -157,6 +164,7 @@ def main():
                 exposure=row.get("exposure_time"),
                 arrival=arrival,
                 started=began_at,
+                max_motion_arrival=float(arrivals[end - 1] - start) if end else -1.0,
                 publication=done,
                 seconds=cost,
                 coordinate_revision=0,
@@ -195,6 +203,8 @@ def main():
         surface_updates_s=sum(p["surface_updates"] for p in publications) / available,
         peak_cuda_allocated_bytes=torch.cuda.max_memory_allocated(),
         peak_cuda_reserved_bytes=torch.cuda.max_memory_reserved(),
+        capture_script_sha256=digest(Path(__file__)),
+        baseline="316a556",
         timing="fixed admissions, measured serial completion; no concurrent display",
         retrospective="first subsequent integration, separate from deadline-available pose",
     )

@@ -83,7 +83,11 @@ def calibration(out):
 
 
 def capture(work, out):
+    import cv2
+    from skimage.metrics import structural_similarity
+
     from ito.protocol import Intrinsics
+    from ito.reconstruction.rgbd import RGBDBackend
 
     k = Intrinsics(
         width=360, height=640, fx=532.5694343521658, fy=532.5694343521658, cx=180.0, cy=320.0
@@ -133,7 +137,10 @@ def capture(work, out):
         encoder.mux(packet)
     encoder.close()
     by_pts = {r["video_pts"]: r for r in rows}
-    errors, matches = [], []
+    errors, matches, visible_ms, sharp_ms, head_ms = [], [], [], [], []
+    alignment_errors = []
+    view = View(k)
+    backend = RGBDBackend(131072, k, device="cpu")
     with av.open(str(out / "video.mp4")) as video:
         for decoded in video.decode(video=0):
             pts = round(decoded.pts * decoded.time_base * 90000)
@@ -150,7 +157,60 @@ def capture(work, out):
             Image.fromarray(rgb).save(out / row["name"])
             truth = np.array(Image.open(out / f"truth-{source:06d}.png"))
             errors.append(float(-10 * np.log10(np.mean(((rgb.astype(float) - truth) / 255) ** 2))))
+            grey = cv2.cvtColor(truth, cv2.COLOR_RGB2GRAY)
+            corners = cv2.goodFeaturesToTrack(grey, 100, 0.02, 8)
+            if corners is not None:
+                moved, status, _ = cv2.calcOpticalFlowPyrLK(
+                    grey,
+                    cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY),
+                    corners,
+                    None,
+                    winSize=(15, 15),
+                    maxLevel=2,
+                )
+                alignment_errors.extend(
+                    np.linalg.norm((moved - corners)[status[:, 0] == 1, 0], axis=1).tolist()
+                )
+            camera = np.array(row["camera"]).reshape(4, 4)
+            depth = room.draw(camera, depth=True)
+            observed_at = time.perf_counter()
+            backend.integrate(rgb, depth, camera, observed_at)
+            row["publication"] = time.perf_counter()
+            row["publication_status"] = "offline RGB-D oracle completed, source monotonic clock"
+            live = backend.keys >= 0
+            records = backend.records[live].copy()
+            view.upload(records)
+            stable = 0
+            for _ in range(3):
+                head_sample = time.perf_counter()
+                image, _ = view.draw(camera)
+                complete = time.perf_counter()
+                head_ms.append((complete - head_sample) * 1000)
+                if row["display"] is None:
+                    row["display"] = complete
+                reference = truth.astype(np.float32) / 255
+                psnr = -10 * np.log10(max(float(np.mean((image - reference) ** 2)), 1e-15))
+                ssim = structural_similarity(reference, image, channel_axis=2, data_range=1)
+                stable = stable + 1 if psnr >= 30 and ssim >= 0.9 else 0
+            row["display_status"] = "offscreen GL completion including readback; not scanout"
+            row["stable_sharp"] = complete if stable == 3 else None
+            row["stable_sharp_status"] = (
+                "three draws at PSNR>=30, SSIM>=0.9" if stable == 3 else "censored"
+            )
+            if stable == 3:
+                sharp_ms.append((complete - row["exposure_time"]) * 1000)
+            # An ID-colour pass tests whether this observation contributed after compositing
+            # against older surfaces. This diagnostic pass is not a displayed candidate.
+            current = backend.seen[live] == observed_at
+            records[:, 3, :3] = (current[:, None].astype(np.float32) - 0.5) / 0.2820947918
+            view.upload(records)
+            contribution, _ = view.draw(camera)
+            row["visible_source_pixels"] = int((contribution[..., 0] > 0.1).sum())
+            row["first_visible"] = row["display"] if row["visible_source_pixels"] else None
+            if row["first_visible"] is not None:
+                visible_ms.append((row["first_visible"] - row["exposure_time"]) * 1000)
             matches.append(source)
+    view.close()
     room.renderer.close()
     if set(matches) != set(range(len(rows))):
         raise AssertionError("Some source frames never decoded")
@@ -160,7 +220,13 @@ def capture(work, out):
         exact_id_matches=len(matches),
         exact_fraction=1.0,
         codec_psnr_db=percentiles(errors),
+        decoded_alignment_px=percentiles(alignment_errors),
         transport="H.264 MP4 PTS; not mediad/WebRTC",
+        freshness_scope="offline RGB-D oracle incl. recording/decoding delay, not live latency",
+        exposure_to_first_visible_ms=percentiles(visible_ms),
+        exposure_to_stable_sharp_ms=percentiles(sharp_ms),
+        stable_sharp_censored=len(rows) - len(sharp_ms),
+        head_sample_to_GL_complete_ms=percentiles(head_ms),
     )
 
 
