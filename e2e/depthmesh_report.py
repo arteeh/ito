@@ -107,6 +107,7 @@ def main():
                 raise AssertionError("Clip uses unpublished patch")
             clip_frames += 1
     result["clips"] = json.loads((args.root / "clips/metric-small-robot/metrics.json").read_text())
+    result["offsets"] = json.loads((args.root / "offsets/metrics.json").read_text())
     for path in sorted(args.root.glob("display-*-*.json")):
         result["gpu"][path.stem] = json.loads(path.read_text())
     result["audit"] = dict(
@@ -132,6 +133,7 @@ def main():
     image_folder.mkdir(exist_ok=True)
     for name, (variant, image) in selected.items():
         shutil.copy2(args.root / f"rendered/{variant}/{image}", image_folder / name)
+    shutil.copy2(args.root / "offsets/wide-offsets.jpg", image_folder / "wide-offsets.jpg")
     pot_folder = args.root / "rendered/metric-small-oracle-cap64"
     sheet(
         [np.asarray(Image.open(pot_folder / f"tour-0363-{eye}.png")) for eye in ("left", "right")],

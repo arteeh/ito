@@ -85,9 +85,13 @@ def main():
         )
         targets = [ctx.simple_framebuffer((width, height)) for _ in range(2)]
         durations = []
+        next_start = time.perf_counter()
+        late = []
         for n in range(args.frames + 10):
             if args.pace:
-                time.sleep(1 / 90)
+                time.sleep(max(0, next_start - time.perf_counter()))
+            deadline = next_start + 1 / 90
+            next_start = deadline
             camera = anchor.copy()
             camera[:3, 3] += camera[:3, 0] * 0.03 * np.sin(n / 90 * 2 * np.pi)
             start = time.perf_counter()
@@ -98,7 +102,16 @@ def main():
             ctx.finish()
             if n >= 10:
                 durations.append((time.perf_counter() - start) * 1000)
-        report["rows"].append(dict(size=[width, height], **timing(durations)))
+                if args.pace:
+                    late.append(max(0, time.perf_counter() - deadline) * 1000)
+        report["rows"].append(
+            dict(
+                size=[width, height],
+                **timing(durations),
+                scheduled_late_ms=percentiles(late) if late else None,
+                scheduled_missed_fraction=float(np.mean(np.array(late) > 0)) if late else None,
+            )
+        )
         for target in targets:
             target.release()
     newest = world.patches[-1]

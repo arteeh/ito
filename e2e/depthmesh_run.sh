@@ -36,6 +36,7 @@ for variant in truth da2-small da2-large metric-small metric-large video-small p
     done
 done
 "$python" e2e/depthmesh_clips.py > "$root/logs/clips.log" 2>&1
+"$python" e2e/depthmesh_offsets.py > "$root/logs/offsets.log" 2>&1
 bash e2e/depthmesh_viewer.sh > "$root/logs/viewer.log" 2>&1
 "$python" e2e/depthmesh_report.py
 "$python" -m compileall -q ito/proto e2e/depthmesh_*.py

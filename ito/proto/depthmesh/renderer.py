@@ -35,7 +35,7 @@ GEOMETRY = """
 layout(triangles) in;
 layout(triangle_strip, max_vertices=3) out;
 in VS { vec2 uv; vec3 world; float z; } vertex[];
-out vec2 uv;
+out vec3 source_uv_depth;
 uniform mat4 view_projection;
 uniform vec2 jump;
 void main() {
@@ -43,7 +43,7 @@ void main() {
     float hi = max(vertex[0].z, max(vertex[1].z, vertex[2].z));
     if (lo < 0.05 || hi > 40 || isnan(hi) || hi-lo > jump.x+jump.y*lo) return;
     for (int k=0; k<3; k++) {
-        uv = vertex[k].uv;
+        source_uv_depth = vec3(vertex[k].uv * vertex[k].z, vertex[k].z);
         gl_Position = view_projection * vec4(vertex[k].world, 1);
         EmitVertex();
     }
@@ -52,11 +52,12 @@ void main() {
 """
 FRAGMENT = """
 #version 430
-in vec2 uv;
+in vec3 source_uv_depth;
 uniform sampler2D colors;
 uniform usampler2D alive;
 out vec4 color;
 void main() {
+    vec2 uv = source_uv_depth.xy / source_uv_depth.z;
     if (texture(alive, uv).r == 0u) discard;
     color = vec4(texture(colors, uv).rgb, 1);
 }
