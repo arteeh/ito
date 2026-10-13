@@ -86,7 +86,6 @@ class RGBDBackend:
         if self.admission is None or self.xp is np:
             return nullcontext()
         return self.admission.cuda_chunk(
-            self.xp.cuda.get_current_stream().synchronize,
             (self.xp.cuda.Event(), self.xp.cuda.Event(), self.xp.cuda.get_elapsed_time),
             kind=kind,
         )
@@ -253,6 +252,7 @@ class RGBDBackend:
         self.release_after[slots] = np.inf
         self.records[slots, 3, 3] = 0
         self.refreshed += len(slots)
+        refreshed_slots, previous_seen = slots.copy(), self.seen[slots].copy()
         free = np.flatnonzero(self.keys < 0)
         room = max(0, self.budget - self.count)
         new = np.flatnonzero(~matched)
@@ -279,4 +279,12 @@ class RGBDBackend:
         pressure = min(max(0, wanted - spare), max(1, self.budget // 4))
         candidates = np.flatnonzero((self.keys >= 0) & ~self.retiring & (self.seen < now))
         if pressure:
-            self.retire(self.oldest(candidates, pressure), pressure=True)
+            victims = self.oldest(candidates, pressure)
+            self.retire(victims, pressure=True)
+            # If this view touches the entire pool, there may be no unseen victim.
+            # Make room for genuinely new detail rather than refreshing a full
+            # pool forever. Prefer slots least recently seen before this frame.
+            missing = min(pressure - len(victims), len(new) - admitted, len(refreshed_slots))
+            if missing > 0:
+                chosen = np.argpartition(previous_seen, missing - 1)[:missing]
+                self.retire(refreshed_slots[chosen], pressure=True)

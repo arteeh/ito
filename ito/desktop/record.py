@@ -114,12 +114,14 @@ class Recorder:
             ("camera", rgb.copy(), {"t": now, "captured": video_time, "yaw": heading(robot_camera)})
         )
 
-    def close(self) -> None:
+    def close(self, performance=None) -> None:
         self.queue.put(None)
         self.thread.join(timeout=30)
         for stream in self.streams.values():
             stream.close()
         summary = {name: stream.count for name, stream in self.streams.items()}
         summary["dropped_by_recorder"] = self.dropped
+        if performance is not None:
+            summary["performance"] = performance
         (self.folder / "summary.json").write_text(json.dumps(summary) + "\n")
         log.info("Recording closed: %s", summary)

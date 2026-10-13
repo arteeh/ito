@@ -10,11 +10,21 @@ from contextlib import contextmanager
 
 from ito import clock
 
-MAX_SPLATS = 524_288
-MAX_CUDA_BYTES = 6_000_000_000
 PUBLICATION_PACKETS = 2
 MATCH_QUERIES = 4096
 MAX_PENDING_CHUNKS = 4
+MAX_BACKOFF_FRAME_SHARE = 0.25
+GPU_STAGES = (
+    "inference",
+    "iter_proj",
+    "refine_matches",
+    "project",
+    "voxelize",
+    "match",
+    "readback",
+    "carve",
+    "graph",
+)
 
 
 class Wake:
@@ -41,8 +51,13 @@ class Admission:
         self.pause_until = context.RawValue("d", 0)
         self.last_progress = context.RawValue("d", 0)
         self.memory_peak = context.RawValue("Q", 0)
+        self.memory_limit = context.RawValue("Q", 0)
+        self.gpu_busy = context.RawValue("d", -1)
+        self.memory_pressure = context.RawValue("b", False)
         self.active_seconds = context.RawValue("d", 0)
         self.chunks = context.RawValue("Q", 0)
+        self.stage_seconds = context.RawArray("d", len(GPU_STAGES))
+        self.stage_calls = context.RawArray("Q", len(GPU_STAGES))
         self.overruns = context.RawValue("Q", 0)
         self.wake = Wake(context)
         self.memory_used = None
@@ -50,13 +65,17 @@ class Admission:
         self.cooldown = 0.0
         self.recovered_at = 0.0
         self.stream = self.torch_stream = None
+        self.gpu = self.xp = self.torch = None
+        self.next_memory_check = 0.0
 
     def completed(self, began, period):
         """After both eyes and UI complete on GL; no render-side lock or CUDA wait."""
         now = clock.now()
         self.enabled.value = True
         if now - began > period:
-            self.cooldown = min(0.020, max(0.002, self.cooldown * 2))
+            # Even persistent lateness must leave a launch window each frame;
+            # renewing a pause longer than the period would starve CUDA forever.
+            self.cooldown = min(period * MAX_BACKOFF_FRAME_SHARE, max(0.002, self.cooldown * 2))
             self.recovered_at = now + 0.25
             self.overruns.value += 1
         elif now >= self.recovered_at:
@@ -64,10 +83,10 @@ class Admission:
         self.pause_until.value = now + self.cooldown
         self.wake.notify()
 
-    def available(self, seconds=None):
+    def available(self):
         return clock.now() >= self.pause_until.value
 
-    def acquire(self, seconds=None):
+    def acquire(self):
         import multiprocessing as mp
 
         parent = mp.parent_process()
@@ -81,8 +100,13 @@ class Admission:
         """Startup transfers finish once before changing streams; never during display."""
         import sys
 
+        from .memory import configure_pools
+
+        self.xp = xp
         xp.cuda.get_current_stream().synchronize()
-        torch = sys.modules.get("torch")
+        torch = self.torch = sys.modules.get("torch")
+        self.gpu, torch_limit, cupy_limit = configure_pools(xp, torch)
+        self.memory_limit.value = torch_limit + cupy_limit
         if torch is not None:
             torch.cuda.synchronize()
             self.torch_stream = torch.cuda.Stream(priority=0)
@@ -94,13 +118,31 @@ class Admission:
         if self.memory_used is not None:
             used = self.memory_used()
             self.memory_peak.value = max(used, self.memory_peak.value)
-            if used > MAX_CUDA_BYTES:
-                raise RuntimeError("Reconstruction exceeds its 6 GB CUDA budget")
+        if self.xp is not None and clock.now() >= self.next_memory_check:
+            from ito.render.gpu import GPU_HEADROOM_BYTES
+
+            from .memory import free_memory
+
+            self.next_memory_check = clock.now() + 0.5
+            free, _ = self.xp.cuda.runtime.memGetInfo()
+            free = free_memory(free, self.gpu)
+            self.gpu_busy.value = -1 if self.gpu.busy is None else self.gpu.busy
+            self.memory_pressure.value = free < GPU_HEADROOM_BYTES
+            if self.memory_pressure.value:
+                # Cached, unused blocks can be returned without dropping live geometry.
+                self.xp.get_default_memory_pool().free_all_blocks()
+                if self.torch is not None:
+                    self.torch.cuda.empty_cache()
 
     def collect(self):
         while self.pending and self.pending[0][1].query():
-            start, end, elapsed = self.pending.popleft()
-            self.active_seconds.value += elapsed(start, end) / 1000
+            start, end, elapsed, kind = self.pending.popleft()
+            seconds = elapsed(start, end) / 1000
+            self.active_seconds.value += seconds
+            if kind in GPU_STAGES:
+                index = GPU_STAGES.index(kind)
+                self.stage_seconds[index] += seconds
+                self.stage_calls[index] += 1
             self.chunks.value += 1
             self.last_progress.value = clock.now()
 
@@ -118,21 +160,19 @@ class Admission:
         self.check_memory()
 
     @contextmanager
-    def cuda_chunk(self, synchronize=None, events=None, *, kind="map"):
+    def cuda_chunk(self, events, *, kind="map"):
         self.checkpoint()
-        if events is not None:
-            start, end, elapsed = events
-            start.record()
+        start, end, elapsed = events
+        start.record()
         try:
             yield
         finally:
-            if events is not None:
-                end.record()
-                self.pending.append((start, end, elapsed))
+            end.record()
+            self.pending.append((start, end, elapsed, kind))
             self.check_memory()
 
     @contextmanager
-    def torch_chunks(self):
+    def integration(self):
         """One stream for an integration; fence only at its CPU publication boundary."""
         from contextlib import nullcontext
 
@@ -181,7 +221,8 @@ def bind_model(model, admission):
                     torch.cuda.Event(enable_timing=True),
                     torch.cuda.Event(enable_timing=True),
                     lambda start, end: start.elapsed_time(end),
-                )
+                ),
+                kind="inference",
             )
             chunk.__enter__()
             scope.append(chunk)
@@ -207,7 +248,7 @@ def bind_native(admission):
     for name in ("iter_proj", "refine_matches"):
         original = getattr(native, name)
 
-        def bounded(image, queries, initial, *options, original=original):
+        def bounded(image, queries, initial, *options, original=original, name=name):
             if not admission.enabled.value:
                 return original(image, queries, initial, *options)
             outputs = None
@@ -219,7 +260,8 @@ def bind_native(admission):
                             torch.cuda.Event(enable_timing=True),
                             torch.cuda.Event(enable_timing=True),
                             lambda start, end: start.elapsed_time(end),
-                        )
+                        ),
+                        kind=name,
                     ):
                         # Upstream's 16-thread blocks have no tail guard.
                         q = queries[member : member + 1, start:end]
@@ -243,5 +285,20 @@ def bind_native(admission):
             return outputs
 
         setattr(native, name, bounded)
-    # Solvers already read their normal equations and convergence back to CPU.
-    # Their original iteration loop retains those necessary dependencies.
+    # Solvers already read normal equations and convergence back to CPU. Keep
+    # their original iteration loop; measure the scope without another fence.
+    for name in ("gauss_newton_points", "gauss_newton_rays", "gauss_newton_calib"):
+        original = getattr(native, name)
+
+        def solve(*args, original=original):
+            with admission.cuda_chunk(
+                events=(
+                    torch.cuda.Event(enable_timing=True),
+                    torch.cuda.Event(enable_timing=True),
+                    lambda start, end: start.elapsed_time(end),
+                ),
+                kind="graph",
+            ):
+                return original(*args)
+
+        setattr(native, name, solve)

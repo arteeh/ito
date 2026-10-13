@@ -105,7 +105,7 @@ def load_worker(args, ready, start, stop, admission):
             map_scope = map_trace.record(backend)
             map_scope.__enter__()
         try:
-            with admission.torch_chunks():
+            with admission.integration():
                 backend.integrate(
                     rgb,
                     None,

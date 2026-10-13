@@ -17,8 +17,8 @@ def load_budget(default):
         return default
     except (KeyError, ValueError, TypeError) as exc:
         raise ValueError("Invalid Ito settings: max_splats must be an integer") from exc
-    if type(value) is not int or not 1 <= value <= 4_194_304:
-        raise ValueError("Invalid Ito settings: max_splats must be between 1 and 4,194,304")
+    if type(value) is not int or not 1 <= value <= (1 << 31) - 1:
+        raise ValueError("Invalid Ito settings: max_splats must be a positive signed 32-bit count")
     return value
 
 

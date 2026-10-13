@@ -33,7 +33,14 @@ def bind(admission):
                 return bounded(*args)
             expected_poses = args[0].clone()
             result = bounded(*args)
-            with admission.cuda_chunk(torch.cuda.synchronize, kind="verify-solve"):
+            with admission.cuda_chunk(
+                (
+                    torch.cuda.Event(enable_timing=True),
+                    torch.cuda.Event(enable_timing=True),
+                    lambda start, end: start.elapsed_time(end),
+                ),
+                kind="verify-solve",
+            ):
                 expected = original(expected_poses, *args[1:])
                 torch.testing.assert_close(args[0], expected_poses, rtol=0, atol=0, equal_nan=True)
                 for actual, wanted in zip(result, expected, strict=True):

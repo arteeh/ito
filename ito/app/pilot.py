@@ -17,7 +17,6 @@ from ito.link.audio import Audio
 from ito.protocol import Command, FrameMetadata, Motion, Paired, PilotState, Pose, Status
 from ito.rates import CounterRate, Rate
 from ito.reconstruction import Reconstruction
-from ito.reconstruction.admission import MAX_SPLATS
 from ito.render import pose
 from ito.render.pose import quaternion
 
@@ -59,6 +58,7 @@ class Pilot:
         address,
         *,
         defaults=None,
+        splat_limit=None,
         overrides=None,
         camera=None,
         cameras=1,
@@ -79,6 +79,7 @@ class Pilot:
         self.description = None  # The robot connected last
         self.settings = defaults or settings.Settings()
         self.defaults = self.settings
+        self.splat_limit = splat_limit
         self.overrides = overrides or {}
         self.state = DesktopState(status=PilotStatus(link="CONNECTING"))
         self.telemetry = {}
@@ -117,13 +118,15 @@ class Pilot:
         self.motion_time = -1.0  # Pilot-clock time of the newest robot motion sample
         # SLAM places the eye from the robot's own motion, corrected by fusion (tracking.py).
         self.robot_first = False
-        self.scene_rate = CounterRate()  # frames reconstruction integrated into the scene
+        self.backend_rate = CounterRate()  # includes pose-only and skipped integrations
 
     @property
     def max_splats(self):
         return self.settings.max_splats
 
     def set_max_splats(self, value):
+        if self.splat_limit is not None and value > self.splat_limit:
+            raise ValueError(f"This GPU supports at most {self.splat_limit:,} slots")
         settings.Settings.model_validate(self.settings.model_dump() | {"max_splats": value})
         self.budget_change = value
 
@@ -159,6 +162,14 @@ class Pilot:
             with contextlib.suppress(RuntimeError):  # The link loop has just closed.
                 loop.call_soon_threadsafe(arrived.set)
 
+    def statistics(self):
+        if not self.worker_lock.acquire(False):
+            return {}
+        try:
+            return self.worker.statistics() if self.worker is not None else {}
+        finally:
+            self.worker_lock.release()
+
     def display_completed(self, began, period):
         if not self.worker_lock.acquire(False):
             return
@@ -193,10 +204,10 @@ class Pilot:
             rates = (
                 self.telemetry.get("pilot_input_hz"),
                 self.camera_rate.hz(),
-                self.scene_rate.hz(worker.integrated.value) if worker is not None else None,
+                self.backend_rate.hz(worker.integrated.value) if worker is not None else None,
             )
             diagnostics.event(
-                "rates", interval=1, pose_hz=rates[0], camera_hz=rates[1], scene_hz=rates[2]
+                "rates", interval=1, pose_hz=rates[0], camera_hz=rates[1], backend_hz=rates[2]
             )
         self.state = replace(
             self.state,
@@ -372,8 +383,8 @@ class Pilot:
             raise ValueError("Driver has no selected camera")
         selected = settings.load(self.address, description.name, self.defaults)
         self.settings = settings.Settings.model_validate(selected.model_dump() | self.overrides)
-        if self.settings.max_splats > MAX_SPLATS:
-            self.settings = self.settings.model_copy(update={"max_splats": MAX_SPLATS})
+        if self.splat_limit is not None and self.settings.max_splats > self.splat_limit:
+            self.settings = self.settings.model_copy(update={"max_splats": self.splat_limit})
         self.overrides = {}
         self.settings_revision += 1
         paired = peer.credential_received.is_set()
