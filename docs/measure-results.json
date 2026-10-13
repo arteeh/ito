@@ -1,0 +1,4961 @@
+{
+  "reference": {
+    "baseline": "316a556",
+    "inputs_sha256": "8f42b69d70d1e27f256d2ae42fbc29b5ea11e9f8f97d9761cf53627554ccf46c",
+    "ito_tree": "a22cb0cdd939c97abd11a259fc5dbf44333dd2df",
+    "drivers_tree": "85972aa3e09228a38993cdcc626c95ea972af066"
+  },
+  "audit": {
+    "prefixes_checked": 51,
+    "pose_deadlines_checked": 11736,
+    "clip_frames_checked": 1098,
+    "repeats": [
+      {
+        "repeat": 1,
+        "sequences": {
+          "sweep180": {
+            "rates": {
+              "schedule_sha256": "8fbe496bdb99476da51e2d99f31e1a4c8cc150342b2525136ad81def1e8969a4",
+              "frames_sha256": "1fa44e219fbec9a08b325de9f0a94e464fd7b1e283c4b80ed94f2c11ffc9088f",
+              "seconds": 29.700513951283938,
+              "visual_factors_s": 3.9056563192902383,
+              "propagated_poses_s": 5.016748203226254,
+              "surface_updates_s": 4.141342476488787,
+              "peak_cuda_allocated_bytes": 3623222784,
+              "peak_cuda_reserved_bytes": 4083154944,
+              "capture_script_sha256": "0ad1a42651d74c8d13df0e7c3f0aa28a77a93a8771ed8366adc9c25e9ad35716",
+              "baseline": "316a556",
+              "timing": "fixed admissions, measured serial completion; no concurrent display",
+              "retrospective": "first subsequent integration, separate from deadline-available pose"
+            },
+            "moments": [
+              {
+                "frame": 215,
+                "prefix_frame": 211,
+                "psnr_db": 20.00122095387642,
+                "ssim": 0.7895245552062988,
+                "lpips": 0.46462082862854004,
+                "coverage": 1.0,
+                "previously_seen_holes": 0.0
+              },
+              {
+                "frame": 453,
+                "prefix_frame": 451,
+                "psnr_db": 17.25358656385002,
+                "ssim": 0.717378556728363,
+                "lpips": 0.5353571176528931,
+                "coverage": 0.9645442708333334,
+                "previously_seen_holes": 0.01613762486126526
+              },
+              {
+                "frame": 526,
+                "prefix_frame": 523,
+                "psnr_db": 17.009516499318504,
+                "ssim": 0.7767629623413086,
+                "lpips": 0.5451172590255737,
+                "coverage": 0.9245269097222222,
+                "previously_seen_holes": 0.00017219772125015546
+              },
+              {
+                "frame": 693,
+                "prefix_frame": 691,
+                "psnr_db": 14.798570308338558,
+                "ssim": 0.7028281092643738,
+                "lpips": 0.5578105449676514,
+                "coverage": 0.8909418402777778,
+                "previously_seen_holes": 0.00010757893604432252
+              }
+            ],
+            "draw": {
+              "ms": {
+                "p50": 87.97713299281895,
+                "p95": 109.89948525093496,
+                "p99": 115.75861434102987,
+                "p99.9": 120.77249580412197
+              },
+              "missed_fraction": 1.0,
+              "longest_miss_run": 386,
+              "samples": 386,
+              "deadline_ms": 11.11111111111111
+            }
+          },
+          "tour": {
+            "rates": {
+              "schedule_sha256": "83e08fd6bff8fa56c176657ff62d261aa20464ea5c0e78f091cf0d6b42b86cc5",
+              "frames_sha256": "835a195cba4e45f0ffa2f9732c9a5e3c2ab97091397beb5c54cba1f42e111dd8",
+              "seconds": 101.2177552178473,
+              "visual_factors_s": 2.924388111185927,
+              "propagated_poses_s": 4.97936354066793,
+              "surface_updates_s": 3.5369288642046013,
+              "peak_cuda_allocated_bytes": 3777229824,
+              "peak_cuda_reserved_bytes": 4099932160,
+              "capture_script_sha256": "0ad1a42651d74c8d13df0e7c3f0aa28a77a93a8771ed8366adc9c25e9ad35716",
+              "baseline": "316a556",
+              "timing": "fixed admissions, measured serial completion; no concurrent display",
+              "retrospective": "first subsequent integration, separate from deadline-available pose"
+            },
+            "moments": [
+              {
+                "frame": 363,
+                "prefix_frame": 355,
+                "psnr_db": 20.83461001232115,
+                "ssim": 0.8042192459106445,
+                "lpips": 0.43637746572494507,
+                "coverage": 1.0,
+                "previously_seen_holes": 0.0
+              },
+              {
+                "frame": 1501,
+                "prefix_frame": 1495,
+                "psnr_db": 22.334602385019416,
+                "ssim": 0.7785491347312927,
+                "lpips": 0.4788762629032135,
+                "coverage": 1.0,
+                "previously_seen_holes": 0.0
+              },
+              {
+                "frame": 2284,
+                "prefix_frame": 2281,
+                "psnr_db": 15.51544512102534,
+                "ssim": 0.7895340323448181,
+                "lpips": 0.6027977466583252,
+                "coverage": 1.0,
+                "previously_seen_holes": 0.0
+              }
+            ],
+            "draw": {
+              "ms": {
+                "p50": 87.74518800782971,
+                "p95": 195.4613509151386,
+                "p99": 200.19823018519673,
+                "p99.9": 201.2640280209598
+              },
+              "missed_fraction": 1.0,
+              "longest_miss_run": 15,
+              "samples": 15,
+              "deadline_ms": 11.11111111111111
+            }
+          }
+        }
+      },
+      {
+        "repeat": 2,
+        "sequences": {
+          "sweep180": {
+            "rates": {
+              "schedule_sha256": "8fbe496bdb99476da51e2d99f31e1a4c8cc150342b2525136ad81def1e8969a4",
+              "frames_sha256": "1fa44e219fbec9a08b325de9f0a94e464fd7b1e283c4b80ed94f2c11ffc9088f",
+              "seconds": 29.701862051275384,
+              "visual_factors_s": 3.9054790504293995,
+              "propagated_poses_s": 5.016520504430867,
+              "surface_updates_s": 4.1411545103691045,
+              "peak_cuda_allocated_bytes": 3623222784,
+              "peak_cuda_reserved_bytes": 4083154944,
+              "capture_script_sha256": "0ad1a42651d74c8d13df0e7c3f0aa28a77a93a8771ed8366adc9c25e9ad35716",
+              "baseline": "316a556",
+              "timing": "fixed admissions, measured serial completion; no concurrent display",
+              "retrospective": "first subsequent integration, separate from deadline-available pose"
+            },
+            "moments": [
+              {
+                "frame": 215,
+                "prefix_frame": 211,
+                "psnr_db": 20.00122095387642,
+                "ssim": 0.7895245552062988,
+                "lpips": 0.46462082862854004,
+                "coverage": 1.0,
+                "previously_seen_holes": 0.0
+              },
+              {
+                "frame": 453,
+                "prefix_frame": 451,
+                "psnr_db": 17.25358656385002,
+                "ssim": 0.717378556728363,
+                "lpips": 0.5353571176528931,
+                "coverage": 0.9645442708333334,
+                "previously_seen_holes": 0.01613762486126526
+              },
+              {
+                "frame": 526,
+                "prefix_frame": 523,
+                "psnr_db": 17.009516499318504,
+                "ssim": 0.7767629623413086,
+                "lpips": 0.5451172590255737,
+                "coverage": 0.9245269097222222,
+                "previously_seen_holes": 0.00017219772125015546
+              },
+              {
+                "frame": 693,
+                "prefix_frame": 691,
+                "psnr_db": 14.798570308338558,
+                "ssim": 0.7028281092643738,
+                "lpips": 0.5578105449676514,
+                "coverage": 0.8909418402777778,
+                "previously_seen_holes": 0.00010757893604432252
+              }
+            ],
+            "draw": {
+              "ms": {
+                "p50": 93.64671898947563,
+                "p95": 111.79263048688881,
+                "p99": 119.48016730020753,
+                "p99.9": 123.09825965348881
+              },
+              "missed_fraction": 1.0,
+              "longest_miss_run": 386,
+              "samples": 386,
+              "deadline_ms": 11.11111111111111
+            }
+          },
+          "tour": {
+            "rates": {
+              "schedule_sha256": "83e08fd6bff8fa56c176657ff62d261aa20464ea5c0e78f091cf0d6b42b86cc5",
+              "frames_sha256": "835a195cba4e45f0ffa2f9732c9a5e3c2ab97091397beb5c54cba1f42e111dd8",
+              "seconds": 101.19850195178878,
+              "visual_factors_s": 2.9348260524794285,
+              "propagated_poses_s": 4.980310876934787,
+              "surface_updates_s": 3.4881939276944047,
+              "peak_cuda_allocated_bytes": 3778320896,
+              "peak_cuda_reserved_bytes": 4099932160,
+              "capture_script_sha256": "0ad1a42651d74c8d13df0e7c3f0aa28a77a93a8771ed8366adc9c25e9ad35716",
+              "baseline": "316a556",
+              "timing": "fixed admissions, measured serial completion; no concurrent display",
+              "retrospective": "first subsequent integration, separate from deadline-available pose"
+            },
+            "moments": [
+              {
+                "frame": 363,
+                "prefix_frame": 355,
+                "psnr_db": 20.83461001232115,
+                "ssim": 0.8042192459106445,
+                "lpips": 0.43637746572494507,
+                "coverage": 1.0,
+                "previously_seen_holes": 0.0
+              },
+              {
+                "frame": 1501,
+                "prefix_frame": 1495,
+                "psnr_db": 22.334602385019416,
+                "ssim": 0.7785491347312927,
+                "lpips": 0.4788762629032135,
+                "coverage": 1.0,
+                "previously_seen_holes": 0.0
+              },
+              {
+                "frame": 2284,
+                "prefix_frame": 2281,
+                "psnr_db": 15.51544512102534,
+                "ssim": 0.7895340323448181,
+                "lpips": 0.6027977466583252,
+                "coverage": 1.0,
+                "previously_seen_holes": 0.0
+              }
+            ],
+            "draw": {
+              "ms": {
+                "p50": 87.92366599664092,
+                "p95": 195.81249898765236,
+                "p99": 200.48889100085944,
+                "p99.9": 201.54107920383103
+              },
+              "missed_fraction": 1.0,
+              "longest_miss_run": 15,
+              "samples": 15,
+              "deadline_ms": 11.11111111111111
+            }
+          }
+        }
+      },
+      {
+        "repeat": 3,
+        "sequences": {
+          "sweep180": {
+            "rates": {
+              "schedule_sha256": "8fbe496bdb99476da51e2d99f31e1a4c8cc150342b2525136ad81def1e8969a4",
+              "frames_sha256": "1fa44e219fbec9a08b325de9f0a94e464fd7b1e283c4b80ed94f2c11ffc9088f",
+              "seconds": 29.69793335127906,
+              "visual_factors_s": 3.9059957010444295,
+              "propagated_poses_s": 5.0171841332381035,
+              "surface_updates_s": 4.141702338176421,
+              "peak_cuda_allocated_bytes": 3623222784,
+              "peak_cuda_reserved_bytes": 4083154944,
+              "capture_script_sha256": "0ad1a42651d74c8d13df0e7c3f0aa28a77a93a8771ed8366adc9c25e9ad35716",
+              "baseline": "316a556",
+              "timing": "fixed admissions, measured serial completion; no concurrent display",
+              "retrospective": "first subsequent integration, separate from deadline-available pose"
+            },
+            "moments": [
+              {
+                "frame": 215,
+                "prefix_frame": 211,
+                "psnr_db": 20.00122095387642,
+                "ssim": 0.7895245552062988,
+                "lpips": 0.46462082862854004,
+                "coverage": 1.0,
+                "previously_seen_holes": 0.0
+              },
+              {
+                "frame": 453,
+                "prefix_frame": 451,
+                "psnr_db": 17.25358656385002,
+                "ssim": 0.717378556728363,
+                "lpips": 0.5353571176528931,
+                "coverage": 0.9645442708333334,
+                "previously_seen_holes": 0.01613762486126526
+              },
+              {
+                "frame": 526,
+                "prefix_frame": 523,
+                "psnr_db": 17.009516499318504,
+                "ssim": 0.7767629623413086,
+                "lpips": 0.5451172590255737,
+                "coverage": 0.9245269097222222,
+                "previously_seen_holes": 0.00017219772125015546
+              },
+              {
+                "frame": 693,
+                "prefix_frame": 691,
+                "psnr_db": 14.798570308338558,
+                "ssim": 0.7028281092643738,
+                "lpips": 0.5578105449676514,
+                "coverage": 0.8909418402777778,
+                "previously_seen_holes": 0.00010757893604432252
+              }
+            ],
+            "draw": {
+              "ms": {
+                "p50": 92.10277600504924,
+                "p95": 107.51262774283532,
+                "p99": 113.51485620543826,
+                "p99.9": 118.65944028701068
+              },
+              "missed_fraction": 1.0,
+              "longest_miss_run": 386,
+              "samples": 386,
+              "deadline_ms": 11.11111111111111
+            }
+          },
+          "tour": {
+            "rates": {
+              "schedule_sha256": "83e08fd6bff8fa56c176657ff62d261aa20464ea5c0e78f091cf0d6b42b86cc5",
+              "frames_sha256": "835a195cba4e45f0ffa2f9732c9a5e3c2ab97091397beb5c54cba1f42e111dd8",
+              "seconds": 101.16649183783738,
+              "visual_factors_s": 2.9258699656647846,
+              "propagated_poses_s": 4.981886698294093,
+              "surface_updates_s": 3.5189517154617005,
+              "peak_cuda_allocated_bytes": 3777295360,
+              "peak_cuda_reserved_bytes": 4099932160,
+              "capture_script_sha256": "0ad1a42651d74c8d13df0e7c3f0aa28a77a93a8771ed8366adc9c25e9ad35716",
+              "baseline": "316a556",
+              "timing": "fixed admissions, measured serial completion; no concurrent display",
+              "retrospective": "first subsequent integration, separate from deadline-available pose"
+            },
+            "moments": [
+              {
+                "frame": 363,
+                "prefix_frame": 355,
+                "psnr_db": 20.83461001232115,
+                "ssim": 0.8042192459106445,
+                "lpips": 0.43637746572494507,
+                "coverage": 1.0,
+                "previously_seen_holes": 0.0
+              },
+              {
+                "frame": 1501,
+                "prefix_frame": 1495,
+                "psnr_db": 22.334602385019416,
+                "ssim": 0.7785491347312927,
+                "lpips": 0.4788762629032135,
+                "coverage": 1.0,
+                "previously_seen_holes": 0.0
+              },
+              {
+                "frame": 2284,
+                "prefix_frame": 2281,
+                "psnr_db": 15.515447713422805,
+                "ssim": 0.7895340919494629,
+                "lpips": 0.6027980446815491,
+                "coverage": 1.0,
+                "previously_seen_holes": 0.0
+              }
+            ],
+            "draw": {
+              "ms": {
+                "p50": 90.64731100806966,
+                "p95": 197.03479100426193,
+                "p99": 199.43725820805412,
+                "p99.9": 199.97781332890736
+              },
+              "missed_fraction": 1.0,
+              "longest_miss_run": 15,
+              "samples": 15,
+              "deadline_ms": 11.11111111111111
+            }
+          }
+        }
+      }
+    ],
+    "evaluation_scripts_sha256": {
+      "measure.py": "e3ff058fd48aab8c2eb1a5c82b83c440004be36c35d760dc5066eb84d33e9d3c",
+      "measure_audit.py": "95d93c5ab08ddf679c3cdb7ba681c620364bfd586b349ee5d1c3759e960188b1",
+      "measure_baseline.sh": "c5dd5facde64ede1c6f146cd2ba9dd6e15fa7a60ea688ac5d14d176209cf62a7",
+      "measure_capture.py": "0ad1a42651d74c8d13df0e7c3f0aa28a77a93a8771ed8366adc9c25e9ad35716",
+      "measure_display.py": "a846771c392f904aa7ad3e3c18af34c0ace96357fdc196c9df9620602350100f",
+      "measure_gl.py": "6817d7acb2aacdb086c054fa9ec914cfa896a6ad9dc11b39d3801b698b1a6b40",
+      "measure_images.py": "db70bd51c300c39529513e3ba93f56f48a9343824e58c4daf2627b8f3e3c4fe7",
+      "measure_reference.json": "e95fc0d5beb8ceded21c17725438fe106e109dbb6c00d90eb669c822b00112c5",
+      "measure_resume.py": "a66662bc798563d5664cc5efbc1e3c7d5d3dbc956353cf0a59c925a34464268c",
+      "measure_source.py": "d85120a9ba9e15a7d1ec0c65633ea640e614e49dbdd47b79d713416e347adb40"
+    }
+  },
+  "source": {
+    "capture": {
+      "frames": 35,
+      "exact_id_matches": 35,
+      "exact_fraction": 1.0,
+      "codec_psnr_db": {
+        "p50": 40.215094034229296,
+        "p95": 43.06075290372338,
+        "p99": 43.70835497491309,
+        "p99.9": 43.99618250862036
+      },
+      "decoded_alignment_px": {
+        "p50": 0.03729543089866638,
+        "p95": 0.1240390747785567,
+        "p99": 0.3147564327716826,
+        "p99.9": 13.731982105257803
+      },
+      "transport": "H.264 MP4 PTS; not mediad/WebRTC",
+      "freshness_scope": "offline RGB-D oracle incl. recording/decoding delay, not live latency",
+      "exposure_to_first_visible_ms": {
+        "p50": 4795.449630008079,
+        "p95": 7782.916422991547,
+        "p99": 8037.715957631589,
+        "p99.9": 8095.565212956048
+      },
+      "exposure_to_stable_sharp_ms": null,
+      "stable_sharp_censored": 35,
+      "head_sample_to_GL_complete_ms": {
+        "p50": 20.624983008019626,
+        "p95": 22.154869811492972,
+        "p99": 22.322541347821243,
+        "p99.9": 22.39116154209478
+      }
+    },
+    "calibration": {
+      "truth": {
+        "p50": 0.10557608458004898,
+        "p95": 0.2826155121707043,
+        "p99": 0.38892961023170414,
+        "p99.9": 0.4496550939427309
+      },
+      "GL": {
+        "p50": 0.007600383972671634,
+        "p95": 0.030057274884854195,
+        "p99": 0.031154790667233773,
+        "p99.9": 0.03176801324207202
+      },
+      "pass": true
+    }
+  },
+  "repetitions": [
+    {
+      "metrics": {
+        "ipd_m": 0.064,
+        "ipd_status": "configured, not measured from a headset",
+        "baseline": "316a556",
+        "moments": [
+          {
+            "run": "sweep180",
+            "frame": 215,
+            "view": "camera",
+            "prefix_frame": 211,
+            "psnr_db": 20.00122095387642,
+            "ssim": 0.7895245552062988,
+            "lpips": 0.46462082862854004,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9999869791666667,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 1.3020833333333334e-05,
+            "never_seen_covered_fraction": 1.3020833333333334e-05,
+            "edge_distance_px": {
+              "p50": 6.4031242374328485,
+              "p95": 288.02465162667613,
+              "p99": 339.3799758682854,
+              "p99.9": 355.1034621890066
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.1402895152568817,
+              "p95": 0.3953929543495178,
+              "p99": 1.0416655540466309,
+              "p99.9": 1.7932807207107544
+            },
+            "foreground_edge_distance_px": {
+              "p50": 34.0,
+              "p95": 52.48237744161149,
+              "p99": 70.88129229417572,
+              "p99.9": 79.39279305226364
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 215,
+            "view": "left",
+            "prefix_frame": 211,
+            "psnr_db": 20.3883915598279,
+            "ssim": 0.7845444083213806,
+            "lpips": 0.47492077946662903,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9970355902777778,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.002964409722222222,
+            "never_seen_covered_fraction": 0.002964409722222222,
+            "edge_distance_px": {
+              "p50": 6.0,
+              "p95": 293.10023857212303,
+              "p99": 344.41980198589044,
+              "p99.9": 356.86251726149476
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.14241266250610352,
+              "p95": 1.2824246883392334,
+              "p99": 1.533889651298523,
+              "p99.9": 1.5338900089263916
+            },
+            "foreground_edge_distance_px": {
+              "p50": 34.0,
+              "p95": 52.0,
+              "p99": 62.93647591023825,
+              "p99.9": 71.42128534267638
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 215,
+            "view": "right",
+            "prefix_frame": 211,
+            "psnr_db": 19.79286892068042,
+            "ssim": 0.7917636036872864,
+            "lpips": 0.48570483922958374,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9982118055555556,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.0017881944444444445,
+            "never_seen_covered_fraction": 0.0017881944444444445,
+            "edge_distance_px": {
+              "p50": 7.0710678118654755,
+              "p95": 217.15846671060459,
+              "p99": 319.0,
+              "p99.9": 344.2542205653433
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.14247596263885498,
+              "p95": 2.337003707885742,
+              "p99": 5.934081077575684,
+              "p99.9": 5.935123920440674
+            },
+            "foreground_edge_distance_px": {
+              "p50": 34.92849839314596,
+              "p95": 63.51810485439309,
+              "p99": 81.5222633835585,
+              "p99.9": 88.74652743268189
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 215,
+            "view": "head-minus3cm",
+            "prefix_frame": 211,
+            "psnr_db": 20.374999717692578,
+            "ssim": 0.7852441668510437,
+            "lpips": 0.47276830673217773,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9974435763888889,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.0025564236111111113,
+            "never_seen_covered_fraction": 0.0025564236111111113,
+            "edge_distance_px": {
+              "p50": 5.830951894845301,
+              "p95": 293.24563082849164,
+              "p99": 344.3448845470652,
+              "p99.9": 356.85520532527715
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.1422068476676941,
+              "p95": 1.1706950664520264,
+              "p99": 1.533889651298523,
+              "p99.9": 1.5338900089263916
+            },
+            "foreground_edge_distance_px": {
+              "p50": 34.0,
+              "p95": 52.0,
+              "p99": 63.635680722573476,
+              "p99.9": 72.12489168102785
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 215,
+            "view": "head-plus3cm",
+            "prefix_frame": 211,
+            "psnr_db": 19.81952279745089,
+            "ssim": 0.7916414141654968,
+            "lpips": 0.48330748081207275,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9986501736111111,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.001349826388888889,
+            "never_seen_covered_fraction": 0.001349826388888889,
+            "edge_distance_px": {
+              "p50": 7.0,
+              "p95": 217.11056914915207,
+              "p99": 319.00485888988726,
+              "p99.9": 344.3700000000008
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.14227932691574097,
+              "p95": 1.5297492742538452,
+              "p99": 5.934080600738525,
+              "p99.9": 5.934082508087158
+            },
+            "foreground_edge_distance_px": {
+              "p50": 34.785054261852174,
+              "p95": 62.15785342495611,
+              "p99": 80.71530190545292,
+              "p99.9": 87.91420417630817
+            },
+            "stereo": {
+              "disparity_error_px": {
+                "p50": 3.939239025115967,
+                "p95": 10.37529559135437,
+                "p99": 12.842304744720453,
+                "p99.9": 14.167694005012514
+              },
+              "matched_fraction": 0.5876302083333333,
+              "method": "SGBM 5px, 128 disparities"
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 453,
+            "view": "camera",
+            "prefix_frame": 451,
+            "psnr_db": 17.25358656385002,
+            "ssim": 0.717378556728363,
+            "lpips": 0.5353571176528931,
+            "coverage": 0.9645442708333334,
+            "common_visible_fraction": 0.9776475694444444,
+            "previously_seen_holes": 0.01613762486126526,
+            "never_seen_fraction": 0.022352430555555556,
+            "never_seen_covered_fraction": 0.002673611111111111,
+            "edge_distance_px": {
+              "p50": 7.0710678118654755,
+              "p95": 222.68861653001002,
+              "p99": 252.0039483662241,
+              "p99.9": 264.93486692254135
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.8689222931861877,
+              "p95": 10.02124309539795,
+              "p99": 10.097955703735352,
+              "p99.9": 10.258567810058594
+            },
+            "foreground_edge_distance_px": {
+              "p50": 34.0,
+              "p95": 52.392747589718944,
+              "p99": 58.00344801963708,
+              "p99.9": 60.696277541309456
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 453,
+            "view": "left",
+            "prefix_frame": 451,
+            "psnr_db": 16.79088494347184,
+            "ssim": 0.6994511485099792,
+            "lpips": 0.5391823053359985,
+            "coverage": 0.9621918402777778,
+            "common_visible_fraction": 0.9732291666666667,
+            "previously_seen_holes": 0.01722323308002426,
+            "never_seen_fraction": 0.026770833333333334,
+            "never_seen_covered_fraction": 0.005724826388888889,
+            "edge_distance_px": {
+              "p50": 8.0,
+              "p95": 222.4610454340636,
+              "p99": 253.13786707443757,
+              "p99.9": 264.92915915048684
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.8691379427909851,
+              "p95": 10.070773124694824,
+              "p99": 10.128546714782715,
+              "p99.9": 10.26059627532959
+            },
+            "foreground_edge_distance_px": {
+              "p50": 34.0,
+              "p95": 53.0,
+              "p99": 58.52349955359813,
+              "p99.9": 61.78683747386659
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 453,
+            "view": "right",
+            "prefix_frame": 451,
+            "psnr_db": 17.48443123999707,
+            "ssim": 0.7197814583778381,
+            "lpips": 0.5296395421028137,
+            "coverage": 0.9669227430555556,
+            "common_visible_fraction": 0.9778385416666666,
+            "previously_seen_holes": 0.015162410006480422,
+            "never_seen_fraction": 0.02216145833333333,
+            "never_seen_covered_fraction": 0.003910590277777778,
+            "edge_distance_px": {
+              "p50": 7.0,
+              "p95": 215.56216903784505,
+              "p99": 254.98717509860575,
+              "p99.9": 267.2436419563208
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.8684930801391602,
+              "p95": 9.875255584716797,
+              "p99": 10.074419975280762,
+              "p99.9": 10.257819175720215
+            },
+            "foreground_edge_distance_px": {
+              "p50": 34.0,
+              "p95": 52.08646657242167,
+              "p99": 58.0,
+              "p99.9": 60.742867606488325
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 453,
+            "view": "head-minus3cm",
+            "prefix_frame": 451,
+            "psnr_db": 16.828593642688688,
+            "ssim": 0.701007068157196,
+            "lpips": 0.5385228991508484,
+            "coverage": 0.9623524305555555,
+            "common_visible_fraction": 0.9736067708333334,
+            "previously_seen_holes": 0.01712293653234902,
+            "never_seen_fraction": 0.026393229166666667,
+            "never_seen_covered_fraction": 0.005416666666666667,
+            "edge_distance_px": {
+              "p50": 7.810249675906654,
+              "p95": 221.0027148765418,
+              "p99": 252.0972034751675,
+              "p99.9": 263.62549456776793
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.8691330552101135,
+              "p95": 10.070773124694824,
+              "p99": 10.126351356506348,
+              "p99.9": 10.26039981842041
+            },
+            "foreground_edge_distance_px": {
+              "p50": 33.83784863137726,
+              "p95": 52.773099207835045,
+              "p99": 58.04429280513666,
+              "p99.9": 61.00819617067857
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 453,
+            "view": "head-plus3cm",
+            "prefix_frame": 451,
+            "psnr_db": 17.476845585911335,
+            "ssim": 0.7198522686958313,
+            "lpips": 0.5330722332000732,
+            "coverage": 0.9667881944444444,
+            "common_visible_fraction": 0.9780208333333333,
+            "previously_seen_holes": 0.0152927184293677,
+            "never_seen_fraction": 0.021979166666666668,
+            "never_seen_covered_fraction": 0.0037239583333333335,
+            "edge_distance_px": {
+              "p50": 7.0,
+              "p95": 213.3815821369266,
+              "p99": 254.14023606231189,
+              "p99.9": 267.2031472513202
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.868524968624115,
+              "p95": 9.877023696899414,
+              "p99": 10.076322555541992,
+              "p99.9": 10.257932662963867
+            },
+            "foreground_edge_distance_px": {
+              "p50": 34.0,
+              "p95": 52.20153254455275,
+              "p99": 58.008620049092706,
+              "p99.9": 61.12534537144178
+            },
+            "stereo": {
+              "disparity_error_px": {
+                "p50": 4.841385841369629,
+                "p95": 7.212716579437256,
+                "p99": 7.5192568969726565,
+                "p99.9": 8.338312484741214
+              },
+              "matched_fraction": 0.6041449652777777,
+              "method": "SGBM 5px, 128 disparities"
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 526,
+            "view": "camera",
+            "prefix_frame": 523,
+            "psnr_db": 17.009516499318504,
+            "ssim": 0.7767629623413086,
+            "lpips": 0.5451172590255737,
+            "coverage": 0.9245269097222222,
+            "common_visible_fraction": 0.9073871527777778,
+            "previously_seen_holes": 0.00017219772125015546,
+            "never_seen_fraction": 0.09261284722222222,
+            "never_seen_covered_fraction": 0.017296006944444445,
+            "edge_distance_px": {
+              "p50": 11.045361017187261,
+              "p95": 87.61045586184076,
+              "p99": 155.54420593516173,
+              "p99.9": 158.2665219708084
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.10199443995952606,
+              "p95": 0.10199445486068726,
+              "p99": 0.10199446231126785,
+              "p99.9": 0.10199447721242905
+            },
+            "foreground_edge_distance_px": {
+              "p50": 4.123105625617661,
+              "p95": 18.601075237738275,
+              "p99": 22.360679774997898,
+              "p99.9": 25.96326689280469
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 526,
+            "view": "left",
+            "prefix_frame": 523,
+            "psnr_db": 20.272445952335417,
+            "ssim": 0.817988395690918,
+            "lpips": 0.5353942513465881,
+            "coverage": 0.9763628472222222,
+            "common_visible_fraction": 0.9496614583333334,
+            "previously_seen_holes": 0.0001736730011608669,
+            "never_seen_fraction": 0.05033854166666667,
+            "never_seen_covered_fraction": 0.026866319444444446,
+            "edge_distance_px": {
+              "p50": 11.045361017187261,
+              "p95": 109.0,
+              "p99": 157.91770008456936,
+              "p99.9": 160.7648593854444
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.10199443995952606,
+              "p95": 0.10199445486068726,
+              "p99": 0.10199446231126785,
+              "p99.9": 0.10199447721242905
+            },
+            "foreground_edge_distance_px": {
+              "p50": 4.47213595499958,
+              "p95": 17.46424919657298,
+              "p99": 24.0,
+              "p99.9": 29.0
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 526,
+            "view": "right",
+            "prefix_frame": 523,
+            "psnr_db": 15.119010806901462,
+            "ssim": 0.7361893653869629,
+            "lpips": 0.5573793053627014,
+            "coverage": 0.8712977430555555,
+            "common_visible_fraction": 0.8635763888888889,
+            "previously_seen_holes": 0.001010212697519199,
+            "never_seen_fraction": 0.13642361111111112,
+            "never_seen_covered_fraction": 0.00859375,
+            "edge_distance_px": {
+              "p50": 13.152946437965905,
+              "p95": 64.52906135811781,
+              "p99": 153.1328821152189,
+              "p99.9": 156.99319265443106
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.10199443995952606,
+              "p95": 0.10199445486068726,
+              "p99": 0.10199446231126785,
+              "p99.9": 0.10199447721242905
+            },
+            "foreground_edge_distance_px": {
+              "p50": 6.324555320336759,
+              "p95": 26.019223662515376,
+              "p99": 36.217394624881436,
+              "p99.9": 39.239887682679175
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 526,
+            "view": "head-minus3cm",
+            "prefix_frame": 523,
+            "psnr_db": 20.014770480742605,
+            "ssim": 0.8161322474479675,
+            "lpips": 0.5339933037757874,
+            "coverage": 0.9737196180555555,
+            "common_visible_fraction": 0.9468880208333333,
+            "previously_seen_holes": 0.00017418168983741514,
+            "never_seen_fraction": 0.05311197916666666,
+            "never_seen_covered_fraction": 0.02699652777777778,
+            "edge_distance_px": {
+              "p50": 11.180339887498949,
+              "p95": 109.0,
+              "p99": 157.84929209931613,
+              "p99.9": 160.65112808645688
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.10199443995952606,
+              "p95": 0.10199445486068726,
+              "p99": 0.10199446231126785,
+              "p99.9": 0.10199447721242905
+            },
+            "foreground_edge_distance_px": {
+              "p50": 4.47213595499958,
+              "p95": 17.46424919657298,
+              "p99": 23.46563392043297,
+              "p99.9": 28.80712224546672
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 526,
+            "view": "head-plus3cm",
+            "prefix_frame": 523,
+            "psnr_db": 15.216366581667081,
+            "ssim": 0.7391594052314758,
+            "lpips": 0.5540392994880676,
+            "coverage": 0.8746788194444445,
+            "common_visible_fraction": 0.8659331597222222,
+            "previously_seen_holes": 0.0007568504994712071,
+            "never_seen_fraction": 0.13406684027777777,
+            "never_seen_covered_fraction": 0.009401041666666667,
+            "edge_distance_px": {
+              "p50": 13.0,
+              "p95": 65.92398707594104,
+              "p99": 153.21344514611263,
+              "p99.9": 156.9888211427739
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.10199443995952606,
+              "p95": 0.10199445486068726,
+              "p99": 0.10199446231126785,
+              "p99.9": 0.10199447721242905
+            },
+            "foreground_edge_distance_px": {
+              "p50": 6.082762530298219,
+              "p95": 25.2536995165227,
+              "p99": 35.21930703999522,
+              "p99.9": 38.29020037001665
+            },
+            "stereo": {
+              "disparity_error_px": {
+                "p50": 9.212444305419922,
+                "p95": 20.13277130126953,
+                "p99": 22.85475673675537,
+                "p99.9": 24.721363906860354
+              },
+              "matched_fraction": 0.5943532986111111,
+              "method": "SGBM 5px, 128 disparities"
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 693,
+            "view": "camera",
+            "prefix_frame": 691,
+            "psnr_db": 14.798570308338558,
+            "ssim": 0.7028281092643738,
+            "lpips": 0.5578105449676514,
+            "coverage": 0.8909418402777778,
+            "common_visible_fraction": 0.8875911458333333,
+            "previously_seen_holes": 0.00010757893604432252,
+            "never_seen_fraction": 0.11240885416666667,
+            "never_seen_covered_fraction": 0.0034461805555555556,
+            "edge_distance_px": {
+              "p50": 11.0,
+              "p95": 128.58381938291188,
+              "p99": 171.8144347599194,
+              "p99.9": 184.0
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.6649733185768127,
+              "p95": 10.262027740478516,
+              "p99": 10.556689262390137,
+              "p99.9": 10.855992317199707
+            },
+            "foreground_edge_distance_px": {
+              "p50": 39.20459156782532,
+              "p95": 56.88585061331157,
+              "p99": 58.54912467321779,
+              "p99.9": 59.30430001273095
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 693,
+            "view": "left",
+            "prefix_frame": 691,
+            "psnr_db": 14.561562951587808,
+            "ssim": 0.6932160258293152,
+            "lpips": 0.5600937604904175,
+            "coverage": 0.8899479166666666,
+            "common_visible_fraction": 0.8858333333333334,
+            "previously_seen_holes": 9.799310128566949e-05,
+            "never_seen_fraction": 0.11416666666666667,
+            "never_seen_covered_fraction": 0.004201388888888889,
+            "edge_distance_px": {
+              "p50": 12.165525060596439,
+              "p95": 152.137600704858,
+              "p99": 168.07644093717312,
+              "p99.9": 176.63550265302308
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.6633442640304565,
+              "p95": 10.03510856628418,
+              "p99": 10.559516906738281,
+              "p99.9": 10.857216835021973
+            },
+            "foreground_edge_distance_px": {
+              "p50": 39.81205847478876,
+              "p95": 56.71860364994893,
+              "p99": 58.42088667591412,
+              "p99.9": 63.68511901608266
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 693,
+            "view": "right",
+            "prefix_frame": 691,
+            "psnr_db": 14.966130622590871,
+            "ssim": 0.7146005630493164,
+            "lpips": 0.5517822504043579,
+            "coverage": 0.8902387152777778,
+            "common_visible_fraction": 0.8850520833333333,
+            "previously_seen_holes": 0.00011279154161517488,
+            "never_seen_fraction": 0.11494791666666666,
+            "never_seen_covered_fraction": 0.005286458333333333,
+            "edge_distance_px": {
+              "p50": 11.0,
+              "p95": 158.15498727514097,
+              "p99": 175.0472506574493,
+              "p99.9": 181.8894144459739
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.8586289286613464,
+              "p95": 10.661783218383789,
+              "p99": 12.866023063659668,
+              "p99.9": 18.30122184753418
+            },
+            "foreground_edge_distance_px": {
+              "p50": 39.0,
+              "p95": 57.0,
+              "p99": 58.85660480059783,
+              "p99.9": 59.30430001273095
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 693,
+            "view": "head-minus3cm",
+            "prefix_frame": 691,
+            "psnr_db": 14.57687607925731,
+            "ssim": 0.6938917636871338,
+            "lpips": 0.5588608980178833,
+            "coverage": 0.8899565972222222,
+            "common_visible_fraction": 0.8860980902777778,
+            "previously_seen_holes": 9.796382196054997e-05,
+            "never_seen_fraction": 0.11390190972222222,
+            "never_seen_covered_fraction": 0.0039453125,
+            "edge_distance_px": {
+              "p50": 12.0,
+              "p95": 118.77645727333413,
+              "p99": 163.6807543878949,
+              "p99.9": 171.74659236535814
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.6633418798446655,
+              "p95": 10.051448822021484,
+              "p99": 10.55767822265625,
+              "p99.9": 10.857264518737793
+            },
+            "foreground_edge_distance_px": {
+              "p50": 39.81205847478876,
+              "p95": 56.753854494650845,
+              "p99": 58.42088667591412,
+              "p99.9": 62.77451603654563
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 693,
+            "view": "head-plus3cm",
+            "prefix_frame": 691,
+            "psnr_db": 14.958840407217417,
+            "ssim": 0.7138622403144836,
+            "lpips": 0.5545087456703186,
+            "coverage": 0.8903298611111111,
+            "common_visible_fraction": 0.8852213541666667,
+            "previously_seen_holes": 0.00010296388909318232,
+            "never_seen_fraction": 0.11477864583333333,
+            "never_seen_covered_fraction": 0.005199652777777778,
+            "edge_distance_px": {
+              "p50": 11.045361017187261,
+              "p95": 157.91136716424933,
+              "p99": 175.10282693320517,
+              "p99.9": 181.32760833636397
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.85101318359375,
+              "p95": 10.591870307922363,
+              "p99": 12.866020202636719,
+              "p99.9": 16.217287063598633
+            },
+            "foreground_edge_distance_px": {
+              "p50": 39.006409203131156,
+              "p95": 57.0,
+              "p99": 58.855755878248644,
+              "p99.9": 59.30430001273095
+            },
+            "stereo": {
+              "disparity_error_px": {
+                "p50": 6.324700355529785,
+                "p95": 10.880235290527343,
+                "p99": 16.835890197753884,
+                "p99.9": 18.637431640625014
+              },
+              "matched_fraction": 0.5925911458333334,
+              "method": "SGBM 5px, 128 disparities"
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 363,
+            "view": "camera",
+            "prefix_frame": 355,
+            "psnr_db": 20.83461001232115,
+            "ssim": 0.8042192459106445,
+            "lpips": 0.43637746572494507,
+            "coverage": 1.0,
+            "common_visible_fraction": 1.0,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.0,
+            "never_seen_covered_fraction": 0.0,
+            "edge_distance_px": {
+              "p50": 12.36931687685298,
+              "p95": 187.4038413533173,
+              "p99": 207.93940976791447,
+              "p99.9": 220.68624592308052
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.2822278141975403,
+              "p95": 0.8076186776161194,
+              "p99": 1.2252938747406006,
+              "p99.9": 2.1157326698303223
+            },
+            "foreground_edge_distance_px": {
+              "p50": 28.0,
+              "p95": 49.64876634922564,
+              "p99": 54.0,
+              "p99.9": 58.52698329972392
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 363,
+            "view": "left",
+            "prefix_frame": 355,
+            "psnr_db": 19.271929698086183,
+            "ssim": 0.7876062989234924,
+            "lpips": 0.4435109496116638,
+            "coverage": 0.9853602430555556,
+            "common_visible_fraction": 0.9797048611111111,
+            "previously_seen_holes": 8.86037816093991e-06,
+            "never_seen_fraction": 0.02029513888888889,
+            "never_seen_covered_fraction": 0.0056640625,
+            "edge_distance_px": {
+              "p50": 13.45362404707371,
+              "p95": 178.13758727455584,
+              "p99": 187.3846311734236,
+              "p99.9": 192.00520826269278
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.2862304449081421,
+              "p95": 2.4274368286132812,
+              "p99": 2.8710806369781494,
+              "p99.9": 2.8710811138153076
+            },
+            "foreground_edge_distance_px": {
+              "p50": 28.071337695236398,
+              "p95": 50.99019513592785,
+              "p99": 55.94640292279746,
+              "p99.9": 60.83669899484573
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 363,
+            "view": "right",
+            "prefix_frame": 355,
+            "psnr_db": 17.070333426346792,
+            "ssim": 0.7525625228881836,
+            "lpips": 0.4870910048484802,
+            "coverage": 0.9412673611111111,
+            "common_visible_fraction": 0.9238454861111111,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.07615451388888889,
+            "never_seen_covered_fraction": 0.017421875,
+            "edge_distance_px": {
+              "p50": 11.852349955359813,
+              "p95": 163.0,
+              "p99": 188.8321581331342,
+              "p99.9": 205.4910146836804
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.2807971239089966,
+              "p95": 0.7903589606285095,
+              "p99": 0.8704609870910645,
+              "p99.9": 2.3925840854644775
+            },
+            "foreground_edge_distance_px": {
+              "p50": 25.495097567963924,
+              "p95": 50.35871324805669,
+              "p99": 55.57877292636101,
+              "p99.9": 60.184064789120455
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 363,
+            "view": "head-minus3cm",
+            "prefix_frame": 355,
+            "psnr_db": 19.387431918323024,
+            "ssim": 0.7889246940612793,
+            "lpips": 0.4445257782936096,
+            "coverage": 0.9864800347222222,
+            "common_visible_fraction": 0.9812022569444444,
+            "previously_seen_holes": 8.846856490717436e-06,
+            "never_seen_fraction": 0.018797743055555555,
+            "never_seen_covered_fraction": 0.005286458333333333,
+            "edge_distance_px": {
+              "p50": 13.152946437965905,
+              "p95": 178.54873279232746,
+              "p99": 187.74036565554613,
+              "p99.9": 193.21131127506067
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.285841703414917,
+              "p95": 2.2711894512176514,
+              "p99": 2.8710806369781494,
+              "p99.9": 2.8710811138153076
+            },
+            "foreground_edge_distance_px": {
+              "p50": 28.071337695236398,
+              "p95": 50.35871324805669,
+              "p99": 55.21892783030097,
+              "p99.9": 60.21012910644254
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 363,
+            "view": "head-plus3cm",
+            "prefix_frame": 355,
+            "psnr_db": 17.27873112307985,
+            "ssim": 0.7566724419593811,
+            "lpips": 0.4838836193084717,
+            "coverage": 0.9460633680555556,
+            "common_visible_fraction": 0.9285850694444444,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.07141493055555556,
+            "never_seen_covered_fraction": 0.01747829861111111,
+            "edge_distance_px": {
+              "p50": 11.661903789690601,
+              "p95": 163.0,
+              "p99": 188.54826837724522,
+              "p99.9": 205.74469893968282
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.2807976007461548,
+              "p95": 0.7892269492149353,
+              "p99": 0.8703644275665283,
+              "p99.9": 2.3963401317596436
+            },
+            "foreground_edge_distance_px": {
+              "p50": 25.709920264364882,
+              "p95": 50.48762224545735,
+              "p99": 55.90169943749474,
+              "p99.9": 60.42539898339358
+            },
+            "stereo": {
+              "disparity_error_px": {
+                "p50": 2.6719970703125,
+                "p95": 12.715054988861079,
+                "p99": 15.668300552368157,
+                "p99.9": 41.522665733337455
+              },
+              "matched_fraction": 0.5548697916666666,
+              "method": "SGBM 5px, 128 disparities"
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 1501,
+            "view": "camera",
+            "prefix_frame": 1495,
+            "psnr_db": 22.334602385019416,
+            "ssim": 0.7785491347312927,
+            "lpips": 0.4788762629032135,
+            "coverage": 1.0,
+            "common_visible_fraction": 1.0,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.0,
+            "never_seen_covered_fraction": 0.0,
+            "edge_distance_px": {
+              "p50": 4.0,
+              "p95": 236.6854452643846,
+              "p99": 263.9511288245208,
+              "p99.9": 276.0361569333204
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.6115071773529053,
+              "p95": 2.7154929637908936,
+              "p99": 3.5467002391815186,
+              "p99.9": 3.5994181632995605
+            },
+            "foreground_edge_distance_px": {
+              "p50": 31.016124838541646,
+              "p95": 49.25444142409901,
+              "p99": 52.0,
+              "p99.9": 53.0
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 1501,
+            "view": "left",
+            "prefix_frame": 1495,
+            "psnr_db": 21.68632675507791,
+            "ssim": 0.7617109417915344,
+            "lpips": 0.4842107594013214,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9999305555555555,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 6.944444444444444e-05,
+            "never_seen_covered_fraction": 6.944444444444444e-05,
+            "edge_distance_px": {
+              "p50": 5.0,
+              "p95": 231.85997857308604,
+              "p99": 263.43641228850055,
+              "p99.9": 276.0
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.6103097200393677,
+              "p95": 0.8785287737846375,
+              "p99": 3.152026891708374,
+              "p99.9": 3.4453601837158203
+            },
+            "foreground_edge_distance_px": {
+              "p50": 31.0,
+              "p95": 49.09175083453431,
+              "p99": 52.0,
+              "p99.9": 53.0
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 1501,
+            "view": "right",
+            "prefix_frame": 1495,
+            "psnr_db": 22.797883173387774,
+            "ssim": 0.7952302098274231,
+            "lpips": 0.47644031047821045,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9999869791666667,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 1.3020833333333334e-05,
+            "never_seen_covered_fraction": 1.3020833333333334e-05,
+            "edge_distance_px": {
+              "p50": 3.605551275463989,
+              "p95": 242.0123963238037,
+              "p99": 266.03007348794233,
+              "p99.9": 276.4734046924348
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.6130094528198242,
+              "p95": 3.5263102054595947,
+              "p99": 3.5994184017181396,
+              "p99.9": 3.599419593811035
+            },
+            "foreground_edge_distance_px": {
+              "p50": 31.400636936215164,
+              "p95": 49.64876634922564,
+              "p99": 52.009614495783374,
+              "p99.9": 53.150729063673246
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 1501,
+            "view": "head-minus3cm",
+            "prefix_frame": 1495,
+            "psnr_db": 21.743165137107688,
+            "ssim": 0.7630144953727722,
+            "lpips": 0.4826851785182953,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9999088541666666,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 9.114583333333334e-05,
+            "never_seen_covered_fraction": 9.114583333333334e-05,
+            "edge_distance_px": {
+              "p50": 5.0,
+              "p95": 230.07705225174794,
+              "p99": 261.207177572891,
+              "p99.9": 275.0901397217718
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.6103723049163818,
+              "p95": 0.8900679349899292,
+              "p99": 3.1845946311950684,
+              "p99.9": 3.4582085609436035
+            },
+            "foreground_edge_distance_px": {
+              "p50": 31.0,
+              "p95": 49.09175083453431,
+              "p99": 52.0,
+              "p99.9": 53.006282459781005
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 1501,
+            "view": "head-plus3cm",
+            "prefix_frame": 1495,
+            "psnr_db": 22.79580610953458,
+            "ssim": 0.7942942976951599,
+            "lpips": 0.47641652822494507,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9999739583333334,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 2.604166666666667e-05,
+            "never_seen_covered_fraction": 2.604166666666667e-05,
+            "edge_distance_px": {
+              "p50": 3.605551275463989,
+              "p95": 242.03305559365234,
+              "p99": 266.0166348133699,
+              "p99.9": 276.1222403716317
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.6128949522972107,
+              "p95": 3.4976000785827637,
+              "p99": 3.5994184017181396,
+              "p99.9": 3.599419116973877
+            },
+            "foreground_edge_distance_px": {
+              "p50": 31.25699921617557,
+              "p95": 49.33558553417604,
+              "p99": 52.0,
+              "p99.9": 53.02923563413144
+            },
+            "stereo": {
+              "disparity_error_px": {
+                "p50": 3.2506093978881836,
+                "p95": 4.133919906616211,
+                "p99": 4.85634204864502,
+                "p99.9": 5.161106025695814
+              },
+              "matched_fraction": 0.5999522569444444,
+              "method": "SGBM 5px, 128 disparities"
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 2284,
+            "view": "camera",
+            "prefix_frame": 2281,
+            "psnr_db": 15.51544512102534,
+            "ssim": 0.7895340323448181,
+            "lpips": 0.6027977466583252,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9954470486111111,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.0045529513888888885,
+            "never_seen_covered_fraction": 0.0045529513888888885,
+            "edge_distance_px": {
+              "p50": 20.12461179749811,
+              "p95": 181.4628054851214,
+              "p99": 198.9124681523798,
+              "p99.9": 208.45692590724178
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.7464155554771423,
+              "p95": 23.89687728881836,
+              "p99": 24.417787551879883,
+              "p99.9": 26.581390380859375
+            },
+            "foreground_edge_distance_px": {
+              "p50": 4.242640687119285,
+              "p95": 72.24956747275377,
+              "p99": 75.50496672405067,
+              "p99.9": 77.8838226073054
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 2284,
+            "view": "left",
+            "prefix_frame": 2281,
+            "psnr_db": 13.705844165401453,
+            "ssim": 0.7201206088066101,
+            "lpips": 0.6748791337013245,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9986414930555556,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.0013585069444444445,
+            "never_seen_covered_fraction": 0.0013585069444444445,
+            "edge_distance_px": {
+              "p50": 24.73863375370596,
+              "p95": 183.1276875676464,
+              "p99": 202.78014833526814,
+              "p99.9": 210.7075194640142
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.7131388187408447,
+              "p95": 23.698013305664062,
+              "p99": 23.896881103515625,
+              "p99.9": 24.81951332092285
+            },
+            "foreground_edge_distance_px": {
+              "p50": 5.0,
+              "p95": 104.0,
+              "p99": 110.24513597879238,
+              "p99.9": 121.95839909739169
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 2284,
+            "view": "right",
+            "prefix_frame": 2281,
+            "psnr_db": 18.978100178161228,
+            "ssim": 0.8505108952522278,
+            "lpips": 0.5097230672836304,
+            "coverage": 0.9999001736111112,
+            "common_visible_fraction": 0.9911935763888889,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.00880642361111111,
+            "never_seen_covered_fraction": 0.008706597222222221,
+            "edge_distance_px": {
+              "p50": 7.615773105863909,
+              "p95": 182.25526681902505,
+              "p99": 196.7669896114161,
+              "p99.9": 208.10708781978576
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.8191752433776855,
+              "p95": 23.896883010864258,
+              "p99": 24.529138565063477,
+              "p99.9": 26.41585922241211
+            },
+            "foreground_edge_distance_px": {
+              "p50": 4.123105625617661,
+              "p95": 22.0,
+              "p99": 32.38826948140329,
+              "p99.9": 38.901359974902526
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 2284,
+            "view": "head-minus3cm",
+            "prefix_frame": 2281,
+            "psnr_db": 13.76773790021478,
+            "ssim": 0.7227160334587097,
+            "lpips": 0.6725108027458191,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9984809027777778,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.0015190972222222222,
+            "never_seen_covered_fraction": 0.0015190972222222222,
+            "edge_distance_px": {
+              "p50": 24.13498120124012,
+              "p95": 183.02936804230552,
+              "p99": 201.20959610964363,
+              "p99.9": 210.11017024835112
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.7144031524658203,
+              "p95": 23.698213577270508,
+              "p99": 23.896881103515625,
+              "p99.9": 24.954936981201172
+            },
+            "foreground_edge_distance_px": {
+              "p50": 4.47213595499958,
+              "p95": 101.1236866416568,
+              "p99": 107.47556714932031,
+              "p99.9": 117.09331269465844
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 2284,
+            "view": "head-plus3cm",
+            "prefix_frame": 2281,
+            "psnr_db": 18.735424236265143,
+            "ssim": 0.8467281460762024,
+            "lpips": 0.5165108442306519,
+            "coverage": 0.9999175347222222,
+            "common_visible_fraction": 0.9914626736111111,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.00853732638888889,
+            "never_seen_covered_fraction": 0.008454861111111111,
+            "edge_distance_px": {
+              "p50": 7.0710678118654755,
+              "p95": 182.43080212834388,
+              "p99": 196.85862431068117,
+              "p99.9": 208.70343657121757
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.8131078481674194,
+              "p95": 23.896881103515625,
+              "p99": 24.528337478637695,
+              "p99.9": 26.428585052490234
+            },
+            "foreground_edge_distance_px": {
+              "p50": 4.123105625617661,
+              "p95": 22.0,
+              "p99": 32.251815762958316,
+              "p99.9": 38.902541795649725
+            },
+            "stereo": {
+              "disparity_error_px": {
+                "p50": 55.91970634460449,
+                "p95": 100.6825439453125,
+                "p99": 102.362491607666,
+                "p99.9": 103.624225479126
+              },
+              "matched_fraction": 0.45184461805555554,
+              "method": "SGBM 5px, 128 disparities"
+            }
+          }
+        ],
+        "clips": [
+          {
+            "file": "frozen-map-moving-head.mp4",
+            "residual_change": {
+              "p50": 0.001562451827339828,
+              "p95": 0.0020782724022865295,
+              "p99": 0.0020837702322751284,
+              "p99.9": 0.0020837702322751284
+            },
+            "edge_changed_fraction": {
+              "p50": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "p99.9": 0.0
+            },
+            "head_sample_to_readback_ms": {
+              "p50": 84.90867901127785,
+              "p95": 96.17478100699373,
+              "p99": 104.71662819036281,
+              "p99.9": 111.73169691581285
+            }
+          },
+          {
+            "file": "fixed-head-map-updates.mp4",
+            "residual_change": {
+              "p50": 0.0,
+              "p95": 0.0005697880405932341,
+              "p99": 0.20301129434257614,
+              "p99.9": 0.4097502341009714
+            },
+            "edge_changed_fraction": {
+              "p50": 0.0,
+              "p95": 0.001082899305555494,
+              "p99": 0.025982204861111087,
+              "p99.9": 0.029969314236111183
+            },
+            "head_sample_to_readback_ms": {
+              "p50": 79.54576099291444,
+              "p95": 111.31064398796298,
+              "p99": 111.70896039693616,
+              "p99.9": 111.85264414409176
+            }
+          },
+          {
+            "file": "both.mp4",
+            "residual_change": {
+              "p50": 0.0019976880867034197,
+              "p95": 0.007656080857850599,
+              "p99": 0.19407447194680433,
+              "p99.9": 0.41091656885110234
+            },
+            "edge_changed_fraction": {
+              "p50": 0.00013671875,
+              "p95": 0.013892361111111085,
+              "p99": 0.02583311631944442,
+              "p99.9": 0.029739561631944515
+            },
+            "head_sample_to_readback_ms": {
+              "p50": 79.39642801648006,
+              "p95": 110.41208900860511,
+              "p99": 112.48598920064978,
+              "p99.9": 113.5963496315526
+            }
+          },
+          {
+            "file": "bookshelf-frozen-map-moving-head.mp4",
+            "residual_change": {
+              "p50": 0.007446737494319677,
+              "p95": 0.009629172272980213,
+              "p99": 0.009692486375570297,
+              "p99.9": 0.009692486375570297
+            },
+            "edge_changed_fraction": {
+              "p50": 0.008322482638888889,
+              "p95": 0.0111328125,
+              "p99": 0.011197916666666667,
+              "p99.9": 0.011197916666666667
+            },
+            "head_sample_to_readback_ms": {
+              "p50": 102.5355969904922,
+              "p95": 115.73854900780134,
+              "p99": 119.7377694013994,
+              "p99.9": 123.40195073746148
+            }
+          },
+          {
+            "file": "bookshelf-fixed-head-map-updates.mp4",
+            "residual_change": {
+              "p50": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "p99.9": 0.0
+            },
+            "edge_changed_fraction": {
+              "p50": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "p99.9": 0.0
+            },
+            "head_sample_to_readback_ms": {
+              "p50": 98.77321199746802,
+              "p95": 107.46461601229385,
+              "p99": 115.07253178860992,
+              "p99.9": 116.31470027670731
+            }
+          },
+          {
+            "file": "bookshelf-both.mp4",
+            "residual_change": {
+              "p50": 0.007446737494319677,
+              "p95": 0.009629172272980213,
+              "p99": 0.009692486375570297,
+              "p99.9": 0.009692486375570297
+            },
+            "edge_changed_fraction": {
+              "p50": 0.008322482638888889,
+              "p95": 0.0111328125,
+              "p99": 0.011197916666666667,
+              "p99.9": 0.011197916666666667
+            },
+            "head_sample_to_readback_ms": {
+              "p50": 99.10025601857342,
+              "p95": 106.29151700413786,
+              "p99": 111.27798579400405,
+              "p99.9": 113.07978597178591
+            }
+          }
+        ],
+        "timing_scope": "offline GL draw completion, excludes readback; not scanout",
+        "freshness": {
+          "exposure_to_first_visible": null,
+          "exposure_to_stable_sharp": null,
+          "head_motion_to_display": null,
+          "reason": "legacy exposure unknown; no compositor/photodiode timestamps"
+        },
+        "gl_renderer": "llvmpipe (LLVM 21.1.8, 256 bits)",
+        "sweep180_poses": {
+          "available_pose": {
+            "rotation_deg": {
+              "p50": 1.4946003373196555,
+              "p95": 20.281030275619912,
+              "p99": 30.155419464627748,
+              "p99.9": 35.73416708966557
+            },
+            "translation_m": {
+              "p50": 0.003474901374080113,
+              "p95": 0.02180063696636563,
+              "p99": 0.03041951100203041,
+              "p99.9": 0.03673479669500912
+            },
+            "frames": 878,
+            "unavailable": 12
+          },
+          "retrospective_pose": {
+            "rotation_deg": {
+              "p50": 0.10350103572849878,
+              "p95": 1.6747773260678802,
+              "p99": 2.873440494552213,
+              "p99.9": 3.675999574459057
+            },
+            "translation_m": {
+              "p50": 0.0016527818676789947,
+              "p95": 0.004650780149756109,
+              "p99": 0.005383199154196949,
+              "p99.9": 0.006182224960465524
+            },
+            "frames": 889,
+            "unavailable": 1
+          }
+        },
+        "sweep180_draw": {
+          "ms": {
+            "p50": 87.97713299281895,
+            "p95": 109.89948525093496,
+            "p99": 115.75861434102987,
+            "p99.9": 120.77249580412197
+          },
+          "missed_fraction": 1.0,
+          "longest_miss_run": 386,
+          "samples": 386,
+          "deadline_ms": 11.11111111111111
+        },
+        "sweep180_upload_ms": {
+          "p50": 4.663478001020849,
+          "p95": 8.412342489464208,
+          "p99": 10.838648784556415,
+          "p99.9": 12.466836265230107
+        },
+        "tour_poses": {
+          "available_pose": {
+            "rotation_deg": {
+              "p50": 6.249033014570288,
+              "p95": 28.08581996944998,
+              "p99": 41.957666065769374,
+              "p99.9": 50.80369921549132
+            },
+            "translation_m": {
+              "p50": 0.013895620582044223,
+              "p95": 0.09209860843634557,
+              "p99": 0.16288951689572734,
+              "p99.9": 0.2244807294043099
+            },
+            "frames": 3011,
+            "unavailable": 11
+          },
+          "retrospective_pose": {
+            "rotation_deg": {
+              "p50": 0.4651754983045471,
+              "p95": 2.058399003653303,
+              "p99": 3.1573527448881857,
+              "p99.9": 4.59112536824662
+            },
+            "translation_m": {
+              "p50": 0.008482298431634675,
+              "p95": 0.03163737012174906,
+              "p99": 0.036389826913812366,
+              "p99.9": 0.039639822493836845
+            },
+            "frames": 3019,
+            "unavailable": 3
+          }
+        },
+        "tour_draw": {
+          "ms": {
+            "p50": 87.74518800782971,
+            "p95": 195.4613509151386,
+            "p99": 200.19823018519673,
+            "p99.9": 201.2640280209598
+          },
+          "missed_fraction": 1.0,
+          "longest_miss_run": 15,
+          "samples": 15,
+          "deadline_ms": 11.11111111111111
+        },
+        "tour_upload_ms": {
+          "p50": 18.591230997117236,
+          "p95": 37.4613780179061,
+          "p99": 39.138724419754,
+          "p99.9": 39.51612736016978
+        }
+      },
+      "display": {
+        "scope": "isolated offscreen stereo GL completion; no inference or compositor",
+        "sweep180": {
+          "renderer": "NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2",
+          "frames": 1000,
+          "ipd_m": 0.064,
+          "occupied": 178182,
+          "sort_capacity": 262144,
+          "uploaded_bytes": 11403648,
+          "upload_ms": [
+            10.027400014223531
+          ],
+          "stereo_ms": {
+            "p50": 3.380149995791726,
+            "p95": 3.642975002003368,
+            "p99": 3.8093310175463557,
+            "p99.9": 4.849502692959513
+          },
+          "missed_fraction": 0.0,
+          "longest_miss_run": 0,
+          "deadline_ms": 11.11111111111111
+        },
+        "tour": {
+          "renderer": "NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2",
+          "frames": 1000,
+          "ipd_m": 0.064,
+          "occupied": 477967,
+          "sort_capacity": 524288,
+          "uploaded_bytes": 30589888,
+          "upload_ms": [
+            47.132200008491054
+          ],
+          "stereo_ms": {
+            "p50": 3.716749997693114,
+            "p95": 4.092520017002243,
+            "p99": 4.317992991418578,
+            "p99.9": 5.188290811580381
+          },
+          "missed_fraction": 0.0,
+          "longest_miss_run": 0,
+          "deadline_ms": 11.11111111111111
+        }
+      }
+    },
+    {
+      "metrics": {
+        "ipd_m": 0.064,
+        "ipd_status": "configured, not measured from a headset",
+        "baseline": "316a556",
+        "moments": [
+          {
+            "run": "sweep180",
+            "frame": 215,
+            "view": "camera",
+            "prefix_frame": 211,
+            "psnr_db": 20.00122095387642,
+            "ssim": 0.7895245552062988,
+            "lpips": 0.46462082862854004,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9999869791666667,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 1.3020833333333334e-05,
+            "never_seen_covered_fraction": 1.3020833333333334e-05,
+            "edge_distance_px": {
+              "p50": 6.4031242374328485,
+              "p95": 288.02465162667613,
+              "p99": 339.3799758682854,
+              "p99.9": 355.1034621890066
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.1402895152568817,
+              "p95": 0.3953929543495178,
+              "p99": 1.0416655540466309,
+              "p99.9": 1.7932807207107544
+            },
+            "foreground_edge_distance_px": {
+              "p50": 34.0,
+              "p95": 52.48237744161149,
+              "p99": 70.88129229417572,
+              "p99.9": 79.39279305226364
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 215,
+            "view": "left",
+            "prefix_frame": 211,
+            "psnr_db": 20.3883915598279,
+            "ssim": 0.7845444083213806,
+            "lpips": 0.47492077946662903,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9970355902777778,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.002964409722222222,
+            "never_seen_covered_fraction": 0.002964409722222222,
+            "edge_distance_px": {
+              "p50": 6.0,
+              "p95": 293.10023857212303,
+              "p99": 344.41980198589044,
+              "p99.9": 356.86251726149476
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.14241266250610352,
+              "p95": 1.2824246883392334,
+              "p99": 1.533889651298523,
+              "p99.9": 1.5338900089263916
+            },
+            "foreground_edge_distance_px": {
+              "p50": 34.0,
+              "p95": 52.0,
+              "p99": 62.93647591023825,
+              "p99.9": 71.42128534267638
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 215,
+            "view": "right",
+            "prefix_frame": 211,
+            "psnr_db": 19.79286892068042,
+            "ssim": 0.7917636036872864,
+            "lpips": 0.48570483922958374,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9982118055555556,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.0017881944444444445,
+            "never_seen_covered_fraction": 0.0017881944444444445,
+            "edge_distance_px": {
+              "p50": 7.0710678118654755,
+              "p95": 217.15846671060459,
+              "p99": 319.0,
+              "p99.9": 344.2542205653433
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.14247596263885498,
+              "p95": 2.337003707885742,
+              "p99": 5.934081077575684,
+              "p99.9": 5.935123920440674
+            },
+            "foreground_edge_distance_px": {
+              "p50": 34.92849839314596,
+              "p95": 63.51810485439309,
+              "p99": 81.5222633835585,
+              "p99.9": 88.74652743268189
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 215,
+            "view": "head-minus3cm",
+            "prefix_frame": 211,
+            "psnr_db": 20.374999717692578,
+            "ssim": 0.7852441668510437,
+            "lpips": 0.47276830673217773,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9974435763888889,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.0025564236111111113,
+            "never_seen_covered_fraction": 0.0025564236111111113,
+            "edge_distance_px": {
+              "p50": 5.830951894845301,
+              "p95": 293.24563082849164,
+              "p99": 344.3448845470652,
+              "p99.9": 356.85520532527715
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.1422068476676941,
+              "p95": 1.1706950664520264,
+              "p99": 1.533889651298523,
+              "p99.9": 1.5338900089263916
+            },
+            "foreground_edge_distance_px": {
+              "p50": 34.0,
+              "p95": 52.0,
+              "p99": 63.635680722573476,
+              "p99.9": 72.12489168102785
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 215,
+            "view": "head-plus3cm",
+            "prefix_frame": 211,
+            "psnr_db": 19.81952279745089,
+            "ssim": 0.7916414141654968,
+            "lpips": 0.48330748081207275,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9986501736111111,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.001349826388888889,
+            "never_seen_covered_fraction": 0.001349826388888889,
+            "edge_distance_px": {
+              "p50": 7.0,
+              "p95": 217.11056914915207,
+              "p99": 319.00485888988726,
+              "p99.9": 344.3700000000008
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.14227932691574097,
+              "p95": 1.5297492742538452,
+              "p99": 5.934080600738525,
+              "p99.9": 5.934082508087158
+            },
+            "foreground_edge_distance_px": {
+              "p50": 34.785054261852174,
+              "p95": 62.15785342495611,
+              "p99": 80.71530190545292,
+              "p99.9": 87.91420417630817
+            },
+            "stereo": {
+              "disparity_error_px": {
+                "p50": 3.939239025115967,
+                "p95": 10.37529559135437,
+                "p99": 12.842304744720453,
+                "p99.9": 14.167694005012514
+              },
+              "matched_fraction": 0.5876302083333333,
+              "method": "SGBM 5px, 128 disparities"
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 453,
+            "view": "camera",
+            "prefix_frame": 451,
+            "psnr_db": 17.25358656385002,
+            "ssim": 0.717378556728363,
+            "lpips": 0.5353571176528931,
+            "coverage": 0.9645442708333334,
+            "common_visible_fraction": 0.9776475694444444,
+            "previously_seen_holes": 0.01613762486126526,
+            "never_seen_fraction": 0.022352430555555556,
+            "never_seen_covered_fraction": 0.002673611111111111,
+            "edge_distance_px": {
+              "p50": 7.0710678118654755,
+              "p95": 222.68861653001002,
+              "p99": 252.0039483662241,
+              "p99.9": 264.93486692254135
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.8689222931861877,
+              "p95": 10.02124309539795,
+              "p99": 10.097955703735352,
+              "p99.9": 10.258567810058594
+            },
+            "foreground_edge_distance_px": {
+              "p50": 34.0,
+              "p95": 52.392747589718944,
+              "p99": 58.00344801963708,
+              "p99.9": 60.696277541309456
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 453,
+            "view": "left",
+            "prefix_frame": 451,
+            "psnr_db": 16.79088494347184,
+            "ssim": 0.6994511485099792,
+            "lpips": 0.5391823053359985,
+            "coverage": 0.9621918402777778,
+            "common_visible_fraction": 0.9732291666666667,
+            "previously_seen_holes": 0.01722323308002426,
+            "never_seen_fraction": 0.026770833333333334,
+            "never_seen_covered_fraction": 0.005724826388888889,
+            "edge_distance_px": {
+              "p50": 8.0,
+              "p95": 222.4610454340636,
+              "p99": 253.13786707443757,
+              "p99.9": 264.92915915048684
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.8691379427909851,
+              "p95": 10.070773124694824,
+              "p99": 10.128546714782715,
+              "p99.9": 10.26059627532959
+            },
+            "foreground_edge_distance_px": {
+              "p50": 34.0,
+              "p95": 53.0,
+              "p99": 58.52349955359813,
+              "p99.9": 61.78683747386659
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 453,
+            "view": "right",
+            "prefix_frame": 451,
+            "psnr_db": 17.48443123999707,
+            "ssim": 0.7197814583778381,
+            "lpips": 0.5296395421028137,
+            "coverage": 0.9669227430555556,
+            "common_visible_fraction": 0.9778385416666666,
+            "previously_seen_holes": 0.015162410006480422,
+            "never_seen_fraction": 0.02216145833333333,
+            "never_seen_covered_fraction": 0.003910590277777778,
+            "edge_distance_px": {
+              "p50": 7.0,
+              "p95": 215.56216903784505,
+              "p99": 254.98717509860575,
+              "p99.9": 267.2436419563208
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.8684930801391602,
+              "p95": 9.875255584716797,
+              "p99": 10.074419975280762,
+              "p99.9": 10.257819175720215
+            },
+            "foreground_edge_distance_px": {
+              "p50": 34.0,
+              "p95": 52.08646657242167,
+              "p99": 58.0,
+              "p99.9": 60.742867606488325
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 453,
+            "view": "head-minus3cm",
+            "prefix_frame": 451,
+            "psnr_db": 16.828593642688688,
+            "ssim": 0.701007068157196,
+            "lpips": 0.5385228991508484,
+            "coverage": 0.9623524305555555,
+            "common_visible_fraction": 0.9736067708333334,
+            "previously_seen_holes": 0.01712293653234902,
+            "never_seen_fraction": 0.026393229166666667,
+            "never_seen_covered_fraction": 0.005416666666666667,
+            "edge_distance_px": {
+              "p50": 7.810249675906654,
+              "p95": 221.0027148765418,
+              "p99": 252.0972034751675,
+              "p99.9": 263.62549456776793
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.8691330552101135,
+              "p95": 10.070773124694824,
+              "p99": 10.126351356506348,
+              "p99.9": 10.26039981842041
+            },
+            "foreground_edge_distance_px": {
+              "p50": 33.83784863137726,
+              "p95": 52.773099207835045,
+              "p99": 58.04429280513666,
+              "p99.9": 61.00819617067857
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 453,
+            "view": "head-plus3cm",
+            "prefix_frame": 451,
+            "psnr_db": 17.476845585911335,
+            "ssim": 0.7198522686958313,
+            "lpips": 0.5330722332000732,
+            "coverage": 0.9667881944444444,
+            "common_visible_fraction": 0.9780208333333333,
+            "previously_seen_holes": 0.0152927184293677,
+            "never_seen_fraction": 0.021979166666666668,
+            "never_seen_covered_fraction": 0.0037239583333333335,
+            "edge_distance_px": {
+              "p50": 7.0,
+              "p95": 213.3815821369266,
+              "p99": 254.14023606231189,
+              "p99.9": 267.2031472513202
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.868524968624115,
+              "p95": 9.877023696899414,
+              "p99": 10.076322555541992,
+              "p99.9": 10.257932662963867
+            },
+            "foreground_edge_distance_px": {
+              "p50": 34.0,
+              "p95": 52.20153254455275,
+              "p99": 58.008620049092706,
+              "p99.9": 61.12534537144178
+            },
+            "stereo": {
+              "disparity_error_px": {
+                "p50": 4.841385841369629,
+                "p95": 7.212716579437256,
+                "p99": 7.5192568969726565,
+                "p99.9": 8.338312484741214
+              },
+              "matched_fraction": 0.6041449652777777,
+              "method": "SGBM 5px, 128 disparities"
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 526,
+            "view": "camera",
+            "prefix_frame": 523,
+            "psnr_db": 17.009516499318504,
+            "ssim": 0.7767629623413086,
+            "lpips": 0.5451172590255737,
+            "coverage": 0.9245269097222222,
+            "common_visible_fraction": 0.9073871527777778,
+            "previously_seen_holes": 0.00017219772125015546,
+            "never_seen_fraction": 0.09261284722222222,
+            "never_seen_covered_fraction": 0.017296006944444445,
+            "edge_distance_px": {
+              "p50": 11.045361017187261,
+              "p95": 87.61045586184076,
+              "p99": 155.54420593516173,
+              "p99.9": 158.2665219708084
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.10199443995952606,
+              "p95": 0.10199445486068726,
+              "p99": 0.10199446231126785,
+              "p99.9": 0.10199447721242905
+            },
+            "foreground_edge_distance_px": {
+              "p50": 4.123105625617661,
+              "p95": 18.601075237738275,
+              "p99": 22.360679774997898,
+              "p99.9": 25.96326689280469
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 526,
+            "view": "left",
+            "prefix_frame": 523,
+            "psnr_db": 20.272445952335417,
+            "ssim": 0.817988395690918,
+            "lpips": 0.5353942513465881,
+            "coverage": 0.9763628472222222,
+            "common_visible_fraction": 0.9496614583333334,
+            "previously_seen_holes": 0.0001736730011608669,
+            "never_seen_fraction": 0.05033854166666667,
+            "never_seen_covered_fraction": 0.026866319444444446,
+            "edge_distance_px": {
+              "p50": 11.045361017187261,
+              "p95": 109.0,
+              "p99": 157.91770008456936,
+              "p99.9": 160.7648593854444
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.10199443995952606,
+              "p95": 0.10199445486068726,
+              "p99": 0.10199446231126785,
+              "p99.9": 0.10199447721242905
+            },
+            "foreground_edge_distance_px": {
+              "p50": 4.47213595499958,
+              "p95": 17.46424919657298,
+              "p99": 24.0,
+              "p99.9": 29.0
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 526,
+            "view": "right",
+            "prefix_frame": 523,
+            "psnr_db": 15.119010806901462,
+            "ssim": 0.7361893653869629,
+            "lpips": 0.5573793053627014,
+            "coverage": 0.8712977430555555,
+            "common_visible_fraction": 0.8635763888888889,
+            "previously_seen_holes": 0.001010212697519199,
+            "never_seen_fraction": 0.13642361111111112,
+            "never_seen_covered_fraction": 0.00859375,
+            "edge_distance_px": {
+              "p50": 13.152946437965905,
+              "p95": 64.52906135811781,
+              "p99": 153.1328821152189,
+              "p99.9": 156.99319265443106
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.10199443995952606,
+              "p95": 0.10199445486068726,
+              "p99": 0.10199446231126785,
+              "p99.9": 0.10199447721242905
+            },
+            "foreground_edge_distance_px": {
+              "p50": 6.324555320336759,
+              "p95": 26.019223662515376,
+              "p99": 36.217394624881436,
+              "p99.9": 39.239887682679175
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 526,
+            "view": "head-minus3cm",
+            "prefix_frame": 523,
+            "psnr_db": 20.014770480742605,
+            "ssim": 0.8161322474479675,
+            "lpips": 0.5339933037757874,
+            "coverage": 0.9737196180555555,
+            "common_visible_fraction": 0.9468880208333333,
+            "previously_seen_holes": 0.00017418168983741514,
+            "never_seen_fraction": 0.05311197916666666,
+            "never_seen_covered_fraction": 0.02699652777777778,
+            "edge_distance_px": {
+              "p50": 11.180339887498949,
+              "p95": 109.0,
+              "p99": 157.84929209931613,
+              "p99.9": 160.65112808645688
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.10199443995952606,
+              "p95": 0.10199445486068726,
+              "p99": 0.10199446231126785,
+              "p99.9": 0.10199447721242905
+            },
+            "foreground_edge_distance_px": {
+              "p50": 4.47213595499958,
+              "p95": 17.46424919657298,
+              "p99": 23.46563392043297,
+              "p99.9": 28.80712224546672
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 526,
+            "view": "head-plus3cm",
+            "prefix_frame": 523,
+            "psnr_db": 15.216366581667081,
+            "ssim": 0.7391594052314758,
+            "lpips": 0.5540392994880676,
+            "coverage": 0.8746788194444445,
+            "common_visible_fraction": 0.8659331597222222,
+            "previously_seen_holes": 0.0007568504994712071,
+            "never_seen_fraction": 0.13406684027777777,
+            "never_seen_covered_fraction": 0.009401041666666667,
+            "edge_distance_px": {
+              "p50": 13.0,
+              "p95": 65.92398707594104,
+              "p99": 153.21344514611263,
+              "p99.9": 156.9888211427739
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.10199443995952606,
+              "p95": 0.10199445486068726,
+              "p99": 0.10199446231126785,
+              "p99.9": 0.10199447721242905
+            },
+            "foreground_edge_distance_px": {
+              "p50": 6.082762530298219,
+              "p95": 25.2536995165227,
+              "p99": 35.21930703999522,
+              "p99.9": 38.29020037001665
+            },
+            "stereo": {
+              "disparity_error_px": {
+                "p50": 9.212444305419922,
+                "p95": 20.13277130126953,
+                "p99": 22.85475673675537,
+                "p99.9": 24.721363906860354
+              },
+              "matched_fraction": 0.5943532986111111,
+              "method": "SGBM 5px, 128 disparities"
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 693,
+            "view": "camera",
+            "prefix_frame": 691,
+            "psnr_db": 14.798570308338558,
+            "ssim": 0.7028281092643738,
+            "lpips": 0.5578105449676514,
+            "coverage": 0.8909418402777778,
+            "common_visible_fraction": 0.8875911458333333,
+            "previously_seen_holes": 0.00010757893604432252,
+            "never_seen_fraction": 0.11240885416666667,
+            "never_seen_covered_fraction": 0.0034461805555555556,
+            "edge_distance_px": {
+              "p50": 11.0,
+              "p95": 128.58381938291188,
+              "p99": 171.8144347599194,
+              "p99.9": 184.0
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.6649733185768127,
+              "p95": 10.262027740478516,
+              "p99": 10.556689262390137,
+              "p99.9": 10.855992317199707
+            },
+            "foreground_edge_distance_px": {
+              "p50": 39.20459156782532,
+              "p95": 56.88585061331157,
+              "p99": 58.54912467321779,
+              "p99.9": 59.30430001273095
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 693,
+            "view": "left",
+            "prefix_frame": 691,
+            "psnr_db": 14.561562951587808,
+            "ssim": 0.6932160258293152,
+            "lpips": 0.5600937604904175,
+            "coverage": 0.8899479166666666,
+            "common_visible_fraction": 0.8858333333333334,
+            "previously_seen_holes": 9.799310128566949e-05,
+            "never_seen_fraction": 0.11416666666666667,
+            "never_seen_covered_fraction": 0.004201388888888889,
+            "edge_distance_px": {
+              "p50": 12.165525060596439,
+              "p95": 152.137600704858,
+              "p99": 168.07644093717312,
+              "p99.9": 176.63550265302308
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.6633442640304565,
+              "p95": 10.03510856628418,
+              "p99": 10.559516906738281,
+              "p99.9": 10.857216835021973
+            },
+            "foreground_edge_distance_px": {
+              "p50": 39.81205847478876,
+              "p95": 56.71860364994893,
+              "p99": 58.42088667591412,
+              "p99.9": 63.68511901608266
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 693,
+            "view": "right",
+            "prefix_frame": 691,
+            "psnr_db": 14.966130622590871,
+            "ssim": 0.7146005630493164,
+            "lpips": 0.5517822504043579,
+            "coverage": 0.8902387152777778,
+            "common_visible_fraction": 0.8850520833333333,
+            "previously_seen_holes": 0.00011279154161517488,
+            "never_seen_fraction": 0.11494791666666666,
+            "never_seen_covered_fraction": 0.005286458333333333,
+            "edge_distance_px": {
+              "p50": 11.0,
+              "p95": 158.15498727514097,
+              "p99": 175.0472506574493,
+              "p99.9": 181.8894144459739
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.8586289286613464,
+              "p95": 10.661783218383789,
+              "p99": 12.866023063659668,
+              "p99.9": 18.30122184753418
+            },
+            "foreground_edge_distance_px": {
+              "p50": 39.0,
+              "p95": 57.0,
+              "p99": 58.85660480059783,
+              "p99.9": 59.30430001273095
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 693,
+            "view": "head-minus3cm",
+            "prefix_frame": 691,
+            "psnr_db": 14.57687607925731,
+            "ssim": 0.6938917636871338,
+            "lpips": 0.5588608980178833,
+            "coverage": 0.8899565972222222,
+            "common_visible_fraction": 0.8860980902777778,
+            "previously_seen_holes": 9.796382196054997e-05,
+            "never_seen_fraction": 0.11390190972222222,
+            "never_seen_covered_fraction": 0.0039453125,
+            "edge_distance_px": {
+              "p50": 12.0,
+              "p95": 118.77645727333413,
+              "p99": 163.6807543878949,
+              "p99.9": 171.74659236535814
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.6633418798446655,
+              "p95": 10.051448822021484,
+              "p99": 10.55767822265625,
+              "p99.9": 10.857264518737793
+            },
+            "foreground_edge_distance_px": {
+              "p50": 39.81205847478876,
+              "p95": 56.753854494650845,
+              "p99": 58.42088667591412,
+              "p99.9": 62.77451603654563
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 693,
+            "view": "head-plus3cm",
+            "prefix_frame": 691,
+            "psnr_db": 14.958840407217417,
+            "ssim": 0.7138622403144836,
+            "lpips": 0.5545087456703186,
+            "coverage": 0.8903298611111111,
+            "common_visible_fraction": 0.8852213541666667,
+            "previously_seen_holes": 0.00010296388909318232,
+            "never_seen_fraction": 0.11477864583333333,
+            "never_seen_covered_fraction": 0.005199652777777778,
+            "edge_distance_px": {
+              "p50": 11.045361017187261,
+              "p95": 157.91136716424933,
+              "p99": 175.10282693320517,
+              "p99.9": 181.32760833636397
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.85101318359375,
+              "p95": 10.591870307922363,
+              "p99": 12.866020202636719,
+              "p99.9": 16.217287063598633
+            },
+            "foreground_edge_distance_px": {
+              "p50": 39.006409203131156,
+              "p95": 57.0,
+              "p99": 58.855755878248644,
+              "p99.9": 59.30430001273095
+            },
+            "stereo": {
+              "disparity_error_px": {
+                "p50": 6.324700355529785,
+                "p95": 10.880235290527343,
+                "p99": 16.835890197753884,
+                "p99.9": 18.637431640625014
+              },
+              "matched_fraction": 0.5925911458333334,
+              "method": "SGBM 5px, 128 disparities"
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 363,
+            "view": "camera",
+            "prefix_frame": 355,
+            "psnr_db": 20.83461001232115,
+            "ssim": 0.8042192459106445,
+            "lpips": 0.43637746572494507,
+            "coverage": 1.0,
+            "common_visible_fraction": 1.0,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.0,
+            "never_seen_covered_fraction": 0.0,
+            "edge_distance_px": {
+              "p50": 12.36931687685298,
+              "p95": 187.4038413533173,
+              "p99": 207.93940976791447,
+              "p99.9": 220.68624592308052
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.2822278141975403,
+              "p95": 0.8076186776161194,
+              "p99": 1.2252938747406006,
+              "p99.9": 2.1157326698303223
+            },
+            "foreground_edge_distance_px": {
+              "p50": 28.0,
+              "p95": 49.64876634922564,
+              "p99": 54.0,
+              "p99.9": 58.52698329972392
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 363,
+            "view": "left",
+            "prefix_frame": 355,
+            "psnr_db": 19.271929698086183,
+            "ssim": 0.7876062989234924,
+            "lpips": 0.4435109496116638,
+            "coverage": 0.9853602430555556,
+            "common_visible_fraction": 0.9797048611111111,
+            "previously_seen_holes": 8.86037816093991e-06,
+            "never_seen_fraction": 0.02029513888888889,
+            "never_seen_covered_fraction": 0.0056640625,
+            "edge_distance_px": {
+              "p50": 13.45362404707371,
+              "p95": 178.13758727455584,
+              "p99": 187.3846311734236,
+              "p99.9": 192.00520826269278
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.2862304449081421,
+              "p95": 2.4274368286132812,
+              "p99": 2.8710806369781494,
+              "p99.9": 2.8710811138153076
+            },
+            "foreground_edge_distance_px": {
+              "p50": 28.071337695236398,
+              "p95": 50.99019513592785,
+              "p99": 55.94640292279746,
+              "p99.9": 60.83669899484573
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 363,
+            "view": "right",
+            "prefix_frame": 355,
+            "psnr_db": 17.070333426346792,
+            "ssim": 0.7525625228881836,
+            "lpips": 0.4870910048484802,
+            "coverage": 0.9412673611111111,
+            "common_visible_fraction": 0.9238454861111111,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.07615451388888889,
+            "never_seen_covered_fraction": 0.017421875,
+            "edge_distance_px": {
+              "p50": 11.852349955359813,
+              "p95": 163.0,
+              "p99": 188.8321581331342,
+              "p99.9": 205.4910146836804
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.2807971239089966,
+              "p95": 0.7903589606285095,
+              "p99": 0.8704609870910645,
+              "p99.9": 2.3925840854644775
+            },
+            "foreground_edge_distance_px": {
+              "p50": 25.495097567963924,
+              "p95": 50.35871324805669,
+              "p99": 55.57877292636101,
+              "p99.9": 60.184064789120455
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 363,
+            "view": "head-minus3cm",
+            "prefix_frame": 355,
+            "psnr_db": 19.387431918323024,
+            "ssim": 0.7889246940612793,
+            "lpips": 0.4445257782936096,
+            "coverage": 0.9864800347222222,
+            "common_visible_fraction": 0.9812022569444444,
+            "previously_seen_holes": 8.846856490717436e-06,
+            "never_seen_fraction": 0.018797743055555555,
+            "never_seen_covered_fraction": 0.005286458333333333,
+            "edge_distance_px": {
+              "p50": 13.152946437965905,
+              "p95": 178.54873279232746,
+              "p99": 187.74036565554613,
+              "p99.9": 193.21131127506067
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.285841703414917,
+              "p95": 2.2711894512176514,
+              "p99": 2.8710806369781494,
+              "p99.9": 2.8710811138153076
+            },
+            "foreground_edge_distance_px": {
+              "p50": 28.071337695236398,
+              "p95": 50.35871324805669,
+              "p99": 55.21892783030097,
+              "p99.9": 60.21012910644254
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 363,
+            "view": "head-plus3cm",
+            "prefix_frame": 355,
+            "psnr_db": 17.27873112307985,
+            "ssim": 0.7566724419593811,
+            "lpips": 0.4838836193084717,
+            "coverage": 0.9460633680555556,
+            "common_visible_fraction": 0.9285850694444444,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.07141493055555556,
+            "never_seen_covered_fraction": 0.01747829861111111,
+            "edge_distance_px": {
+              "p50": 11.661903789690601,
+              "p95": 163.0,
+              "p99": 188.54826837724522,
+              "p99.9": 205.74469893968282
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.2807976007461548,
+              "p95": 0.7892269492149353,
+              "p99": 0.8703644275665283,
+              "p99.9": 2.3963401317596436
+            },
+            "foreground_edge_distance_px": {
+              "p50": 25.709920264364882,
+              "p95": 50.48762224545735,
+              "p99": 55.90169943749474,
+              "p99.9": 60.42539898339358
+            },
+            "stereo": {
+              "disparity_error_px": {
+                "p50": 2.6719970703125,
+                "p95": 12.715054988861079,
+                "p99": 15.668300552368157,
+                "p99.9": 41.522665733337455
+              },
+              "matched_fraction": 0.5548697916666666,
+              "method": "SGBM 5px, 128 disparities"
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 1501,
+            "view": "camera",
+            "prefix_frame": 1495,
+            "psnr_db": 22.334602385019416,
+            "ssim": 0.7785491347312927,
+            "lpips": 0.4788762629032135,
+            "coverage": 1.0,
+            "common_visible_fraction": 1.0,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.0,
+            "never_seen_covered_fraction": 0.0,
+            "edge_distance_px": {
+              "p50": 4.0,
+              "p95": 236.6854452643846,
+              "p99": 263.9511288245208,
+              "p99.9": 276.0361569333204
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.6115071773529053,
+              "p95": 2.7154929637908936,
+              "p99": 3.5467002391815186,
+              "p99.9": 3.5994181632995605
+            },
+            "foreground_edge_distance_px": {
+              "p50": 31.016124838541646,
+              "p95": 49.25444142409901,
+              "p99": 52.0,
+              "p99.9": 53.0
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 1501,
+            "view": "left",
+            "prefix_frame": 1495,
+            "psnr_db": 21.68632675507791,
+            "ssim": 0.7617109417915344,
+            "lpips": 0.4842107594013214,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9999305555555555,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 6.944444444444444e-05,
+            "never_seen_covered_fraction": 6.944444444444444e-05,
+            "edge_distance_px": {
+              "p50": 5.0,
+              "p95": 231.85997857308604,
+              "p99": 263.43641228850055,
+              "p99.9": 276.0
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.6103097200393677,
+              "p95": 0.8785287737846375,
+              "p99": 3.152026891708374,
+              "p99.9": 3.4453601837158203
+            },
+            "foreground_edge_distance_px": {
+              "p50": 31.0,
+              "p95": 49.09175083453431,
+              "p99": 52.0,
+              "p99.9": 53.0
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 1501,
+            "view": "right",
+            "prefix_frame": 1495,
+            "psnr_db": 22.797883173387774,
+            "ssim": 0.7952302098274231,
+            "lpips": 0.47644031047821045,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9999869791666667,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 1.3020833333333334e-05,
+            "never_seen_covered_fraction": 1.3020833333333334e-05,
+            "edge_distance_px": {
+              "p50": 3.605551275463989,
+              "p95": 242.0123963238037,
+              "p99": 266.03007348794233,
+              "p99.9": 276.4734046924348
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.6130094528198242,
+              "p95": 3.5263102054595947,
+              "p99": 3.5994184017181396,
+              "p99.9": 3.599419593811035
+            },
+            "foreground_edge_distance_px": {
+              "p50": 31.400636936215164,
+              "p95": 49.64876634922564,
+              "p99": 52.009614495783374,
+              "p99.9": 53.150729063673246
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 1501,
+            "view": "head-minus3cm",
+            "prefix_frame": 1495,
+            "psnr_db": 21.743165137107688,
+            "ssim": 0.7630144953727722,
+            "lpips": 0.4826851785182953,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9999088541666666,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 9.114583333333334e-05,
+            "never_seen_covered_fraction": 9.114583333333334e-05,
+            "edge_distance_px": {
+              "p50": 5.0,
+              "p95": 230.07705225174794,
+              "p99": 261.207177572891,
+              "p99.9": 275.0901397217718
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.6103723049163818,
+              "p95": 0.8900679349899292,
+              "p99": 3.1845946311950684,
+              "p99.9": 3.4582085609436035
+            },
+            "foreground_edge_distance_px": {
+              "p50": 31.0,
+              "p95": 49.09175083453431,
+              "p99": 52.0,
+              "p99.9": 53.006282459781005
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 1501,
+            "view": "head-plus3cm",
+            "prefix_frame": 1495,
+            "psnr_db": 22.79580610953458,
+            "ssim": 0.7942942976951599,
+            "lpips": 0.47641652822494507,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9999739583333334,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 2.604166666666667e-05,
+            "never_seen_covered_fraction": 2.604166666666667e-05,
+            "edge_distance_px": {
+              "p50": 3.605551275463989,
+              "p95": 242.03305559365234,
+              "p99": 266.0166348133699,
+              "p99.9": 276.1222403716317
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.6128949522972107,
+              "p95": 3.4976000785827637,
+              "p99": 3.5994184017181396,
+              "p99.9": 3.599419116973877
+            },
+            "foreground_edge_distance_px": {
+              "p50": 31.25699921617557,
+              "p95": 49.33558553417604,
+              "p99": 52.0,
+              "p99.9": 53.02923563413144
+            },
+            "stereo": {
+              "disparity_error_px": {
+                "p50": 3.2506093978881836,
+                "p95": 4.133919906616211,
+                "p99": 4.85634204864502,
+                "p99.9": 5.161106025695814
+              },
+              "matched_fraction": 0.5999522569444444,
+              "method": "SGBM 5px, 128 disparities"
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 2284,
+            "view": "camera",
+            "prefix_frame": 2281,
+            "psnr_db": 15.51544512102534,
+            "ssim": 0.7895340323448181,
+            "lpips": 0.6027977466583252,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9954470486111111,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.0045529513888888885,
+            "never_seen_covered_fraction": 0.0045529513888888885,
+            "edge_distance_px": {
+              "p50": 20.12461179749811,
+              "p95": 181.4628054851214,
+              "p99": 198.9124681523798,
+              "p99.9": 208.45692590724178
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.7464155554771423,
+              "p95": 23.89687728881836,
+              "p99": 24.417787551879883,
+              "p99.9": 26.581390380859375
+            },
+            "foreground_edge_distance_px": {
+              "p50": 4.242640687119285,
+              "p95": 72.24956747275377,
+              "p99": 75.50496672405067,
+              "p99.9": 77.8838226073054
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 2284,
+            "view": "left",
+            "prefix_frame": 2281,
+            "psnr_db": 13.705844165401453,
+            "ssim": 0.7201206088066101,
+            "lpips": 0.6748791337013245,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9986414930555556,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.0013585069444444445,
+            "never_seen_covered_fraction": 0.0013585069444444445,
+            "edge_distance_px": {
+              "p50": 24.73863375370596,
+              "p95": 183.1276875676464,
+              "p99": 202.78014833526814,
+              "p99.9": 210.7075194640142
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.7131388187408447,
+              "p95": 23.698013305664062,
+              "p99": 23.896881103515625,
+              "p99.9": 24.81951332092285
+            },
+            "foreground_edge_distance_px": {
+              "p50": 5.0,
+              "p95": 104.0,
+              "p99": 110.24513597879238,
+              "p99.9": 121.95839909739169
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 2284,
+            "view": "right",
+            "prefix_frame": 2281,
+            "psnr_db": 18.978100178161228,
+            "ssim": 0.8505108952522278,
+            "lpips": 0.5097230672836304,
+            "coverage": 0.9999001736111112,
+            "common_visible_fraction": 0.9911935763888889,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.00880642361111111,
+            "never_seen_covered_fraction": 0.008706597222222221,
+            "edge_distance_px": {
+              "p50": 7.615773105863909,
+              "p95": 182.25526681902505,
+              "p99": 196.7669896114161,
+              "p99.9": 208.10708781978576
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.8191752433776855,
+              "p95": 23.896883010864258,
+              "p99": 24.529138565063477,
+              "p99.9": 26.41585922241211
+            },
+            "foreground_edge_distance_px": {
+              "p50": 4.123105625617661,
+              "p95": 22.0,
+              "p99": 32.38826948140329,
+              "p99.9": 38.901359974902526
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 2284,
+            "view": "head-minus3cm",
+            "prefix_frame": 2281,
+            "psnr_db": 13.76773790021478,
+            "ssim": 0.7227160334587097,
+            "lpips": 0.6725108027458191,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9984809027777778,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.0015190972222222222,
+            "never_seen_covered_fraction": 0.0015190972222222222,
+            "edge_distance_px": {
+              "p50": 24.13498120124012,
+              "p95": 183.02936804230552,
+              "p99": 201.20959610964363,
+              "p99.9": 210.11017024835112
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.7144031524658203,
+              "p95": 23.698213577270508,
+              "p99": 23.896881103515625,
+              "p99.9": 24.954936981201172
+            },
+            "foreground_edge_distance_px": {
+              "p50": 4.47213595499958,
+              "p95": 101.1236866416568,
+              "p99": 107.47556714932031,
+              "p99.9": 117.09331269465844
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 2284,
+            "view": "head-plus3cm",
+            "prefix_frame": 2281,
+            "psnr_db": 18.735424236265143,
+            "ssim": 0.8467281460762024,
+            "lpips": 0.5165108442306519,
+            "coverage": 0.9999175347222222,
+            "common_visible_fraction": 0.9914626736111111,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.00853732638888889,
+            "never_seen_covered_fraction": 0.008454861111111111,
+            "edge_distance_px": {
+              "p50": 7.0710678118654755,
+              "p95": 182.43080212834388,
+              "p99": 196.85862431068117,
+              "p99.9": 208.70343657121757
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.8131078481674194,
+              "p95": 23.896881103515625,
+              "p99": 24.528337478637695,
+              "p99.9": 26.428585052490234
+            },
+            "foreground_edge_distance_px": {
+              "p50": 4.123105625617661,
+              "p95": 22.0,
+              "p99": 32.251815762958316,
+              "p99.9": 38.902541795649725
+            },
+            "stereo": {
+              "disparity_error_px": {
+                "p50": 55.91970634460449,
+                "p95": 100.6825439453125,
+                "p99": 102.362491607666,
+                "p99.9": 103.624225479126
+              },
+              "matched_fraction": 0.45184461805555554,
+              "method": "SGBM 5px, 128 disparities"
+            }
+          }
+        ],
+        "clips": [
+          {
+            "file": "frozen-map-moving-head.mp4",
+            "residual_change": {
+              "p50": 0.001562451827339828,
+              "p95": 0.0020782724022865295,
+              "p99": 0.0020837702322751284,
+              "p99.9": 0.0020837702322751284
+            },
+            "edge_changed_fraction": {
+              "p50": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "p99.9": 0.0
+            },
+            "head_sample_to_readback_ms": {
+              "p50": 80.65651499782689,
+              "p95": 91.06828802032396,
+              "p99": 91.68362219934352,
+              "p99.9": 92.1884455147665
+            }
+          },
+          {
+            "file": "fixed-head-map-updates.mp4",
+            "residual_change": {
+              "p50": 0.0,
+              "p95": 0.0005697880405932341,
+              "p99": 0.20301129434257614,
+              "p99.9": 0.4097502341009714
+            },
+            "edge_changed_fraction": {
+              "p50": 0.0,
+              "p95": 0.001082899305555494,
+              "p99": 0.025982204861111087,
+              "p99.9": 0.029969314236111183
+            },
+            "head_sample_to_readback_ms": {
+              "p50": 79.99263002420776,
+              "p95": 111.28717800602317,
+              "p99": 112.11964279646054,
+              "p99.9": 112.43462857790291
+            }
+          },
+          {
+            "file": "both.mp4",
+            "residual_change": {
+              "p50": 0.001962327631190419,
+              "p95": 0.007656080857850599,
+              "p99": 0.1985708221420632,
+              "p99.9": 0.41136620387062817
+            },
+            "edge_changed_fraction": {
+              "p50": 0.00013671875,
+              "p95": 0.013892361111111085,
+              "p99": 0.027425911458333316,
+              "p99.9": 0.029898841145833376
+            },
+            "head_sample_to_readback_ms": {
+              "p50": 80.66576402052306,
+              "p95": 112.33537900261581,
+              "p99": 113.4919979958795,
+              "p99.9": 114.28976158204024
+            }
+          },
+          {
+            "file": "bookshelf-frozen-map-moving-head.mp4",
+            "residual_change": {
+              "p50": 0.007446737494319677,
+              "p95": 0.009629172272980213,
+              "p99": 0.009692486375570297,
+              "p99.9": 0.009692486375570297
+            },
+            "edge_changed_fraction": {
+              "p50": 0.008322482638888889,
+              "p95": 0.0111328125,
+              "p99": 0.011197916666666667,
+              "p99.9": 0.011197916666666667
+            },
+            "head_sample_to_readback_ms": {
+              "p50": 104.05279300175607,
+              "p95": 116.06321900035255,
+              "p99": 117.28839980205521,
+              "p99.9": 117.67563488043379
+            }
+          },
+          {
+            "file": "bookshelf-fixed-head-map-updates.mp4",
+            "residual_change": {
+              "p50": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "p99.9": 0.0
+            },
+            "edge_changed_fraction": {
+              "p50": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "p99.9": 0.0
+            },
+            "head_sample_to_readback_ms": {
+              "p50": 99.39938900060952,
+              "p95": 115.5622589867562,
+              "p99": 121.31317639141344,
+              "p99.9": 122.73277484462598
+            }
+          },
+          {
+            "file": "bookshelf-both.mp4",
+            "residual_change": {
+              "p50": 0.007446737494319677,
+              "p95": 0.009629172272980213,
+              "p99": 0.009692486375570297,
+              "p99.9": 0.009692486375570297
+            },
+            "edge_changed_fraction": {
+              "p50": 0.008322482638888889,
+              "p95": 0.0111328125,
+              "p99": 0.011197916666666667,
+              "p99.9": 0.011197916666666667
+            },
+            "head_sample_to_readback_ms": {
+              "p50": 100.40451399981976,
+              "p95": 119.28502199589275,
+              "p99": 123.02029480342753,
+              "p99.9": 123.15239607531112
+            }
+          }
+        ],
+        "timing_scope": "offline GL draw completion, excludes readback; not scanout",
+        "freshness": {
+          "exposure_to_first_visible": null,
+          "exposure_to_stable_sharp": null,
+          "head_motion_to_display": null,
+          "reason": "legacy exposure unknown; no compositor/photodiode timestamps"
+        },
+        "gl_renderer": "llvmpipe (LLVM 21.1.8, 256 bits)",
+        "sweep180_poses": {
+          "available_pose": {
+            "rotation_deg": {
+              "p50": 1.49267269450751,
+              "p95": 20.281030275619912,
+              "p99": 30.155419464627748,
+              "p99.9": 35.73416708966557
+            },
+            "translation_m": {
+              "p50": 0.003429986394383134,
+              "p95": 0.02180063696636563,
+              "p99": 0.03041951100203041,
+              "p99.9": 0.03673479669500912
+            },
+            "frames": 878,
+            "unavailable": 12
+          },
+          "retrospective_pose": {
+            "rotation_deg": {
+              "p50": 0.10350103572849878,
+              "p95": 1.6747773260678802,
+              "p99": 2.873440494552213,
+              "p99.9": 3.675999574459057
+            },
+            "translation_m": {
+              "p50": 0.0016527818676789947,
+              "p95": 0.004650780149756109,
+              "p99": 0.005383199154196949,
+              "p99.9": 0.006182224960465524
+            },
+            "frames": 889,
+            "unavailable": 1
+          }
+        },
+        "sweep180_draw": {
+          "ms": {
+            "p50": 93.64671898947563,
+            "p95": 111.79263048688881,
+            "p99": 119.48016730020753,
+            "p99.9": 123.09825965348881
+          },
+          "missed_fraction": 1.0,
+          "longest_miss_run": 386,
+          "samples": 386,
+          "deadline_ms": 11.11111111111111
+        },
+        "sweep180_upload_ms": {
+          "p50": 4.926007997710258,
+          "p95": 8.395798489800654,
+          "p99": 9.730259716161525,
+          "p99.9": 9.995823892240882
+        },
+        "tour_poses": {
+          "available_pose": {
+            "rotation_deg": {
+              "p50": 6.381213318294991,
+              "p95": 28.691059612222666,
+              "p99": 43.66632553409777,
+              "p99.9": 51.06519978888559
+            },
+            "translation_m": {
+              "p50": 0.013848936929012953,
+              "p95": 0.09290488806153133,
+              "p99": 0.16081457945534694,
+              "p99.9": 0.213384136091284
+            },
+            "frames": 3010,
+            "unavailable": 12
+          },
+          "retrospective_pose": {
+            "rotation_deg": {
+              "p50": 0.4446695483787114,
+              "p95": 2.0477488442700142,
+              "p99": 3.081472367328384,
+              "p99.9": 4.467788492045271
+            },
+            "translation_m": {
+              "p50": 0.008477109106882293,
+              "p95": 0.03163440500505876,
+              "p99": 0.03638982645511586,
+              "p99.9": 0.03963982160208473
+            },
+            "frames": 3019,
+            "unavailable": 3
+          }
+        },
+        "tour_draw": {
+          "ms": {
+            "p50": 87.92366599664092,
+            "p95": 195.81249898765236,
+            "p99": 200.48889100085944,
+            "p99.9": 201.54107920383103
+          },
+          "missed_fraction": 1.0,
+          "longest_miss_run": 15,
+          "samples": 15,
+          "deadline_ms": 11.11111111111111
+        },
+        "tour_upload_ms": {
+          "p50": 18.725934001849964,
+          "p95": 34.992447582772,
+          "p99": 36.43835990107618,
+          "p99.9": 36.76369017269463
+        }
+      },
+      "display": {
+        "scope": "isolated offscreen stereo GL completion; no inference or compositor",
+        "sweep180": {
+          "renderer": "NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2",
+          "frames": 1000,
+          "ipd_m": 0.064,
+          "occupied": 178182,
+          "sort_capacity": 262144,
+          "uploaded_bytes": 11403648,
+          "upload_ms": [
+            9.708099998533726
+          ],
+          "stereo_ms": {
+            "p50": 3.3835999929578975,
+            "p95": 3.6041000232216898,
+            "p99": 3.7947249933495186,
+            "p99.9": 4.90630168968346
+          },
+          "missed_fraction": 0.0,
+          "longest_miss_run": 0,
+          "deadline_ms": 11.11111111111111
+        },
+        "tour": {
+          "renderer": "NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2",
+          "frames": 1000,
+          "ipd_m": 0.064,
+          "occupied": 477967,
+          "sort_capacity": 524288,
+          "uploaded_bytes": 30589888,
+          "upload_ms": [
+            46.082899993052706
+          ],
+          "stereo_ms": {
+            "p50": 3.673350001918152,
+            "p95": 3.9914450084324926,
+            "p99": 4.129530011559837,
+            "p99.9": 5.1797884035914
+          },
+          "missed_fraction": 0.0,
+          "longest_miss_run": 0,
+          "deadline_ms": 11.11111111111111
+        }
+      }
+    },
+    {
+      "metrics": {
+        "ipd_m": 0.064,
+        "ipd_status": "configured, not measured from a headset",
+        "baseline": "316a556",
+        "moments": [
+          {
+            "run": "sweep180",
+            "frame": 215,
+            "view": "camera",
+            "prefix_frame": 211,
+            "psnr_db": 20.00122095387642,
+            "ssim": 0.7895245552062988,
+            "lpips": 0.46462082862854004,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9999869791666667,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 1.3020833333333334e-05,
+            "never_seen_covered_fraction": 1.3020833333333334e-05,
+            "edge_distance_px": {
+              "p50": 6.4031242374328485,
+              "p95": 288.02465162667613,
+              "p99": 339.3799758682854,
+              "p99.9": 355.1034621890066
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.1402895152568817,
+              "p95": 0.3953929543495178,
+              "p99": 1.0416655540466309,
+              "p99.9": 1.7932807207107544
+            },
+            "foreground_edge_distance_px": {
+              "p50": 34.0,
+              "p95": 52.48237744161149,
+              "p99": 70.88129229417572,
+              "p99.9": 79.39279305226364
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 215,
+            "view": "left",
+            "prefix_frame": 211,
+            "psnr_db": 20.3883915598279,
+            "ssim": 0.7845444083213806,
+            "lpips": 0.47492077946662903,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9970355902777778,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.002964409722222222,
+            "never_seen_covered_fraction": 0.002964409722222222,
+            "edge_distance_px": {
+              "p50": 6.0,
+              "p95": 293.10023857212303,
+              "p99": 344.41980198589044,
+              "p99.9": 356.86251726149476
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.14241266250610352,
+              "p95": 1.2824246883392334,
+              "p99": 1.533889651298523,
+              "p99.9": 1.5338900089263916
+            },
+            "foreground_edge_distance_px": {
+              "p50": 34.0,
+              "p95": 52.0,
+              "p99": 62.93647591023825,
+              "p99.9": 71.42128534267638
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 215,
+            "view": "right",
+            "prefix_frame": 211,
+            "psnr_db": 19.79286892068042,
+            "ssim": 0.7917636036872864,
+            "lpips": 0.48570483922958374,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9982118055555556,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.0017881944444444445,
+            "never_seen_covered_fraction": 0.0017881944444444445,
+            "edge_distance_px": {
+              "p50": 7.0710678118654755,
+              "p95": 217.15846671060459,
+              "p99": 319.0,
+              "p99.9": 344.2542205653433
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.14247596263885498,
+              "p95": 2.337003707885742,
+              "p99": 5.934081077575684,
+              "p99.9": 5.935123920440674
+            },
+            "foreground_edge_distance_px": {
+              "p50": 34.92849839314596,
+              "p95": 63.51810485439309,
+              "p99": 81.5222633835585,
+              "p99.9": 88.74652743268189
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 215,
+            "view": "head-minus3cm",
+            "prefix_frame": 211,
+            "psnr_db": 20.374999717692578,
+            "ssim": 0.7852441668510437,
+            "lpips": 0.47276830673217773,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9974435763888889,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.0025564236111111113,
+            "never_seen_covered_fraction": 0.0025564236111111113,
+            "edge_distance_px": {
+              "p50": 5.830951894845301,
+              "p95": 293.24563082849164,
+              "p99": 344.3448845470652,
+              "p99.9": 356.85520532527715
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.1422068476676941,
+              "p95": 1.1706950664520264,
+              "p99": 1.533889651298523,
+              "p99.9": 1.5338900089263916
+            },
+            "foreground_edge_distance_px": {
+              "p50": 34.0,
+              "p95": 52.0,
+              "p99": 63.635680722573476,
+              "p99.9": 72.12489168102785
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 215,
+            "view": "head-plus3cm",
+            "prefix_frame": 211,
+            "psnr_db": 19.81952279745089,
+            "ssim": 0.7916414141654968,
+            "lpips": 0.48330748081207275,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9986501736111111,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.001349826388888889,
+            "never_seen_covered_fraction": 0.001349826388888889,
+            "edge_distance_px": {
+              "p50": 7.0,
+              "p95": 217.11056914915207,
+              "p99": 319.00485888988726,
+              "p99.9": 344.3700000000008
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.14227932691574097,
+              "p95": 1.5297492742538452,
+              "p99": 5.934080600738525,
+              "p99.9": 5.934082508087158
+            },
+            "foreground_edge_distance_px": {
+              "p50": 34.785054261852174,
+              "p95": 62.15785342495611,
+              "p99": 80.71530190545292,
+              "p99.9": 87.91420417630817
+            },
+            "stereo": {
+              "disparity_error_px": {
+                "p50": 3.939239025115967,
+                "p95": 10.37529559135437,
+                "p99": 12.842304744720453,
+                "p99.9": 14.167694005012514
+              },
+              "matched_fraction": 0.5876302083333333,
+              "method": "SGBM 5px, 128 disparities"
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 453,
+            "view": "camera",
+            "prefix_frame": 451,
+            "psnr_db": 17.25358656385002,
+            "ssim": 0.717378556728363,
+            "lpips": 0.5353571176528931,
+            "coverage": 0.9645442708333334,
+            "common_visible_fraction": 0.9776475694444444,
+            "previously_seen_holes": 0.01613762486126526,
+            "never_seen_fraction": 0.022352430555555556,
+            "never_seen_covered_fraction": 0.002673611111111111,
+            "edge_distance_px": {
+              "p50": 7.0710678118654755,
+              "p95": 222.68861653001002,
+              "p99": 252.0039483662241,
+              "p99.9": 264.93486692254135
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.8689222931861877,
+              "p95": 10.02124309539795,
+              "p99": 10.097955703735352,
+              "p99.9": 10.258567810058594
+            },
+            "foreground_edge_distance_px": {
+              "p50": 34.0,
+              "p95": 52.392747589718944,
+              "p99": 58.00344801963708,
+              "p99.9": 60.696277541309456
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 453,
+            "view": "left",
+            "prefix_frame": 451,
+            "psnr_db": 16.79088494347184,
+            "ssim": 0.6994511485099792,
+            "lpips": 0.5391823053359985,
+            "coverage": 0.9621918402777778,
+            "common_visible_fraction": 0.9732291666666667,
+            "previously_seen_holes": 0.01722323308002426,
+            "never_seen_fraction": 0.026770833333333334,
+            "never_seen_covered_fraction": 0.005724826388888889,
+            "edge_distance_px": {
+              "p50": 8.0,
+              "p95": 222.4610454340636,
+              "p99": 253.13786707443757,
+              "p99.9": 264.92915915048684
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.8691379427909851,
+              "p95": 10.070773124694824,
+              "p99": 10.128546714782715,
+              "p99.9": 10.26059627532959
+            },
+            "foreground_edge_distance_px": {
+              "p50": 34.0,
+              "p95": 53.0,
+              "p99": 58.52349955359813,
+              "p99.9": 61.78683747386659
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 453,
+            "view": "right",
+            "prefix_frame": 451,
+            "psnr_db": 17.48443123999707,
+            "ssim": 0.7197814583778381,
+            "lpips": 0.5296395421028137,
+            "coverage": 0.9669227430555556,
+            "common_visible_fraction": 0.9778385416666666,
+            "previously_seen_holes": 0.015162410006480422,
+            "never_seen_fraction": 0.02216145833333333,
+            "never_seen_covered_fraction": 0.003910590277777778,
+            "edge_distance_px": {
+              "p50": 7.0,
+              "p95": 215.56216903784505,
+              "p99": 254.98717509860575,
+              "p99.9": 267.2436419563208
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.8684930801391602,
+              "p95": 9.875255584716797,
+              "p99": 10.074419975280762,
+              "p99.9": 10.257819175720215
+            },
+            "foreground_edge_distance_px": {
+              "p50": 34.0,
+              "p95": 52.08646657242167,
+              "p99": 58.0,
+              "p99.9": 60.742867606488325
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 453,
+            "view": "head-minus3cm",
+            "prefix_frame": 451,
+            "psnr_db": 16.828593642688688,
+            "ssim": 0.701007068157196,
+            "lpips": 0.5385228991508484,
+            "coverage": 0.9623524305555555,
+            "common_visible_fraction": 0.9736067708333334,
+            "previously_seen_holes": 0.01712293653234902,
+            "never_seen_fraction": 0.026393229166666667,
+            "never_seen_covered_fraction": 0.005416666666666667,
+            "edge_distance_px": {
+              "p50": 7.810249675906654,
+              "p95": 221.0027148765418,
+              "p99": 252.0972034751675,
+              "p99.9": 263.62549456776793
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.8691330552101135,
+              "p95": 10.070773124694824,
+              "p99": 10.126351356506348,
+              "p99.9": 10.26039981842041
+            },
+            "foreground_edge_distance_px": {
+              "p50": 33.83784863137726,
+              "p95": 52.773099207835045,
+              "p99": 58.04429280513666,
+              "p99.9": 61.00819617067857
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 453,
+            "view": "head-plus3cm",
+            "prefix_frame": 451,
+            "psnr_db": 17.476845585911335,
+            "ssim": 0.7198522686958313,
+            "lpips": 0.5330722332000732,
+            "coverage": 0.9667881944444444,
+            "common_visible_fraction": 0.9780208333333333,
+            "previously_seen_holes": 0.0152927184293677,
+            "never_seen_fraction": 0.021979166666666668,
+            "never_seen_covered_fraction": 0.0037239583333333335,
+            "edge_distance_px": {
+              "p50": 7.0,
+              "p95": 213.3815821369266,
+              "p99": 254.14023606231189,
+              "p99.9": 267.2031472513202
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.868524968624115,
+              "p95": 9.877023696899414,
+              "p99": 10.076322555541992,
+              "p99.9": 10.257932662963867
+            },
+            "foreground_edge_distance_px": {
+              "p50": 34.0,
+              "p95": 52.20153254455275,
+              "p99": 58.008620049092706,
+              "p99.9": 61.12534537144178
+            },
+            "stereo": {
+              "disparity_error_px": {
+                "p50": 4.841385841369629,
+                "p95": 7.212716579437256,
+                "p99": 7.5192568969726565,
+                "p99.9": 8.338312484741214
+              },
+              "matched_fraction": 0.6041449652777777,
+              "method": "SGBM 5px, 128 disparities"
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 526,
+            "view": "camera",
+            "prefix_frame": 523,
+            "psnr_db": 17.009516499318504,
+            "ssim": 0.7767629623413086,
+            "lpips": 0.5451172590255737,
+            "coverage": 0.9245269097222222,
+            "common_visible_fraction": 0.9073871527777778,
+            "previously_seen_holes": 0.00017219772125015546,
+            "never_seen_fraction": 0.09261284722222222,
+            "never_seen_covered_fraction": 0.017296006944444445,
+            "edge_distance_px": {
+              "p50": 11.045361017187261,
+              "p95": 87.61045586184076,
+              "p99": 155.54420593516173,
+              "p99.9": 158.2665219708084
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.10199443995952606,
+              "p95": 0.10199445486068726,
+              "p99": 0.10199446231126785,
+              "p99.9": 0.10199447721242905
+            },
+            "foreground_edge_distance_px": {
+              "p50": 4.123105625617661,
+              "p95": 18.601075237738275,
+              "p99": 22.360679774997898,
+              "p99.9": 25.96326689280469
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 526,
+            "view": "left",
+            "prefix_frame": 523,
+            "psnr_db": 20.272445952335417,
+            "ssim": 0.817988395690918,
+            "lpips": 0.5353942513465881,
+            "coverage": 0.9763628472222222,
+            "common_visible_fraction": 0.9496614583333334,
+            "previously_seen_holes": 0.0001736730011608669,
+            "never_seen_fraction": 0.05033854166666667,
+            "never_seen_covered_fraction": 0.026866319444444446,
+            "edge_distance_px": {
+              "p50": 11.045361017187261,
+              "p95": 109.0,
+              "p99": 157.91770008456936,
+              "p99.9": 160.7648593854444
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.10199443995952606,
+              "p95": 0.10199445486068726,
+              "p99": 0.10199446231126785,
+              "p99.9": 0.10199447721242905
+            },
+            "foreground_edge_distance_px": {
+              "p50": 4.47213595499958,
+              "p95": 17.46424919657298,
+              "p99": 24.0,
+              "p99.9": 29.0
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 526,
+            "view": "right",
+            "prefix_frame": 523,
+            "psnr_db": 15.119010806901462,
+            "ssim": 0.7361893653869629,
+            "lpips": 0.5573793053627014,
+            "coverage": 0.8712977430555555,
+            "common_visible_fraction": 0.8635763888888889,
+            "previously_seen_holes": 0.001010212697519199,
+            "never_seen_fraction": 0.13642361111111112,
+            "never_seen_covered_fraction": 0.00859375,
+            "edge_distance_px": {
+              "p50": 13.152946437965905,
+              "p95": 64.52906135811781,
+              "p99": 153.1328821152189,
+              "p99.9": 156.99319265443106
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.10199443995952606,
+              "p95": 0.10199445486068726,
+              "p99": 0.10199446231126785,
+              "p99.9": 0.10199447721242905
+            },
+            "foreground_edge_distance_px": {
+              "p50": 6.324555320336759,
+              "p95": 26.019223662515376,
+              "p99": 36.217394624881436,
+              "p99.9": 39.239887682679175
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 526,
+            "view": "head-minus3cm",
+            "prefix_frame": 523,
+            "psnr_db": 20.014770480742605,
+            "ssim": 0.8161322474479675,
+            "lpips": 0.5339933037757874,
+            "coverage": 0.9737196180555555,
+            "common_visible_fraction": 0.9468880208333333,
+            "previously_seen_holes": 0.00017418168983741514,
+            "never_seen_fraction": 0.05311197916666666,
+            "never_seen_covered_fraction": 0.02699652777777778,
+            "edge_distance_px": {
+              "p50": 11.180339887498949,
+              "p95": 109.0,
+              "p99": 157.84929209931613,
+              "p99.9": 160.65112808645688
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.10199443995952606,
+              "p95": 0.10199445486068726,
+              "p99": 0.10199446231126785,
+              "p99.9": 0.10199447721242905
+            },
+            "foreground_edge_distance_px": {
+              "p50": 4.47213595499958,
+              "p95": 17.46424919657298,
+              "p99": 23.46563392043297,
+              "p99.9": 28.80712224546672
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 526,
+            "view": "head-plus3cm",
+            "prefix_frame": 523,
+            "psnr_db": 15.216366581667081,
+            "ssim": 0.7391594052314758,
+            "lpips": 0.5540392994880676,
+            "coverage": 0.8746788194444445,
+            "common_visible_fraction": 0.8659331597222222,
+            "previously_seen_holes": 0.0007568504994712071,
+            "never_seen_fraction": 0.13406684027777777,
+            "never_seen_covered_fraction": 0.009401041666666667,
+            "edge_distance_px": {
+              "p50": 13.0,
+              "p95": 65.92398707594104,
+              "p99": 153.21344514611263,
+              "p99.9": 156.9888211427739
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.10199443995952606,
+              "p95": 0.10199445486068726,
+              "p99": 0.10199446231126785,
+              "p99.9": 0.10199447721242905
+            },
+            "foreground_edge_distance_px": {
+              "p50": 6.082762530298219,
+              "p95": 25.2536995165227,
+              "p99": 35.21930703999522,
+              "p99.9": 38.29020037001665
+            },
+            "stereo": {
+              "disparity_error_px": {
+                "p50": 9.212444305419922,
+                "p95": 20.13277130126953,
+                "p99": 22.85475673675537,
+                "p99.9": 24.721363906860354
+              },
+              "matched_fraction": 0.5943532986111111,
+              "method": "SGBM 5px, 128 disparities"
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 693,
+            "view": "camera",
+            "prefix_frame": 691,
+            "psnr_db": 14.798570308338558,
+            "ssim": 0.7028281092643738,
+            "lpips": 0.5578105449676514,
+            "coverage": 0.8909418402777778,
+            "common_visible_fraction": 0.8875911458333333,
+            "previously_seen_holes": 0.00010757893604432252,
+            "never_seen_fraction": 0.11240885416666667,
+            "never_seen_covered_fraction": 0.0034461805555555556,
+            "edge_distance_px": {
+              "p50": 11.0,
+              "p95": 128.58381938291188,
+              "p99": 171.8144347599194,
+              "p99.9": 184.0
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.6649733185768127,
+              "p95": 10.262027740478516,
+              "p99": 10.556689262390137,
+              "p99.9": 10.855992317199707
+            },
+            "foreground_edge_distance_px": {
+              "p50": 39.20459156782532,
+              "p95": 56.88585061331157,
+              "p99": 58.54912467321779,
+              "p99.9": 59.30430001273095
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 693,
+            "view": "left",
+            "prefix_frame": 691,
+            "psnr_db": 14.561562951587808,
+            "ssim": 0.6932160258293152,
+            "lpips": 0.5600937604904175,
+            "coverage": 0.8899479166666666,
+            "common_visible_fraction": 0.8858333333333334,
+            "previously_seen_holes": 9.799310128566949e-05,
+            "never_seen_fraction": 0.11416666666666667,
+            "never_seen_covered_fraction": 0.004201388888888889,
+            "edge_distance_px": {
+              "p50": 12.165525060596439,
+              "p95": 152.137600704858,
+              "p99": 168.07644093717312,
+              "p99.9": 176.63550265302308
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.6633442640304565,
+              "p95": 10.03510856628418,
+              "p99": 10.559516906738281,
+              "p99.9": 10.857216835021973
+            },
+            "foreground_edge_distance_px": {
+              "p50": 39.81205847478876,
+              "p95": 56.71860364994893,
+              "p99": 58.42088667591412,
+              "p99.9": 63.68511901608266
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 693,
+            "view": "right",
+            "prefix_frame": 691,
+            "psnr_db": 14.966130622590871,
+            "ssim": 0.7146005630493164,
+            "lpips": 0.5517822504043579,
+            "coverage": 0.8902387152777778,
+            "common_visible_fraction": 0.8850520833333333,
+            "previously_seen_holes": 0.00011279154161517488,
+            "never_seen_fraction": 0.11494791666666666,
+            "never_seen_covered_fraction": 0.005286458333333333,
+            "edge_distance_px": {
+              "p50": 11.0,
+              "p95": 158.15498727514097,
+              "p99": 175.0472506574493,
+              "p99.9": 181.8894144459739
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.8586289286613464,
+              "p95": 10.661783218383789,
+              "p99": 12.866023063659668,
+              "p99.9": 18.30122184753418
+            },
+            "foreground_edge_distance_px": {
+              "p50": 39.0,
+              "p95": 57.0,
+              "p99": 58.85660480059783,
+              "p99.9": 59.30430001273095
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 693,
+            "view": "head-minus3cm",
+            "prefix_frame": 691,
+            "psnr_db": 14.57687607925731,
+            "ssim": 0.6938917636871338,
+            "lpips": 0.5588608980178833,
+            "coverage": 0.8899565972222222,
+            "common_visible_fraction": 0.8860980902777778,
+            "previously_seen_holes": 9.796382196054997e-05,
+            "never_seen_fraction": 0.11390190972222222,
+            "never_seen_covered_fraction": 0.0039453125,
+            "edge_distance_px": {
+              "p50": 12.0,
+              "p95": 118.77645727333413,
+              "p99": 163.6807543878949,
+              "p99.9": 171.74659236535814
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.6633418798446655,
+              "p95": 10.051448822021484,
+              "p99": 10.55767822265625,
+              "p99.9": 10.857264518737793
+            },
+            "foreground_edge_distance_px": {
+              "p50": 39.81205847478876,
+              "p95": 56.753854494650845,
+              "p99": 58.42088667591412,
+              "p99.9": 62.77451603654563
+            }
+          },
+          {
+            "run": "sweep180",
+            "frame": 693,
+            "view": "head-plus3cm",
+            "prefix_frame": 691,
+            "psnr_db": 14.958840407217417,
+            "ssim": 0.7138622403144836,
+            "lpips": 0.5545087456703186,
+            "coverage": 0.8903298611111111,
+            "common_visible_fraction": 0.8852213541666667,
+            "previously_seen_holes": 0.00010296388909318232,
+            "never_seen_fraction": 0.11477864583333333,
+            "never_seen_covered_fraction": 0.005199652777777778,
+            "edge_distance_px": {
+              "p50": 11.045361017187261,
+              "p95": 157.91136716424933,
+              "p99": 175.10282693320517,
+              "p99.9": 181.32760833636397
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.85101318359375,
+              "p95": 10.591870307922363,
+              "p99": 12.866020202636719,
+              "p99.9": 16.217287063598633
+            },
+            "foreground_edge_distance_px": {
+              "p50": 39.006409203131156,
+              "p95": 57.0,
+              "p99": 58.855755878248644,
+              "p99.9": 59.30430001273095
+            },
+            "stereo": {
+              "disparity_error_px": {
+                "p50": 6.324700355529785,
+                "p95": 10.880235290527343,
+                "p99": 16.835890197753884,
+                "p99.9": 18.637431640625014
+              },
+              "matched_fraction": 0.5925911458333334,
+              "method": "SGBM 5px, 128 disparities"
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 363,
+            "view": "camera",
+            "prefix_frame": 355,
+            "psnr_db": 20.83461001232115,
+            "ssim": 0.8042192459106445,
+            "lpips": 0.43637746572494507,
+            "coverage": 1.0,
+            "common_visible_fraction": 1.0,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.0,
+            "never_seen_covered_fraction": 0.0,
+            "edge_distance_px": {
+              "p50": 12.36931687685298,
+              "p95": 187.4038413533173,
+              "p99": 207.93940976791447,
+              "p99.9": 220.68624592308052
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.2822278141975403,
+              "p95": 0.8076186776161194,
+              "p99": 1.2252938747406006,
+              "p99.9": 2.1157326698303223
+            },
+            "foreground_edge_distance_px": {
+              "p50": 28.0,
+              "p95": 49.64876634922564,
+              "p99": 54.0,
+              "p99.9": 58.52698329972392
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 363,
+            "view": "left",
+            "prefix_frame": 355,
+            "psnr_db": 19.271929698086183,
+            "ssim": 0.7876062989234924,
+            "lpips": 0.4435109496116638,
+            "coverage": 0.9853602430555556,
+            "common_visible_fraction": 0.9797048611111111,
+            "previously_seen_holes": 8.86037816093991e-06,
+            "never_seen_fraction": 0.02029513888888889,
+            "never_seen_covered_fraction": 0.0056640625,
+            "edge_distance_px": {
+              "p50": 13.45362404707371,
+              "p95": 178.13758727455584,
+              "p99": 187.3846311734236,
+              "p99.9": 192.00520826269278
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.2862304449081421,
+              "p95": 2.4274368286132812,
+              "p99": 2.8710806369781494,
+              "p99.9": 2.8710811138153076
+            },
+            "foreground_edge_distance_px": {
+              "p50": 28.071337695236398,
+              "p95": 50.99019513592785,
+              "p99": 55.94640292279746,
+              "p99.9": 60.83669899484573
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 363,
+            "view": "right",
+            "prefix_frame": 355,
+            "psnr_db": 17.070333426346792,
+            "ssim": 0.7525625228881836,
+            "lpips": 0.4870910048484802,
+            "coverage": 0.9412673611111111,
+            "common_visible_fraction": 0.9238454861111111,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.07615451388888889,
+            "never_seen_covered_fraction": 0.017421875,
+            "edge_distance_px": {
+              "p50": 11.852349955359813,
+              "p95": 163.0,
+              "p99": 188.8321581331342,
+              "p99.9": 205.4910146836804
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.2807971239089966,
+              "p95": 0.7903589606285095,
+              "p99": 0.8704609870910645,
+              "p99.9": 2.3925840854644775
+            },
+            "foreground_edge_distance_px": {
+              "p50": 25.495097567963924,
+              "p95": 50.35871324805669,
+              "p99": 55.57877292636101,
+              "p99.9": 60.184064789120455
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 363,
+            "view": "head-minus3cm",
+            "prefix_frame": 355,
+            "psnr_db": 19.387431918323024,
+            "ssim": 0.7889246940612793,
+            "lpips": 0.4445257782936096,
+            "coverage": 0.9864800347222222,
+            "common_visible_fraction": 0.9812022569444444,
+            "previously_seen_holes": 8.846856490717436e-06,
+            "never_seen_fraction": 0.018797743055555555,
+            "never_seen_covered_fraction": 0.005286458333333333,
+            "edge_distance_px": {
+              "p50": 13.152946437965905,
+              "p95": 178.54873279232746,
+              "p99": 187.74036565554613,
+              "p99.9": 193.21131127506067
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.285841703414917,
+              "p95": 2.2711894512176514,
+              "p99": 2.8710806369781494,
+              "p99.9": 2.8710811138153076
+            },
+            "foreground_edge_distance_px": {
+              "p50": 28.071337695236398,
+              "p95": 50.35871324805669,
+              "p99": 55.21892783030097,
+              "p99.9": 60.21012910644254
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 363,
+            "view": "head-plus3cm",
+            "prefix_frame": 355,
+            "psnr_db": 17.27873112307985,
+            "ssim": 0.7566724419593811,
+            "lpips": 0.4838836193084717,
+            "coverage": 0.9460633680555556,
+            "common_visible_fraction": 0.9285850694444444,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.07141493055555556,
+            "never_seen_covered_fraction": 0.01747829861111111,
+            "edge_distance_px": {
+              "p50": 11.661903789690601,
+              "p95": 163.0,
+              "p99": 188.54826837724522,
+              "p99.9": 205.74469893968282
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.2807976007461548,
+              "p95": 0.7892269492149353,
+              "p99": 0.8703644275665283,
+              "p99.9": 2.3963401317596436
+            },
+            "foreground_edge_distance_px": {
+              "p50": 25.709920264364882,
+              "p95": 50.48762224545735,
+              "p99": 55.90169943749474,
+              "p99.9": 60.42539898339358
+            },
+            "stereo": {
+              "disparity_error_px": {
+                "p50": 2.6719970703125,
+                "p95": 12.715054988861079,
+                "p99": 15.668300552368157,
+                "p99.9": 41.522665733337455
+              },
+              "matched_fraction": 0.5548697916666666,
+              "method": "SGBM 5px, 128 disparities"
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 1501,
+            "view": "camera",
+            "prefix_frame": 1495,
+            "psnr_db": 22.334602385019416,
+            "ssim": 0.7785491347312927,
+            "lpips": 0.4788762629032135,
+            "coverage": 1.0,
+            "common_visible_fraction": 1.0,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.0,
+            "never_seen_covered_fraction": 0.0,
+            "edge_distance_px": {
+              "p50": 4.0,
+              "p95": 236.6854452643846,
+              "p99": 263.9511288245208,
+              "p99.9": 276.0361569333204
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.6115071773529053,
+              "p95": 2.7154929637908936,
+              "p99": 3.5467002391815186,
+              "p99.9": 3.5994181632995605
+            },
+            "foreground_edge_distance_px": {
+              "p50": 31.016124838541646,
+              "p95": 49.25444142409901,
+              "p99": 52.0,
+              "p99.9": 53.0
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 1501,
+            "view": "left",
+            "prefix_frame": 1495,
+            "psnr_db": 21.68632675507791,
+            "ssim": 0.7617109417915344,
+            "lpips": 0.4842107594013214,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9999305555555555,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 6.944444444444444e-05,
+            "never_seen_covered_fraction": 6.944444444444444e-05,
+            "edge_distance_px": {
+              "p50": 5.0,
+              "p95": 231.85997857308604,
+              "p99": 263.43641228850055,
+              "p99.9": 276.0
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.6103097200393677,
+              "p95": 0.8785287737846375,
+              "p99": 3.152026891708374,
+              "p99.9": 3.4453601837158203
+            },
+            "foreground_edge_distance_px": {
+              "p50": 31.0,
+              "p95": 49.09175083453431,
+              "p99": 52.0,
+              "p99.9": 53.0
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 1501,
+            "view": "right",
+            "prefix_frame": 1495,
+            "psnr_db": 22.797883173387774,
+            "ssim": 0.7952302098274231,
+            "lpips": 0.47644031047821045,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9999869791666667,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 1.3020833333333334e-05,
+            "never_seen_covered_fraction": 1.3020833333333334e-05,
+            "edge_distance_px": {
+              "p50": 3.605551275463989,
+              "p95": 242.0123963238037,
+              "p99": 266.03007348794233,
+              "p99.9": 276.4734046924348
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.6130094528198242,
+              "p95": 3.5263102054595947,
+              "p99": 3.5994184017181396,
+              "p99.9": 3.599419593811035
+            },
+            "foreground_edge_distance_px": {
+              "p50": 31.400636936215164,
+              "p95": 49.64876634922564,
+              "p99": 52.009614495783374,
+              "p99.9": 53.150729063673246
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 1501,
+            "view": "head-minus3cm",
+            "prefix_frame": 1495,
+            "psnr_db": 21.743165137107688,
+            "ssim": 0.7630144953727722,
+            "lpips": 0.4826851785182953,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9999088541666666,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 9.114583333333334e-05,
+            "never_seen_covered_fraction": 9.114583333333334e-05,
+            "edge_distance_px": {
+              "p50": 5.0,
+              "p95": 230.07705225174794,
+              "p99": 261.207177572891,
+              "p99.9": 275.0901397217718
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.6103723049163818,
+              "p95": 0.8900679349899292,
+              "p99": 3.1845946311950684,
+              "p99.9": 3.4582085609436035
+            },
+            "foreground_edge_distance_px": {
+              "p50": 31.0,
+              "p95": 49.09175083453431,
+              "p99": 52.0,
+              "p99.9": 53.006282459781005
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 1501,
+            "view": "head-plus3cm",
+            "prefix_frame": 1495,
+            "psnr_db": 22.79580610953458,
+            "ssim": 0.7942942976951599,
+            "lpips": 0.47641652822494507,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9999739583333334,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 2.604166666666667e-05,
+            "never_seen_covered_fraction": 2.604166666666667e-05,
+            "edge_distance_px": {
+              "p50": 3.605551275463989,
+              "p95": 242.03305559365234,
+              "p99": 266.0166348133699,
+              "p99.9": 276.1222403716317
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.6128949522972107,
+              "p95": 3.4976000785827637,
+              "p99": 3.5994184017181396,
+              "p99.9": 3.599419116973877
+            },
+            "foreground_edge_distance_px": {
+              "p50": 31.25699921617557,
+              "p95": 49.33558553417604,
+              "p99": 52.0,
+              "p99.9": 53.02923563413144
+            },
+            "stereo": {
+              "disparity_error_px": {
+                "p50": 3.2506093978881836,
+                "p95": 4.133919906616211,
+                "p99": 4.85634204864502,
+                "p99.9": 5.161106025695814
+              },
+              "matched_fraction": 0.5999522569444444,
+              "method": "SGBM 5px, 128 disparities"
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 2284,
+            "view": "camera",
+            "prefix_frame": 2281,
+            "psnr_db": 15.515447713422805,
+            "ssim": 0.7895340919494629,
+            "lpips": 0.6027980446815491,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9954470486111111,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.0045529513888888885,
+            "never_seen_covered_fraction": 0.0045529513888888885,
+            "edge_distance_px": {
+              "p50": 20.12461179749811,
+              "p95": 181.4628054851214,
+              "p99": 198.9124681523798,
+              "p99.9": 208.45692590724178
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.7464161515235901,
+              "p95": 23.89687728881836,
+              "p99": 24.417787551879883,
+              "p99.9": 26.581390380859375
+            },
+            "foreground_edge_distance_px": {
+              "p50": 4.242640687119285,
+              "p95": 72.24956747275377,
+              "p99": 75.50496672405067,
+              "p99.9": 77.8838226073054
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 2284,
+            "view": "left",
+            "prefix_frame": 2281,
+            "psnr_db": 13.705844545178635,
+            "ssim": 0.7201206088066101,
+            "lpips": 0.674879252910614,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9986414930555556,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.0013585069444444445,
+            "never_seen_covered_fraction": 0.0013585069444444445,
+            "edge_distance_px": {
+              "p50": 24.73863375370596,
+              "p95": 183.1276875676464,
+              "p99": 202.78014833526814,
+              "p99.9": 210.7075194640142
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.7131386399269104,
+              "p95": 23.698013305664062,
+              "p99": 23.896881103515625,
+              "p99.9": 24.81951332092285
+            },
+            "foreground_edge_distance_px": {
+              "p50": 5.0,
+              "p95": 104.0,
+              "p99": 110.24513597879238,
+              "p99.9": 121.95839909739169
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 2284,
+            "view": "right",
+            "prefix_frame": 2281,
+            "psnr_db": 18.97810369447256,
+            "ssim": 0.8505110740661621,
+            "lpips": 0.509722888469696,
+            "coverage": 0.9999001736111112,
+            "common_visible_fraction": 0.9911935763888889,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.00880642361111111,
+            "never_seen_covered_fraction": 0.008706597222222221,
+            "edge_distance_px": {
+              "p50": 7.615773105863909,
+              "p95": 182.25526681902505,
+              "p99": 196.7669896114161,
+              "p99.9": 208.10708781978576
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.8191707134246826,
+              "p95": 23.896883010864258,
+              "p99": 24.529138565063477,
+              "p99.9": 26.41585922241211
+            },
+            "foreground_edge_distance_px": {
+              "p50": 4.123105625617661,
+              "p95": 22.0,
+              "p99": 32.38826948140329,
+              "p99.9": 38.901359974902526
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 2284,
+            "view": "head-minus3cm",
+            "prefix_frame": 2281,
+            "psnr_db": 13.767739055899938,
+            "ssim": 0.7227160930633545,
+            "lpips": 0.6725099086761475,
+            "coverage": 1.0,
+            "common_visible_fraction": 0.9984809027777778,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.0015190972222222222,
+            "never_seen_covered_fraction": 0.0015190972222222222,
+            "edge_distance_px": {
+              "p50": 24.13498120124012,
+              "p95": 183.02936804230552,
+              "p99": 201.20959610964363,
+              "p99.9": 210.11017024835112
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.7144034504890442,
+              "p95": 23.698213577270508,
+              "p99": 23.896881103515625,
+              "p99.9": 24.954936981201172
+            },
+            "foreground_edge_distance_px": {
+              "p50": 4.47213595499958,
+              "p95": 101.1236866416568,
+              "p99": 107.47556714932031,
+              "p99.9": 117.09331269465844
+            }
+          },
+          {
+            "run": "tour",
+            "frame": 2284,
+            "view": "head-plus3cm",
+            "prefix_frame": 2281,
+            "psnr_db": 18.73543028211229,
+            "ssim": 0.8467283248901367,
+            "lpips": 0.5165103673934937,
+            "coverage": 0.9999175347222222,
+            "common_visible_fraction": 0.9914626736111111,
+            "previously_seen_holes": 0.0,
+            "never_seen_fraction": 0.00853732638888889,
+            "never_seen_covered_fraction": 0.008454861111111111,
+            "edge_distance_px": {
+              "p50": 7.0710678118654755,
+              "p95": 182.43080212834388,
+              "p99": 196.85862431068117,
+              "p99.9": 208.70343657121757
+            },
+            "visible_observation_capture_age_s": {
+              "p50": 0.813105583190918,
+              "p95": 23.896881103515625,
+              "p99": 24.528337478637695,
+              "p99.9": 26.428585052490234
+            },
+            "foreground_edge_distance_px": {
+              "p50": 4.123105625617661,
+              "p95": 22.0,
+              "p99": 32.251815762958316,
+              "p99.9": 38.902541795649725
+            },
+            "stereo": {
+              "disparity_error_px": {
+                "p50": 55.9009313583374,
+                "p95": 100.68213424682617,
+                "p99": 102.36089946746826,
+                "p99.9": 103.6223497886658
+              },
+              "matched_fraction": 0.45203125,
+              "method": "SGBM 5px, 128 disparities"
+            }
+          }
+        ],
+        "clips": [
+          {
+            "file": "frozen-map-moving-head.mp4",
+            "residual_change": {
+              "p50": 0.001562451827339828,
+              "p95": 0.0020782724022865295,
+              "p99": 0.0020837702322751284,
+              "p99.9": 0.0020837702322751284
+            },
+            "edge_changed_fraction": {
+              "p50": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "p99.9": 0.0
+            },
+            "head_sample_to_readback_ms": {
+              "p50": 80.89215200743638,
+              "p95": 85.43915700283833,
+              "p99": 92.38572421018033,
+              "p99.9": 95.68795814062472
+            }
+          },
+          {
+            "file": "fixed-head-map-updates.mp4",
+            "residual_change": {
+              "p50": 0.0,
+              "p95": 0.0031124530942179067,
+              "p99": 0.20301129434257614,
+              "p99.9": 0.4097502341009714
+            },
+            "edge_changed_fraction": {
+              "p50": 0.0,
+              "p95": 0.007526909722222194,
+              "p99": 0.025982204861111087,
+              "p99.9": 0.029969314236111183
+            },
+            "head_sample_to_readback_ms": {
+              "p50": 79.21474101021886,
+              "p95": 109.27199898287654,
+              "p99": 110.5553302098997,
+              "p99.9": 111.09904972603545
+            }
+          },
+          {
+            "file": "both.mp4",
+            "residual_change": {
+              "p50": 0.001962327631190419,
+              "p95": 0.007573393336497239,
+              "p99": 0.1985708221420632,
+              "p99.9": 0.41136620387062817
+            },
+            "edge_changed_fraction": {
+              "p50": 0.00013671875,
+              "p95": 0.01364019097222221,
+              "p99": 0.027425911458333316,
+              "p99.9": 0.029898841145833376
+            },
+            "head_sample_to_readback_ms": {
+              "p50": 81.54286901117302,
+              "p95": 108.75225500785746,
+              "p99": 111.06565940426663,
+              "p99.9": 111.1615612427704
+            }
+          },
+          {
+            "file": "bookshelf-frozen-map-moving-head.mp4",
+            "residual_change": {
+              "p50": 0.007446737494319677,
+              "p95": 0.009629172272980213,
+              "p99": 0.009692486375570297,
+              "p99.9": 0.009692486375570297
+            },
+            "edge_changed_fraction": {
+              "p50": 0.008322482638888889,
+              "p95": 0.0111328125,
+              "p99": 0.011197916666666667,
+              "p99.9": 0.011197916666666667
+            },
+            "head_sample_to_readback_ms": {
+              "p50": 100.72835197206587,
+              "p95": 105.98085698438808,
+              "p99": 112.70275140414014,
+              "p99.9": 114.55131504219027
+            }
+          },
+          {
+            "file": "bookshelf-fixed-head-map-updates.mp4",
+            "residual_change": {
+              "p50": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "p99.9": 0.0
+            },
+            "edge_changed_fraction": {
+              "p50": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "p99.9": 0.0
+            },
+            "head_sample_to_readback_ms": {
+              "p50": 98.06852802284993,
+              "p95": 103.47184899728745,
+              "p99": 109.20192999765277,
+              "p99.9": 109.84578549687285
+            }
+          },
+          {
+            "file": "bookshelf-both.mp4",
+            "residual_change": {
+              "p50": 0.007446737494319677,
+              "p95": 0.009629172272980213,
+              "p99": 0.009692486375570297,
+              "p99.9": 0.009692486375570297
+            },
+            "edge_changed_fraction": {
+              "p50": 0.008322482638888889,
+              "p95": 0.0111328125,
+              "p99": 0.011197916666666667,
+              "p99.9": 0.011197916666666667
+            },
+            "head_sample_to_readback_ms": {
+              "p50": 98.17417699377984,
+              "p95": 111.03388399351388,
+              "p99": 113.00971319433302,
+              "p99.9": 114.88243481842802
+            }
+          }
+        ],
+        "timing_scope": "offline GL draw completion, excludes readback; not scanout",
+        "freshness": {
+          "exposure_to_first_visible": null,
+          "exposure_to_stable_sharp": null,
+          "head_motion_to_display": null,
+          "reason": "legacy exposure unknown; no compositor/photodiode timestamps"
+        },
+        "gl_renderer": "llvmpipe (LLVM 21.1.8, 256 bits)",
+        "sweep180_poses": {
+          "available_pose": {
+            "rotation_deg": {
+              "p50": 1.5787214138960848,
+              "p95": 20.323132511388824,
+              "p99": 30.161396318281692,
+              "p99.9": 35.736632678795935
+            },
+            "translation_m": {
+              "p50": 0.003485837918191836,
+              "p95": 0.021833063480917955,
+              "p99": 0.030432501018160075,
+              "p99.9": 0.036742565254321194
+            },
+            "frames": 872,
+            "unavailable": 18
+          },
+          "retrospective_pose": {
+            "rotation_deg": {
+              "p50": 0.10350103572849878,
+              "p95": 1.6747773260678802,
+              "p99": 2.873440494552213,
+              "p99.9": 3.675999574459057
+            },
+            "translation_m": {
+              "p50": 0.0016527818676789947,
+              "p95": 0.004650780149756109,
+              "p99": 0.005383199154196949,
+              "p99.9": 0.006182224960465524
+            },
+            "frames": 889,
+            "unavailable": 1
+          }
+        },
+        "sweep180_draw": {
+          "ms": {
+            "p50": 92.10277600504924,
+            "p95": 107.51262774283532,
+            "p99": 113.51485620543826,
+            "p99.9": 118.65944028701068
+          },
+          "missed_fraction": 1.0,
+          "longest_miss_run": 386,
+          "samples": 386,
+          "deadline_ms": 11.11111111111111
+        },
+        "sweep180_upload_ms": {
+          "p50": 4.316969512728974,
+          "p95": 6.588415250007529,
+          "p99": 7.976928455173037,
+          "p99.9": 8.135250643535985
+        },
+        "tour_poses": {
+          "available_pose": {
+            "rotation_deg": {
+              "p50": 6.255546610075886,
+              "p95": 28.09868109592753,
+              "p99": 42.98609954945487,
+              "p99.9": 51.066343225946824
+            },
+            "translation_m": {
+              "p50": 0.013428327118282943,
+              "p95": 0.08922591282227955,
+              "p99": 0.15409978369803448,
+              "p99.9": 0.2049558217274247
+            },
+            "frames": 3008,
+            "unavailable": 14
+          },
+          "retrospective_pose": {
+            "rotation_deg": {
+              "p50": 0.45076491237837163,
+              "p95": 2.047841588830913,
+              "p99": 3.081472389166018,
+              "p99.9": 4.47122984700367
+            },
+            "translation_m": {
+              "p50": 0.008454664727857155,
+              "p95": 0.03162558159475974,
+              "p99": 0.03638983830104611,
+              "p99.9": 0.039639827474342616
+            },
+            "frames": 3019,
+            "unavailable": 3
+          }
+        },
+        "tour_draw": {
+          "ms": {
+            "p50": 90.64731100806966,
+            "p95": 197.03479100426193,
+            "p99": 199.43725820805412,
+            "p99.9": 199.97781332890736
+          },
+          "missed_fraction": 1.0,
+          "longest_miss_run": 15,
+          "samples": 15,
+          "deadline_ms": 11.11111111111111
+        },
+        "tour_upload_ms": {
+          "p50": 17.94649599469267,
+          "p95": 30.770406118244864,
+          "p99": 31.910309240338393,
+          "p99.9": 32.16678744280944
+        }
+      },
+      "display": {
+        "scope": "isolated offscreen stereo GL completion; no inference or compositor",
+        "sweep180": {
+          "renderer": "NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2",
+          "frames": 1000,
+          "ipd_m": 0.064,
+          "occupied": 178182,
+          "sort_capacity": 262144,
+          "uploaded_bytes": 11403648,
+          "upload_ms": [
+            10.028299991972744
+          ],
+          "stereo_ms": {
+            "p50": 3.3781499951146543,
+            "p95": 3.5776250006165355,
+            "p99": 3.732043011987116,
+            "p99.9": 4.84250099788188
+          },
+          "missed_fraction": 0.0,
+          "longest_miss_run": 0,
+          "deadline_ms": 11.11111111111111
+        },
+        "tour": {
+          "renderer": "NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2",
+          "frames": 1000,
+          "ipd_m": 0.064,
+          "occupied": 477968,
+          "sort_capacity": 524288,
+          "uploaded_bytes": 30589952,
+          "upload_ms": [
+            48.59829999622889
+          ],
+          "stereo_ms": {
+            "p50": 3.6808500153711066,
+            "p95": 4.008639993844554,
+            "p99": 4.211464995460119,
+            "p99.9": 4.966497207671681
+          },
+          "missed_fraction": 0.0,
+          "longest_miss_run": 0,
+          "deadline_ms": 11.11111111111111
+        }
+      }
+    }
+  ],
+  "supplementary_missed_publication": {
+    "scope": "Earlier warm run, not a final repetition",
+    "moment": {
+      "run": "sweep180",
+      "frame": 526,
+      "view": "camera",
+      "prefix_frame": 517,
+      "psnr_db": 5.921660877190806,
+      "ssim": 0.0006568428943865001,
+      "lpips": 0.8001670837402344,
+      "coverage": 0.0,
+      "common_visible_fraction": 0.9073871527777778,
+      "previously_seen_holes": 1.0,
+      "never_seen_fraction": 0.09261284722222222,
+      "never_seen_covered_fraction": 0.0,
+      "edge_distance_px": {
+        "p50": 734.3023900274328,
+        "p95": 734.3023900274328,
+        "p99": 734.3023900274328,
+        "p99.9": 734.3023900274328
+      },
+      "foreground_edge_distance_px": {
+        "p50": 734.3023900274328,
+        "p95": 734.3023900274328,
+        "p99": 734.3023900274328,
+        "p99.9": 734.3023900274328
+      }
+    },
+    "snapshot_sha256": "78bae7f67683ccbf0a451a4690f613d03e942cd046095738658c60a091c026eb",
+    "capture": {
+      "schedule_sha256": "8fbe496bdb99476da51e2d99f31e1a4c8cc150342b2525136ad81def1e8969a4",
+      "frames_sha256": "1fa44e219fbec9a08b325de9f0a94e464fd7b1e283c4b80ed94f2c11ffc9088f",
+      "seconds": 29.701460351272544,
+      "visual_factors_s": 3.905531870422999,
+      "propagated_poses_s": 5.016588350801955,
+      "surface_updates_s": 4.141210517776111,
+      "peak_cuda_allocated_bytes": 3623222784,
+      "peak_cuda_reserved_bytes": 4083154944,
+      "capture_script_sha256": "0ad1a42651d74c8d13df0e7c3f0aa28a77a93a8771ed8366adc9c25e9ad35716",
+      "baseline": "316a556",
+      "timing": "fixed admissions, measured serial completion; no concurrent display",
+      "retrospective": "first subsequent integration, separate from deadline-available pose"
+    }
+  },
+  "linux_packages": "absl-py==2.5.1\naiohappyeyeballs==2.7.1\naiohttp==3.14.5\naioice==0.10.2\naiortc==1.15.0\naiosignal==1.4.0\nannotated-types==0.8.0\nattrs==26.1.0\nav==17.1.0\ncffi==2.1.1\ncryptography==50.0.2\ndnspython==2.9.0\netils==1.14.0\nfilelock==3.32.3\nfrozenlist==1.8.0\nfsspec==2026.9.0\nglcontext==3.1.0\nglfw==2.10.2\ngoogle-crc32c==1.9.0\nidna==3.20\nifaddr==0.2.0\nimageio==2.38.1\nimageio-ffmpeg==0.6.0\nimgui-bundle==1.92.900\n-e file:///mnt/c/Users/me/Projects/ito/work/m1\njinja2==3.1.6\nlazy-loader==0.6\nlpips==0.1.4\nmarkupsafe==3.0.3\nmoderngl==5.13.0\nmpmath==1.3.0\nmujoco==3.3.7\nmultidict==7.1.0\nnetworkx==3.7\nnumpy==2.5.4\nopencv-python-headless==5.0.0.93\npackaging==26.3\npillow==12.3.0\nplyfile==1.1.5\npropcache==0.5.4\npycparser==3.11\npydantic==2.14.1\npydantic-core==2.50.1\npyee==14.0.0\npygame-ce==2.5.8\npylibsrtp==1.0.0\npyopengl==3.1.10\npyopenssl==26.4.0\npyopenxr==1.1.6302\nruff==0.17.0\nscikit-image==0.26.0\nscipy==1.18.1\nsetuptools==78.1.0\nsounddevice==0.5.6\nsympy==1.14.0\ntifffile==2026.9.20\ntorch==2.14.1+cpu\ntorchvision==0.29.1+cpu\ntqdm==4.70.1\ntyping-extensions==4.16.0\ntyping-inspection==0.4.4\nyarl==1.25.1\nzipp==4.1.1\n",
+  "sheets_sha256": {
+    "hard-526-missed-publication.jpg": "cc9612f6806e193576bd0b3e547e89417edc58e94258c3af37e952ed7ce718ea",
+    "hard-526.jpg": "2f533823218a25f4288f08ae27519f346b659359509d56fa2613c6f3ea2c5124",
+    "sweep-reference.jpg": "705c92ff109f1caadc94c834d23dd0712c0f14c7234bc1b17a8edf171ff83524",
+    "tour-reference.jpg": "6b7e7ec008ffe74e4eb8d9213360b9fc563001070191bd6b0769eebbea3e0c5c",
+    "tour-stereo.jpg": "d06594410e486555eeb53274fb13dfe2a4721382c7ec47e5a8314fdb91238d78"
+  }
+}

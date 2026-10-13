@@ -1,6 +1,7 @@
 """Audit actual replay artifacts, then summarize repeated baseline measurements."""
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
@@ -79,6 +80,11 @@ def main():
         pose_deadlines_checked=deadlines,
         clip_frames_checked=clip_frames,
         repeats=reports,
+        evaluation_scripts_sha256={
+            p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in sorted(Path(__file__).parent.glob("measure*"))
+            if p.is_file()
+        },
     )
     (args.output / "audit.json").write_text(json.dumps(report, indent=2) + "\n")
     print(
