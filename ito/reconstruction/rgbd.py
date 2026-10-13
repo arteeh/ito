@@ -106,8 +106,10 @@ class RGBDBackend:
         return int(np.count_nonzero(self.keys >= 0))
 
     def grow(self, slots):
+        # Counted once: the fields grow one by one, keys among them.
+        added = slots - len(self.keys)
         for name, (dtype, empty, shape) in SLOT_FIELDS.items():
-            extra = np.full((slots - len(self.keys), *shape), empty, dtype)
+            extra = np.full((added, *shape), empty, dtype)
             setattr(self, name, np.concatenate((getattr(self, name), extra)))
 
     def resize(self, budget, now):
