@@ -54,7 +54,7 @@ class View:
             self.context.finish()
             self.upload_ms.append((time.perf_counter() - began) * 1000)
 
-    def draw(self, camera, *, sort=True):
+    def draw(self, camera, *, sort=True, alpha=False):
         with self.context:
             began = time.perf_counter()
             self.renderer.draw(
@@ -70,7 +70,7 @@ class View:
             w, h = self.size
             pixels = np.frombuffer(self.target.read(components=4, dtype="f4"), np.float32)
         rgba = pixels.reshape(h, w, 4)[::-1].copy()
-        return rgba[..., :3].clip(0, 1), rgba[..., 3] > 0.5
+        return rgba[..., :3].clip(0, 1), rgba[..., 3] if alpha else rgba[..., 3] > 0.5
 
     def close(self):
         with self.context:

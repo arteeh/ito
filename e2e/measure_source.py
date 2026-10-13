@@ -182,10 +182,8 @@ def capture(work, out):
             view.upload(records)
             stable = 0
             for _ in range(3):
-                head_sample = time.perf_counter()
                 image, _ = view.draw(camera)
                 complete = time.perf_counter()
-                head_ms.append((complete - head_sample) * 1000)
                 if row["display"] is None:
                     row["display"] = complete
                 reference = truth.astype(np.float32) / 255
@@ -199,6 +197,12 @@ def capture(work, out):
             )
             if stable == 3:
                 sharp_ms.append((complete - row["exposure_time"]) * 1000)
+            row["head_motion"] = time.perf_counter()
+            head_camera = camera.copy()
+            head_camera[:3, 3] += camera[:3, 0] * (0.03 if source % 2 else -0.03)
+            view.draw(head_camera)
+            row["head_motion_display"] = time.perf_counter()
+            head_ms.append((row["head_motion_display"] - row["head_motion"]) * 1000)
             # An ID-colour pass tests whether this observation contributed after compositing
             # against older surfaces. This diagnostic pass is not a displayed candidate.
             current = backend.seen[live] == observed_at

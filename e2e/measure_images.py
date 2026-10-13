@@ -178,6 +178,7 @@ def evaluate(work, out, ipd):
         i = i.model_copy(update=dict(cx=i.width / 2, cy=i.height / 2))
         room = Room(work / "truth/data/scan/scene.mjb", i)
         view = View(i)
+        age_view = View(i)
         report["gl_renderer"] = view.device
         poses = np.load(work / f"gs/out/{run}/data.npz")["poses"]
         report[f"{run}_poses"] = pose_scores(out / run, poses)
@@ -196,6 +197,13 @@ def evaluate(work, out, ipd):
                     history_frame = f
             world = align(snap["first_pose"], poses[int(snap["first_index"])])
             view.upload(snap["records"])
+            ages = float(snap["deadline"]) - snap["last_observed_capture"]
+            if np.any(ages < 0):
+                raise AssertionError("Surface observation is from the future")
+            age_limit = max(float(ages.max()), 1e-6)
+            age_records = snap["records"].copy()
+            age_records[:, 3, :3] = (ages[:, None] / age_limit - 0.5) / 0.2820947918
+            age_view.upload(age_records)
             eye_images = {}
             for label, offset in (
                 ("camera", 0),
@@ -210,6 +218,11 @@ def evaluate(work, out, ipd):
                 seen = room.seen(camera, depth, history)
                 candidate, covered = view.draw(world @ camera, sort=label not in {"left", "right"})
                 values = metrics.score(truth, candidate, covered, seen)
+                age_image, alpha = age_view.draw(
+                    world @ camera, alpha=True, sort=label not in {"left", "right"}
+                )
+                visible_age = age_image[..., 0] * age_limit / np.maximum(alpha, 1e-6)
+                values["visible_observation_capture_age_s"] = percentiles(visible_age[covered])
                 foreground = (depth < 2) & (
                     np.hypot(sobel(depth, axis=0), sobel(depth, axis=1)) > 0.1
                 )
@@ -237,7 +250,12 @@ def evaluate(work, out, ipd):
                     .astype(np.uint8)
                 ).save(out / f"{name}.png")
                 pair(truth, candidate, caption).save(out / f"{name}.jpg", quality=90)
-                np.savez_compressed(out / f"{name}-mask.npz", seen=seen, covered=covered)
+                np.savez_compressed(
+                    out / f"{name}-mask.npz",
+                    seen=seen,
+                    covered=covered,
+                    visible_observation_capture_age_s=visible_age,
+                )
                 eye_images[label] = (truth, candidate, depth)
                 print(caption, flush=True)
             stereo = stereo_error(eye_images["left"], eye_images["right"], i, ipd)
@@ -250,6 +268,7 @@ def evaluate(work, out, ipd):
         report[f"{run}_draw"] = timing(view.draw_ms)
         report[f"{run}_upload_ms"] = percentiles(view.upload_ms)
         view.close()
+        age_view.close()
         room.renderer.close()
     (out / "metrics.json").write_text(json.dumps(report, indent=2) + "\n")
     contact_sheets(out)
@@ -334,6 +353,7 @@ def clips(out, run, poses, room, view, camera_index=525, prefix=""):
 
     frames = list(range(495, 556, 6))
     snaps = [np.load(out / run / f"snapshot-{f:06d}.npz") for f in frames]
+    snapshot_times = np.array([float(s["deadline"]) for s in snaps])
     world = align(snaps[0]["first_pose"], poses[int(snaps[0]["first_index"])])
     results = []
     for kind in ("frozen-map-moving-head", "fixed-head-map-updates", "both"):
@@ -345,11 +365,17 @@ def clips(out, run, poses, room, view, camera_index=525, prefix=""):
         residuals, edge_changes, previous = [], [], None
         trace = []
         head_completion = []
+        uploaded = None
         for n in range(61):
-            k = min(n // 6, len(snaps) - 1)
-            snap = snaps[0] if mode == "frozen-map-moving-head" else snaps[k]
-            if n == 0 or (n % 6 == 0 and mode != "frozen-map-moving-head"):
+            deadline = snapshot_times[0] + n / 30
+            k = max(0, int(np.searchsorted(snapshot_times, deadline, side="right")) - 1)
+            selected = 0 if mode == "frozen-map-moving-head" else k
+            snap = snaps[selected]
+            if float(snap["published"]) > deadline:
+                raise AssertionError("Clip frame uses an unpublished map")
+            if uploaded != selected:
                 view.upload(snap["records"])
+                uploaded = selected
             camera = poses[camera_index].copy()
             if mode != "fixed-head-map-updates":
                 camera[:3, 3] += camera[:3, 0] * (0.03 * np.sin(n / 60 * 2 * np.pi))
@@ -363,18 +389,17 @@ def clips(out, run, poses, room, view, camera_index=525, prefix=""):
                 residuals.append(float(np.abs(residual - previous[0]).mean()))
                 edge_changes.append(float(np.mean(edges(candidate) != previous[1])))
             previous = residual, edges(candidate)
-            deadline = float(snaps[0]["deadline"]) + n / 30
             source_age = deadline - float(np.max(snap["last_observed_capture"]))
             caption = (
-                f"{kind} obs #{int(snap['index']) + 1} age {source_age:.3f}s "
-                f"draw {(complete - began) * 1000:.1f}ms"
+                f"{kind} newest-map-obs #{int(snap['index']) + 1} age {source_age:.3f}s "
+                f"draw {(complete - began) * 1000:.1f}ms t={complete:.3f}"
             )
             trace.append(
                 dict(
                     frame=n,
                     deadline=float(snaps[0]["deadline"]) + n / 30,
                     observation_frame=int(snap["index"]) + 1,
-                    observation_age_s=source_age,
+                    newest_map_observation_age_s=source_age,
                     head_sample=began,
                     display_complete=complete,
                     publication=float(snap["published"]),

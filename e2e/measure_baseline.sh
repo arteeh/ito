@@ -27,6 +27,10 @@ for repeat in 1 2 3; do
     mkdir -p "$run_out"
     cp "$output/inputs.json" "$output/"*-schedule.json "$run_out/"
     for sequence in sweep180 tour; do
+        if [[ "${ITO_MEASURE_RESUME:-0}" == 1 ]] && "$python" e2e/measure_resume.py "$run_out/$sequence" "$output/$sequence-schedule.json" "$work/rf-run/out/$sequence/rec"; then
+            echo "Reusing verified capture $repeat: $sequence"
+            continue
+        fi
         echo "SLAM repeat $repeat: $sequence"
         env PYTHONPATH="$(wslpath -w "$root")" PYTHONUTF8=1 \
             CUPY_CACHE_DIR="$(wslpath -w "$work/m1-out/cupy-cache")" \

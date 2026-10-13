@@ -282,12 +282,14 @@ def main():
             # Every frame the pilot took (the flat feed shows it; SLAM is offered it), with
             # the pose prior SLAM is offered and its capture time on both clocks.
             nonlocal dropped
+            arrived = clock.now()
             before = self.state.video_time
             shown(self, pair, peer)
             if pair is None or self.state.video_time == before:
                 return
             rgb, _, camera, captured = _frames.FrameJoin.arrays(pair, peer.clock)
             metadata = pair[1]
+            calibration = next(c for c in self.description.cameras if c.name == metadata.camera)
             measured = camera is not None or metadata.head_angles is not None
             prior = self._prior(camera, metadata)
             telemetry = self.telemetry
@@ -299,7 +301,8 @@ def main():
                 exposure_time=None,
                 exposure_status="unknown",
                 readout_status="unknown",
-                arrival=clock.now(),
+                arrival=arrived,
+                arrival_status="pilot submission after decode and metadata join",
                 publication=None,
                 display=None,
                 publication_status="see camera-poses.jsonl; observation visibility unknown",
@@ -308,7 +311,9 @@ def main():
                 coordinate_revision_status="unknown",
                 camera_model={
                     "model": "pinhole",
-                    **self.description.cameras[0].intrinsics.model_dump(),
+                    "name": metadata.camera,
+                    "configured_exposure_duration": calibration.exposure,
+                    **calibration.intrinsics.model_dump(),
                 },
                 captured=captured,
                 capture_time=metadata.capture_time,
@@ -330,13 +335,14 @@ def main():
         def recording_motion(self, message, peer):
             # Every sample once, on both clocks: `time` is the driver's (robotd's t_ns where
             # it shares the robot's clock), `local` the pilot's, as the worker sees it.
+            arrived = clock.now()
             fresh = received_motion(self, message, peer)
             remote = {peer.clock.remote_to_local(m.time): m.time for m in message.samples}
             for local, camera, spin, state in fresh:
                 motion_file.write(
                     json.dumps(
                         dict(
-                            arrival=clock.now(),
+                            arrival=arrived,
                             time=remote[local],
                             local=local,
                             camera=np.asarray(camera).ravel().tolist(),
@@ -395,7 +401,11 @@ def main():
         if app.worker:
             workers.add(app.worker.process.pid)
         if args.record and not (args.record / "camera.json").exists() and app.description:
-            camera = app.description.cameras[0]
+            camera = next(
+                c
+                for c in app.description.cameras
+                if app.camera_name is None or c.name == app.camera_name
+            )
             (args.record / "camera.json").write_text(camera.intrinsics.model_dump_json())
             # What robot-first tracking needs to replay this drive.
             (args.record / "robot.json").write_text(app.description.model_dump_json())
