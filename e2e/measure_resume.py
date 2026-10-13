@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from measure_capture import product_digest
 
 
 def digest(path):
@@ -13,9 +14,12 @@ def digest(path):
 
 
 def main():
-    folder, schedule, recording = map(Path, sys.argv[1:])
+    folder, schedule, recording = map(Path, sys.argv[1:4])
+    budget = int(sys.argv[4])
     try:
         summary = json.loads((folder / "summary.json").read_text())
+        assert summary["product_sha256"] == product_digest()
+        assert summary["budget"] == budget
         assert summary["capture_script_sha256"] == digest(
             Path(__file__).with_name("measure_capture.py")
         )

@@ -11,4 +11,5 @@ export CUPY_CACHE_DIR="$(wslpath -w "$work/m2-out/cupy-cache")"
 export WSLENV=PYTHONPATH:PYTHONUTF8:PYTHONDONTWRITEBYTECODE:CUPY_CACHE_DIR
 flock "$work/../ceres.lock" timeout 1100 "$work/../venv-slam/Scripts/python.exe" \
     e2e/gpu_budget.py --work "$(wslpath -w "$work")" \
-    --out "$(wslpath -w "$(realpath "$output")")" "$@"
+    --out "$(wslpath -w "$(realpath "$output")")" \
+    --linux-work "$work" --distro "${WSL_DISTRO_NAME:-Ubuntu-26.04}" "$@"
