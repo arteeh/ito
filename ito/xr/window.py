@@ -22,7 +22,7 @@ from ito.render.pose import quaternion
 
 from .dispatch import XRDispatch
 from .input import VALID, Actions
-from .session import Session
+from .session import HEADSET_POLL, HEADSET_WAIT, Session
 
 log = logging.getLogger(__name__)
 PANEL_LINGER = 0.5  # The panel stays this long after the controller stops pointing at it.
@@ -94,7 +94,7 @@ class XRWindow(DesktopWindow):
         self.xr = None
         super().__init__(*args, **kwargs)
         try:
-            self.xr = Session(self.context, reference_space)
+            self.xr = Session(self.context, reference_space, waiting=self._waiting)
             self.actions = Actions(self.xr)
             self.input.translate = False
             self.centered = False
@@ -113,6 +113,41 @@ class XRWindow(DesktopWindow):
         except BaseException:
             self.close()
             raise
+
+    def _waiting(self, runtime, waited):
+        """The companion window while the runtime has no headset yet; False on Cancel."""
+        pygame.display.set_caption("Ito — waiting for the headset")
+        until = time.monotonic() + HEADSET_POLL
+        while time.monotonic() < until:
+            events = pygame.event.get()
+            if any(
+                e.type == pygame.QUIT or (e.type == pygame.KEYDOWN and e.key == pygame.K_ESCAPE)
+                for e in events
+            ):
+                return False
+            size = pygame.display.get_window_size()
+            self.overlay.begin(events, size, False)
+            imgui.set_next_window_pos((size[0] / 2, size[1] / 2), imgui.Cond_.always, (0.5, 0.5))
+            imgui.begin(
+                "Ito",
+                flags=imgui.WindowFlags_.always_auto_resize
+                | imgui.WindowFlags_.no_move
+                | imgui.WindowFlags_.no_collapse,
+            )
+            imgui.text(f"Waiting for a headset on {runtime}")
+            imgui.text_disabled("Connect it: Steam Link, Virtual Desktop or its cable.")
+            imgui.text_disabled(f"{waited:.0f} of {HEADSET_WAIT:.0f} s")
+            cancel = imgui.button("Cancel", (380, 0))
+            imgui.end()
+            self.context.screen.use()
+            self.context.viewport = (0, 0, *size)
+            self.context.clear(0.05, 0.06, 0.07)
+            self.overlay.render()
+            pygame.display.flip()
+            if cancel:
+                return False
+            time.sleep(1 / 30)
+        return True
 
     def aiming_hand(self):
         """Right aim takes precedence; without a tracked controller nothing points."""

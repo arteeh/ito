@@ -4,6 +4,7 @@ import ctypes as ct
 import logging
 import math
 import threading
+import time
 from contextlib import ExitStack, contextmanager
 
 import moderngl
@@ -14,6 +15,11 @@ from xr.utils.gl import OpenGLGraphics
 from ito import clock
 
 log = logging.getLogger(__name__)
+# A runtime reports a headset that is not connected yet (SteamVR before Steam Link or the
+# cable brings one, a headset asleep) as unavailable, and the spec says to ask again. The
+# pilot gets this long to connect it, and can give up sooner.
+HEADSET_WAIT = 90.0
+HEADSET_POLL = 0.5
 
 
 class SDLContext:
@@ -66,8 +72,18 @@ class Swapchain:
             xr.release_swapchain_image(self.handle)
 
 
+def runtime_name(instance):
+    properties = xr.get_instance_properties(instance)
+    name = properties.runtime_name
+    name = name.decode(errors="replace") if isinstance(name, bytes) else str(name)
+    version = properties.runtime_version
+    return f"{name} {version.major}.{version.minor}.{version.patch}"
+
+
 class Session:
-    def __init__(self, context: moderngl.Context, reference):
+    def __init__(self, context: moderngl.Context, reference, waiting=None):
+        """waiting(runtime, seconds): called while no headset is connected yet, about every
+        HEADSET_POLL seconds; it returns False when the pilot stops waiting."""
         self.context = context
         self.reference_mode = reference
         self.resources = ExitStack()
@@ -100,7 +116,9 @@ class Session:
                 )
             )
             self.resources.callback(xr.destroy_instance, self.instance)
-            self.system = xr.get_system(self.instance, xr.SystemGetInfo())
+            self.runtime = runtime_name(self.instance)
+            log.info("OpenXR runtime: %s", self.runtime)
+            self.system = self._headset(waiting)
             self.graphics = OpenGLGraphics(self.instance, self.system, SDLContext())
             requirements = self.graphics.graphics_requirements
             version = xr.Version(context.version_code // 100, context.version_code % 100 // 10, 0)
@@ -161,6 +179,31 @@ class Session:
         except BaseException:
             self.close()
             raise
+
+    def _headset(self, waiting):
+        started = clock.now()
+        logged = -math.inf
+        while True:
+            try:
+                return xr.get_system(
+                    self.instance,
+                    xr.SystemGetInfo(form_factor=xr.FormFactor.HEAD_MOUNTED_DISPLAY),
+                )
+            except xr.FormFactorUnavailableError:
+                waited = clock.now() - started
+                if waited >= HEADSET_WAIT:
+                    raise RuntimeError(
+                        f"{self.runtime} found no headset in {HEADSET_WAIT:.0f} s. Connect "
+                        "the headset first (Steam Link, Virtual Desktop or its cable), make "
+                        "sure it is awake, and try again."
+                    ) from None
+                if waited - logged >= 10:
+                    log.info("Waiting for %s to find a headset (%.0f s)", self.runtime, waited)
+                    logged = waited
+                if waiting is None:
+                    time.sleep(HEADSET_POLL)
+                elif not waiting(self.runtime, waited):
+                    raise RuntimeError(f"Stopped waiting for a headset on {self.runtime}") from None
 
     def reference(self, kind):
         space = xr.create_reference_space(
