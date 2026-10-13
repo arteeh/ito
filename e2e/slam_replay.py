@@ -57,32 +57,15 @@ AHEAD = 1.0  # Seconds between a scene snapshot and the frame it has to predict.
 
 
 def render(records, live, camera, intrinsics, size):
-    """Nearest-first point splats of the fused scene, seen from a world-from-camera pose."""
-    position = records[live, 0, :3]
-    radius = records[live, 1, 0]
-    color = np.clip(records[live, 3, :3] * 0.2820947918 + 0.5, 0, 1)
-    local = (position - camera[:3, 3]) @ camera[:3, :3]
-    depth = -local[:, 2]
-    ahead = depth > 1e-6
-    local, depth, radius, color = local[ahead], depth[ahead], radius[ahead], color[ahead]
-    u = intrinsics.fx * local[:, 0] / depth + intrinsics.cx
-    v = intrinsics.cy - intrinsics.fy * local[:, 1] / depth
-    pixels = np.clip(np.round(radius * intrinsics.fx / depth), 0, 3).astype(int)
-    width, height = size
-    zbuffer = np.full(height * width, np.inf)
-    image = np.zeros((height * width, 3))
-    for dy in range(-3, 4):
-        for dx in range(-3, 4):
-            reach = max(abs(dx), abs(dy))
-            x = np.round(u).astype(int) + dx
-            y = np.round(v).astype(int) + dy
-            inside = (pixels >= reach) & (x >= 0) & (x < width) & (y >= 0) & (y < height)
-            index = y[inside] * width + x[inside]
-            np.minimum.at(zbuffer, index, depth[inside])
-            nearest = depth[inside] <= zbuffer[index]
-            image[index[nearest]] = color[inside][nearest]
-    covered = np.isfinite(zbuffer)
-    return image.reshape(height, width, 3), covered.reshape(height, width)
+    """Production Gaussian compositing; black holes remain in full-frame scores."""
+    from measure_gl import View
+
+    view = View(intrinsics)
+    try:
+        view.upload(records[live])
+        return view.draw(camera)
+    finally:
+        view.close()
 
 
 def rotation(q):
@@ -420,15 +403,16 @@ def main():
                 rendered, covered = render(
                     records, live, camera, intrinsics, (rgb.shape[1], rgb.shape[0])
                 )
-                if covered.mean() > 0.05:
-                    error = ((rendered[covered] - rgb[covered] / 255) ** 2).mean()
-                    predictions.append((float(covered.mean()), float(-10 * np.log10(error))))
-                    if previews < 12 and len(predictions) % 10 == 1:
-                        side = np.concatenate((rgb / 255, rendered), axis=1)
-                        Image.fromarray((side * 255).astype(np.uint8)).save(
-                            out / f"predict-{previews:02d}.png"
-                        )
-                        previews += 1
+                error = ((rendered - rgb / 255) ** 2).mean()
+                predictions.append(
+                    (float(covered.mean()), float(-10 * np.log10(max(error, 1e-15))))
+                )
+                if previews < 12 and len(predictions) % 10 == 1:
+                    side = np.concatenate((rgb / 255, rendered), axis=1)
+                    Image.fromarray((side * 255).astype(np.uint8)).save(
+                        out / f"predict-{previews:02d}.png"
+                    )
+                    previews += 1
             if not pending or now - pending[-1][0] + AHEAD > 0.5:
                 live = backend.keys >= 0
                 pending.append((now + AHEAD, backend.records.copy(), live.copy()))
@@ -481,7 +465,8 @@ def main():
         heading_error_deg_p95=round(float(np.percentile(stray, 95)), 1) if len(stray) else None,
         heading_error_deg_max=round(float(stray.max()), 1) if len(stray) else None,
         truth=score_truth(estimates, truths) if truth else None,
-        every_frame=score_truth(every_estimates, every_truths) if truth else None,
+        every_frame_retrospective=score_truth(every_estimates, every_truths) if truth else None,
+        prediction_renderer="production GL, full frame",
         prediction_psnr_median=round(float(np.median([p[1] for p in predictions])), 2)
         if predictions
         else None,

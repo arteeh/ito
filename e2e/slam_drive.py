@@ -292,6 +292,24 @@ def main():
             prior = self._prior(camera, metadata)
             telemetry = self.telemetry
             row = dict(
+                source_frame_id=None,
+                source_frame_id_status="unknown: driver exposes transport sequence only",
+                transport_sequence=metadata.sequence,
+                video_pts=metadata.video_pts,
+                exposure_time=None,
+                exposure_status="unknown",
+                readout_status="unknown",
+                arrival=clock.now(),
+                publication=None,
+                display=None,
+                publication_status="see camera-poses.jsonl; observation visibility unknown",
+                display_status="unknown: no scanout timestamp",
+                coordinate_revision=None,
+                coordinate_revision_status="unknown",
+                camera_model={
+                    "model": "pinhole",
+                    **self.description.cameras[0].intrinsics.model_dump(),
+                },
                 captured=captured,
                 capture_time=metadata.capture_time,
                 measured=measured,
@@ -318,6 +336,7 @@ def main():
                 motion_file.write(
                     json.dumps(
                         dict(
+                            arrival=clock.now(),
                             time=remote[local],
                             local=local,
                             camera=np.asarray(camera).ravel().tolist(),
@@ -433,7 +452,18 @@ def main():
         if latest and latest[1] != (poses[-1][1] if poses else None):
             camera, count, tracking, captured = latest
             robot = priors.get(captured)
-            fused.write(json.dumps(dict(captured=captured, camera=camera.ravel().tolist())) + "\n")
+            fused.write(
+                json.dumps(
+                    dict(
+                        captured=captured,
+                        camera=camera.ravel().tolist(),
+                        publication_observed=now,
+                        coordinate_revision=None,
+                        coordinate_revision_status="unknown",
+                    )
+                )
+                + "\n"
+            )
             poses.append(
                 (
                     now - ready_at,
