@@ -21,6 +21,8 @@ not "operator", not "user" when the pilot is meant.
 - **Out of scope:** fleets, a central server, session management, robot lobbies, more than one
   pilot. One Ito instance pilots exactly one robot.
 - Keep the code base small. Reach for maintained libraries before writing infrastructure.
+- Changes to what the pilot sees are judged on motion sheets (docs/motion-sheets.md), against
+  main on the same drive; verdicts cite sheet cells, and a run that looks worse than main fails.
 - Small, coherent commits with descriptive messages. Never commit secrets or model weights.
 - Priorities, in order: pilot comfort, low pilot→robot→pilot latency, long-term maintainability.
   Hot paths (frame decode, Gaussian upload, sort, draw) stay on the GPU and out of Python loops;
