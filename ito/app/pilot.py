@@ -188,8 +188,10 @@ class Pilot:
                 try:
                     return self.worker.poll()
                 except RuntimeError as exc:
-                    self.failure = str(exc)
-                    self.reconstruction_status = str(exc) + "; showing flat camera feed"
+                    message, _, cause = str(exc).partition("\n")
+                    log.warning("Reconstruction failed: %s\n%s", message, cause.rstrip())
+                    self.failure = message
+                    self.reconstruction_status = message + "; showing flat camera feed"
                     self.state = replace(self.state, flat_video=True)
             return None
         finally:

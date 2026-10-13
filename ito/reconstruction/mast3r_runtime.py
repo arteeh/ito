@@ -85,9 +85,6 @@ def prepare(report):
     if not torch.cuda.is_available():
         raise RuntimeError("MASt3R needs an NVIDIA CUDA device and driver")
 
-    from .memory import prepare_torch
-
-    prepare_torch(torch)
     report("Loading MASt3R")
     # Instantiate locally below; also disable upstream hub lookups and telemetry.
     os.environ["HF_HUB_OFFLINE"] = "1"

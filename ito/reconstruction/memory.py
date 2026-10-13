@@ -12,25 +12,17 @@ def free_memory(cuda_free, gpu):
     return cuda_free
 
 
-def prepare_torch(torch):
-    gpu = GPU(torch.cuda.current_device())
-    try:
-        free, total = torch.cuda.mem_get_info()
-        available = max(0, free_memory(free, gpu) - GPU_HEADROOM_BYTES)
-        limit = torch.cuda.memory_reserved() + int(available * TORCH_MEMORY_SHARE)
-        torch.cuda.set_per_process_memory_fraction(min(1.0, limit / total))
-    finally:
-        gpu.close()
-
-
 def configure_pools(xp, torch):
     gpu = GPU(xp.cuda.runtime.getDevice())
     free, total = xp.cuda.runtime.memGetInfo()
     available = max(0, free_memory(free, gpu) - GPU_HEADROOM_BYTES)
     pool = xp.get_default_memory_pool()
     if torch is not None:
+        # Torch only holds the model and its inference working set, which a hard cap
+        # sized from a moment's free VRAM (a VR compositor, a restarted worker's memory
+        # not yet released) turned into out-of-memory failures. Only the CuPy splat
+        # pool, which grows with the scene, is held to its share.
         torch_limit = torch.cuda.memory_reserved() + int(available * TORCH_MEMORY_SHARE)
-        torch.cuda.set_per_process_memory_fraction(min(1.0, torch_limit / total))
         cupy_limit = pool.total_bytes() + int(available * (1 - TORCH_MEMORY_SHARE))
     else:
         torch_limit = 0

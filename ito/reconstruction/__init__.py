@@ -4,6 +4,7 @@ import json
 import logging
 import multiprocessing as mp
 import os
+import traceback
 
 import numpy as np
 
@@ -247,10 +248,11 @@ def _run(recon):
         if not recon.stopped.value:
             recon.errors.send("GPU admission stopped")
     except Exception as exc:
-        # The pilot sees one plain line; the log keeps the cause for whoever debugs it.
-        log.exception("Reconstruction stopped")
+        # The pilot shows the first line; its log keeps the cause. This spawned process
+        # has no log file of its own, so the traceback travels with the message.
         message = str(exc) if recon.backend == "slam" else f"Reconstruction failed: {exc}"
-        recon.errors.send(message[:2000])
+        cause = "".join(traceback.format_exception(exc))
+        recon.errors.send(message.splitlines()[0][:500] + "\n" + cause[-6000:])
     finally:
         if recon.admission.gpu is not None:
             recon.admission.gpu.close()
