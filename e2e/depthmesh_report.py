@@ -50,6 +50,7 @@ def main():
         audit={},
         code_sha256={},
     )
+    result["packages"] = (args.root / "packages.txt").read_text()
     baseline = json.loads((args.work / "m1-out/verified/repeat-1/metrics.json").read_text())
 
     def summaries(name, rows):

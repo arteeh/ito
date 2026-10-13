@@ -9,6 +9,7 @@ export LIBGL_ALWAYS_SOFTWARE=1 PYTHONPATH="$PWD" PYTHONDONTWRITEBYTECODE=1 SDL_V
 unset WAYLAND_DISPLAY
 output="$(realpath -m ../p47-out/viewer-e2e)"
 mkdir -p "$output"
+rm -f "$output"/frame-*.png
 : > "$output/frames.jsonl"
 ../p47-out/venv/bin/python -m ito.proto.depthmesh "$2" --size 960 540 \
     --frames 80 --capture-dir "$output" --metrics "$output/frames.jsonl" > "$output/run.log" 2>&1 &
