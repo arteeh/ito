@@ -32,9 +32,9 @@ Each sheet stays under ~1.5 MP so labels survive model downscaling.
 
 - Any change to what the pilot sees gets a recorded run and sheets, against main on the same
   drive (`--compare`).
-- Verdicts cite cells (`sheet 004 row 3`). Numbers say where to look; the sheets decide.
-- If the numbers pass but the sheets look worse than main, it fails.
-- "Same as main" passes. Sheets only block a merge; each step passes on its own goal.
+- Verdicts cite cells (`sheet 004 row 3`). The reviewer looks at the sheets and decides;
+  there are no numeric quality bars (dB, PSNR, LPIPS, coverage). Numbers only say where to look.
+- "Same as main" passes; a step that promises better quality must look plainly better.
 
 ### What counts as worse
 

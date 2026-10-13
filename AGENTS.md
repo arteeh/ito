@@ -25,6 +25,9 @@ not "operator", not "user" when the pilot is meant.
   main on the same drive; verdicts cite sheet cells, and a run that looks worse than main fails.
   "Same as main" passes. Only clear, repeatable problems count as worse (see "What counts as
   worse" there); first-seen areas may be black; rerun borderline cases once.
+- Quality is judged by eye, never by a threshold (no dB, PSNR, LPIPS or coverage bars). The
+  reviewer records a live session, makes the frame grid and looks at it; numbers only point
+  at where to look.
 - Small, coherent commits with descriptive messages. Never commit secrets or model weights.
 - Priorities, in order: pilot comfort, low pilot→robot→pilot latency, long-term maintainability.
   Hot paths (frame decode, Gaussian upload, sort, draw) stay on the GPU and out of Python loops;
