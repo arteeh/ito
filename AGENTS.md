@@ -23,6 +23,8 @@ not "operator", not "user" when the pilot is meant.
 - Keep the code base small. Reach for maintained libraries before writing infrastructure.
 - Changes to what the pilot sees are judged on motion sheets (docs/motion-sheets.md), against
   main on the same drive; verdicts cite sheet cells, and a run that looks worse than main fails.
+  "Same as main" passes. Only clear, repeatable problems count as worse (see "What counts as
+  worse" there); first-seen areas may be black; rerun borderline cases once.
 - Small, coherent commits with descriptive messages. Never commit secrets or model weights.
 - Priorities, in order: pilot comfort, low pilot→robot→pilot latency, long-term maintainability.
   Hot paths (frame decode, Gaussian upload, sort, draw) stay on the GPU and out of Python loops;

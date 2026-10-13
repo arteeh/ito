@@ -34,3 +34,19 @@ Each sheet stays under ~1.5 MP so labels survive model downscaling.
   drive (`--compare`).
 - Verdicts cite cells (`sheet 004 row 3`). Numbers say where to look; the sheets decide.
 - If the numbers pass but the sheets look worse than main, it fails.
+- "Same as main" passes. Sheets only block a merge; each step passes on its own goal.
+
+### What counts as worse
+
+Two runs of one build never match exactly, so only clear, repeatable problems count:
+
+- a frozen frame (red REPEAT) where main has none;
+- a blink or flash, or a black area where main had an image;
+- shimmer or tearing that shows up in more than one row.
+
+These do not count:
+
+- small differences in where fill-in or blur appears;
+- black in an area the robot is seeing for the first time.
+
+If a sheet is borderline, rerun both builds once. It fails only if the problem shows up again.
