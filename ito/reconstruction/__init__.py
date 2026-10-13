@@ -78,12 +78,11 @@ def _run(recon):
                 rows, motion_cursor = recon.motion_ring.read(motion_cursor)
                 backend.add_motion(rows)
             frame = None
-            take = recon.sequence.value != sequence and (
-                backend.xp is np or recon.admission.available()
-            )
+            take = recon.sequence.value != sequence and recon.admission.available()
             if take and recon.input_lock.acquire(False):
                 try:
                     if recon.sequence.value != sequence:
+                        previous_sequence = sequence
                         sequence = recon.sequence.value
                         frame = (
                             np.frombuffer(recon.rgb, np.uint8).reshape(recon.shape + (3,)).copy(),
@@ -102,15 +101,22 @@ def _run(recon):
                         backend.count,
                     )
                     began = clock.now()
-                if recon.backend == "slam":
-                    with recon.admission.torch_chunks():
+                backend.source_sequence = sequence
+                backend.source_captured = captured
+                with recon.admission.torch_chunks():
+                    if recon.backend == "slam":
                         if robot_first:
                             backend.integrate(*frame, now, captured=captured)
                         else:
                             backend.integrate(*frame, now, measured=measured)
-                else:
-                    backend.integrate(*frame, now)
+                    else:
+                        backend.integrate(*frame, now)
                 recon.integrated.value += 1
+                recon.matched.value = getattr(backend, "matched", getattr(backend, "tracked", 0))
+                recon.blurred.value = getattr(backend, "blurred", 0)
+                recon.scene_slots.value = backend.count
+                recon.retiring_slots.value = int(backend.retiring.sum())
+                recon.dirty_slots.value = int(backend.dirty.sum())
                 if timeline:
                     done = clock.now()
                     restarted = sum(getattr(backend, "restarts", {}).values()) - before[1]
@@ -138,6 +144,14 @@ def _run(recon):
                         splats_delta=int(backend.count) - before[2],
                         recalls=getattr(backend, "recalls", None),
                         matched=getattr(backend, "matched", None),
+                        backend_calls=recon.integrated.value,
+                        dirty_slots=recon.dirty_slots.value,
+                        retiring_slots=recon.retiring_slots.value,
+                        slot_capacity=recon.budget.value,
+                        cuda_active_seconds=recon.admission.active_seconds.value,
+                        cuda_memory_peak_bytes=recon.admission.memory_peak.value,
+                        render_backoffs=recon.admission.overruns.value,
+                        input_frames_skipped=max(0, sequence - previous_sequence - 1),
                         blurred=getattr(backend, "blurred", None),
                         frame_delay_ms=round(backend.graph.td * 1000, 1)
                         if hasattr(backend, "graph")
@@ -162,7 +176,13 @@ def _run(recon):
             for _ in range(recon.ring.slots):
                 dirty = np.flatnonzero(backend.dirty)
                 start = np.searchsorted(dirty, cursor)
-                indices = np.concatenate((dirty[start:], dirty[:start]))[: recon.ring.batch]
+                ordered = np.concatenate((dirty[start:], dirty[:start]))
+                # Fades must reach GL and be acknowledged even under a stream of
+                # refreshed slots; otherwise a full pool can never release victims.
+                eviction = backend.sequences[ordered] == 0
+                indices = np.concatenate((ordered[eviction], ordered[~eviction]))[
+                    : recon.ring.batch
+                ]
                 if not len(indices):
                     break
                 if not recon.ring.publish(
@@ -172,6 +192,8 @@ def _run(recon):
                     backend.count,
                     revision,
                     captured,
+                    backend.sequences[indices],
+                    backend.captures[indices],
                 ):
                     break
                 retiring = indices[backend.retiring[indices]]
@@ -179,7 +201,9 @@ def _run(recon):
                 cursor = (int(indices[-1]) + 1) % len(backend.keys)
                 backend.dirty[indices] = False
                 revision += 1
-            recon.admission.wake.wait(0.01)
+            recon.dirty_slots.value = int(backend.dirty.sum())
+            if recon.sequence.value == sequence:
+                recon.admission.wake.wait(0.005)
     except InterruptedError:
         if not recon.stopped.value:
             recon.errors.send("GPU admission stopped")
@@ -240,7 +264,12 @@ class Reconstruction:
         self.motion_ring = MotionRing(context)
         self.output_captured = context.RawValue("d", 0)
         self.tracked = context.RawValue("Q", 0)
-        self.integrated = context.RawValue("Q", 0)  # frames integrated into the scene
+        self.integrated = context.RawValue("Q", 0)  # backend calls, including pose-only frames
+        self.matched = context.RawValue("Q", 0)
+        self.blurred = context.RawValue("Q", 0)
+        self.scene_slots = context.RawValue("I", 0)
+        self.retiring_slots = context.RawValue("I", 0)
+        self.dirty_slots = context.RawValue("I", 0)
         self.tracking = context.RawValue("b", False)
         self.restart_counts = context.RawArray("Q", len(RESTART_CAUSES))
         self.report(

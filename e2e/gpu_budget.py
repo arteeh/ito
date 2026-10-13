@@ -535,11 +535,11 @@ def main():
                 done = time.perf_counter()
                 if args.admit:
                     training_turn = training is not None and (worker is None or n % 2 == 0)
-                    admission.completed(due, 0 if training_turn else 1 / 90)
+                    admission.completed(due, 1 / 90)
                     if training is not None:
-                        from ito.reconstruction.admission import GUARD_SECONDS
-
-                        deadline = due + 1 / 90 - GUARD_SECONDS
+                        # The separate stress optimizer still uses expiring grants.
+                        # Production reconstruction uses render feedback concurrently.
+                        deadline = due + 1 / 90 - 0.002
                         grant = (
                             precise_unix() + deadline - time.perf_counter() if training_turn else 0
                         )

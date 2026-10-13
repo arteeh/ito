@@ -23,7 +23,7 @@ def models_directory():
 
 
 MODELS = models_directory()
-BUNDLE_VERSION = 4  # Bump when source pins, layout or kernel adaptations change.
+BUNDLE_VERSION = 5  # Bump when source pins, layout or kernel adaptations change.
 EXTENSIONS = ("lietorch_backends", "mast3r_slam_backends", "curope")
 MODEL_FILES = {
     "model.safetensors": "0a615eb05fa9db654050aa655945ee5696e7c6c1b7f93f1ee8c37249010f6feb",
@@ -51,7 +51,7 @@ def prepare(report):
     try:
         manifest = json.loads((MODELS / "manifest.json").read_text(encoding="utf-8"))
         if manifest["version"] != BUNDLE_VERSION or manifest["abi"] != abi():
-            raise ValueError("incompatible assets")
+            raise RuntimeError("MASt3R bundle needs rebuilding for current-stream CUDA kernels")
         required = {
             *MODEL_FILES,
             "LICENSE",

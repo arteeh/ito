@@ -22,6 +22,8 @@ class SplatUpdate:
     epoch: float
     fade_seconds: float
     acknowledge: Callable[[], None] | None = None
+    # Actual contributing frames, not the most recent backend call. Empty for evictions.
+    observations: tuple[tuple[int, float], ...] = ()
 
 
 class UpdateRing:
@@ -30,6 +32,8 @@ class UpdateRing:
         self.epoch, self.fade_seconds = epoch, fade_seconds
         self.data = context.RawArray("f", slots * batch * 16)
         self.indices = context.RawArray("I", slots * batch)
+        self.sequences = context.RawArray("Q", slots * batch)
+        self.captures = context.RawArray("d", slots * batch)
         self.headers = context.RawArray("d", slots * 6)
         self.ready = context.RawArray("b", slots)
         self.locks = [context.Lock() for _ in range(slots)]
@@ -37,7 +41,17 @@ class UpdateRing:
         self.acknowledged = context.RawValue("q", -1)
         self.ack_lock = context.Lock()
 
-    def publish(self, indices, records, capacity, count, revision, captured_at):
+    def publish(
+        self,
+        indices,
+        records,
+        capacity,
+        count,
+        revision,
+        captured_at,
+        sequences=None,
+        captures=None,
+    ):
         slot = self.write_position % self.slots
         if not self.locks[slot].acquire(False):
             return False
@@ -52,6 +66,12 @@ class UpdateRing:
             )
             np.frombuffer(self.indices, np.uint32).reshape(self.slots, self.batch)[slot, :n] = (
                 indices
+            )
+            np.frombuffer(self.sequences, np.uint64).reshape(self.slots, self.batch)[slot, :n] = (
+                sequences if sequences is not None else 0
+            )
+            np.frombuffer(self.captures).reshape(self.slots, self.batch)[slot, :n] = (
+                captures if captures is not None else captured_at
             )
             np.frombuffer(self.headers).reshape(self.slots, 6)[slot] = (
                 n,
@@ -103,6 +123,14 @@ class UpdateRing:
                 .reshape(self.slots, self.batch)[slot, :n]
                 .copy()
             )
+            sequences = np.frombuffer(self.sequences, np.uint64).reshape(self.slots, self.batch)[
+                slot, :n
+            ]
+            captures = np.frombuffer(self.captures).reshape(self.slots, self.batch)[slot, :n]
+            unique, first = np.unique(sequences, return_index=True)
+            observations = tuple(
+                (int(seq), float(captures[i])) for seq, i in zip(unique, first, strict=True) if seq
+            )
             self.ready[slot] = 0
             self.read_position += 1
             return SplatUpdate(
@@ -115,6 +143,7 @@ class UpdateRing:
                 self.epoch,
                 self.fade_seconds,
                 lambda: self.acknowledge(int(revision)),
+                observations,
             )
         finally:
             self.locks[slot].release()

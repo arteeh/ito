@@ -49,9 +49,14 @@ class RGBDBackend:
         self.keys = np.full(capacity, -1, np.int64)
         self.seen = np.full(capacity, -np.inf)
         self.retiring = np.zeros(capacity, bool)
+        self.pressure_victims = np.zeros(capacity, bool)
         self.dirty = np.zeros(capacity, bool)
         self.retire_revision = np.full(capacity, np.inf)
         self.release_after = np.full(capacity, np.inf)
+        self.source_sequence = 0
+        self.source_captured = 0.0
+        self.sequences = np.zeros(capacity, np.uint64)
+        self.captures = np.zeros(capacity)
         self.budget = capacity
         self.refreshed = 0
         xp = self.xp
@@ -69,6 +74,7 @@ class RGBDBackend:
         self.admission = admission
         if self.xp is not np:
             admission.memory_used = self.cuda_memory_bytes
+            admission.bind_stream(self.xp)
 
     def cuda_memory_bytes(self):
         torch = sys.modules.get("torch")
@@ -77,7 +83,7 @@ class RGBDBackend:
         )
 
     def gpu_chunk(self, kind="map"):
-        if self.admission is None or self.xp is np or not self.admission.enabled.value:
+        if self.admission is None or self.xp is np:
             return nullcontext()
         return self.admission.cuda_chunk(
             self.xp.cuda.get_current_stream().synchronize,
@@ -96,6 +102,9 @@ class RGBDBackend:
             self.keys = np.pad(self.keys, (0, extra), constant_values=-1)
             self.seen = np.pad(self.seen, (0, extra), constant_values=-np.inf)
             self.retiring = np.pad(self.retiring, (0, extra))
+            self.pressure_victims = np.pad(self.pressure_victims, (0, extra))
+            self.sequences = np.pad(self.sequences, (0, extra))
+            self.captures = np.pad(self.captures, (0, extra))
             self.dirty = np.pad(self.dirty, (0, extra))
             self.retire_revision = np.pad(self.retire_revision, (0, extra), constant_values=np.inf)
             self.release_after = np.pad(self.release_after, (0, extra), constant_values=np.inf)
@@ -103,7 +112,7 @@ class RGBDBackend:
         excess = max(0, self.count - budget - int(self.retiring.sum()))
         candidates = np.flatnonzero((self.keys >= 0) & ~self.retiring)
         if excess:
-            self.retire(self.oldest(candidates, excess))
+            self.retire(self.oldest(candidates, excess), pressure=True)
 
     def oldest(self, candidates, n):
         # A partial selection: a full budget is too many slots to sort every frame.
@@ -111,10 +120,12 @@ class RGBDBackend:
             return candidates
         return candidates[np.argpartition(self.seen[candidates], n - 1)[:n]]
 
-    def retire(self, indices):
+    def retire(self, indices, *, pressure=False):
         # Preserve the natural deadline so delayed eviction packets cannot revive stale geometry.
         self.records[indices, 3, 3] = 1
         self.retiring[indices] = True
+        self.pressure_victims[indices] = pressure
+        self.sequences[indices] = 0
         self.dirty[indices] = True
 
     def expire(self, now, acknowledged):
@@ -124,8 +135,10 @@ class RGBDBackend:
         )
         expired = (self.keys >= 0) & self.retiring & (self.release_after <= now)
         self.keys[expired] = -1
+        self.sequences[expired] = 0
         self.records[expired] = 0
         self.retiring[expired] = False
+        self.pressure_victims[expired] = False
         self.retire_revision[expired] = np.inf
         self.release_after[expired] = np.inf
         self.dirty[expired] = True
@@ -227,8 +240,12 @@ class RGBDBackend:
                     xp.asnumpy, (keys, points, colors, cell, locations, matched, order)
                 )
         slots = occupied[order[locations[matched]]]
-        # A new observation rescues a pressure victim unless the pilot is shrinking the budget.
-        refresh = ~self.retiring[slots] | (self.count <= self.budget)
+        # Carved geometry can be rescued by a fresh observation. Pressure victims
+        # must finish fading: rescuing them on every frame can permanently fill the
+        # pool and exclude new detail. They become eligible again after release.
+        refresh = ~self.retiring[slots] | (
+            ~self.pressure_victims[slots] & (self.count <= self.budget)
+        )
         slots = slots[refresh]
         observed = np.flatnonzero(matched)[refresh]
         self.retiring[slots] = False
@@ -245,6 +262,8 @@ class RGBDBackend:
         slots = np.concatenate((slots, free[:admitted]))
         observed = np.concatenate((observed, selected))
         self.keys[slots] = keys[observed]
+        self.sequences[slots] = self.source_sequence
+        self.captures[slots] = self.source_captured
         self.seen[slots] = now
         self.records[slots, 0, :3] = points[observed]
         self.records[slots, 0, 3] = 0.85
@@ -256,8 +275,8 @@ class RGBDBackend:
         # Keep a little room free: splats the view replaces hold their slots while they
         # fade, and the next frame's own splats must not wait for them.
         spare = max(0, self.budget - self.count) + int(self.retiring.sum())
-        wanted = len(new) - admitted + self.budget // 16
+        wanted = len(new) - admitted + self.budget // 8
         pressure = min(max(0, wanted - spare), max(1, self.budget // 4))
         candidates = np.flatnonzero((self.keys >= 0) & ~self.retiring & (self.seen < now))
         if pressure:
-            self.retire(self.oldest(candidates, pressure))
+            self.retire(self.oldest(candidates, pressure), pressure=True)
