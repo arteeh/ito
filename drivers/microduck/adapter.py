@@ -35,6 +35,7 @@ HEAD_LIMITS = {
 # commands within +-1.40 rad (microduck_rl velocity recipe), and robot.look's IK flips the
 # neck through a singular pose at +-90 degrees: past that the head flails and rolls 30 degrees.
 GAZE_PAN = (-1.40, 1.40)
+PAN_LIMIT = 1.50  # The most the pan trim may aim, short of that flip.
 # mediad's frames reach the driver about 90 ms after robotd reports the head pose they were
 # taken at (encoding, WebRTC, decoding). Measured on the simulated twin by matching
 # MASt3R-SLAM's turns to the robot's: taking the pose from receive time instead puts a
@@ -100,12 +101,13 @@ def steady_heading(samples):
 def yaw_command(rate):
     """The robot.move yaw command that turns the body at about this rate, rad/s.
 
-    Pollen's velstand stands still for yaw commands below about 1 rad/s (dead zone documented
-    in microduck_rl docs/velstand_policy.md); their runtime remap makes it track 0.5-1 rad/s.
+    Velstand v8 (microduck 0.17's policy set) tracks the true command from about 0.5 rad/s up
+    (microduck_rl docs/velstand_policy.md). v7's dead zone needed `0.33 + |rate| / 0.6`, which
+    makes v8 turn about twice as fast as asked.
     """
     if abs(rate) <= 0.05:
         return 0.0
-    return math.copysign(0.33 + abs(rate) / 0.6, rate)
+    return rate
 
 
 def motion_state(data):
@@ -183,6 +185,10 @@ class MicroduckAdapter(Adapter):
         self._ups = deque()
         self._camera_in_trunk = None
         self._trim = gaze.TiltTrim()
+        # The same learned trim for the pan, standing or turning in place (one table): there
+        # robot.look lands a look about 15% short (velstand v8: 51 degrees for 60, 68 for 80;
+        # v7 about 10%). Walking, the trunk's yaw sway would be learned as error.
+        self._pan_trim = gaze.TiltTrim()
         self._looks = Rate()  # robot.look calls answered, and their round trips.
         self._look_ms = deque(maxlen=50)
         self._measured_at = None
@@ -320,6 +326,7 @@ class MicroduckAdapter(Adapter):
                 await self.remote.call("robot.pose", {"active": False})
                 # Hold head and beak: releasing a carried object is not a safe neutral.
                 self._trim.release()
+                self._pan_trim.release()
                 self._neutral_done.set()
                 continue
             state = latest[1]
@@ -336,6 +343,7 @@ class MicroduckAdapter(Adapter):
             self.remote.notify("robot.pose", {"z": -0.025 if crouch else 0.0, "active": crouch})
             if not state.head:
                 self._trim.release()
+                self._pan_trim.release()
                 continue
             # Levelled by the trunk's lean averaged over a gait period: chasing the gait's
             # pitch sway with a head that lags it would add to the camera's swing. A robotd
@@ -347,8 +355,12 @@ class MicroduckAdapter(Adapter):
             )
             gait = gaze.gait(move.forward, move.left, vyaw)
             aim = self._trim(move.tilt, clock.now(), gait)
+            # Short of the IK's singular pose at +-90 degrees, where the head flails.
+            in_place = "standing" if gait in ("standing", "turning") else gait
+            pan = self._pan_trim(move.pan, clock.now(), in_place)
+            pan = min(PAN_LIMIT, max(-PAN_LIMIT, pan))
             x, y, z = gaze.target(
-                move.pan,
+                pan,
                 aim,
                 up,
                 self._camera_in_trunk or (0.0, 0.0, 0.0),
@@ -385,6 +397,8 @@ class MicroduckAdapter(Adapter):
                 gait=gait,
                 pilot_tilt=move.tilt,
                 aimed_tilt=aim,
+                pilot_pan=move.pan,
+                aimed_pan=pan,
                 pilot_roll=move.roll,
                 aimed_roll=roll if rolled else 0.0,
             )
@@ -465,6 +479,10 @@ class MicroduckAdapter(Adapter):
                 values[f"camera_{name}"] = angle
             if self._measured_at is not None:
                 self._trim.measured(values["camera_pitch"], now, now - self._measured_at)
+                if self._pan_trim.gait == "standing":
+                    # The camera's pan off the trunk's heading, as the pilot's pan is measured.
+                    pan = math.remainder(values["camera_yaw"] - values["base_yaw"], math.tau)
+                    self._pan_trim.measured(pan, now, now - self._measured_at)
             self._measured_at = now
         self._telemetry.update(values)
         self._state_at = clock.now()
