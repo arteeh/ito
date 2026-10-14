@@ -79,7 +79,7 @@ def poison_half(self):
 runtime.NetworkPrecision.native_positions = poison_half
 """
     if args.fp16:
-        fault = "import torch\ntorch.cuda.is_bf16_supported = lambda: False\n" + fault
+        fault = "import torch\ntorch.cuda.is_bf16_supported = lambda **kwargs: False\n" + fault
     bootstrap.write_text(
         "import runpy, sys\n"
         + fault

@@ -124,7 +124,11 @@ def load_model(weights, report, *, precision="full", precision_report=None):
         network = NetworkPrecision(model, weights, precision_report)
         if precision == "half":
             try:
-                network.dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+                network.dtype = (
+                    torch.bfloat16
+                    if torch.cuda.is_bf16_supported(including_emulation=False)
+                    else torch.float16
+                )
                 model.to(device="cuda", dtype=network.dtype)
             except (RuntimeError, TypeError, ValueError) as exc:
                 network.fallback(exc)
