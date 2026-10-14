@@ -130,3 +130,8 @@ GPU in one process tree instead of being streamed between programs.
 - The main dev box has no GPU and no headset: desktop mode under `xvfb-run` with Mesa llvmpipe must
   work, and CUDA-only backends must fail with a clear message instead of crashing.
 - Monado with its simulated HMD exercises the OpenXR path without hardware.
+- On the Windows GPU box, all source work happens in WSL (Linux): the clone is `~/Projects/ito/main`,
+  branch worktrees `~/Projects/ito/work/<name>`, test output `~/Projects/ito/out`. Commit there.
+  Windows only builds and runs: `release.ps1 -Branch <branch>` exports the pushed commit (`-Local`:
+  the committed WSL branch) with `git archive` and builds it into `builds\<branch>\ito`. Never edit
+  or check out source on the Windows side.
