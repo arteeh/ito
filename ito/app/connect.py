@@ -13,6 +13,7 @@ from ito.protocol import Credential
 from ito.xr import runtimes
 
 from . import settings
+from .menu_layout import MenuLayout
 
 # Where the last frame drew each control, so e2e scripts click what the pilot sees.
 layout = {}
@@ -45,17 +46,15 @@ class Menu:
         self.error, self.pairing = error, pairing
         self.page = "main"
         self.pending_choice = None
-        self.settings = SettingsScreen(placed)
+        self.layout = MenuLayout(placed)
+        self.settings = SettingsScreen(self.layout)
 
     def draw(self, size, *, xr_mode=False):
         self.settings.poll()
-        imgui.set_next_window_pos((size[0] / 2, size[1] / 2), imgui.Cond_.always, (0.5, 0.5))
-        imgui.begin(
-            "Settings" if self.page == "settings" else "Ito",
-            flags=imgui.WindowFlags_.always_auto_resize
-            | imgui.WindowFlags_.no_move
-            | imgui.WindowFlags_.no_collapse,
-        )
+        with self.layout.window("Settings" if self.page == "settings" else "Ito", size):
+            return self.draw_page(xr_mode=xr_mode)
+
+    def draw_page(self, *, xr_mode):
         choice = None
         layout.clear()
         if self.pending_choice:
@@ -75,60 +74,56 @@ class Menu:
             if self.focus:
                 imgui.set_keyboard_focus_here()
                 self.focus = False
-            imgui.set_next_item_width(300)
-            entered, self.code = imgui.input_text_with_hint(
-                "##code", "123 456", self.code, imgui.InputTextFlags_.enter_returns_true
-            )
+            field, action = self.layout.row(3, 1)
+            with self.layout.field(field):
+                entered, self.code = imgui.input_text_with_hint(
+                    "##code", "123 456", self.code, imgui.InputTextFlags_.enter_returns_true
+                )
             placed("code")
             imgui.same_line()
-            if imgui.button("Pair", (94, 40)) or entered:
+            if self.layout.button("Pair", "pair", action) or entered:
                 if normalize(self.code):
                     choice = Choice(self.pairing, self.xr, normalize(self.code))
                 else:
                     self.error = f"A pairing code is {DIGITS} digits"
-            placed("pair")
-            if imgui.button("Back", (380, 40)):
+            if self.layout.button("Back", "back"):
                 self.pairing = self.error = None
-            placed("back")
         else:
             imgui.text("Robot address")
-            imgui.set_next_item_width(300)
-            entered, self.address = imgui.input_text_with_hint(
-                "##address",
-                "192.168.1.20:8080",
-                self.address,
-                imgui.InputTextFlags_.enter_returns_true,
-            )
+            field, action = self.layout.row(3, 1)
+            with self.layout.field(field):
+                entered, self.address = imgui.input_text_with_hint(
+                    "##address",
+                    "192.168.1.20:8080",
+                    self.address,
+                    imgui.InputTextFlags_.enter_returns_true,
+                )
             placed("address")
             imgui.same_line()
-            if (imgui.button("Connect", (94, 40)) or entered) and self.address.strip():
+            if (
+                self.layout.button("Connect", "connect", action) or entered
+            ) and self.address.strip():
                 typed = self.address.strip()
                 choice = Choice(typed, self.xr, credential=settings.credential(typed))
-            placed("connect")
             if self.recent:
                 imgui.separator_text("Recent robots")
                 for index, entry in enumerate(self.recent):
-                    if imgui.button(f"{entry['name']}  {entry['address']}##{index}", (380, 40)):
+                    if self.layout.button(
+                        f"{entry['name']}  {entry['address']}##{index}", f"recent {index}"
+                    ):
                         choice = Choice(entry["address"], self.xr, credential=entry["credential"])
-                    placed(f"recent {index}")
             imgui.separator()
-            if imgui.button("Try simulated robot", (380, 40)):
+            if self.layout.button("Try simulated robot", "simulated"):
                 choice = Choice(None, self.xr)
-            placed("simulated")
-            if imgui.button("Settings", (380, 40)):
+            if self.layout.button("Settings", "settings"):
                 self.page = "settings"
-            placed("settings")
             if xr_mode or self.headset:
-                if imgui.button("Use desktop menu" if xr_mode else "Open menu in VR", (380, 40)):
+                if self.layout.button("Use desktop menu" if xr_mode else "Open menu in VR", "vr"):
                     choice = Choice(None, not xr_mode, menu=True)
-                placed("vr")
         if self.error:
-            imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + 380)
             imgui.text_colored((1, 0.45, 0.4, 1), self.error)
-            imgui.pop_text_wrap_pos()
         if choice and self.settings.writes:
             self.pending_choice, choice = choice, None
-        imgui.end()
         return choice
 
 

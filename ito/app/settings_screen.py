@@ -10,8 +10,9 @@ from ito.desktop.settings import AppSettings, load, save
 
 
 class SettingsScreen:
-    def __init__(self, placed):
-        self.placed = placed
+    def __init__(self, layout):
+        self.layout = layout
+        self.placed = layout.placed
         self.settings = load()
         self.error = self.save_error = None
         self.typed_splats = str(self.settings.max_splats)
@@ -59,23 +60,17 @@ class SettingsScreen:
     def close(self):
         self.writer.shutdown(wait=True)
 
-    def button(self, label, name, size=(94, 40), disabled=False):
-        imgui.begin_disabled(disabled)
-        selected = imgui.button(label, size)
-        self.placed(name)
-        imgui.end_disabled()
-        return selected
-
     def draw(self, *, xr_mode=False):
         s = self.settings
         imgui.separator_text("MASt3R-SLAM")
         imgui.text("Precision")
+        precision_widths = self.layout.row(1, 1)
         for index, value in enumerate(("full", "half")):
             if index:
                 imgui.same_line()
             if s.precision == value:
                 imgui.push_style_color(imgui.Col_.button, (0.18, 0.42, 0.65, 1))
-            clicked = self.button(value.title(), value, (180, 40))
+            clicked = self.layout.button(value.title(), value, precision_widths[index])
             if s.precision == value:
                 imgui.pop_style_color()
             if clicked and s.precision != value:
@@ -84,25 +79,27 @@ class SettingsScreen:
         imgui.text("Input resolution")
         steps = (25, 50, 75, 100)
         index = steps.index(s.input_resolution)
-        if self.button("-##resolution", "resolution minus", disabled=index == 0):
+        minus, value_width, plus = self.layout.row(1, 1.85, 1)
+        if self.layout.button("-##resolution", "resolution minus", minus, disabled=index == 0):
             self.change(input_resolution=steps[index - 1])
         imgui.same_line()
         value = f"{s.input_resolution}%"
-        self.button(value, "resolution value", (172, 40), True)
+        self.layout.button(value, "resolution value", value_width, disabled=True)
         imgui.same_line()
-        if self.button("+##resolution", "resolution plus", disabled=index == 3):
+        if self.layout.button("+##resolution", "resolution plus", plus, disabled=index == 3):
             self.change(input_resolution=steps[index + 1])
         imgui.text_disabled("Lower: faster, less VRAM, blurrier. Keeps the whole frame.")
         imgui.separator_text("Scene")
         imgui.text("Max splats")
-        if self.button("-##splats", "splats minus", disabled=s.max_splats == 1):
-            self.change(max_splats=max(1, s.max_splats // 2))
+        minus, value_width, plus = self.layout.row(1, 1.85, 1)
+        if self.layout.button("-##splats", "splats minus", minus, disabled=s.max_splats == 1):
+            self.change(max_splats=max(1, ((s.max_splats - 1) // 100_000) * 100_000))
         imgui.same_line()
         if xr_mode:
-            self.button(f"{s.max_splats:,}", "splats value", (172, 40), True)
+            self.layout.button(f"{s.max_splats:,}", "splats value", value_width, disabled=True)
         else:
-            imgui.set_next_item_width(172)
-            edited, self.typed_splats = imgui.input_text("##max splats", self.typed_splats)
+            with self.layout.field(value_width):
+                edited, self.typed_splats = imgui.input_text("##max splats", self.typed_splats)
             self.placed("splats value")
             if edited:
                 try:
@@ -110,8 +107,10 @@ class SettingsScreen:
                 except ValueError:
                     self.error = "Max splats must be a positive whole number."
         imgui.same_line()
-        if self.button("+##splats", "splats plus", disabled=s.max_splats == (1 << 31) - 1):
-            self.change(max_splats=min((1 << 31) - 1, s.max_splats * 2))
+        if self.layout.button(
+            "+##splats", "splats plus", plus, disabled=s.max_splats == (1 << 31) - 1
+        ):
+            self.change(max_splats=min((1 << 31) - 1, (s.max_splats // 100_000 + 1) * 100_000))
         imgui.text_disabled("Higher: more scene detail, more VRAM and draw time.")
         imgui.text_disabled("The live VRAM manager may keep fewer splats.")
         imgui.separator_text("Diagnostics")
@@ -120,25 +119,24 @@ class SettingsScreen:
         enabled = (
             debug.enabled if debug.override is not None or debug.error else s.diagnostic_logging
         )
-        if self.button(
-            "On" if enabled else "Off", "diagnostics", (180, 40), debug.override is not None
+        if self.layout.button(
+            "On" if enabled else "Off", "diagnostics", disabled=debug.override is not None
         ):
             self.change(diagnostic_logging=not enabled)
-        imgui.same_line()
-        imgui.text_disabled("ITO_DEBUG override" if debug.override is not None else "")
+        if debug.override is not None:
+            imgui.text_disabled("ITO_DEBUG override")
         imgui.text_disabled("On: records timings to disk for troubleshooting.")
         if imgui.is_item_hovered():
             imgui.set_tooltip(str(debug.path))
         if debug.error:
             imgui.text_wrapped(debug.error)
         imgui.separator()
-        if self.button("Reset to defaults", "reset", (270, 40)):
+        reset_width, back_width = self.layout.row(3, 1)
+        if self.layout.button("Reset to defaults", "reset", reset_width):
             self.change(**AppSettings().model_dump())
         imgui.same_line()
-        back = self.button("Back", "back", (94, 40))
+        back = self.layout.button("Back", "back", back_width)
         if self.error or self.save_error:
-            imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + 380)
             imgui.text_colored((1, 0.45, 0.4, 1), self.error or self.save_error)
             self.placed("settings error")
-            imgui.pop_text_wrap_pos()
         return back
