@@ -181,6 +181,7 @@ def main():
             shown = subprocess.run(driver + ["--show-code"], check=True, capture_output=True)
             assert b"used by a paired pilot" in shown.stdout, shown.stdout
             codes["credential"] = credential
+            legacy.write_text("[]")
             screenshot("paired")
             click(window.overlay.layout["disconnect"])
             live.clear()
@@ -190,6 +191,8 @@ def main():
             click(at("recent 0"))
             go("remembered piloting")
         elif stage == "remembered piloting" and scene:
+            assert pilot.settings.fov == 70, "Malformed robot settings did not recover"
+            assert pilot.settings.max_splats == 1_000_000
             remembered = pilot.credential.model_dump(include={"pilot", "secret"})
             assert pilot.code is None and len(seen) == 5, "remembered pairing not used"
             assert remembered == codes["credential"], "remembered pairing not used"

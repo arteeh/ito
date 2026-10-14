@@ -12,6 +12,7 @@ from dataclasses import replace
 
 from ito import clock, diagnostics
 from ito.desktop import DesktopState, PilotStatus
+from ito.desktop.settings import load as app_settings
 from ito.link import PairingError, connect
 from ito.link.audio import Audio
 from ito.protocol import Command, FrameMetadata, Motion, Paired, PilotState, Pose, Status
@@ -78,7 +79,7 @@ class Pilot:
         self.credential = credential
         self.refusal = None  # Why the robot refused to pair; the pilot must act.
         self.description = None  # The robot connected last
-        self.settings = defaults or settings.Settings(**settings.AppSettings().model_dump())
+        self.settings = defaults or settings.Settings(**app_settings().model_dump())
         self.defaults = self.settings
         self.splat_limit = splat_limit
         self.overrides = overrides or {}

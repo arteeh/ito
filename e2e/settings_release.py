@@ -36,12 +36,29 @@ def main():
         for _ in range(3):
             app.click(344, 326)  # Resolution -
         app.click(344, 428)  # Splats -
+        # Type a different global count through the real desktop edit box.
+        app.click(455, 417)
+
+        def key(value):
+            scan = release.user32.MapVirtualKeyW(value, 0)
+            param = 1 | (scan << 16) | ((1 << 24) if value == 0x23 else 0)
+            release.user32.PostMessageW(app.window, 0x100, value, param)
+            time.sleep(0.1)
+            release.user32.PostMessageW(app.window, 0x101, value, param | 0xC0000000)
+            time.sleep(0.1)
+
+        key(0x23)  # End
+        for _ in range(6):
+            key(0x08)  # Backspace
+        for character in "375000":
+            release.user32.PostMessageW(app.window, 0x102, ord(character), 0)
+            time.sleep(0.2)
         app.click(385, 545)  # Logging on
         time.sleep(1)
         app.screenshot("settings-lowest")
         values = json.loads(path.read_text())
         assert values == dict(
-            precision="half", input_resolution=25, max_splats=500_000, diagnostic_logging=True
+            precision="half", input_resolution=25, max_splats=375_000, diagnostic_logging=True
         ), values
         app.close()
         app = release.App(args.release.resolve(), env, "restart", "--size", "1000", "800")

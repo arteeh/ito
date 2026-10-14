@@ -31,6 +31,7 @@ def main():
     parser.add_argument("--record", action="store_true")
     parser.add_argument("--fps", type=int, default=90)
     parser.add_argument("--baseline", action="store_true")
+    parser.add_argument("--network-fault", choices=("load", "nan"))
     parser.add_argument("--limit-gib", type=float)
     args = parser.parse_args()
     assert os.name == "nt", "Run in the Windows desktop session"
@@ -46,11 +47,42 @@ def main():
     scripts.mkdir(parents=True, exist_ok=True)
     shutil.copy(Path(__file__).with_name("slam_drive.py"), scripts / "slam_drive.py")
     bootstrap = args.out / "drive.py"
+    fault = ""
+    if args.network_fault == "load":
+        fault = """from ito.reconstruction import mast3r_runtime as runtime
+original = runtime.NetworkPrecision.__init__
+def fail_half(self, *args, **kwargs):
+    import torch
+    original(self, *args, **kwargs)
+    transfer = self.model.to
+    def to(*args, **kwargs):
+        if kwargs.get('dtype') in (torch.bfloat16, torch.float16):
+            raise RuntimeError('Injected Half transfer failure')
+        return transfer(*args, **kwargs)
+    self.model.to = to
+runtime.NetworkPrecision.__init__ = fail_half
+"""
+    elif args.network_fault == "nan":
+        fault = """from ito.reconstruction import mast3r_runtime as runtime
+original = runtime.NetworkPrecision.native_positions
+def poison_half(self):
+    import torch
+    original(self)
+    head = self.model._downstream_head
+    def poisoned(*args, **kwargs):
+        result = head(*args, **kwargs)
+        if self.dtype != torch.float32:
+            result['pts3d'] = torch.full_like(result['pts3d'], float('nan'))
+        return result
+    self.model._downstream_head = poisoned
+runtime.NetworkPrecision.native_positions = poison_half
+"""
     bootstrap.write_text(
         "import runpy, sys\n"
-        "if __name__ == '__main__':\n"
-        f"    sys.path.insert(0, {str(scripts.parent)!r})\n"
-        "    runpy.run_module('e2e.slam_drive', run_name='__main__')\n"
+        + fault
+        + "if __name__ == '__main__':\n"
+        + f"    sys.path.insert(0, {str(scripts.parent)!r})\n"
+        + "    runpy.run_module('e2e.slam_drive', run_name='__main__')\n"
     )
     settings = args.out / "config/ito/settings.json"
     settings.parent.mkdir(parents=True, exist_ok=True)
@@ -104,7 +136,7 @@ def main():
                 "import torch, time\n"
                 f"available = {args.limit_gib} * 2**30\n"
                 "free, total = torch.cuda.mem_get_info()\n"
-                "filler = torch.empty(max(0, int(free - available)), device='cuda', "
+                "filler = torch.empty(max(0, int(total - available)), device='cuda', "
                 "dtype=torch.uint8)\n"
                 "filler.zero_(); torch.cuda.synchronize()\n"
                 "print(torch.cuda.mem_get_info(), flush=True)\n"
@@ -152,8 +184,12 @@ def main():
             values = [r["performance"] for r in live if r.get("performance")]
         else:
             assert values, "No active precision in overlay metrics"
-            assert not values[-1]["precision_fallback"], "Requested precision fell back"
-            assert values[-1]["slam_precision"].startswith(args.precision.title())
+            if args.network_fault:
+                assert values[-1]["precision_fallback"], "Half failure was not reported"
+                assert values[-1]["slam_precision"] == "Full (fp32)"
+            else:
+                assert not values[-1]["precision_fallback"], "Requested precision fell back"
+                assert values[-1]["slam_precision"].startswith(args.precision.title())
         report = dict(
             precision=args.precision,
             resolution=args.resolution,

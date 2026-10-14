@@ -130,10 +130,11 @@ def load_model(weights, report, *, precision="full", precision_report=None):
                 network.fallback(exc)
         else:
             model.to("cuda")
-        network.native_positions()
+        if network.dtype != torch.float32:
+            network.native_positions()
+            for name in ("_encode_image", "_decoder", "_downstream_head"):
+                network.wrap(name)
         network.report()
-        for name in ("_encode_image", "_decoder", "_downstream_head"):
-            network.wrap(name)
         return model
     except (ImportError, OSError, ValueError, RuntimeError) as exc:
         raise RuntimeError(f"MASt3R model could not load from {weights}") from exc
@@ -186,6 +187,8 @@ class NetworkPrecision:
 
             def positions(tokens, pixels, *, original=original):
                 # cuRoPE has no bf16 dispatch. Native CUDA math stays fp32 in either mode.
+                if tokens.dtype == torch.float32:
+                    return original(tokens, pixels)
                 with torch.autocast("cuda", enabled=False):
                     return original(tokens.float(), pixels).to(tokens.dtype)
 
@@ -198,6 +201,9 @@ class NetworkPrecision:
 
         @wraps(original)
         def inference(*args, **kwargs):
+            if self.dtype == torch.float32:
+                return original(*args, **kwargs)
+
             def invoke():
                 with torch.autocast("cuda", dtype=self.dtype, enabled=self.dtype != torch.float32):
                     result = original(*args, **kwargs)

@@ -42,6 +42,8 @@ def load(address, name, defaults):
     path = robot_path(address, name)
     try:
         values = json.loads(path.read_text())
+        if not isinstance(values, dict):
+            raise ValueError("Robot settings must be an object")
         for key in AppSettings.model_fields:
             values.pop(key, None)
         return Settings.model_validate(defaults.model_dump() | values)
