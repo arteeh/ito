@@ -6,6 +6,7 @@ saved mature map with controlled uploads. This is a frozen-renderer load experim
 
 import argparse
 import multiprocessing as mp
+import os
 import time
 from pathlib import Path
 
@@ -51,6 +52,7 @@ def main():
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--seconds", type=float, required=True)
     args = p.parse_args()
+    (args.out / "pid").write_text(str(os.getpid()))
     args.estimates = args.recording / "causal-full"
     args.arm, args.max_splats, args.precision, args.oom_at = "TT", 1_000_000, None, -1
     ctx = mp.get_context("spawn")
@@ -67,10 +69,11 @@ def main():
             return super().available()
 
     status = ctx.Queue()
+    # Stop at the integration boundary so the final audit report is always written.
     worker(
         args,
         Drain(),
-        Feedback(ctx, stop),
+        Feedback(ctx, ctx.RawValue("b", False)),
         Flag(args.out / "ready"),
         Start(args.out / "start"),
         stop,

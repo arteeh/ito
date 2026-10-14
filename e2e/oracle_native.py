@@ -121,7 +121,7 @@ def main():
         if args.load:
             load = args.out / "load"
             load.mkdir(exist_ok=True)
-            for name in ("ready", "start", "stop", "pause"):
+            for name in ("ready", "start", "stop", "pause", "pid"):
                 (load / name).unlink(missing_ok=True)
             linux_out = subprocess.check_output(
                 ["wsl.exe", "--exec", "wslpath", "-u", str(load)], text=True
@@ -228,7 +228,13 @@ def main():
             try:
                 child.wait(15)
             except subprocess.TimeoutExpired:
-                # The owned bridge is the only process terminated; never use process-name kills.
+                # Stop only the PID this owned loader wrote; killing wsl.exe alone can orphan it.
+                pidfile = load / "pid"
+                if pidfile.exists():
+                    pid = str(int(pidfile.read_text()))
+                    subprocess.run(
+                        ["wsl.exe", "--exec", "kill", "-KILL", pid], check=False, timeout=5
+                    )
                 child.terminate()
                 child.wait(10)
         other.release()
