@@ -78,6 +78,7 @@ _frames.FrameJoin.described = _counting_described
 # (gaze yaw degrees, gaze pitch degrees, held keys, seconds to hold once there).
 # Positive yaw looks left. The body follows the gaze once the head runs out of pan.
 ROUTES = {}
+ROUTES["pan"] = [(0, 0, "", 5), (-60, 0, "", 3), (60, 0, "", 3), (0, 0, "", 3)]
 ROUTES["short"] = [
     (0, 0, "", 2),
     (0, 0, "w", 3),

@@ -9,7 +9,26 @@ import os
 import time
 from pathlib import Path
 
+import numpy as np
+
 from e2e import release
+
+
+def button_rows(image):
+    blue = (image[:, :, 2] > 55) & (image[:, :, 2] > image[:, :, 0] + 20)
+    rows = np.flatnonzero(blue.sum(axis=1) > 50)
+    bands = [b for b in np.split(rows, np.flatnonzero(np.diff(rows) > 1) + 1) if len(b)]
+    tallest = max(map(len, bands))
+    result = []
+    for band in bands:
+        if len(band) < tallest * 0.7:
+            continue
+        columns = np.flatnonzero(blue[band].sum(axis=0) > len(band) * 0.5)
+        groups = np.split(columns, np.flatnonzero(np.diff(columns) > 1) + 1)
+        result.append(
+            [(float((g[0] + g[-1]) / 2), float((band[0] + band[-1]) / 2)) for g in groups]
+        )
+    return result
 
 
 def main():
@@ -31,13 +50,14 @@ def main():
         app.click(*buttons[-2 if release.runtimes.installed() else -1])
         time.sleep(1)
         app.screenshot("settings-defaults")
-        # The settings panel is centred and uses fixed-size button rows.
-        app.click(575, 248)  # Half
-        for _ in range(3):
-            app.click(344, 326)  # Resolution -
-        app.click(344, 428)  # Splats -
-        # Type a different global count through the real desktop edit box.
-        app.click(455, 417)
+        shot = 0
+
+        def control(row, column=0):
+            nonlocal shot
+            shot += 1
+            rows = button_rows(app.screenshot(f"controls-{shot:02d}"))
+            assert len(rows) == 5, rows
+            app.click(*rows[row][column])
 
         def key(value):
             scan = release.user32.MapVirtualKeyW(value, 0)
@@ -47,13 +67,34 @@ def main():
             release.user32.PostMessageW(app.window, 0x101, value, param | 0xC0000000)
             time.sleep(0.1)
 
-        key(0x23)  # End
-        for _ in range(6):
-            key(0x08)  # Backspace
-        for character in "375000":
-            release.user32.PostMessageW(app.window, 0x102, ord(character), 0)
-            time.sleep(0.2)
-        app.click(385, 545)  # Logging on
+        def type_splats(value):
+            control(2, 1)
+            key(0x23)  # End
+            for _ in range(10):
+                key(0x08)
+            for character in str(value):
+                release.user32.PostMessageW(app.window, 0x102, ord(character), 0)
+                time.sleep(0.1)
+            time.sleep(0.3)
+            assert json.loads(path.read_text())["max_splats"] == value
+
+        control(0, 1)  # Half
+        for _ in range(3):
+            control(1, 0)
+        for value, column, expected in (
+            (150_000, 2, 200_000),
+            (150_000, 0, 100_000),
+            (124_928, 2, 200_000),
+            (124_928, 0, 100_000),
+            (200_000, 2, 300_000),
+            (100_000, 0, 1),
+        ):
+            type_splats(value)
+            control(2, column)
+            time.sleep(0.3)
+            assert json.loads(path.read_text())["max_splats"] == expected
+        type_splats(375_000)
+        control(3)
         time.sleep(1)
         app.screenshot("settings-lowest")
         values = json.loads(path.read_text())
@@ -68,12 +109,12 @@ def main():
         time.sleep(1)
         app.screenshot("settings-persisted")
         assert json.loads(path.read_text()) == values
-        app.click(432, 611)  # Reset
+        control(4, 0)  # Reset
         time.sleep(0.5)
         assert json.loads(path.read_text()) == dict(
             precision="full", input_resolution=100, max_splats=1_000_000, diagnostic_logging=False
         )
-        app.click(623, 611)  # Back
+        control(4, 1)  # Back
         time.sleep(0.5)
         image = app.screenshot("back")
         app.click(*release.simulated_robot_button(image))

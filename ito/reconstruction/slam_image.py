@@ -1,6 +1,7 @@
 """One uncropped patch grid for MASt3R's image, points and camera calibration."""
 
 import math
+from functools import cache
 
 import numpy as np
 
@@ -15,6 +16,24 @@ def input_size(width, height, percent):
     return (long, short) if width >= height else (short, long)
 
 
+@cache
+def sensor_frame_type():
+    import torch
+    from mast3r_slam.frame import Frame
+
+    class SensorFrame(Frame):
+        def update_pointmap(self, points, confidence):
+            # The patch canvas includes no observation outside the fitted sensor.
+            # Ignore those pixels in tracking as well as scene admission; true black
+            # pixels inside the sensor remain ordinary observations.
+            super().update_pointmap(
+                torch.where(self.sensor_pixels, points, 0),
+                torch.where(self.sensor_pixels, confidence, 0),
+            )
+
+    return SensorFrame
+
+
 class SLAMImage:
     def __init__(self, intrinsics, percent):
         self.width, self.height = input_size(intrinsics.width, intrinsics.height, percent)
@@ -23,6 +42,7 @@ class SLAMImage:
             max(1, round(intrinsics.width * scale)),
             max(1, round(intrinsics.height * scale)),
         )
+        self.sensor_pixels = None
         self.left = (self.width - self.scaled[0]) // 2
         self.top = (self.height - self.scaled[1]) // 2
         sx, sy = self.scaled[0] / intrinsics.width, self.scaled[1] / intrinsics.height
@@ -55,4 +75,14 @@ class SLAMImage:
         # Dimensions are host metadata. The heads inspect them on the CPU; a
         # CUDA shape would add a fence to every head, in Full and Half alike.
         shape = torch.tensor([[self.height, self.width]], dtype=torch.int32)
-        return Frame(index, normalized, shape, shape.clone(), pixels.float() / 255, transform)
+        frame_type = Frame
+        if self.scaled != (self.width, self.height):
+            if self.sensor_pixels is None:
+                sensor = np.zeros((self.height, self.width), bool)
+                sensor[self.top : self.top + height, self.left : self.left + width] = True
+                self.sensor_pixels = torch.as_tensor(sensor, device="cuda").reshape(-1, 1)
+            frame_type = sensor_frame_type()
+        frame = frame_type(index, normalized, shape, shape.clone(), pixels.float() / 255, transform)
+        if self.sensor_pixels is not None:
+            frame.sensor_pixels = self.sensor_pixels
+        return frame

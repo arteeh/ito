@@ -17,9 +17,7 @@ from pathlib import Path
 
 
 def wsl(*args):
-    return subprocess.check_output(
-        ["wsl.exe", "-d", "ito-microduck", "-u", "root", "--exec", *args], text=True
-    ).strip()
+    return subprocess.check_output(["wsl.exe", "--exec", *args], text=True).strip()
 
 
 def main():
@@ -29,9 +27,12 @@ def main():
     parser.add_argument("--precision", choices=("full", "half"), default="full")
     parser.add_argument("--resolution", type=int, choices=(25, 50, 75, 100), default=100)
     parser.add_argument("--record", action="store_true")
+    parser.add_argument("--route", choices=("short", "pan"), default="short")
+    parser.add_argument("--max-splats", type=int, default=1_000_000)
     parser.add_argument("--fps", type=int, default=90)
     parser.add_argument("--baseline", action="store_true")
     parser.add_argument("--profile-network", action="store_true")
+    parser.add_argument("--inspect-points", action="store_true")
     parser.add_argument("--network-fault", choices=("oom", "nan"))
     parser.add_argument("--fp16", action="store_true", help="exercise the non-bf16 GPU path")
     parser.add_argument("--limit-gib", type=float)
@@ -115,6 +116,35 @@ def measured_load(*args, **kwargs):
     return model
 runtime.load_model = measured_load
 """.replace("PROFILE_OUTPUT", repr(str(args.out / "network-profile.json")))
+    if args.inspect_points:
+        fault += """from ito.reconstruction.mast3r_frontend import MASt3RFrontend
+cloud = MASt3RFrontend._cloud
+def inspected_cloud(self, frame, scale):
+    import json, numpy as np
+    result = cloud(self, frame, scale)
+    if frame.frame_id in (30, 75, 120):
+        colors = result.colors.cpu().numpy()
+        valid = result.valid.cpu().numpy()
+        sensor = np.zeros((self.image.height, self.image.width), dtype=bool)
+        w, h = self.image.scaled
+        x, y = self.image.left, self.image.top
+        sensor[y:y+h, x:x+w] = True
+        record = dict(frame=frame.frame_id, points_dtype=str(result.points.dtype),
+                      color_dtype=str(result.colors.dtype), rgb_dtype=str(frame.uimg.dtype),
+                      padding_pixels=int((~sensor).sum()),
+                      admitted_padding=int((valid & ~sensor.ravel()).sum()),
+                      black_padding=int((valid & ~sensor.ravel() & (colors == 0).all(1)).sum()),
+                      black_sensor=int((valid & sensor.ravel() & (colors == 0).all(1)).sum()))
+        with open(INSPECT_OUTPUT, 'a') as output:
+            output.write(json.dumps(record) + '\\n')
+        np.savez(INSPECT_POINTS + str(frame.frame_id) + '.npz',
+                 points=result.points.cpu().numpy(), colors=colors, valid=valid,
+                 sensor=sensor, confidence=frame.C.cpu().numpy())
+    return result
+MASt3RFrontend._cloud = inspected_cloud
+""".replace("INSPECT_OUTPUT", repr(str(args.out / "points.jsonl"))).replace(
+            "INSPECT_POINTS", repr(str(args.out / "points-"))
+        )
     if args.fp16:
         fault = "import torch\ntorch.cuda.is_bf16_supported = lambda **kwargs: False\n" + fault
     bootstrap.write_text(
@@ -131,20 +161,24 @@ runtime.load_model = measured_load
             dict(
                 precision=args.precision,
                 input_resolution=args.resolution,
-                max_splats=1_000_000,
+                max_splats=args.max_splats,
                 diagnostic_logging=True,
             )
         )
     )
-    shared = wsl("wslpath", "-u", str(args.out))
+    shared = (
+        "/" + "/".join(args.out.parts[1:])
+        if args.out.drive.lower().startswith("\\\\wsl.localhost\\")
+        else wsl("wslpath", "-u", str(args.out))
+    )
     ip = wsl("hostname", "-I").split()[0]
     with socket.socket() as probe:
         probe.settimeout(1)
         assert probe.connect_ex((ip, 8081)) != 0, "Microduck already running; leave it alone"
     pidfile = shared + "/sim.pid"
     command = (
-        f"echo $$ > '{pidfile}'; cd /opt/ito; "
-        f"exec /opt/ito/stack/microduck-sim --viewer --logs '{shared}/sim-logs' "
+        f"echo $$ > '{pidfile}'; cd ~; "
+        f"exec .local/share/ito-microduck/microduck-sim --viewer --logs '{shared}/sim-logs' "
         f"--pairing-file '{shared}/pairing-code'"
     )
     filler = None
@@ -153,7 +187,7 @@ runtime.load_model = measured_load
         env["ITO_RECORD"] = str(args.out / "motion")
     simlog = (args.out / "sim.log").open("w")
     sim = subprocess.Popen(
-        ["wsl.exe", "-d", "ito-microduck", "-u", "root", "--exec", "sh", "-c", command],
+        ["wsl.exe", "--exec", "sh", "-c", command],
         stdout=simlog,
         stderr=simlog,
     )
@@ -203,7 +237,9 @@ runtime.load_model = measured_load
                     "--fps",
                     str(args.fps),
                     "--route",
-                    "short",
+                    args.route,
+                    "--turn-rate",
+                    "15" if args.route == "pan" else "45",
                     "--open-loop",
                     "--no-shots",
                     "--startup-timeout",
