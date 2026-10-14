@@ -177,9 +177,11 @@ def worker(args, ring, admission, ready, start, stopped, status):
                     rgb = data["rgb"]
                     began = time.perf_counter()
                     try:
-                        if args.oom_at == cursor:
-                            free, total = torch.cuda.mem_get_info()
-                            torch.empty(total + 1, device="cuda", dtype=torch.uint8)
+                        if args.oom_at == cursor and main:
+                            # WDDM can overcommit more than dedicated VRAM. Request beyond
+                            # the addressable device allocation, without changing any cap.
+                            torch.empty(1 << 60, device="cuda", dtype=torch.uint8)
+                            raise AssertionError("CUDA allocator did not reject the fault")
                         if main:
                             import cv2
 
@@ -210,22 +212,35 @@ def worker(args, ring, admission, ready, start, stopped, status):
                             points = np.stack(
                                 ((x - k.cx) / k.fx * z, -(y - k.cy) / k.fy * z, -z), -1
                             )
-                            engine.add(
-                                Keyframe(
-                                    row["source_frame_id"],
-                                    rgb,
-                                    pose,
-                                    k,
-                                    points,
-                                    rgb,
-                                    (np.isfinite(z) & (z > 0)).astype(np.float32),
-                                    row["captured"],
-                                    depth=z,
+                            seed = engine._seed
+                            if args.oom_at == cursor:
+
+                                def fail_after_seed(*values, seed=seed):
+                                    seed(*values)
+                                    torch.empty(1 << 60, device="cuda", dtype=torch.uint8)
+                                    raise AssertionError("CUDA allocator accepted the fault")
+
+                                engine._seed = fail_after_seed
+                            try:
+                                engine.add(
+                                    Keyframe(
+                                        row["source_frame_id"],
+                                        rgb,
+                                        pose,
+                                        k,
+                                        points,
+                                        rgb,
+                                        (np.isfinite(z) & (z > 0)).astype(np.float32),
+                                        row["captured"],
+                                        depth=z,
+                                    )
                                 )
-                            )
+                            finally:
+                                engine._seed = seed
                         captured = row["captured"]
                         admitted.append(row["source_frame_id"])
                     except torch.cuda.OutOfMemoryError:
+                        args.oom_warning.value = time.perf_counter()
                         oom += 1
                         torch.cuda.empty_cache()
                         # Precision never changes: the incoming observation is dropped.
@@ -257,6 +272,7 @@ def worker(args, ring, admission, ready, start, stopped, status):
                     try:
                         engine.step()
                     except torch.cuda.OutOfMemoryError:
+                        args.oom_warning.value = time.perf_counter()
                         oom += 1
                         for optimizer in engine.optimizers.values():
                             optimizer.zero_grad(set_to_none=True)
@@ -349,6 +365,7 @@ def main():
     admission = Admission(context, stopped)
     ring = UpdateRing(context, 1, 0.5, slots=16)
     status = context.Queue()
+    args.oom_warning = context.RawValue("d", -1)
     child = context.Process(
         target=worker, args=(args, ring, admission, ready, start, stopped, status)
     )
@@ -359,6 +376,11 @@ def main():
     pygame.display.set_mode((640, 640), pygame.OPENGL | pygame.DOUBLEBUF)
     gl = moderngl.create_context(require=430)
     renderer = GaussianRenderer(gl)
+    from ito.desktop.overlay import Overlay, PilotStatus
+
+    overlay = Overlay(gl, args.max_splats)
+    warning_saved = False
+    warning_frames = 0
     k = Intrinsics.model_validate_json((args.recording / "source/camera.json").read_text())
     from measure_gl import projection
 
@@ -491,6 +513,40 @@ def main():
                 )
                 recorder.camera(frame["rgb"], index, now, camera)
                 next_record += 0.1
+            if 0 <= time.perf_counter() - args.oom_warning.value < 10:
+                warning_frames += 1
+                gl.screen.use()
+                gl.screen.clear(0.025, 0.035, 0.055, 1)
+                overlay.begin([], (640, 640), False)
+                overlay.draw(
+                    PilotStatus(
+                        robot="Oracle mapper experiment",
+                        reconstruction=f"Mapper {settings['precision']}; allocation recovered",
+                    ),
+                    90,
+                    renderer.count,
+                    None,
+                    False,
+                    None,
+                    live=True,
+                    performance={
+                        "reconstruction_oom": True,
+                    },
+                    target=gl.screen,
+                )
+                if not warning_saved and warning_frames >= 2:
+                    from OpenGL import GL
+                    from PIL import Image
+
+                    GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, 0)
+                    GL.glReadBuffer(GL.GL_BACK)
+                    pixels = GL.glReadPixels(0, 0, 640, 640, GL.GL_RGB, GL.GL_UNSIGNED_BYTE)
+                    image = Image.frombytes("RGB", (640, 640), pixels)
+                    image.transpose(Image.Transpose.FLIP_TOP_BOTTOM).save(
+                        args.out / "oom-warning.png"
+                    )
+                    warning_saved = True
+                pygame.display.flip()
             last_completion = ended - start.value
             deadline += max(1, missed + 1) / 90
             delay = deadline - time.perf_counter()
@@ -506,6 +562,8 @@ def main():
             child.join()
         if recorder:
             recorder.close()
+        if overlay:
+            overlay.close()
         renderer.close()
         target.release()
         camera_target.release()

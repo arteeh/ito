@@ -265,6 +265,9 @@ class GaussianMap:
         torch = self.torch
         parameters = dict(self.p.items())
         state = self.state.copy()
+        scene_scale = self.scene_scale
+        learning_rates = {k: [g["lr"] for g in o.param_groups] for k, o in self.optimizers.items()}
+        changed, urgent = self.changed.copy(), self.urgent.copy()
         anchors = {n: a.copy() for n, a in self.anchors.items()}
         views = {n: replace(v) for n, v in self.views.items()}
         poses, rotations, slot_poses = (
@@ -272,10 +275,12 @@ class GaussianMap:
             self.rotations.clone(),
             self.slot_poses.copy(),
         )
-        optimizer_states = {
-            k: (o.state.copy(), [g["params"][:] for g in o.param_groups])
-            for k, o in self.optimizers.items()
-        }
+        optimizer_states = {}
+        for key, optimizer in self.optimizers.items():
+            saved = optimizer.state.copy()
+            # gsplat replaces tensors inside each mutable per-parameter state dict.
+            saved.update({parameter: values.copy() for parameter, values in saved.items()})
+            optimizer_states[key] = (saved, [g["params"][:] for g in optimizer.param_groups])
         # Retirement bakes an old anchor in-place; preserve those three arrays too.
         baked = (
             {k: self.p[k].detach().clone() for k in ("means", "quats", "owner")}
@@ -286,6 +291,7 @@ class GaussianMap:
             self._add(frame)
         except torch.cuda.OutOfMemoryError:
             self.p = torch.nn.ParameterDict(parameters)
+            self.scene_scale, self.changed, self.urgent = scene_scale, changed, urgent
             self.state, self.anchors, self.views = state, anchors, views
             self.poses, self.rotations, self.slot_poses = poses, rotations, slot_poses
             with torch.no_grad():
@@ -296,6 +302,8 @@ class GaussianMap:
                 optimizer.state = saved
                 for group, values in zip(optimizer.param_groups, groups, strict=True):
                     group["params"] = values
+                for group, rate in zip(optimizer.param_groups, learning_rates[key], strict=True):
+                    group["lr"] = rate
             raise
 
     def _add(self, frame):
