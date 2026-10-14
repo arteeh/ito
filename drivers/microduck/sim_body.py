@@ -9,6 +9,7 @@ import struct
 import sys
 import threading
 import time
+from pathlib import Path
 
 import mujoco
 import numpy as np
@@ -51,6 +52,28 @@ class HeadCamera(Camera):
         # blur the simulator otherwise never shows (drive (f) of #36). The exposure is their
         # span; the truth pose is the middle one's.
         self.blur = max(1, int(os.environ.get("ITO_MICRODUCK_BLUR", 1)))
+        recording = os.environ.get("ITO_MICRODUCK_RGBD_RECORD")
+        self.rgbd = Path(recording) if recording else None
+        self.source_frame_id = 0
+        if self.rgbd:
+            if self.blur != 1:
+                raise ValueError("Exact RGB-D recording requires instantaneous sim exposure")
+            self.rgbd.mkdir(parents=True, exist_ok=False)
+            focal = lens.focal_px(width)
+            (self.rgbd / "camera.json").write_text(
+                json.dumps(
+                    dict(
+                        width=height,
+                        height=width,
+                        fx=focal,
+                        fy=focal,
+                        cx=height / 2 - 1,
+                        cy=width / 2,
+                    )
+                )
+            )
+            self.rgbd_index = (self.rgbd / "frames.jsonl").open("w", buffering=1)
+            atexit.register(self.rgbd_index.close)
 
     def render(self, world):
         option = mujoco.MjvOption()
@@ -60,7 +83,7 @@ class HeadCamera(Camera):
         for _ in range(self.blur):
             with world.lock:
                 self.renderer.update_scene(world.data, camera=self.camera, scene_option=option)
-                if self.truth:
+                if self.truth or self.rgbd:
                     camera = np.eye(4)
                     # MuJoCo's world (z up) and camera to Ito's (y up), the image upright.
                     camera[:3, :3] = (
@@ -73,6 +96,36 @@ class HeadCamera(Camera):
             self.renderer.scene.flags[mujoco.mjtRndFlag.mjRND_SHADOW] = False
             frames.append(self.renderer.render().copy())
         rgb = frames[0] if self.blur == 1 else np.mean(frames, axis=0).astype(np.uint8)
+        if self.rgbd:
+            # The copied MjvScene is the RGB scene, even if physics advanced meanwhile.
+            self.renderer.enable_depth_rendering()
+            depth = self.renderer.render().copy()
+            self.renderer.disable_depth_rendering()
+            taken, camera = poses[0]
+            name = f"{self.source_frame_id:06d}.npz"
+            np.savez(
+                self.rgbd / name,
+                rgb=np.rot90(rgb, -1).copy(),
+                depth=np.rot90(depth, -1).copy(),
+                camera=camera,
+            )
+            self.rgbd_index.write(
+                json.dumps(
+                    dict(
+                        source_frame_id=self.source_frame_id,
+                        file=name,
+                        captured=taken,
+                        available=time.perf_counter(),
+                        exposure_duration=0,
+                        readout_duration=0,
+                        exposure_status="sim instantaneous",
+                        readout_status="global",
+                        coordinate_revision=0,
+                    )
+                )
+                + "\n"
+            )
+            self.source_frame_id += 1
         if self.truth:
             taken, camera = poses[len(poses) // 2]
             self.truth.write(

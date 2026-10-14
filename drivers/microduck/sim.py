@@ -68,6 +68,7 @@ def simulation(
     gl=None,
     camera_height=360,
     truth=None,
+    rgbd_record=None,
     blur=1,
 ):
     upstream, rl, policies_dir = (p.resolve() for p in (upstream, rl, policies_dir))
@@ -84,6 +85,8 @@ def simulation(
     }
     if truth is not None:
         sim_env["ITO_MICRODUCK_TRUTH"] = str(Path(truth).resolve())
+    if rgbd_record is not None:
+        sim_env["ITO_MICRODUCK_RGBD_RECORD"] = str(Path(rgbd_record).resolve())
     sim_env["ITO_MICRODUCK_BLUR"] = str(blur)
     on_screen = sim_env["MUJOCO_GL"] == "glfw"
     if on_screen and Path("/dev/dxg").exists() and "GALLIUM_DRIVER" not in os.environ:
@@ -317,6 +320,9 @@ def main():
         "--truth", type=Path, help="write each head camera frame's true pose here (JSONL)"
     )
     parser.add_argument(
+        "--rgbd-record", type=Path, help="save exact upright RGB, axial depth and camera poses"
+    )
+    parser.add_argument(
         "--blur",
         type=int,
         default=1,
@@ -350,6 +356,7 @@ def main():
             gl=args.gl,
             camera_height=args.camera_height,
             truth=args.truth,
+            rgbd_record=args.rgbd_record,
             blur=args.blur,
         ) as sim:
             addresses = [args.host]
