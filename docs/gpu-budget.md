@@ -16,8 +16,8 @@ memory). Below a 512 MiB margin it releases Torch/CuPy cached blocks; if still s
 it lowers the splat limit, fading the least recently seen splats, moves the rest below
 the new limit and gives the slots back, so the GL buffer shrinks too. With more than
 twice the margin free, the limit grows again. Slots are allocated on demand, doubling
-up to the limit. The limit is the pilot's Max splats (default 524,288, which also bounds
-per-frame sorting and drawing) or less when VRAM is short; GL's buffer size is the only
+up to the limit. The limit is the pilot's app-wide Max splats (default 1,000,000, which
+also bounds per-frame sorting and drawing) or less when VRAM is short; GL's buffer size is the only
 fixed ceiling. Releases and shrinks are logged.
 
 Slot pressure fades the oldest observations, reserves space for incoming detail and
