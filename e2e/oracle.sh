@@ -3,6 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 output="$HOME/Projects/ito/out/oracle-40"
+export GST_PLUGIN_PATH="$HOME/.local/share/ito-microduck/gst-plugins-rs/target/debug${GST_PLUGIN_PATH:+:$GST_PLUGIN_PATH}"
 export DISPLAY=:0 GALLIUM_DRIVER=d3d12 PYTHONPATH="$PWD" PYTHONUTF8=1
 export LD_LIBRARY_PATH="/usr/lib/wsl/lib:$output/cuda/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 for library in "$PWD"/.venv/lib/python*/site-packages/nvidia/*/lib; do
@@ -12,4 +13,7 @@ export PATH="$PWD/.venv/bin:$PATH"
 export CUDA_HOME="$output/cuda"
 export CXX="$output/gcc/root/usr/bin/g++-13" CC="$output/gcc/root/usr/bin/gcc-13"
 export TORCH_CUDA_ARCH_LIST=8.9 MAX_JOBS=4
+if [[ "${ITO_ORACLE_LOCK_HELD:-0}" == 1 ]]; then
+    exec .venv/bin/python "$@"
+fi
 exec flock /mnt/c/Users/me/Projects/ito/ceres.lock .venv/bin/python "$@"
