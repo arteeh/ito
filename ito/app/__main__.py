@@ -91,12 +91,6 @@ def main(argv=None, *, on_frame=None):
     if code is not None and (code := normalize(code)) is None:
         parser.error(f"a pairing code is {DIGITS} digits")
     configure_logging()
-    app_settings = load()
-    if args.max_splats is not None:
-        app_settings = AppSettings.model_validate(
-            app_settings.model_dump() | {"max_splats": args.max_splats}
-        )
-        save(app_settings)
     diagnostics.current()
     overrides = {
         key: getattr(args, key)
@@ -129,6 +123,11 @@ def main(argv=None, *, on_frame=None):
     try:
         Audio(args.audio_source, args.audio_sink)  # Validate before any window opens.
         Settings.model_validate(Settings().model_dump() | overrides)
+        if args.max_splats is not None:
+            selected = AppSettings.model_validate(
+                load().model_dump() | {"max_splats": args.max_splats}
+            )
+            save(selected)
         if args.frames < 0 or not 1 <= args.cameras <= 16:
             raise ValueError("frames must be nonnegative and cameras between 1 and 16")
         if args.metrics:
