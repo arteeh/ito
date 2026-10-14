@@ -27,8 +27,9 @@ INTERVAL = 0.5
 
 
 class VRAM:
-    def __init__(self, xp, torch, note):
+    def __init__(self, xp, torch, note, *, slot_bytes=SLOT_BYTES):
         self.xp, self.torch, self.note = xp, torch, note
+        self.slot_bytes = slot_bytes
         self.gpu = GPU(xp.cuda.runtime.getDevice())
         self.next_check = 0.0
         self.last_release = -RELEASE_COOLDOWN
@@ -80,7 +81,7 @@ class VRAM:
         self.cached_bytes = self.cached()
         self.pressure = free < FLOOR_BYTES
         if free >= MARGIN_BYTES:
-            self.fit = slots + (free - MARGIN_BYTES) // SLOT_BYTES
+            self.fit = slots + (free - MARGIN_BYTES) // self.slot_bytes
         elif not self.pressure:
             # Between floor and margin: keep what is allocated, grow no further.
             self.fit = slots if self.fit is None else min(self.fit, slots)
@@ -92,7 +93,7 @@ class VRAM:
             self.fit = slots if self.fit is None else min(self.fit, slots)
         elif settled:
             # At most half per step: the next readings show whether that was enough.
-            shortfall = -(-(MARGIN_BYTES - free) // SLOT_BYTES)
+            shortfall = -(-(MARGIN_BYTES - free) // self.slot_bytes)
             fit = max(MIN_SLOTS, slots - shortfall, slots // 2)
             if self.fit is None or fit < self.fit:
                 self.fit = fit

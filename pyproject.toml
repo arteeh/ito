@@ -72,6 +72,7 @@ explicit = true
 packages = ["ito", "drivers"]
 
 [dependency-groups]
+oracle = ["gsplat==1.5.3"]
 dev = [
     "pillow>=12.3.0",
     "psutil>=7,<8",
