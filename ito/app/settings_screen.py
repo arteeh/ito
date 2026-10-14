@@ -86,7 +86,7 @@ class SettingsScreen:
         imgui.separator_text("Diagnostics")
         debug = diagnostics.current()
         imgui.text("Diagnostic logging")
-        enabled = debug.enabled if debug.override is not None else s.diagnostic_logging
+        enabled = debug.enabled
         if self.button(
             "On" if enabled else "Off", "diagnostics", (180, 40), debug.override is not None
         ):

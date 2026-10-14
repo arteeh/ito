@@ -23,7 +23,7 @@ from ito.protocol import Intrinsics
 from ito.reconstruction import Reconstruction
 from ito.render import perspective, pose
 
-OUTPUT = Path("e2e/out/reconstruction")
+OUTPUT = Path(os.environ.get("ITO_E2E_OUT", "e2e/out/reconstruction"))
 CAMERA = Intrinsics(width=96, height=72, fx=58, fy=58, cx=47.5, cy=35.5)
 BUDGET = 4096
 
@@ -194,10 +194,17 @@ def main():
         last_tick = clock.now()
         ticks = 0
         captures = set()
+        ready = False
 
         def drive(pilot):
-            nonlocal last_tick, ticks
+            nonlocal last_tick, ticks, began, ready
             now = clock.now()
+            if not ready:
+                assert now - began < 30, "No initial reconstruction"
+                if not source.revisions:
+                    return
+                began = last_tick = now
+                ready = True
             elapsed = now - began
             samples.append((elapsed, now - last_tick))
             last_tick = now

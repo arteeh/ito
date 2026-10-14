@@ -21,10 +21,11 @@ from OpenGL import GL
 from ito import clock
 from ito.app import connect
 from ito.app.__main__ import main as pilot_main
+from ito.app.settings import robot_path
 from ito.driver import pairing
 from ito.link.pairing import display
 
-OUT = Path("e2e/out/connect")
+OUT = Path(os.environ.get("ITO_E2E_OUT", "e2e/out/connect"))
 
 
 def network_address():
@@ -78,6 +79,9 @@ def main():
         probe.bind(("0.0.0.0", 0))
         port = probe.getsockname()[1]
     address = f"{network_address()}:{port}"
+    legacy = robot_path(address, "room")
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text(json.dumps({"max_splats": 1, "fov": 75}))
     driver = [sys.executable, "-m", "drivers.mujoco.cli", "--pairing-file", str(code_file)]
     log = (OUT / "driver.log").open("w")
     robot = subprocess.Popen(
@@ -162,6 +166,9 @@ def main():
         elif stage == "paired" and scene and pairing.paired_pilot(code_file):
             # The typed code is spent: the robot gave this pilot its own secret instead.
             assert pilot.address == address and pilot.code is None, pilot.address
+            assert pilot.settings.max_splats == 1_000_000, "Legacy robot budget leaked"
+            assert pilot.settings.fov == 75, "Robot comfort setting was lost"
+            assert "max_splats" not in json.loads(legacy.read_text())
             credential = pilot.credential.model_dump(include={"pilot", "secret"})
             saved = json.loads(recent.read_text())
             if os.name != "nt":

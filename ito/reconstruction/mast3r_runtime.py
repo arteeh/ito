@@ -130,6 +130,7 @@ def load_model(weights, report, *, precision="full", precision_report=None):
                 network.fallback(exc)
         else:
             model.to("cuda")
+        network.native_positions()
         network.report()
         for name in ("_encode_image", "_decoder", "_downstream_head"):
             network.wrap(name)
@@ -159,8 +160,10 @@ class NetworkPrecision:
         import torch
         from safetensors.torch import load_file
 
-        self.reason = str(error)
-        logging.getLogger(__name__).warning("MASt3R Half failed; falling back to Full: %s", error)
+        self.reason = str(error).splitlines()[0]
+        logging.getLogger(__name__).warning(
+            "MASt3R Half failed; falling back to Full: %s", self.reason
+        )
         # Restore original fp32 weights, rather than promoting rounded Half weights.
         self.model.to(device="cpu", dtype=torch.float32)
         self.model.load_state_dict(load_file(self.weights / "model.safetensors"), strict=False)
@@ -168,6 +171,19 @@ class NetworkPrecision:
         self.model.to("cuda")
         self.dtype = torch.float32
         self.report()
+
+    def native_positions(self):
+        import torch
+
+        rope = self.model.rope
+        original = rope.forward
+
+        def positions(tokens, pixels):
+            # cuRoPE has no bf16 dispatch. Native CUDA math stays fp32 in either mode.
+            with torch.autocast("cuda", enabled=False):
+                return original(tokens.float(), pixels).to(tokens.dtype)
+
+        rope.forward = positions
 
     def wrap(self, name):
         import torch
