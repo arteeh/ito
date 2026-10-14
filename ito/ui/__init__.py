@@ -60,7 +60,7 @@ class Theme:
         if self.prepared != (size, scale):
             self.prepared = (size, scale)
             for font in self.art.fonts.values():
-                for pixels in (BASE * scale, BASE * 1.6 * scale):
+                for pixels in (BASE * scale, BASE * scale * scale, BASE * 1.6 * scale * scale):
                     baked = font.get_font_baked(pixels)
                     for code in range(32, 127):
                         baked.find_glyph(code)

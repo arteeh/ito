@@ -178,9 +178,26 @@ class Overlay:
         if xr_mode:
             # The VR quad hangs centred ahead of the pilot: centre the window on it. A steady
             # minimum width keeps the controls from shifting as status text changes length.
-            width, _ = imgui.get_io().display_size
+            width, height = imgui.get_io().display_size
+            maximum_height = height - 36
+            stopped = status.link == "CONNECTED" and (
+                not status.armed or status.e_stop or status.detail.startswith("fault")
+            )
+            if stopped or self.theme.stopped.alpha(self.theme.t) > 0:
+                # Reserve the safety prompt's two display lines and body line. Long status
+                # details scroll within the HUD instead of hiding a safety control.
+                style = imgui.get_style()
+                scale = style.font_scale_main * style.font_scale_dpi
+                prompt_height = (
+                    imgui.get_font_size() * (3.2 * scale + 1)
+                    + 3 * style.item_spacing.y
+                    + 2 * style.window_padding.y
+                )
+                maximum_height -= prompt_height + 12
             imgui.set_next_window_pos((width / 2, 12), imgui.Cond_.always, (0.5, 0))
-            imgui.set_next_window_size_constraints((min(580, width - 24), 0), (width - 24, 1e9))
+            imgui.set_next_window_size_constraints(
+                (min(580, width - 24), 0), (width - 24, max(100, maximum_height))
+            )
         else:
             imgui.set_next_window_pos((12, 12), imgui.Cond_.always)
         imgui.set_next_window_bg_alpha(0.9)

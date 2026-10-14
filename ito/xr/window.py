@@ -24,7 +24,7 @@ from ito.render.pose import quaternion
 
 from .dispatch import XRDispatch
 from .input import VALID, Actions
-from .session import HEADSET_POLL, HEADSET_WAIT, Session
+from .session import HEADSET_POLL, HEADSET_WAIT, HUD_PANEL_PIXELS, Session
 
 log = logging.getLogger(__name__)
 PANEL_LINGER = 0.5  # The panel stays this long after the controller stops pointing at it.
@@ -32,7 +32,7 @@ PANEL_LINGER = 0.5  # The panel stays this long after the controller stops point
 # them, so it is centred and readable with a glance down but never covers the scene ahead.
 PANEL_DISTANCE = 1.2
 PANEL_DROP = math.radians(25)
-PANEL_SIZE = (1.05, 1.05 * 440 / 768)
+PANEL_SIZE = (1.05, 1.05 * HUD_PANEL_PIXELS[1] / HUD_PANEL_PIXELS[0])
 # It follows the head lazily: it starts to follow once the gaze leaves it by SLACK, glides
 # with time constant FOLLOW until it is centred again (within SETTLED), and holds still while
 # a controller points at a control on it. A glance down at it, a pitch of up to the drop,
