@@ -1,6 +1,8 @@
 """Desktop tracking and input, using SDL's standardized controller mappings."""
 
+import logging
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -11,6 +13,8 @@ from ito import clock, diagnostics
 from ito.protocol import Pose
 from ito.render import pose
 from ito.render.scene import FloatArray
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -35,6 +39,9 @@ class DesktopInput:
         self.speed = speed
         self.position = np.zeros(3, dtype=np.float32)
         self.yaw = self.pitch = 0.0
+        # Yaw the robot's camera looks along now (radians, positive to the left): Home turns
+        # the view there, so recentering never swings the robot back to where it started.
+        self.heading: Callable[[], float] = lambda: 0.0
         self.captured = False
         self.grabbing: str | None = None  # "batch", then "baseline": motion not to look with
         self.active = True
@@ -125,8 +132,7 @@ class DesktopInput:
                             ]
                         )
                     elif event.key == pygame.K_HOME:
-                        self.position[:] = 0
-                        self.yaw = self.pitch = 0.0
+                        self.recenter()
             elif event.type == pygame.KEYUP:
                 self.keys.discard(event.key)
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and self.active:
@@ -208,6 +214,17 @@ class DesktopInput:
             quit_requested,
             screenshot,
         )
+
+    def recenter(self) -> None:
+        """Put the view back on the robot: at its camera, level, looking where it looks now."""
+        try:
+            heading = float(self.heading())
+        except Exception:
+            log.exception("Robot heading unavailable; recentering to the start heading")
+            heading = 0.0
+        self.position[:] = 0
+        self.yaw = math.remainder(heading, 2 * math.pi) if math.isfinite(heading) else 0.0
+        self.pitch = 0.0
 
     def close(self) -> None:
         self.capture(False)
