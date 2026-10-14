@@ -36,6 +36,30 @@ not "operator", not "user" when the pilot is meant.
 - UI is Dear ImGui (imgui-bundle): a window in desktop mode, and the same UI drawn to a texture on
   a panel in VR. No hand-built widget toolkit.
 
+## Project management
+
+The GitHub project board **Ito** (https://github.com/users/arteeh/projects/1) is where Ito's work
+is planned and tracked. If it is not on the board, nobody is working on it. Read the board before
+starting, and keep it current while you work.
+
+- **Only issues go on the board.** Every piece of work has an issue; every PR belongs to one and
+  says `Closes #N` in its body. No PR without an issue.
+- **Status** (the board's columns):
+  - `issues` — everything incoming, from anyone, including ideas and prototypes.
+  - `backlog` — handpicked by the owner to be worked on. Only the owner moves issues here.
+  - `in-progress` — someone is working on it. A PR is not required yet.
+  - `in-review` — a PR with `Closes #N` is open.
+  - `in-main` — merged to main. For now merging also closes the issue.
+  - `in-beta`, `released` — unused until 1.0 (later: beta branch off main with feature freeze,
+    then closed in a release).
+- Take work from `backlog`. Move the issue to `in-progress` when you start and to `in-review` when
+  the PR opens; the merge moves it to `in-main`. A research or prototype result that is not merged
+  stays in `in-review` or goes back to `issues`, with the outcome written on the issue.
+- New problems or ideas found along the way become new issues in `issues`, not scope added to
+  the current one.
+- With `gh`: `gh project item-add 1 --owner arteeh --url <issue-url>`, then
+  `gh project item-edit` on the Status field. The token needs the `project` scope.
+
 ## Commits
 
 Every commit, by a person or a coding agent, has one identity as both author and committer:
