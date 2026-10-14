@@ -29,6 +29,8 @@ def main():
     parser.add_argument("--precision", choices=("full", "half"), default="full")
     parser.add_argument("--resolution", type=int, choices=(25, 50, 75, 100), default=100)
     parser.add_argument("--record", action="store_true")
+    parser.add_argument("--fps", type=int, default=90)
+    parser.add_argument("--baseline", action="store_true")
     parser.add_argument("--limit-gib", type=float)
     args = parser.parse_args()
     assert os.name == "nt", "Run in the Windows desktop session"
@@ -126,6 +128,8 @@ def main():
                     code,
                     "--out",
                     str(args.out),
+                    "--fps",
+                    str(args.fps),
                     "--route",
                     "short",
                     "--open-loop",
@@ -144,9 +148,12 @@ def main():
         live = [r for r in rows if r["link"] == "CONNECTED" and not r["flat_video"]]
         assert live, "No reconstructed view"
         values = [r["performance"] for r in live if r.get("performance", {}).get("slam_precision")]
-        assert values, "No active precision in overlay metrics"
-        assert not values[-1]["precision_fallback"], "Requested precision fell back"
-        assert values[-1]["slam_precision"].startswith(args.precision.title())
+        if args.baseline:
+            values = [r["performance"] for r in live if r.get("performance")]
+        else:
+            assert values, "No active precision in overlay metrics"
+            assert not values[-1]["precision_fallback"], "Requested precision fell back"
+            assert values[-1]["slam_precision"].startswith(args.precision.title())
         report = dict(
             precision=args.precision,
             resolution=args.resolution,

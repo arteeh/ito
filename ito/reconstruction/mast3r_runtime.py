@@ -175,15 +175,21 @@ class NetworkPrecision:
     def native_positions(self):
         import torch
 
-        rope = self.model.rope
-        original = rope.forward
+        # MASt3R deep-copies the second decoder, including its separate RoPE module.
+        ropes = {
+            module.rope
+            for module in self.model.modules()
+            if getattr(module, "rope", None) is not None
+        }
+        for rope in ropes:
+            original = rope.forward
 
-        def positions(tokens, pixels):
-            # cuRoPE has no bf16 dispatch. Native CUDA math stays fp32 in either mode.
-            with torch.autocast("cuda", enabled=False):
-                return original(tokens.float(), pixels).to(tokens.dtype)
+            def positions(tokens, pixels, *, original=original):
+                # cuRoPE has no bf16 dispatch. Native CUDA math stays fp32 in either mode.
+                with torch.autocast("cuda", enabled=False):
+                    return original(tokens.float(), pixels).to(tokens.dtype)
 
-        rope.forward = positions
+            rope.forward = positions
 
     def wrap(self, name):
         import torch

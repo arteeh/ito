@@ -28,6 +28,7 @@ import psutil
 import pygame
 
 from ito import clock
+from ito.xr import runtimes
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "e2e/out/release"
@@ -200,17 +201,19 @@ class App:
         log(f"{self.name}: closed, exit 0")
 
 
+def menu_buttons(image):
+    """Blue button bands in the centre of the real main menu, top to bottom."""
+    width = image.shape[1]
+    middle = image[:, width // 2 - 180 : width // 2 + 180]
+    blue = (middle[:, :, 2] > 90) & (middle[:, :, 2] > middle[:, :, 0] + 40)
+    rows = np.flatnonzero(blue.sum(axis=1) > 180)
+    groups = np.split(rows, np.flatnonzero(np.diff(rows) > 1) + 1)
+    return [(width // 2, float((group[0] + group[-1]) / 2)) for group in groups if len(group) > 20]
+
+
 def simulated_robot_button(image):
-    """The lowest button on the connect panel, found by colour so DPI and fonts do not matter."""
-    column = image[:, image.shape[1] // 2]
-    blue = (column[:, 2] > 90) & (column[:, 2] > column[:, 0] + 40)
-    rows = np.flatnonzero(blue)
-    assert len(rows), "No connect panel buttons visible"
-    bottom = rows[-1]
-    top = bottom
-    while top - 1 in rows:
-        top -= 1
-    return image.shape[1] // 2, (top + bottom) / 2
+    buttons = menu_buttons(image)
+    return buttons[-3 if runtimes.installed() else -2]
 
 
 def live(rows, *, flat, after=0.0):

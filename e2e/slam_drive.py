@@ -181,6 +181,7 @@ def main():
     parser.add_argument("--record", type=Path, help="save the frames reconstruction received")
     parser.add_argument("--route", choices=sorted(ROUTES), default="short")
     parser.add_argument("--laps", type=int, default=1)
+    parser.add_argument("--fps", type=int, default=60)
     parser.add_argument(
         "--turn-rate", type=float, default=45, help="degrees/s the pilot's head turns"
     )
@@ -579,7 +580,7 @@ def main():
             "1280",
             "720",
             "--fps",
-            "60",
+            str(args.fps),
             "--reconstruction",
             args.reconstruction,
             "--audio-source",
