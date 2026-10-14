@@ -34,12 +34,13 @@ checkout() {
         git init "$dest"
         git -C "$dest" remote add origin "$url"
     fi
-    if ! git -C "$dest" rev-parse --verify HEAD >/dev/null 2>&1; then
+    # A moved pin is fetched and checked out over the old one; git refuses if it was edited.
+    if [ "$(git -C "$dest" rev-parse --verify -q HEAD)" != "$revision" ]; then
         git -C "$dest" fetch --depth 1 origin "$revision"
         git -C "$dest" checkout --detach FETCH_HEAD
     fi
     [ "$(git -C "$dest" rev-parse HEAD)" = "$revision" ] || {
-        echo "Unexpected revision in $dest; use a fresh prefix" >&2; exit 1;
+        echo "Unexpected revision in $dest" >&2; exit 1;
     }
 }
 # Pins are the third_party/ submodule gitlinks (upstream, unmodified).
