@@ -31,7 +31,7 @@ def main():
     pygame.display.set_mode((1280, 960), pygame.OPENGL | pygame.DOUBLEBUF)
     context = moderngl.create_context()
     overlay = Overlay(context, 1_000_000)
-    menu = connect.Menu(SimpleNamespace())
+    menu = connect.Menu(SimpleNamespace(overlay=overlay))
     menu.headset = True
     menu.recent = [dict(name="Microduck", address="172.29.91.193:8081", credential=None)]
     menu.address = menu.recent[0]["address"]
@@ -42,7 +42,7 @@ def main():
         menu.draw(size, xr_mode=size == (768, 768))
         context.screen.use()
         context.viewport = (0, 0, *size)
-        context.clear(0.05, 0.06, 0.07)
+        context.clear(*overlay.theme.color("clear"))
         overlay.render()
         if shot:
             screenshot(size, shot)
@@ -69,8 +69,11 @@ def main():
             style.font_scale_main = scale
             for page in ("main", "settings"):
                 menu.page = page
-                for _ in range(3):
+                overlay.theme.show(page, "menu")
+                until = imgui.get_time() + 2.2
+                while imgui.get_time() < until:
                     frame(size)
+                    pygame.time.wait(11)
                 facts.append(
                     dict(size=size, scale=scale, page=page, controls=connect.layout.copy())
                 )
@@ -78,6 +81,11 @@ def main():
         pygame.display.set_mode((1280, 960), pygame.OPENGL | pygame.DOUBLEBUF)
         style.font_scale_main = 1
         menu.page = "settings"
+        overlay.theme.show("settings", "menu")
+        until = imgui.get_time() + 0.2
+        while imgui.get_time() < until:
+            frame((1280, 960))
+            pygame.time.wait(11)
         for value, action, expected in (
             (150_000, "plus", 200_000),
             (150_000, "minus", 100_000),

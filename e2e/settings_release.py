@@ -15,19 +15,25 @@ from e2e import release
 
 
 def button_rows(image):
-    blue = (image[:, :, 2] > 55) & (image[:, :, 2] > image[:, :, 0] + 20)
-    rows = np.flatnonzero(blue.sum(axis=1) > 50)
+    controls = release.control_pixels(image)
+    rows = np.flatnonzero(controls.sum(axis=1) > 50)
     bands = [b for b in np.split(rows, np.flatnonzero(np.diff(rows) > 1) + 1) if len(b)]
     tallest = max(map(len, bands))
     result = []
     for band in bands:
         if len(band) < tallest * 0.7:
             continue
-        columns = np.flatnonzero(blue[band].sum(axis=0) > len(band) * 0.5)
+        columns = np.flatnonzero(controls[band].sum(axis=0) > len(band) * 0.5)
         groups = np.split(columns, np.flatnonzero(np.diff(columns) > 1) + 1)
-        result.append(
-            [(float((g[0] + g[-1]) / 2), float((band[0] + band[-1]) / 2)) for g in groups]
-        )
+        groups = [group for group in groups if len(group) > 40]
+        centres = []
+        for index, group in enumerate(groups):
+            if index and group[0] - groups[index - 1][-1] > 40:
+                # The numeric input is dark glass between the two cyan step buttons.
+                centres.append(float((group[0] + groups[index - 1][-1]) / 2))
+            centres.append(float((group[0] + group[-1]) / 2))
+        result.append([(x, float((band[0] + band[-1]) / 2)) for x in centres])
+
     return result
 
 
