@@ -75,6 +75,7 @@ class Theme:
 
     def menu(self):
         intro = self.kind != "menu"
+        self.prepared = None  # Reacquire baked glyphs after a session may have evicted them.
         self.name = self.previous = None
         self.leaving = False
         self.start_leave = False

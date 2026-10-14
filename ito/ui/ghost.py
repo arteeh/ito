@@ -321,6 +321,11 @@ class GhostRite:
         if widest > room:
             pixels *= room / widest
         baked = font.get_font_baked(pixels)
+        # Loading glyphs may move ImGui's glyph vector. Retain references only after all
+        # inscription characters exist, so cache entries cannot point into the old storage.
+        for char in "0123456789abcdef /":
+            baked.find_glyph(ord(char))
+        self.ring_baked = baked
         self.ring_glyphs = {char: baked.find_glyph(ord(char)) for char in "0123456789abcdef /"}
         self.ring_advance = {char: baked.get_char_advance(ord(char)) for char in self.ring_glyphs}
         advance = self.ring_advance["0"]
@@ -338,7 +343,8 @@ class GhostRite:
             self._shape_arc("//", radius, lean, True),
             self._shape_arc("//", radius, math.pi - lean, True),
         )
-        self.seal_glyph = self.fonts["kanji"].get_font_baked(30 * scale).find_glyph(ord("糸"))
+        self.seal_baked = self.fonts["kanji"].get_font_baked(30 * scale)
+        self.seal_glyph = self.seal_baked.find_glyph(ord("糸"))
 
     def _glyph(self, dl, ch, x, y, size, color):
         """Draw one glyph with its ink box centred on (x, y), not its line box."""
@@ -411,6 +417,8 @@ class GhostRite:
     def window_under(self, draw_list, pos, size, title, kind, t):
         if kind != "menu":
             return
+        # Cached draw-list quads bypass push_font, so keep their baked atlas entries alive.
+        self.ring_baked.last_used_frame = self.seal_baked.last_used_frame = imgui.get_frame_count()
         bg = imgui.get_background_draw_list()
         x, y, w, h = pos.x, pos.y, size.x, size.y
         u = imgui.get_font_size() / BASE
