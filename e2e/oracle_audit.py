@@ -40,11 +40,24 @@ def main():
         for arm in ("TT", "TE", "ET", "EE", "TF", "main-TT", "main-EE"):
             name = f"{sequence}-{arm}"
             folder = out / "visual" / name
-            display, work = read(folder / "display.json"), read(folder / "worker.json")
-            assert work["oom"] == 0
+            display = read(folder / "display.json")
             log = [json.loads(s) for s in (folder / "mapping.jsonl").read_text().splitlines()]
             updates = [r for r in log if r["event"] == "publication"]
             observations = [r for r in log if r["event"] == "observation"]
+            if (folder / "worker.json").exists():
+                work = read(folder / "worker.json")
+                final_summary = True
+            else:
+                # A completed display/trace remains evidence if cancellation interrupts
+                # the optional worker footer. Do not invent an unrecorded memory peak.
+                assert arm.startswith("main-")
+                work = dict(
+                    admitted=[r["source_frame_id"] for r in observations],
+                    oom=max(r["oom"] for r in observations),
+                    torch_peak_reserved=None,
+                )
+                final_summary = False
+            assert work["oom"] == 0
             assert all(
                 plan[r["source_frame_id"]] <= r["started"] <= r["finished"] for r in observations
             )
@@ -67,7 +80,10 @@ def main():
                 final_steps=updates[-1]["steps"],
                 final_count=updates[-1]["count"],
                 min_free_mib=min(r["vram_free"] for r in updates) / 2**20,
-                torch_peak_mib=work["torch_peak_reserved"] / 2**20,
+                torch_peak_mib=work["torch_peak_reserved"] / 2**20
+                if work["torch_peak_reserved"] is not None
+                else None,
+                final_worker_summary=final_summary,
                 recording_display=display,
             )
     for folder in sorted((out / "timing").iterdir()):

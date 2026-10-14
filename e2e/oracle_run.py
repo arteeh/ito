@@ -402,7 +402,8 @@ def main():
     stopped = context.RawValue("b", False)
     start = context.RawValue("d", 0)
     ready = context.Event()
-    admission = Admission(context, stopped)
+    # Stop between integrations; interruption inside one would skip its final audit report.
+    admission = Admission(context, context.RawValue("b", False))
     ring = UpdateRing(context, 1, 0.5, slots=16)
     status = context.Queue()
     args.oom_warning = context.RawValue("d", -1)
