@@ -44,9 +44,11 @@ class Menu:
         self.xr = xr and self.headset
         self.error, self.pairing = error, pairing
         self.page = "main"
+        self.pending_choice = None
         self.settings = SettingsScreen(placed, getattr(window, "menu_camera", None))
 
     def draw(self, size, *, xr_mode=False):
+        self.settings.poll()
         imgui.set_next_window_pos((size[0] / 2, size[1] / 2), imgui.Cond_.always, (0.5, 0.5))
         imgui.begin(
             "Settings" if self.page == "settings" else "Ito",
@@ -56,7 +58,14 @@ class Menu:
         )
         choice = None
         layout.clear()
-        if self.page == "settings":
+        if self.pending_choice:
+            imgui.text("Saving settings...")
+            if self.settings.save_error:
+                self.pending_choice = None
+                self.page = "settings"
+            elif not self.settings.writes:
+                choice, self.pending_choice = self.pending_choice, None
+        elif self.page == "settings":
             if self.settings.draw(xr_mode=xr_mode):
                 self.page = "main"
         elif self.pairing:
@@ -117,6 +126,8 @@ class Menu:
             imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + 380)
             imgui.text_colored((1, 0.45, 0.4, 1), self.error)
             imgui.pop_text_wrap_pos()
+        if choice and self.settings.writes:
+            self.pending_choice, choice = choice, None
         imgui.end()
         return choice
 
@@ -126,22 +137,25 @@ def choose(window, *, xr=False, error=None, pairing=None):
     menu = Menu(window, xr=xr, error=error, pairing=pairing)
     window.input.capture(False)
     pygame.display.set_caption("Ito")
-    if getattr(window, "xr", None) is not None:
-        return window.choose(menu)
-    clock = pygame.time.Clock()
-    while True:
-        events = pygame.event.get()
-        if any(e.type == pygame.QUIT for e in events):
-            return None
-        size = pygame.display.get_window_size()
-        window.overlay.begin(events, size, False)
-        choice = menu.draw(size)
-        window.context.screen.use()
-        window.context.viewport = (0, 0, *size)
-        window.context.clear(0.05, 0.06, 0.07)
-        window.overlay.render()
-        pygame.display.flip()
-        if choice:
-            layout.clear()
-            return choice
-        clock.tick(30)
+    try:
+        if getattr(window, "xr", None) is not None:
+            return window.choose(menu)
+        clock = pygame.time.Clock()
+        while True:
+            events = pygame.event.get()
+            if any(e.type == pygame.QUIT for e in events):
+                return None
+            size = pygame.display.get_window_size()
+            window.overlay.begin(events, size, False)
+            choice = menu.draw(size)
+            window.context.screen.use()
+            window.context.viewport = (0, 0, *size)
+            window.context.clear(0.05, 0.06, 0.07)
+            window.overlay.render()
+            pygame.display.flip()
+            if choice:
+                layout.clear()
+                return choice
+            clock.tick(30)
+    finally:
+        menu.settings.close()

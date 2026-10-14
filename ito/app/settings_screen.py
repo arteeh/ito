@@ -1,5 +1,8 @@
 """The same button-only settings page in the desktop window and VR panel."""
 
+import logging
+from concurrent.futures import ThreadPoolExecutor
+
 from imgui_bundle import imgui
 
 from ito import diagnostics
@@ -11,19 +14,51 @@ class SettingsScreen:
     def __init__(self, placed, camera=None):
         self.placed, self.camera = placed, camera
         self.settings = load()
-        self.error = None
+        self.error = self.save_error = None
         self.typed_splats = str(self.settings.max_splats)
+        self.saved = self.settings
+        self.writes = []
+        self.writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ito-settings")
 
     def change(self, **values):
         try:
             selected = AppSettings.model_validate(self.settings.model_dump() | values)
-            save(selected)
-        except (OSError, ValueError) as exc:
-            self.error = f"Could not save settings: {exc}"
+        except ValueError as exc:
+            self.error = (
+                "Max splats must be between 1 and 2,147,483,647."
+                if "max_splats" in values
+                else str(exc).splitlines()[0]
+            )
             return
         self.settings, self.error = selected, None
         self.typed_splats = str(selected.max_splats)
+        self.writes.append((selected, self.writer.submit(self.persist, selected)))
+
+    @staticmethod
+    def persist(selected):
+        # Disk writes and first-time log initialization must never hold the VR draw thread.
+        try:
+            save(selected)
+        except OSError as exc:
+            logging.getLogger(__name__).warning("Could not save settings: %s", exc)
+            raise
         diagnostics.current().set_enabled(selected.diagnostic_logging)
+
+    def poll(self):
+        while self.writes and self.writes[0][1].done():
+            selected, future = self.writes.pop(0)
+            try:
+                future.result()
+                self.saved = selected
+                self.save_error = None
+            except OSError as exc:
+                self.save_error = f"Could not save settings: {exc.strerror or exc}"
+                if not self.writes:
+                    self.settings = self.saved
+                    self.typed_splats = str(self.saved.max_splats)
+
+    def close(self):
+        self.writer.shutdown(wait=True)
 
     def button(self, label, name, size=(94, 40), disabled=False):
         imgui.begin_disabled(disabled)
@@ -86,7 +121,9 @@ class SettingsScreen:
         imgui.separator_text("Diagnostics")
         debug = diagnostics.current()
         imgui.text("Diagnostic logging")
-        enabled = debug.enabled
+        enabled = (
+            debug.enabled if debug.override is not None or debug.error else s.diagnostic_logging
+        )
         if self.button(
             "On" if enabled else "Off", "diagnostics", (180, 40), debug.override is not None
         ):
@@ -103,6 +140,9 @@ class SettingsScreen:
             self.change(**AppSettings().model_dump())
         imgui.same_line()
         back = self.button("Back", "back", (94, 40))
-        if self.error:
-            imgui.text_colored((1, 0.45, 0.4, 1), self.error)
+        if self.error or self.save_error:
+            imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + 380)
+            imgui.text_colored((1, 0.45, 0.4, 1), self.error or self.save_error)
+            self.placed("settings error")
+            imgui.pop_text_wrap_pos()
         return back

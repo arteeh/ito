@@ -32,6 +32,7 @@ def main():
     parser.add_argument("--fps", type=int, default=90)
     parser.add_argument("--baseline", action="store_true")
     parser.add_argument("--network-fault", choices=("load", "nan"))
+    parser.add_argument("--fp16", action="store_true", help="exercise the non-bf16 GPU path")
     parser.add_argument("--limit-gib", type=float)
     args = parser.parse_args()
     assert os.name == "nt", "Run in the Windows desktop session"
@@ -77,6 +78,8 @@ def poison_half(self):
     self.model._downstream_head = poisoned
 runtime.NetworkPrecision.native_positions = poison_half
 """
+    if args.fp16:
+        fault = "import torch\ntorch.cuda.is_bf16_supported = lambda: False\n" + fault
     bootstrap.write_text(
         "import runpy, sys\n"
         + fault

@@ -44,6 +44,9 @@ def phase(name):
     os.environ.pop("ITO_DEBUG", None)
     if name == "edit":
         settings_path().unlink(missing_ok=True)
+    elif name == "failure":
+        settings_path().unlink(missing_ok=True)
+        settings_path().mkdir()
     began = clock.now()
     changed = None
     stage = 0
@@ -83,6 +86,27 @@ def phase(name):
                 precision="half", input_resolution=25, max_splats=1_000_000, diagnostic_logging=True
             )
             pygame.event.post(pygame.event.Event(pygame.QUIT))
+        elif name == "failure":
+            if stage == 0 and "settings" in connect.layout:
+                click(connect.layout["settings"])
+                stage, changed = 1, clock.now()
+            elif stage == 1 and "half" in connect.layout:
+                click(connect.layout["half"])
+                stage, changed = 2, clock.now()
+            elif stage == 2 and "settings error" in connect.layout:
+                capture("save-failed")
+                assert settings_path().is_dir(), "A failed save changed the settings file"
+                settings_path().rmdir()
+                click(connect.layout["half"])
+                stage, changed = 3, clock.now()
+            elif stage == 3 and settings_path().is_file():
+                assert load().precision == "half"
+                assert "settings error" not in connect.layout
+                capture("save-recovered")
+                click(connect.layout["back"])
+                stage, changed = 4, clock.now()
+            elif stage == 4 and "settings" in connect.layout:
+                pygame.event.post(pygame.event.Event(pygame.QUIT))
         elif name == "restart":
             if stage < 2:
                 assert load().precision == "half" and load().input_resolution == 25
@@ -122,7 +146,7 @@ def phase(name):
     finally:
         pygame.display.flip = flip
     assert stage == (len(actions) if name == "edit" else 4)
-    assert name == "edit" or connected
+    assert name != "restart" or connected
     print(name, json.loads(settings_path().read_text()))
 
 
@@ -130,7 +154,7 @@ def main():
     if len(sys.argv) > 1:
         phase(sys.argv[1])
         return
-    for name in ("edit", "restart"):
+    for name in ("edit", "restart", "failure"):
         subprocess.run([sys.executable, "-m", "e2e.settings", name], check=True, timeout=90)
     print("PASS: settings buttons, disk persistence, restart, reset and real simulation connection")
 
