@@ -45,7 +45,7 @@ class Menu:
         self.error, self.pairing = error, pairing
         self.page = "main"
         self.pending_choice = None
-        self.settings = SettingsScreen(placed, getattr(window, "menu_camera", None))
+        self.settings = SettingsScreen(placed)
 
     def draw(self, size, *, xr_mode=False):
         self.settings.poll()

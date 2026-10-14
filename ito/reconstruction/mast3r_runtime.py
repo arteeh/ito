@@ -3,7 +3,6 @@
 import hashlib
 import importlib.util
 import json
-import logging
 import os
 import platform
 import sys
@@ -108,8 +107,9 @@ def prepare(report):
 
 def load_model(weights, report, *, precision="full", precision_report=None):
     report("Loading MASt3R")
+    import torch
+
     try:
-        import torch
         from mast3r.model import AsymmetricMASt3R
         from safetensors.torch import load_file
 
@@ -121,25 +121,25 @@ def load_model(weights, report, *, precision="full", precision_report=None):
         if missing or result.unexpected_keys:
             raise RuntimeError(f"weights do not match MASt3R: {missing + result.unexpected_keys}")
         model.eval()
-        network = NetworkPrecision(model, weights, precision_report)
+        network = NetworkPrecision(model, precision_report)
         if precision == "half":
-            try:
-                network.dtype = (
-                    torch.bfloat16
-                    if torch.cuda.is_bf16_supported(including_emulation=False)
-                    else torch.float16
-                )
-                model.to(device="cuda", dtype=network.dtype)
-            except (RuntimeError, TypeError, ValueError) as exc:
-                network.fallback(exc)
-        else:
-            model.to("cuda")
+            network.dtype = (
+                torch.bfloat16
+                if torch.cuda.is_bf16_supported(including_emulation=False)
+                else torch.float16
+            )
+        model.to(device="cuda", dtype=network.dtype)
         if network.dtype != torch.float32:
             network.native_positions()
             for name in ("_encode_image", "_decoder", "_downstream_head"):
                 network.wrap(name)
+        if network.dtype == torch.float16:
+            network.invalid_count = torch.zeros((), dtype=torch.int64, device="cuda")
+        model.network_precision = network
         network.report()
         return model
+    except torch.cuda.OutOfMemoryError:
+        raise
     except (ImportError, OSError, ValueError, RuntimeError) as exc:
         raise RuntimeError(f"MASt3R model could not load from {weights}") from exc
 
@@ -147,35 +147,37 @@ def load_model(weights, report, *, precision="full", precision_report=None):
 class NetworkPrecision:
     """Low precision ends at each network call; tracking and native kernels receive fp32."""
 
-    def __init__(self, model, weights, report):
+    def __init__(self, model, report):
         import torch
 
-        self.model, self.weights, self.notify = model, weights, report
+        self.model, self.notify = model, report
         self.dtype = torch.float32
-        self.reason = ""
+        self.invalid_count = None
 
     def report(self):
         import torch
 
         active = {torch.float32: "fp32", torch.bfloat16: "bf16", torch.float16: "fp16"}[self.dtype]
         if self.notify:
-            self.notify(active, self.reason)
+            self.notify(active)
 
-    def fallback(self, error):
+    def statistics(self):
+        # Called once a second between integrations, never from a network call.
+        return 0 if self.invalid_count is None else int(self.invalid_count.item())
+
+    def sanitize(self, result):
         import torch
-        from safetensors.torch import load_file
 
-        self.reason = str(error).splitlines()[0]
-        logging.getLogger(__name__).warning(
-            "MASt3R Half failed; falling back to Full: %s", self.reason
-        )
-        # Restore original fp32 weights, rather than promoting rounded Half weights.
-        self.model.to(device="cpu", dtype=torch.float32)
-        self.model.load_state_dict(load_file(self.weights / "model.safetensors"), strict=False)
-        torch.cuda.empty_cache()
-        self.model.to("cuda")
-        self.dtype = torch.float32
-        self.report()
+        # Head outputs share B,H,W. Reject a pixel if its points, descriptors or
+        # confidences overflow; both tracker confidence masks then ignore it.
+        valid = torch.isfinite(result["pts3d"]).all(dim=-1)
+        valid &= torch.isfinite(result["desc"]).all(dim=-1)
+        valid &= torch.isfinite(result["conf"]) & torch.isfinite(result["desc_conf"])
+        self.invalid_count.add_((~valid).sum())
+        return {
+            key: torch.where(valid[..., None] if value.ndim == valid.ndim + 1 else valid, value, 0)
+            for key, value in result.items()
+        }
 
     def native_positions(self):
         import torch
@@ -205,29 +207,14 @@ class NetworkPrecision:
 
         @wraps(original)
         def inference(*args, **kwargs):
-            if self.dtype == torch.float32:
-                return original(*args, **kwargs)
-
-            def invoke():
-                with torch.autocast("cuda", dtype=self.dtype, enabled=self.dtype != torch.float32):
-                    result = original(*args, **kwargs)
-                result = tensors(result, lambda t: t.float() if t.is_floating_point() else t)
-                if self.dtype != torch.float32:
-                    tensors(result, finite)
-                return result
-
-            try:
-                return invoke()
-            except (RuntimeError, ValueError, TypeError) as exc:
-                if self.dtype == torch.float32:
-                    raise
-                self.fallback(exc)
-                return invoke()
-
-        def finite(tensor):
-            if tensor.is_floating_point() and not torch.isfinite(tensor).all():
-                raise ValueError(f"{name} produced non-finite network output")
-            return tensor
+            with torch.autocast("cuda", dtype=self.dtype):
+                result = original(*args, **kwargs)
+            result = tensors(result, lambda t: t.float() if t.is_floating_point() else t)
+            # bf16 has fp32 range. fp16 cleanup and its counter stay entirely on
+            # the device; converting a reduction to bool would fence every call.
+            if name == "_downstream_head" and self.dtype == torch.float16:
+                result = self.sanitize(result)
+            return result
 
         setattr(self.model, name, inference)
 

@@ -46,8 +46,8 @@ camera panel in desktop and VR, with the reason in ImGui; controls stay connecte
 **Settings** in the main menu saves app-wide choices immediately for the next connection.
 Choose MASt3R-SLAM Full (fp32) or Half (bf16 where supported, otherwise fp16), and
 100/75/50/25% input pixels. The whole camera frame fits a patch grid up to 512 pixels
-on its long side; the overlay shows the active precision and size, including any fallback
-to Full. Lower settings trade detail for speed and VRAM. Max splats defaults to 1,000,000;
+on its long side; the overlay shows the active precision. Out-of-memory frames are
+dropped at the chosen precision with a warning until memory recovers. Lower settings trade detail for speed and VRAM. Max splats defaults to 1,000,000;
 use −/+ or type a count on desktop. Reset restores all defaults.
 
 **Diagnostic logging** is off by default. Toggle it in Settings, or set `ITO_DEBUG=1` to

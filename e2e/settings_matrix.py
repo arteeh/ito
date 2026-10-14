@@ -31,7 +31,7 @@ def main():
     parser.add_argument("--record", action="store_true")
     parser.add_argument("--fps", type=int, default=90)
     parser.add_argument("--baseline", action="store_true")
-    parser.add_argument("--network-fault", choices=("load", "nan"))
+    parser.add_argument("--network-fault", choices=("oom", "nan"))
     parser.add_argument("--fp16", action="store_true", help="exercise the non-bf16 GPU path")
     parser.add_argument("--limit-gib", type=float)
     args = parser.parse_args()
@@ -49,35 +49,38 @@ def main():
     shutil.copy(Path(__file__).with_name("slam_drive.py"), scripts / "slam_drive.py")
     bootstrap = args.out / "drive.py"
     fault = ""
-    if args.network_fault == "load":
+    if args.network_fault:
         fault = """from ito.reconstruction import mast3r_runtime as runtime
 original = runtime.NetworkPrecision.__init__
-def fail_half(self, *args, **kwargs):
+def inject(self, *args, **kwargs):
     import torch
     original(self, *args, **kwargs)
-    transfer = self.model.to
-    def to(*args, **kwargs):
-        if kwargs.get('dtype') in (torch.bfloat16, torch.float16):
-            raise RuntimeError('Injected Half transfer failure')
-        return transfer(*args, **kwargs)
-    self.model.to = to
-runtime.NetworkPrecision.__init__ = fail_half
+    calls = 0
 """
-    elif args.network_fault == "nan":
-        fault = """from ito.reconstruction import mast3r_runtime as runtime
-original = runtime.NetworkPrecision.native_positions
-def poison_half(self):
-    import torch
-    original(self)
-    head = self.model._downstream_head
-    def poisoned(*args, **kwargs):
+        if args.network_fault == "oom":
+            fault += """    encoder = self.model._encode_image
+    def fail(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if 8 <= calls <= 10:
+            raise torch.cuda.OutOfMemoryError('Injected network allocation failure')
+        return encoder(*args, **kwargs)
+    self.model._encode_image = fail
+"""
+        else:
+            assert args.fp16, "Non-finite cleanup applies to fp16; use --fp16"
+            fault += """    head = self.model._downstream_head
+    def poison(*args, **kwargs):
+        nonlocal calls
+        calls += 1
         result = head(*args, **kwargs)
-        if self.dtype != torch.float32:
-            result['pts3d'] = torch.full_like(result['pts3d'], float('nan'))
+        if calls == 12:
+            result['pts3d'][:, 0, 0] = float('nan')
+            result['desc'][:, 0, 1] = float('inf')
         return result
-    self.model._downstream_head = poisoned
-runtime.NetworkPrecision.native_positions = poison_half
+    self.model._downstream_head = poison
 """
+        fault += "runtime.NetworkPrecision.__init__ = inject\n"
     if args.fp16:
         fault = "import torch\ntorch.cuda.is_bf16_supported = lambda **kwargs: False\n" + fault
     bootstrap.write_text(
@@ -187,12 +190,18 @@ runtime.NetworkPrecision.native_positions = poison_half
             values = [r["performance"] for r in live if r.get("performance")]
         else:
             assert values, "No active precision in overlay metrics"
-            if args.network_fault:
-                assert values[-1]["precision_fallback"], "Half failure was not reported"
-                assert values[-1]["slam_precision"] == "Full (fp32)"
+            assert all(v["slam_precision"].startswith(args.precision.title()) for v in values)
+            if args.network_fault == "oom":
+                warnings = [v for v in values if v["reconstruction_oom"]]
+                assert warnings, "Out-of-memory warning never appeared"
+                assert not values[-1]["reconstruction_oom"], "Warning did not clear after recovery"
+                assert values[-1]["network_oom_count"] == 3
+                assert values[-1]["backend_calls"] > warnings[-1]["backend_calls"]
+            elif args.network_fault == "nan":
+                assert values[-1]["network_nonfinite_points"] >= 2
             else:
-                assert not values[-1]["precision_fallback"], "Requested precision fell back"
-                assert values[-1]["slam_precision"].startswith(args.precision.title())
+                assert values[-1]["network_oom_count"] == 0
+                assert values[-1]["network_nonfinite_points"] == 0
         report = dict(
             precision=args.precision,
             resolution=args.resolution,

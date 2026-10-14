@@ -231,17 +231,6 @@ def pilot_window(window, args, overrides, metrics, choice, on_frame):
                 window.input.sensitivity = selected.sensitivity
                 window.input.invert_y = selected.invert_y
                 window.overlay.max_splats = selected.max_splats
-            if pilot.description:
-                camera = next(
-                    (
-                        c
-                        for c in pilot.description.cameras
-                        if args.camera is None or c.name == args.camera
-                    ),
-                    None,
-                )
-                if camera:
-                    window.menu_camera = camera.intrinsics
             if pilot.refusal:
                 window.overlay.leave = True
             if sim and (failure := sim.failure()):

@@ -155,12 +155,13 @@ class Overlay:
             memory = "--" if vram is None else f"{vram[0] / 2**30:.1f} / {vram[1] / 2**30:.1f} GiB"
             imgui.text(f"Splats: {splats} | VRAM {memory}")
             if values.get("slam_precision"):
-                width, height = values["slam_input_size"]
-                imgui.text(f"MASt3R: {values['slam_precision']} | {width} × {height}")
-                if values.get("precision_fallback"):
-                    imgui.text_wrapped(
-                        "Half unavailable; using Full: " + values["precision_fallback"]
-                    )
+                imgui.text(f"MASt3R: {values['slam_precision']}")
+            if values.get("reconstruction_oom"):
+                imgui.text_colored(
+                    (1, 0.45, 0.4, 1), "Out of GPU memory: reconstruction is degraded"
+                )
+            if values.get("network_nonfinite_points"):
+                imgui.text_colored((1, 0.65, 0.3, 1), "fp16 overflow: invalid points discarded")
         if xr_mode:
             imgui.text("Aim + trigger to select | stick to drive")
             imgui.text("B e-stop | X stop | A resume | Y recenter")

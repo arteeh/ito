@@ -9,7 +9,7 @@ import traceback
 
 import numpy as np
 
-from ito import clock
+from ito import clock, diagnostics
 from ito.protocol import Intrinsics
 from ito.render.gpu import MAX_SLOT_COUNT
 from ito.render.pose import validate_pose
@@ -76,6 +76,10 @@ def _run(recon):
             from .memory import VRAM
 
             vram = VRAM(backend.xp, sys.modules.get("torch"), recon.notes.send)
+        frontend = getattr(backend, "frontend", backend)
+        model = getattr(frontend, "model", None)
+        network = getattr(model, "network_precision", None)
+        next_network_stats = 0
         sequence = 0
         # ITO_TIMELINE names a file for one line per frame the worker took: what became of it.
         timeline = os.environ.get("ITO_TIMELINE")
@@ -90,6 +94,12 @@ def _run(recon):
         parent = mp.parent_process()
         while not recon.stopped.value and parent.is_alive():
             now = clock.now() - recon.epoch
+            if network is not None and now >= next_network_stats:
+                next_network_stats = now + 1
+                count = network.statistics()
+                if count > recon.nonfinite_points.value:
+                    recon.notes.send(dict(event="network_nonfinite", count=count))
+                    recon.nonfinite_points.value = count
             backend.expire(now, recon.ring.last_acknowledged())
             limit = recon.budget.value
             if vram is not None:
@@ -142,14 +152,38 @@ def _run(recon):
                     began = clock.now()
                 backend.source_sequence = sequence
                 backend.source_captured = captured
-                with recon.admission.integration():
-                    if recon.backend == "slam":
-                        if robot_first:
-                            backend.integrate(*frame, now, captured=captured)
+                dropped = False
+                try:
+                    with recon.admission.integration():
+                        if recon.backend == "slam":
+                            if robot_first:
+                                backend.integrate(*frame, now, captured=captured)
+                            else:
+                                backend.integrate(*frame, now, measured=measured)
                         else:
-                            backend.integrate(*frame, now, measured=measured)
-                    else:
-                        backend.integrate(*frame, now)
+                            backend.integrate(*frame, now)
+                except RuntimeError as exc:
+                    torch = sys.modules.get("torch")
+                    if torch is None or not isinstance(exc, torch.cuda.OutOfMemoryError):
+                        raise
+                    recon.report_oom(exc)
+                    dropped = True
+                if dropped:
+                    # The failed call's traceback and temporaries are gone before
+                    # releasing cached blocks. No weights or precision are changed.
+                    torch.cuda.empty_cache()
+                    if robot_first:
+                        node = backend.graph.current
+                        if node is not None and node not in backend.graph.keyframes:
+                            frontend.forget([node])
+                    tracker = getattr(frontend, "tracker", None)
+                    if tracker is not None:
+                        tracker.reset_idx_f2k()
+                    if timeline:
+                        timeline.write(
+                            json.dumps(dict(seq=sequence, outcome="out_of_memory")) + "\n"
+                        )
+                    continue
                 recon.work_seconds.value = clock.now() - began
                 recon.work_total.value += recon.work_seconds.value
                 recon.integrated.value += 1
@@ -280,6 +314,10 @@ def _run(recon):
     except Exception as exc:
         # The pilot shows the first line; its log keeps the cause. This spawned process
         # has no log file of its own, so the traceback travels with the message.
+        torch = sys.modules.get("torch")
+        if torch is not None and isinstance(exc, torch.cuda.OutOfMemoryError):
+            recon.report_oom(exc)
+            torch.cuda.empty_cache()
         message = str(exc) if recon.backend == "slam" else f"Reconstruction failed: {exc}"
         cause = "".join(traceback.format_exception(exc))
         recon.errors.send(message.splitlines()[0][:500] + "\n" + cause[-6000:])
@@ -337,7 +375,9 @@ class Reconstruction:
         self.epoch = clock.now()
         context = mp.get_context("spawn")
         self.active_precision = context.RawValue("b", 0)
-        self.precision_failure = context.RawArray("B", 1024)
+        self.oom_count = context.RawValue("Q", 0)
+        self.last_oom = context.RawValue("d", 0)
+        self.nonfinite_points = context.RawValue("Q", 0)
         self.status_lock = context.Lock()
         self.status_text = context.RawArray("B", 1024)
         self.output_lock = context.Lock()
@@ -399,12 +439,15 @@ class Reconstruction:
         self.notes = notes
         self.closed = False
 
-    def report_precision(self, active, reason=""):
+    def report_precision(self, active):
         self.active_precision.value = {"fp32": 1, "bf16": 2, "fp16": 3}[active]
-        encoded = reason.encode("utf-8")[:1023]
-        self.precision_failure[:] = encoded + bytes(1024 - len(encoded))
+        self.notes.send(f"MASt3R precision {active}")
+
+    def report_oom(self, error):
+        self.oom_count.value += 1
+        self.last_oom.value = clock.now()
         self.notes.send(
-            f"MASt3R precision {active}" + (f"; Half fell back to Full: {reason}" if reason else "")
+            dict(event="network_out_of_memory", count=self.oom_count.value, reason=str(error))
         )
 
     def statistics(self):
@@ -418,9 +461,9 @@ class Reconstruction:
             slam_input_size=input_size(
                 self.intrinsics.width, self.intrinsics.height, self.input_resolution
             ),
-            precision_fallback=bytes(self.precision_failure)
-            .split(b"\0", 1)[0]
-            .decode("utf-8", errors="replace"),
+            reconstruction_oom=self.last_oom.value > 0 and clock.now() - self.last_oom.value < 10,
+            network_oom_count=self.oom_count.value,
+            network_nonfinite_points=self.nonfinite_points.value,
             worker_epoch=self.epoch,
             backend_calls=self.integrated.value,
             matched_pct=100 * self.matched.value / tracked
@@ -580,7 +623,13 @@ class Reconstruction:
             raise RuntimeError(message)
         try:
             while self.notes.poll():
-                log.info("Reconstruction: %s", self.notes.recv())
+                note = self.notes.recv()
+                if isinstance(note, dict):
+                    fields = {k: v for k, v in note.items() if k != "event"}
+                    diagnostics.event(note["event"], **fields)
+                    log.warning("Reconstruction: %s", note)
+                else:
+                    log.info("Reconstruction: %s", note)
         except (EOFError, OSError):
             pass
         if not self.process.is_alive():

@@ -7,12 +7,11 @@ from imgui_bundle import imgui
 
 from ito import diagnostics
 from ito.desktop.settings import AppSettings, load, save
-from ito.reconstruction.slam_image import input_size
 
 
 class SettingsScreen:
-    def __init__(self, placed, camera=None):
-        self.placed, self.camera = placed, camera
+    def __init__(self, placed):
+        self.placed = placed
         self.settings = load()
         self.error = self.save_error = None
         self.typed_splats = str(self.settings.max_splats)
@@ -89,9 +88,6 @@ class SettingsScreen:
             self.change(input_resolution=steps[index - 1])
         imgui.same_line()
         value = f"{s.input_resolution}%"
-        if self.camera:
-            width, height = input_size(self.camera.width, self.camera.height, s.input_resolution)
-            value += f" ({width} × {height})"
         self.button(value, "resolution value", (172, 40), True)
         imgui.same_line()
         if self.button("+##resolution", "resolution plus", disabled=index == 3):
