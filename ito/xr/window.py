@@ -14,6 +14,7 @@ from xr.utils import GraphicsAPI, Matrix4x4f
 
 from ito import clock, diagnostics
 from ito.desktop import DesktopWindow
+from ito.desktop.window import DesktopState
 from ito.reconstruction import SplatUpdate
 from ito.reconstruction.admission import PUBLICATION_PACKETS
 from ito.render import pose
@@ -103,6 +104,7 @@ class XRWindow(DesktopWindow):
             self.panel_visible = True
             self.panel_hovered = False  # ImGui hovers a control under the aim (last frame).
             self.panel = PanelFollow()
+            self.panel_size = PANEL_SIZE
             self.panel_pose = self.panel.matrix()  # As last submitted; the pointer aims at it.
             pygame.display.set_caption("Ito — XR pilot controls")
         except xr.XrException as exc:
@@ -164,8 +166,12 @@ class XRWindow(DesktopWindow):
             return (-10000, -10000, False)
         distance = -origin[2] / direction[2]
         hit = origin + distance * direction
-        x, y = (hit[0] / PANEL_SIZE[0] + 0.5) * 768, (0.5 - hit[1] / PANEL_SIZE[1]) * 440
-        inside = distance > 0 and 0 <= x < 768 and 0 <= y < 440
+        width, height = self.xr.panel.size
+        x, y = (
+            (hit[0] / self.panel_size[0] + 0.5) * width,
+            (0.5 - hit[1] / self.panel_size[1]) * height,
+        )
+        inside = distance > 0 and 0 <= x < width and 0 <= y < height
         return (
             (float(x), float(y), self.actions.triggers.get(hand, False))
             if inside
@@ -183,6 +189,37 @@ class XRWindow(DesktopWindow):
         pygame.image.save(pygame.transform.flip(image, False, True), path)
         return str(path)
 
+    def choose(self, menu):
+        from .session import Swapchain
+
+        class EmptyScene:
+            def poll(self):
+                return None
+
+        if not hasattr(self, "menu_panel"):
+            self.menu_panel = Swapchain(self.xr, (768, 768))
+        runtime_panel = self.xr.panel
+        self.xr.panel, self.panel_size = self.menu_panel, (1.05, 1.05)
+        self.overlay.leave = False
+        from ito.render.scene import GaussianBuffer
+
+        self.renderer.upload(GaussianBuffer(np.empty((0, 4, 4), np.float32)))
+        choice = None
+
+        def draw(size):
+            nonlocal choice
+            choice = menu.draw(size, xr_mode=True)
+            self.overlay.render()
+            if choice:
+                self.overlay.leave = True
+
+        try:
+            self.run(EmptyScene(), state=DesktopState, menu=draw)
+        finally:
+            self.xr.panel, self.panel_size = runtime_panel, PANEL_SIZE
+            self.overlay.leave = False
+        return choice
+
     def run(
         self,
         source,
@@ -193,12 +230,13 @@ class XRWindow(DesktopWindow):
         max_frames=0,
         metrics=None,
         save_settings=None,
+        menu=None,
     ):
         self.performance = Performance()
         try:
             dispatch = XRDispatch(self, state)
             dispatch.run(
-                lambda: self._run(source, state, on_input, max_frames, metrics, dispatch),
+                lambda: self._run(source, state, on_input, max_frames, metrics, dispatch, menu),
                 on_sample,
             )
         except xr.XrException as exc:
@@ -206,7 +244,7 @@ class XRWindow(DesktopWindow):
         finally:
             self.performance.close(metrics)
 
-    def _run(self, source, state, on_input, max_frames, metrics, dispatch):
+    def _run(self, source, state, on_input, max_frames, metrics, dispatch, menu=None):
         revision = captured_at = None
         pending = None
         frames = 0
@@ -323,7 +361,10 @@ class XRWindow(DesktopWindow):
                     for event in events:
                         if event.type == pygame.MOUSEMOTION:
                             width, height = pygame.display.get_window_size()
-                            event.pos = (event.pos[0] * 768 / width, event.pos[1] * 440 / height)
+                            event.pos = (
+                                event.pos[0] * self.xr.panel.size[0] / width,
+                                event.pos[1] * self.xr.panel.size[1] / height,
+                            )
                         panel_events.append(event)
                     # Mouse events in the companion window override controller aim for this frame.
                     mouse = any(
@@ -368,26 +409,29 @@ class XRWindow(DesktopWindow):
                         target.use()
                         self.context.viewport = (0, 0, *self.xr.panel.size)
                         target.clear(0, 0, 0, 0)
-                        budget = self.overlay.draw(
-                            current.status,
-                            1 / max(dt, 1e-6),
-                            self.renderer.count,
-                            None if captured_at is None else max(0, now - captured_at),
-                            False,
-                            request,
-                            live=True,
-                            target=target,
-                            xr_mode=True,
-                            performance=self.performance.last,
-                            driving=any(value.movement),
-                        )
-                        if budget is not None:
-                            if budget <= self.splat_limit:
-                                source.set_max_splats(budget)
-                            else:
-                                self.overlay.error = (
-                                    f"This GPU supports at most {self.splat_limit:,} splats"
-                                )
+                        if menu:
+                            menu(self.xr.panel.size)
+                        else:
+                            budget = self.overlay.draw(
+                                current.status,
+                                1 / max(dt, 1e-6),
+                                self.renderer.count,
+                                None if captured_at is None else max(0, now - captured_at),
+                                False,
+                                request,
+                                live=True,
+                                target=target,
+                                xr_mode=True,
+                                performance=self.performance.last,
+                                driving=any(value.movement),
+                            )
+                            if budget is not None:
+                                if budget <= self.splat_limit:
+                                    source.set_max_splats(budget)
+                                else:
+                                    self.overlay.error = (
+                                        f"This GPU supports at most {self.splat_limit:,} splats"
+                                    )
                         dispatch.ui(io, self.overlay.commands)
                         self.overlay.commands.clear()
                         if value.screenshot:
@@ -397,8 +441,7 @@ class XRWindow(DesktopWindow):
                         GL.glBlitFramebuffer(
                             0,
                             0,
-                            768,
-                            440,
+                            *self.xr.panel.size,
                             0,
                             0,
                             *pygame.display.get_window_size(),
@@ -417,7 +460,7 @@ class XRWindow(DesktopWindow):
                                     orientation=xr.Quaternionf(*quaternion(self.panel_pose)),
                                     position=xr.Vector3f(*map(float, self.panel_pose[:3, 3])),
                                 ),
-                                size=xr.Extent2Df(*PANEL_SIZE),
+                                size=xr.Extent2Df(*self.panel_size),
                             )
                         )
                 performance = self.performance.last

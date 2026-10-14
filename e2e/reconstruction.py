@@ -19,7 +19,6 @@ import pygame
 
 from ito import clock
 from ito.desktop import DesktopState, DesktopWindow, PilotStatus
-from ito.desktop.settings import load_budget
 from ito.protocol import Intrinsics
 from ito.reconstruction import Reconstruction
 from ito.render import perspective, pose
@@ -104,53 +103,25 @@ class Observe:
 
 
 def verify_setting(window, source, room, anchor):
-    # Drive the real ImGui input and Apply button through SDL, then watch the worker shrink.
+    # Settings UI is exercised in e2e/settings.py; drive live budget reduction here.
     ticks = 0
     rgb, depth = room.frame(anchor)
-
-    def post(kind, **attributes):
-        pygame.event.post(pygame.event.Event(kind, **attributes))
-
-    def key(code, down):
-        post(pygame.KEYDOWN if down else pygame.KEYUP, key=code)
 
     def drive(pilot):
         nonlocal ticks
         ticks += 1
         source.source.submit(rgb, depth, anchor)
         if ticks == 2:
-            post(pygame.MOUSEMOTION, pos=(65, 150), rel=(0, 0), buttons=(0, 0, 0))
-        elif ticks == 3:
-            post(pygame.MOUSEBUTTONDOWN, pos=(65, 150), button=1)
-        elif ticks == 4:
-            post(pygame.MOUSEBUTTONUP, pos=(65, 150), button=1)
-        elif ticks == 6:
-            key(pygame.K_LCTRL, True)
-            key(pygame.K_a, True)
-        elif ticks == 7:
-            key(pygame.K_a, False)
-            key(pygame.K_LCTRL, False)
-        elif ticks == 9:
-            post(pygame.TEXTINPUT, text="2048")
-        elif ticks == 11:
-            key(pygame.K_RETURN, True)
-        elif ticks == 12:
-            key(pygame.K_RETURN, False)
-            post(pygame.MOUSEMOTION, pos=(285, 150), rel=(0, 0), buttons=(0, 0, 0))
-        elif ticks == 14:
-            post(pygame.MOUSEBUTTONDOWN, pos=(285, 150), button=1)
-        elif ticks == 15:
-            post(pygame.MOUSEBUTTONUP, pos=(285, 150), button=1)
+            source.set_max_splats(2048)
         elif ticks == 20:
-            assert source.max_splats == 2048, (source.max_splats, window.overlay.max_splats)
-            assert load_budget(BUDGET) == 2048, "Pilot setting was not saved"
+            assert source.max_splats == 2048
         elif ticks == 80:
             assert window.renderer.count <= 2048, "Worker did not honor the reduced budget"
-            assert not window.input.captured, "Editing the budget grabbed the pilot camera"
-            assert np.allclose(pilot.head, np.eye(4)), "Editing the budget moved the pilot camera"
+            assert not window.input.captured, "Budget reduction grabbed the pilot camera"
+            assert np.allclose(pilot.head, np.eye(4)), "Budget reduction moved the pilot camera"
 
     window.run(source, state=lambda: DesktopState(anchor), on_input=drive, max_frames=85)
-    print("PASS: ImGui budget editing, persistence, input capture and graceful budget reduction")
+    print("PASS: live budget reduction and input isolation")
 
 
 def verify_fade(window, source, anchor):

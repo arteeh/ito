@@ -56,14 +56,15 @@ class Keyframes(list):
 
 
 class MASt3RFrontend:
-    def __init__(self, intrinsics, report):
+    def __init__(
+        self, intrinsics, report, *, precision="full", input_resolution=100, precision_report=None
+    ):
         from .mast3r_runtime import load_model, prepare
 
         source, weights = prepare(report)
         import lietorch
         import torch
         from mast3r_slam.config import config, load_config
-        from mast3r_slam.mast3r_utils import resize_img
         from mast3r_slam.tracker import FrameTracker
 
         load_config(str(source / "config/base.yaml"))
@@ -74,7 +75,9 @@ class MASt3RFrontend:
         config["tracking"]["filtering_mode"] = "recent"
         config["local_opt"]["max_iters"] = 5
         self.config = config
-        self.model = load_model(weights, report)
+        self.model = load_model(
+            weights, report, precision=precision, precision_report=precision_report
+        )
         self.lietorch = lietorch
         self.torch = torch
         self.frames = Keyframes()
@@ -82,17 +85,10 @@ class MASt3RFrontend:
         self.tracker = FrameTracker(self.model, self.frames, "cuda")
         if not hasattr(self.tracker, "prior"):
             raise RuntimeError("MASt3R bundle predates robot-first tracking; rebuild it")
-        # MASt3R sees a resized, centre-cropped image; carry the driver's calibration there.
-        blank = np.zeros((intrinsics.height, intrinsics.width, 3))
-        _, (sx, sy, crop_x, crop_y) = resize_img(blank, 512, return_transformation=True)
-        self.K = torch.tensor(
-            [
-                [intrinsics.fx / sx, 0, intrinsics.cx / sx - crop_x],
-                [0, intrinsics.fy / sy, intrinsics.cy / sy - crop_y],
-                [0, 0, 1],
-            ],
-            device="cuda",
-        )
+        from .slam_image import SLAMImage
+
+        self.image = SLAMImage(intrinsics, input_resolution)
+        self.K = torch.as_tensor(self.image.calibration, device="cuda")
         self.axes = torch.tensor(AXES, device="cuda", dtype=torch.float32)
         self.frame_id = 0
         self.unmatched = 0
@@ -194,14 +190,13 @@ class MASt3RFrontend:
         return self.K.new_tensor(1 / sigma**2)
 
     def track(self, rgb, node, predicted, prior_sigma):
-        from mast3r_slam.frame import create_frame
         from mast3r_slam.mast3r_utils import mast3r_inference_mono
 
         torch = self.torch
         with torch.inference_mode():
-            frame = create_frame(
+            frame = self.image.frame(
                 self.frame_id,
-                rgb.astype(np.float32) / 255,
+                rgb,
                 self.lietorch.Sim3.Identity(1, device="cuda"),
             )
             frame.K = self.K

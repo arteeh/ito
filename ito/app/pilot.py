@@ -78,7 +78,7 @@ class Pilot:
         self.credential = credential
         self.refusal = None  # Why the robot refused to pair; the pilot must act.
         self.description = None  # The robot connected last
-        self.settings = defaults or settings.Settings()
+        self.settings = defaults or settings.Settings(**settings.AppSettings().model_dump())
         self.defaults = self.settings
         self.splat_limit = splat_limit
         self.overrides = overrides or {}
@@ -123,7 +123,7 @@ class Pilot:
 
     @property
     def max_splats(self):
-        return self.settings.max_splats
+        return min(self.settings.max_splats, self.splat_limit or self.settings.max_splats)
 
     def set_max_splats(self, value):
         if self.splat_limit is not None and value > self.splat_limit:
@@ -390,8 +390,6 @@ class Pilot:
             raise ValueError("Driver has no selected camera")
         selected = settings.load(self.address, description.name, self.defaults)
         self.settings = settings.Settings.model_validate(selected.model_dump() | self.overrides)
-        if self.splat_limit is not None and self.settings.max_splats > self.splat_limit:
-            self.settings = self.settings.model_copy(update={"max_splats": self.splat_limit})
         self.overrides = {}
         self.settings_revision += 1
         paired = peer.credential_received.is_set()
@@ -441,7 +439,9 @@ class Pilot:
             with self.worker_lock:
                 self.worker = Reconstruction(
                     camera.intrinsics,
-                    max_splats=self.max_splats,
+                    max_splats=min(self.max_splats, self.splat_limit or self.max_splats),
+                    precision=self.settings.precision,
+                    input_resolution=self.settings.input_resolution,
                     backend=self.backend,
                     tracking=self.settings.tracking,
                     motion_noise=description.motion_noise,

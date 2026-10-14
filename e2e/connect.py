@@ -25,7 +25,6 @@ from ito.driver import pairing
 from ito.link.pairing import display
 
 OUT = Path("e2e/out/connect")
-DISCONNECT = (218, 173)  # The pilot overlay's button row.
 
 
 def network_address():
@@ -121,7 +120,7 @@ def main():
             )
             assert sims, "No simulated robot process"
             assert screenshot("simulated").std() > 15, "Simulated room not reconstructed"
-            click(DISCONNECT)
+            click(window.overlay.layout["disconnect"])
             live.clear()
             go("back")
         elif stage == "back" and waited > 1.5 and at("address"):
@@ -176,7 +175,7 @@ def main():
             assert b"used by a paired pilot" in shown.stdout, shown.stdout
             codes["credential"] = credential
             screenshot("paired")
-            click(DISCONNECT)
+            click(window.overlay.layout["disconnect"])
             live.clear()
             go("remembered")
         elif stage == "remembered" and waited > 1.5 and at("recent 0"):
@@ -187,7 +186,7 @@ def main():
             remembered = pilot.credential.model_dump(include={"pilot", "secret"})
             assert pilot.code is None and len(seen) == 5, "remembered pairing not used"
             assert remembered == codes["credential"], "remembered pairing not used"
-            click(DISCONNECT)
+            click(window.overlay.layout["disconnect"])
             live.clear()
             subprocess.run(
                 driver + ["--rotate-code"], env=os.environ | gl, check=True, capture_output=True
@@ -214,7 +213,7 @@ def main():
             go("escape piloting")
         elif stage == "escape piloting" and waited > 0.5:
             assert connected
-            click(DISCONNECT)
+            click(window.overlay.layout["disconnect"])
             live.clear()
             go("escape connect")
         elif stage == "escape connect" and waited > 0.5 and at("address"):

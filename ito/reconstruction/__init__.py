@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 STOP_WAIT = 0.5
 # Max splats also bounds sorting and drawing per frame: 2^19 kept 90 Hz stereo on an
 # RTX 4070 Ti with a full scene. VRAM may hold fewer; the worker budgets that live.
-DEFAULT_MAX_SPLATS = 524_288
+DEFAULT_MAX_SPLATS = 1_000_000
 
 
 def default_budget(renderer: str = "") -> int:
@@ -49,6 +49,9 @@ def _run(recon):
                 recon.budget.value,
                 recon.intrinsics,
                 report=recon.report,
+                precision=recon.precision,
+                input_resolution=recon.input_resolution,
+                precision_report=recon.report_precision,
                 motion_noise=recon.motion_noise,
                 frame_delay=recon.frame_delay,
                 exposure=recon.exposure,
@@ -61,6 +64,9 @@ def _run(recon):
                 recon.budget.value,
                 recon.intrinsics,
                 report=recon.report,
+                precision=recon.precision,
+                input_resolution=recon.input_resolution,
+                precision_report=recon.report_precision,
                 **recon.options,
             )
         else:
@@ -289,7 +295,7 @@ class Reconstruction:
         self,
         intrinsics: Intrinsics,
         *,
-        max_splats=262_144,
+        max_splats=1_000_000,
         voxel_size=0.04,
         fade_seconds=0.5,
         device="auto",
@@ -298,6 +304,8 @@ class Reconstruction:
         motion_noise=None,
         frame_delay=0.0,
         exposure=None,
+        precision="full",
+        input_resolution=100,
     ):
         """tracking: for SLAM, "robot" fuses the robot's Motion with vision (it needs the
         robot's motion_noise); "vision" is MASt3R-SLAM alone, steered by the pose prior
@@ -310,6 +318,10 @@ class Reconstruction:
             raise ValueError("Reconstruction backend must be rgbd or slam")
         if tracking not in ("robot", "vision"):
             raise ValueError("Tracking must be robot or vision")
+        from ito.desktop.settings import AppSettings
+
+        AppSettings(precision=precision, input_resolution=input_resolution)
+        self.precision, self.input_resolution = precision, input_resolution
         self.backend = backend
         self.tracking_mode = tracking if motion_noise is not None else "vision"
         self.motion_noise = motion_noise
@@ -324,6 +336,8 @@ class Reconstruction:
         )
         self.epoch = clock.now()
         context = mp.get_context("spawn")
+        self.active_precision = context.RawValue("b", 0)
+        self.precision_failure = context.RawArray("B", 1024)
         self.status_lock = context.Lock()
         self.status_text = context.RawArray("B", 1024)
         self.output_lock = context.Lock()
@@ -385,9 +399,28 @@ class Reconstruction:
         self.notes = notes
         self.closed = False
 
+    def report_precision(self, active, reason=""):
+        self.active_precision.value = {"fp32": 1, "bf16": 2, "fp16": 3}[active]
+        encoded = reason.encode("utf-8")[:1023]
+        self.precision_failure[:] = encoded + bytes(1024 - len(encoded))
+        self.notes.send(
+            f"MASt3R precision {active}" + (f"; Half fell back to Full: {reason}" if reason else "")
+        )
+
     def statistics(self):
         tracked = self.tracked.value
+        from .slam_image import input_size
+
         return dict(
+            slam_precision={0: None, 1: "Full (fp32)", 2: "Half (bf16)", 3: "Half (fp16)"}[
+                self.active_precision.value
+            ],
+            slam_input_size=input_size(
+                self.intrinsics.width, self.intrinsics.height, self.input_resolution
+            ),
+            precision_fallback=bytes(self.precision_failure)
+            .split(b"\0", 1)[0]
+            .decode("utf-8", errors="replace"),
             worker_epoch=self.epoch,
             backend_calls=self.integrated.value,
             matched_pct=100 * self.matched.value / tracked

@@ -11,92 +11,126 @@ from pathlib import Path
 
 import pygame
 
-from e2e.simulated import click, key
+from e2e.settings import click
+from e2e.simulated import key
 from ito import clock, diagnostics
+from ito.app import connect
 from ito.app.__main__ import main as pilot_main
 
-OUT = Path("e2e/out/diagnostics")
+OUT = Path(os.environ.get("ITO_E2E_OUT", "e2e/out/diagnostics"))
 
 
 def phase(mode):
     root = OUT / mode
     root.mkdir(parents=True, exist_ok=True)
-    os.environ["XDG_CONFIG_HOME"] = str(root)
+    os.environ["XDG_CONFIG_HOME"] = os.environ["APPDATA"] = str(root.resolve())
+    (root / "ito/settings.json").unlink(missing_ok=True)
     path = root / "ito/diagnostics.jsonl"
     for old in path.parent.glob("diagnostics.jsonl*"):
         old.rmdir() if old.is_dir() else old.unlink()
     if mode == "unavailable":
-        path.mkdir(parents=True)  # A real filesystem error, even when run as root.
-    # Exercise the same rotating handler with a small budget in a real running app.
+        path.mkdir(parents=True)
     diagnostics.MAX_BYTES = 8000
-    stage, changed = "start", clock.now()
+    stage, changed = "settings", None
     saved_size = 0
+    live = {}
+    flip = pygame.display.flip
 
     def go(value):
         nonlocal stage, changed
         stage, changed = value, clock.now()
 
-    def drive(app, window, value):
-        nonlocal saved_size
+    def frame():
+        nonlocal saved_size, changed
+        if changed is None:
+            changed = clock.now()
         waited = clock.now() - changed
         assert waited < 25, stage
-        layout = window.overlay.layout
-        if app.state.status.link != "CONNECTED" or "diagnostics" not in layout:
+        if waited < 0.7:
+            flip()
             return
-        if stage == "start":
-            go("ready")
-        elif stage == "ready" and waited > 0.7:
+        menu = connect.layout
+        app, window = live.get("app"), live.get("window")
+        connected = app and app.state.status.link == "CONNECTED"
+        if stage == "settings" and "settings" in menu:
+            click(menu["settings"])
+            go("toggle")
+        elif stage == "toggle" and "diagnostics" in menu:
             assert diagnostics.current().enabled == (mode == "on")
             if mode not in {"on", "unavailable"}:
                 assert not path.exists()
-            click(layout["diagnostics"])
+            click(menu["diagnostics"])
             go("clicked")
-        elif stage == "clicked" and waited > 1:
+        elif stage == "clicked" and "back" in menu:
             if mode == "unavailable" and path.is_dir():
-                assert not diagnostics.current().enabled
-                assert diagnostics.current().error
+                assert not diagnostics.current().enabled and diagnostics.current().error
                 path.rmdir()
-                click(layout["diagnostics"])
+                click(menu["diagnostics"])
                 go("clicked")
-                return
-            assert diagnostics.current().enabled == (mode != "off")
-            if mode == "off":
-                assert not path.exists()
-                pygame.event.post(pygame.event.Event(pygame.QUIT))
-                go("done")
             else:
-                key(pygame.K_TAB)
-                go("capture")
-        elif stage == "capture" and waited > 1:
+                assert diagnostics.current().enabled == (mode != "off")
+                click(menu["back"])
+                go("main")
+        elif stage == "main" and "simulated" in menu:
+            click(menu["simulated"])
+            connect.layout.clear()
+            go("connected")
+        elif stage == "connected" and connected:
+            assert "diagnostics" not in window.overlay.layout
+            key(pygame.K_TAB)
+            go("capture")
+        elif stage == "capture" and connected:
             assert window.input.captured
             key(pygame.K_ESCAPE)
             go("release")
-        elif stage == "release" and waited > 1:
+        elif stage == "release" and connected:
             assert not window.input.captured
             if mode in {"toggle", "unavailable"}:
-                click(layout["diagnostics"])
-                go("disabled")
+                click(window.overlay.layout["disconnect"])
+                go("disable settings")
             else:
                 go("shutdown")
-        elif stage == "disabled" and waited > 1:
+        elif stage == "disable settings" and "settings" in menu:
+            click(menu["settings"])
+            go("disable")
+        elif stage == "disable" and "diagnostics" in menu:
+            click(menu["diagnostics"])
+            go("disabled")
+        elif stage == "disabled" and "diagnostics" in menu:
             assert not diagnostics.current().enabled
             saved_size = path.stat().st_size
             go("quiet")
-        elif stage == "quiet" and waited > 1:
+        elif stage == "quiet":
             assert path.stat().st_size == saved_size, "Off still writes diagnostics"
-            click(layout["diagnostics"])
+            click(menu["diagnostics"])
+            go("reenabled")
+        elif stage == "reenabled":
+            assert diagnostics.current().enabled
+            click(menu["back"])
+            go("reconnect")
+        elif stage == "reconnect" and "simulated" in menu:
+            click(menu["simulated"])
+            connect.layout.clear()
             go("shutdown")
-        elif stage == "shutdown" and waited > 3:
+        elif stage == "shutdown" and connected and waited > 3:
             pygame.event.post(pygame.event.Event(pygame.QUIT))
             go("done")
+        flip()
 
-    assert (
-        pilot_main(
-            ["--sim", "--size", "900", "700", "--fps", "30", "--reconstruction", "video"],
-            on_frame=drive,
+    def drive(app, window, value):
+        live.update(app=app, window=window)
+
+    pygame.display.flip = frame
+    try:
+        assert (
+            pilot_main(
+                ["--size", "900", "700", "--fps", "30", "--reconstruction", "video"],
+                on_frame=drive,
+            )
+            == 0
         )
-        == 0
-    )
+    finally:
+        pygame.display.flip = flip
     assert stage == "done"
     files = list(path.parent.glob("diagnostics.jsonl*"))
     if mode == "off":

@@ -20,7 +20,7 @@ MAX_BYTES, BACKUPS = 2 * 1024 * 1024, 3
 
 class Diagnostics:
     def __init__(self):
-        from ito.desktop.settings import settings_path
+        from ito.desktop.settings import load, settings_path
 
         self.enabled = False
         override = os.environ.get("ITO_DEBUG", "").lower()
@@ -34,7 +34,7 @@ class Diagnostics:
         self.dropped = 0
         self.lock = threading.RLock()
         self.last = {}
-        self.set_enabled(bool(self.override))
+        self.set_enabled(load().diagnostic_logging)
 
     def set_enabled(self, enabled):
         with self.lock:
