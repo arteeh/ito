@@ -90,6 +90,12 @@ def simulation(
         # WSL's Mesa defaults to llvmpipe; d3d12 renders the viewer and head camera on the GPU.
         # Only on screen: OSMesa and EGL segfault with d3d12, so headless stays on llvmpipe.
         sim_env["GALLIUM_DRIVER"] = "d3d12"
+    x11_glfw = sorted((rl / ".venv/lib").glob("python*/site-packages/glfw/x11/libglfw.so"))
+    if on_screen and Path("/dev/dxg").exists() and x11_glfw:
+        # pyGLFW prefers the system's GLFW, and Ubuntu 26.04's (3.4) opens the viewer on WSLg's
+        # Wayland: no title bar or window decorations. The wheel's X11 build keeps it on
+        # XWayland, as on 24.04's GLFW 3.3.
+        sim_env.setdefault("PYGLFW_LIBRARY", str(x11_glfw[0]))
     ort = list(
         (rl / ".venv/lib").glob("python*/site-packages/onnxruntime/capi/libonnxruntime.so.*")
     )

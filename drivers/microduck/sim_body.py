@@ -1,5 +1,6 @@
 """Keep the CAD body visible in Pollen's viewer without occluding its head camera."""
 
+import atexit
 import base64
 import json
 import os
@@ -92,6 +93,7 @@ class HeadCamera(Camera):
 
 # The real head camera (IMX219 through mediad) runs every rung at 30 fps.
 FPS = int(os.environ.get("ITO_MICRODUCK_CAMERA_FPS", 30))
+CAMERAS = []  # Render threads to stop before the viewer closes.
 
 
 class ThreadedHeadCamera(HeadCamera):
@@ -111,18 +113,36 @@ class ThreadedHeadCamera(HeadCamera):
         self.world = None
         self.seq = 0
         self.fresh = threading.Condition(self.lock)
+        self.thread = None
+        self.stopping = threading.Event()
+        # Before GLFW goes: rendering on after the viewer closed and GLFW terminated
+        # segfaulted the body in make_context_current (GLFW 3.4, Ubuntu 26.04).
+        atexit.register(self.stop)
+        CAMERAS.append(self)
 
     def render(self, world):
         if self.world is None:
             self.world = world
-            threading.Thread(target=self.loop, name="head-camera", daemon=True).start()
+            self.thread = threading.Thread(target=self.loop, name="head-camera", daemon=True)
+            self.thread.start()
+
+    def stop(self):
+        self.stopping.set()
+        if self.thread is not None and self.thread is not threading.current_thread():
+            self.thread.join(timeout=2)
 
     def loop(self):
         self.renderer = mujoco.Renderer(self.model, height=self.height, width=self.width)
+        try:
+            self.frames()
+        finally:
+            self.renderer.close()
+
+    def frames(self):
         period = 1.0 / max(1, FPS)
         next_frame = time.perf_counter()
         costs, late, window = [], 0, time.perf_counter()
-        while True:
+        while not self.stopping.is_set():
             start = time.perf_counter()
             super().render(self.world)
             with self.lock:
@@ -184,6 +204,14 @@ if __name__ == "__main__":
                 viewer = launch(model, data, **kwargs)
                 with viewer.lock():
                     mujoco.mjv_defaultFreeCamera(model, viewer.cam)
+                close = viewer.close
+
+                def stop_cameras_then_close():
+                    for camera in CAMERAS:
+                        camera.stop()
+                    close()
+
+                viewer.close = stop_cameras_then_close
                 return viewer
             except Exception as exc:
                 raise SystemExit(f"MuJoCo viewer unavailable: {exc}") from exc

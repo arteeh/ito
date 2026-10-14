@@ -4,9 +4,9 @@ Also checks the camera pose robotd's head FK reports against where the pilot loo
 heading, and its pitch against the pilot's tilt standing and walking.
 
 Runs inside the simulator environment (see drivers/microduck/setup-sim.sh):
-PYTHONPATH=. /opt/ito/stack/ito-venv/bin/python e2e/microduck_walking.py \
-    --microduck /opt/ito/stack/microduck --rl /opt/ito/stack/microduck_rl \
-    --policies /opt/ito/stack/policies/current
+P=~/.local/share/ito-microduck; GST_PLUGIN_PATH=$P/gst-plugins-rs/target/debug PYTHONPATH=. \
+    $P/ito-venv/bin/python e2e/microduck_walking.py \
+    --microduck $P/microduck --rl $P/microduck_rl --policies $P/policies/current
 """
 
 import argparse
@@ -116,6 +116,10 @@ class Probe:
                                 "applied_vx",
                                 "applied_vy",
                                 "applied_vyaw",
+                                "gait",
+                                "aimed_tilt",
+                                "pilot_pan",
+                                "aimed_pan",
                                 "fallen",
                             )
                         },

@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import json
+import re
 
 import aiohttp
 from aiortc import RTCConfiguration, RTCPeerConnection, RTCSessionDescription
@@ -11,6 +12,21 @@ from aiortc.sdp import candidate_from_sdp
 
 class RemoteError(RuntimeError):
     """An RPC refusal, distinct from a broken or stalled control connection."""
+
+
+_PROFILE = re.compile(r"^(a=fmtp:(\d+) .*?profile-level-id=)([0-9a-fA-F]{6})", re.MULTILINE)
+
+
+def echo_h264_profile(offer, answer):
+    """Answer each H.264 payload with the profile-level-id it was offered with.
+
+    aiortc answers its own 42e01f. GStreamer 1.28's `rtph264pay` (not 1.24's) puts the encoder's
+    actual profile-level-id (x264's 42c01e for mediad's offer) in its caps, and `webrtcsink`
+    pins the answered one downstream, so the mismatch fails caps negotiation and mediad ends
+    the session. Both are constrained baseline, which aiortc decodes at any level.
+    """
+    offered = {m.group(2): m.group(3) for m in _PROFILE.finditer(offer)}
+    return _PROFILE.sub(lambda m: m.group(1) + offered.get(m.group(2), m.group(3)), answer)
 
 
 class Remote:
@@ -173,6 +189,7 @@ class Remote:
                             # ciphers. As DTLS server we present our ECDSA certificate, which
                             # GStreamer accepts, without weakening either peer's cipher list.
                             answer.sdp = answer.sdp.replace("a=setup:active", "a=setup:passive")
+                            answer.sdp = echo_h264_profile(message["sdp"]["sdp"], answer.sdp)
                             await self.pc.setLocalDescription(answer)
                             await ws.send_json(
                                 {

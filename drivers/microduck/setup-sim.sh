@@ -34,12 +34,13 @@ checkout() {
         git init "$dest"
         git -C "$dest" remote add origin "$url"
     fi
-    if ! git -C "$dest" rev-parse --verify HEAD >/dev/null 2>&1; then
+    # A moved pin is fetched and checked out over the old one; git refuses if it was edited.
+    if [ "$(git -C "$dest" rev-parse --verify -q HEAD)" != "$revision" ]; then
         git -C "$dest" fetch --depth 1 origin "$revision"
         git -C "$dest" checkout --detach FETCH_HEAD
     fi
     [ "$(git -C "$dest" rev-parse HEAD)" = "$revision" ] || {
-        echo "Unexpected revision in $dest; use a fresh prefix" >&2; exit 1;
+        echo "Unexpected revision in $dest" >&2; exit 1;
     }
 }
 # Pins are the third_party/ submodule gitlinks (upstream, unmodified).
@@ -51,10 +52,21 @@ pinned() {
 pinned microduck
 pinned microduck_rl
 pinned gst-plugins-rs
-# The body server needs MuJoCo, not the RL training stack or CUDA/PyTorch.
+# The body server needs MuJoCo, not the RL training stack or CUDA/PyTorch: install only its
+# packages, at the versions upstream's own uv.lock pins (what `duck-sim` runs after `uv sync`).
+locked() {
+    awk -v n="$1" '$0 == "name = \"" n "\"" {getline; gsub(/[^0-9.]/, ""); print; exit}' \
+        "$prefix/microduck_rl/uv.lock"
+}
+body_packages=
+for package in mujoco numpy onnxruntime pillow; do
+    version=$(locked "$package")
+    [ -n "$version" ] || { echo "$package is not in microduck_rl/uv.lock" >&2; exit 1; }
+    body_packages="$body_packages $package==$version"
+done
 uv venv --python 3.12 --allow-existing "$prefix/microduck_rl/.venv"
-uv pip install --python "$prefix/microduck_rl/.venv/bin/python" \
-    mujoco==3.3.7 numpy==2.2.6 onnxruntime==1.24.4 pillow==11.3.0
+# shellcheck disable=SC2086
+uv pip install --python "$prefix/microduck_rl/.venv/bin/python" $body_packages
 uv venv --python 3.12 --allow-existing "$prefix/ito-venv"
 uv pip install --python "$prefix/ito-venv/bin/python" --no-cache \
     --reinstall-package ito-driver-microduck "$source/drivers/microduck"
@@ -67,12 +79,14 @@ for policy in velstand alpha_sitstand alpha_ground_pick ball_kick_left ball_kick
     test -s "$prefix/policies/current/$policy.onnx"
 done
 # Quote paths through Python so prefixes containing spaces work in the generated launcher.
-"$prefix/ito-venv/bin/python" - "$prefix" <<'PY'
+"$prefix/ito-venv/bin/python" - "$prefix" "$source" <<'PY'
 import pathlib, shlex, sys
-p = pathlib.Path(sys.argv[1])
+p, source = pathlib.Path(sys.argv[1]), sys.argv[2]
 q = lambda suffix: shlex.quote(str(p / suffix))
 (p / 'microduck-sim').write_text(
     '#!/bin/sh\nset -eu\n'
+    # This checkout's code goes ahead of the venv's installed copy, so the sim is never stale.
+    f'export PYTHONPATH={shlex.quote(source)}${{PYTHONPATH:+:$PYTHONPATH}}\n'
     f'export GST_PLUGIN_PATH={q("gst-plugins-rs/target/debug")}${{GST_PLUGIN_PATH:+:$GST_PLUGIN_PATH}}\n'
     f'exec {q("ito-venv/bin/python")} -m drivers.microduck.sim '
     f'--microduck {q("microduck")} --rl {q("microduck_rl")} '

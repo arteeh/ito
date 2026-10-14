@@ -1,5 +1,7 @@
 # Upstream Pollen stack for the Microduck sim, unmodified. The gitlinks pin the
 # exact commits; drivers/microduck/setup-sim.sh reads them from here.
+# microduck: a release tag (daemon-vX.Y.Z), what ships on a duck. microduck_rl:
+# its develop branch, which has no releases. gst-plugins-rs: 0.14.5 or newer.
 [submodule "third_party/microduck"]
 	path = third_party/microduck
 	url = https://github.com/pollen-robotics/microduck

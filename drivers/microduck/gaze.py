@@ -20,9 +20,10 @@ from .frames import normalized, rotate
 TRIM_STEP = math.radians(15)
 TRIM_BINS = 13  # -90 to +90 degrees.
 # How fast the trim follows the measured error, and how far it may go: past this the head is
-# at its travel and more trim only winds up.
+# at its travel and more trim only winds up. Velstand v8 stands with the neck lower than v7:
+# a level gaze takes +18 degrees and 15 degrees up about +28, past v7's 25 degree limit.
 TRIM_TIME = 0.3
-TRIM_LIMIT = math.radians(25)
+TRIM_LIMIT = math.radians(35)
 # The trim learns only once the pilot's tilt has held within STEADY, and the gait has not
 # changed, for SETTLE: while the head is still getting there, the error is lag, not droop.
 STEADY = math.radians(2)
