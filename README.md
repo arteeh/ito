@@ -48,7 +48,7 @@ Choose MASt3R-SLAM Full (fp32) or Half (bf16 where supported, otherwise fp16), a
 100/75/50/25% input pixels. The whole camera frame fits a patch grid up to 512 pixels
 on its long side; the overlay shows the active precision. Out-of-memory frames are
 dropped at the chosen precision with a warning until memory recovers. Lower settings trade detail for speed and VRAM. Max splats defaults to 1,000,000;
-use −/+ or type a count on desktop. Reset restores all defaults.
+use −/+ to step by 100,000 or type a count on desktop. Reset restores all defaults.
 
 **Diagnostic logging** is off by default. Toggle it in Settings, or set `ITO_DEBUG=1` to
 force it on (`0` forces it off). `diagnostics.jsonl` beside the settings file retains up to

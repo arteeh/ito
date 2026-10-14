@@ -236,6 +236,8 @@ MASt3RFrontend._cloud = inspected_cloud
                     str(args.out),
                     "--fps",
                     str(args.fps),
+                    "--max-splats",
+                    str(args.max_splats),
                     "--route",
                     args.route,
                     "--turn-rate",

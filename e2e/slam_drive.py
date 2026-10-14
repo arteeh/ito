@@ -183,6 +183,7 @@ def main():
     parser.add_argument("--route", choices=sorted(ROUTES), default="short")
     parser.add_argument("--laps", type=int, default=1)
     parser.add_argument("--fps", type=int, default=60)
+    parser.add_argument("--max-splats", type=int)
     parser.add_argument(
         "--turn-rate", type=float, default=45, help="degrees/s the pilot's head turns"
     )
@@ -584,6 +585,7 @@ def main():
             str(args.fps),
             "--reconstruction",
             args.reconstruction,
+            *(["--max-splats", str(args.max_splats)] if args.max_splats is not None else []),
             "--audio-source",
             "none",
             "--audio-sink",
