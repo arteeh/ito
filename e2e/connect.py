@@ -21,11 +21,11 @@ from OpenGL import GL
 from ito import clock
 from ito.app import connect
 from ito.app.__main__ import main as pilot_main
+from ito.app.settings import robot_path
 from ito.driver import pairing
 from ito.link.pairing import display
 
-OUT = Path("e2e/out/connect")
-DISCONNECT = (218, 173)  # The pilot overlay's button row.
+OUT = Path(os.environ.get("ITO_E2E_OUT", "e2e/out/connect"))
 
 
 def network_address():
@@ -79,6 +79,9 @@ def main():
         probe.bind(("0.0.0.0", 0))
         port = probe.getsockname()[1]
     address = f"{network_address()}:{port}"
+    legacy = robot_path(address, "room")
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text(json.dumps({"max_splats": 1, "fov": 75}))
     driver = [sys.executable, "-m", "drivers.mujoco.cli", "--pairing-file", str(code_file)]
     log = (OUT / "driver.log").open("w")
     robot = subprocess.Popen(
@@ -121,7 +124,7 @@ def main():
             )
             assert sims, "No simulated robot process"
             assert screenshot("simulated").std() > 15, "Simulated room not reconstructed"
-            click(DISCONNECT)
+            click(window.overlay.layout["disconnect"])
             live.clear()
             go("back")
         elif stage == "back" and waited > 1.5 and at("address"):
@@ -163,6 +166,9 @@ def main():
         elif stage == "paired" and scene and pairing.paired_pilot(code_file):
             # The typed code is spent: the robot gave this pilot its own secret instead.
             assert pilot.address == address and pilot.code is None, pilot.address
+            assert pilot.settings.max_splats == 1_000_000, "Legacy robot budget leaked"
+            assert pilot.settings.fov == 75, "Robot comfort setting was lost"
+            assert "max_splats" not in json.loads(legacy.read_text())
             credential = pilot.credential.model_dump(include={"pilot", "secret"})
             saved = json.loads(recent.read_text())
             if os.name != "nt":
@@ -175,8 +181,9 @@ def main():
             shown = subprocess.run(driver + ["--show-code"], check=True, capture_output=True)
             assert b"used by a paired pilot" in shown.stdout, shown.stdout
             codes["credential"] = credential
+            legacy.write_text("[]")
             screenshot("paired")
-            click(DISCONNECT)
+            click(window.overlay.layout["disconnect"])
             live.clear()
             go("remembered")
         elif stage == "remembered" and waited > 1.5 and at("recent 0"):
@@ -184,10 +191,12 @@ def main():
             click(at("recent 0"))
             go("remembered piloting")
         elif stage == "remembered piloting" and scene:
+            assert pilot.settings.fov == 70, "Malformed robot settings did not recover"
+            assert pilot.settings.max_splats == 1_000_000
             remembered = pilot.credential.model_dump(include={"pilot", "secret"})
             assert pilot.code is None and len(seen) == 5, "remembered pairing not used"
             assert remembered == codes["credential"], "remembered pairing not used"
-            click(DISCONNECT)
+            click(window.overlay.layout["disconnect"])
             live.clear()
             subprocess.run(
                 driver + ["--rotate-code"], env=os.environ | gl, check=True, capture_output=True
@@ -214,7 +223,7 @@ def main():
             go("escape piloting")
         elif stage == "escape piloting" and waited > 0.5:
             assert connected
-            click(DISCONNECT)
+            click(window.overlay.layout["disconnect"])
             live.clear()
             go("escape connect")
         elif stage == "escape connect" and waited > 0.5 and at("address"):

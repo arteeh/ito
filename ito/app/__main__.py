@@ -11,7 +11,7 @@ import pygame
 
 from ito import diagnostics
 from ito.desktop import DesktopWindow
-from ito.desktop.settings import settings_path
+from ito.desktop.settings import AppSettings, load, save, settings_path
 from ito.link.audio import Audio, arguments
 from ito.link.pairing import DIGITS, normalize
 
@@ -116,13 +116,18 @@ def main(argv=None, *, on_frame=None):
             args.size,
             fps=args.fps,
             capture_dir=args.capture_dir,
-            max_splats=args.max_splats,
+            max_splats=load().max_splats,
             **options,
         )
 
     try:
         Audio(args.audio_source, args.audio_sink)  # Validate before any window opens.
         Settings.model_validate(Settings().model_dump() | overrides)
+        if args.max_splats is not None:
+            selected = AppSettings.model_validate(
+                load().model_dump() | {"max_splats": args.max_splats}
+            )
+            save(selected)
         if args.frames < 0 or not 1 <= args.cameras <= 16:
             raise ValueError("frames must be nonnegative and cameras between 1 and 16")
         if args.metrics:
@@ -130,13 +135,24 @@ def main(argv=None, *, on_frame=None):
         with args.metrics.open("w") if args.metrics else nullcontext() as metrics:
             while True:
                 if choosing:
-                    if window_mode != "desktop":
+                    menu_mode = "xr" if choice.xr else "desktop"
+                    if window_mode != menu_mode:
                         if window:
                             window.close()
-                        window, window_mode = open_window("desktop"), "desktop"
+                        window = window_mode = None
+                        try:
+                            window, window_mode = open_window(menu_mode), menu_mode
+                        except RuntimeError as exc:
+                            if menu_mode == "desktop":
+                                raise
+                            error = str(exc)
+                            choice = connect.Choice(None)
+                            continue
                     choice = connect.choose(window, xr=choice.xr, error=error, pairing=pairing)
                     if choice is None:
                         return 0
+                    if choice.menu:
+                        continue
                     error = pairing = None
                 mode = "xr" if choice.xr else "desktop"
                 if mode != window_mode:
@@ -190,7 +206,7 @@ def pilot_window(window, args, overrides, metrics, choice, on_frame):
         SimulatedRobot() if choice.address is None else nullcontext() as sim,
         Pilot(
             choice.address or sim.address,
-            defaults=Settings(max_splats=window.max_splats),
+            defaults=Settings(**load().model_dump()),
             splat_limit=window.splat_limit,
             overrides=overrides,
             camera=args.camera,
@@ -215,8 +231,6 @@ def pilot_window(window, args, overrides, metrics, choice, on_frame):
                 window.input.sensitivity = selected.sensitivity
                 window.input.invert_y = selected.invert_y
                 window.overlay.max_splats = selected.max_splats
-                if selected.max_splats > window.splat_limit:
-                    pilot.set_max_splats(window.splat_limit)
             if pilot.refusal:
                 window.overlay.leave = True
             if sim and (failure := sim.failure()):

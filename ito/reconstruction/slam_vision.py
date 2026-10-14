@@ -79,14 +79,23 @@ class VisionSLAMBackend(RGBDBackend):
         self.admission_hooks = bind_model(self.model, admission)
         bind_native(admission)
 
-    def __init__(self, capacity, intrinsics, *, report, **options):
+    def __init__(
+        self,
+        capacity,
+        intrinsics,
+        *,
+        report,
+        precision="full",
+        input_resolution=100,
+        precision_report=None,
+        **options,
+    ):
         from .mast3r_runtime import load_model, prepare
 
         source, weights = prepare(report)
         import lietorch
         import torch
         from mast3r_slam.config import config, load_config
-        from mast3r_slam.mast3r_utils import resize_img
         from mast3r_slam.tracker import FrameTracker
 
         load_config(str(source / "config/base.yaml"))
@@ -96,24 +105,19 @@ class VisionSLAMBackend(RGBDBackend):
         config["use_calib"] = True
         config["tracking"]["filtering_mode"] = "recent"
         config["local_opt"]["max_iters"] = 5
-        self.model = load_model(weights, report)
+        self.model = load_model(
+            weights, report, precision=precision, precision_report=precision_report
+        )
         options["device"] = "cuda"
         super().__init__(capacity, intrinsics, **options)
         self.report = report
         self.lietorch = lietorch
         self.frames = Keyframes()
         self.tracker = FrameTracker(self.model, self.frames, "cuda")
-        # MASt3R sees a resized, centre-cropped image; carry the driver's calibration there.
-        blank = np.zeros((intrinsics.height, intrinsics.width, 3))
-        _, (sx, sy, crop_x, crop_y) = resize_img(blank, 512, return_transformation=True)
-        self.K = torch.tensor(
-            [
-                [intrinsics.fx / sx, 0, intrinsics.cx / sx - crop_x],
-                [0, intrinsics.fy / sy, intrinsics.cy / sy - crop_y],
-                [0, 0, 1],
-            ],
-            device="cuda",
-        )
+        from .slam_image import SLAMImage
+
+        self.image = SLAMImage(intrinsics, input_resolution)
+        self.K = torch.as_tensor(self.image.calibration, device="cuda")
         self.transform = lietorch.Sim3.Identity(1, device="cuda")
         self.camera_pose = np.eye(4, dtype=np.float32)
         self.tracked = 0
@@ -234,7 +238,6 @@ class VisionSLAMBackend(RGBDBackend):
     def integrate(self, rgb, depth, camera, now, measured=False):
         """Camera is the robot's world-from-camera estimate; measured when it tracks the gaze."""
         import torch
-        from mast3r_slam.frame import create_frame
         from mast3r_slam.geometry import constrain_points_to_ray
         from mast3r_slam.global_opt import FactorGraph
         from mast3r_slam.mast3r_utils import mast3r_inference_mono
@@ -243,7 +246,7 @@ class VisionSLAMBackend(RGBDBackend):
         prior = np.asarray(camera, dtype=np.float64)
         restarted = None
         with torch.inference_mode():
-            frame = create_frame(self.frame_id, rgb.astype(np.float32) / 255, self.transform)
+            frame = self.image.frame(self.frame_id, rgb, self.transform)
             frame.K = self.K
             self.frame_id += 1
             if self.failures >= max(len(self.frames), 1) + 2:

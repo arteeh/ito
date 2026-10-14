@@ -43,10 +43,17 @@ MASt3R-SLAM; `--mode desktop` is the default. `--reconstruction auto|rgbd|slam|v
 per-robot override. Missing CUDA, loading, lost tracking and SLAM failures show a flat live
 camera panel in desktop and VR, with the reason in ImGui; controls stay connected.
 
-**Diagnostic logging** is off by default. Toggle it in the panel, or set `ITO_DEBUG=1` to
+**Settings** in the main menu saves app-wide choices immediately for the next connection.
+Choose MASt3R-SLAM Full (fp32) or Half (bf16 where supported, otherwise fp16), and
+100/75/50/25% input pixels. The whole camera frame fits a patch grid up to 512 pixels
+on its long side; the overlay shows the active precision. Out-of-memory frames are
+dropped at the chosen precision with a warning until memory recovers. Lower settings trade detail for speed and VRAM. Max splats defaults to 1,000,000;
+use −/+ to step by 100,000 or type a count on desktop. Reset restores all defaults.
+
+**Diagnostic logging** is off by default. Toggle it in Settings, or set `ITO_DEBUG=1` to
 force it on (`0` forces it off). `diagnostics.jsonl` beside the settings file retains up to
 8 MiB across four rotating files, with run/build IDs and operational timings and counters.
-It excludes pairing codes, credentials, media and input contents; hover the toggle for its path.
+It excludes pairing codes, credentials, media and input contents; hover its description for the path.
 
 XR uses the active OpenXR runtime (SteamVR, Virtual Desktop/VDXR, or Monado) and OpenGL 4.3.
 Use `--reference-space seated` (default) or `standing` after room setup. Each eye renders at
@@ -73,9 +80,9 @@ checks that both eyes see the flat camera feed straight ahead with the right dis
 Comfort and input preferences are saved per driver address and robot name: `--fov 75`,
 `--sensitivity 0.0025`, `--invert-y` / `--no-invert-y`, `--move-x move_x`, `--move-y move_y`.
 `--camera NAME --cameras N` selects a camera from a driver with N video tracks.
-The ImGui panel saves the robot's maximum splat count; lowering it fades excess splats first.
-Defaults are 16K for software rendering, 256K for hardware, or 512K with at least 8 GB NVIDIA VRAM.
-Live reconstruction is capped at 512K; [the shared GPU budget](docs/gpu-budget.md) reserves the
+Max splats is global; old per-robot budgets are ignored. Software rendering and OpenGL
+buffer limits cap the active count, and the live VRAM manager can lower it further without
+changing the saved setting. [The shared GPU budget](docs/gpu-budget.md) reserves the
 display first and admits reconstruction between completed frames.
 `ito-desktop scene.ply` remains a local scene viewer with WASD and Page Up/Down free flight.
 

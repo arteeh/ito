@@ -8,7 +8,7 @@ import pygame
 from imgui_bundle import imgui
 from imgui_bundle.python_backends.pygame_backend import PygameRenderer
 
-from ito import clock, diagnostics
+from ito import clock
 
 
 @dataclass(frozen=True)
@@ -154,6 +154,14 @@ class Overlay:
             vram = values.get("vram")
             memory = "--" if vram is None else f"{vram[0] / 2**30:.1f} / {vram[1] / 2**30:.1f} GiB"
             imgui.text(f"Splats: {splats} | VRAM {memory}")
+            if values.get("slam_precision"):
+                imgui.text(f"MASt3R: {values['slam_precision']}")
+            if values.get("reconstruction_oom"):
+                imgui.text_colored(
+                    (1, 0.45, 0.4, 1), "Out of GPU memory: reconstruction is degraded"
+                )
+            if values.get("network_nonfinite_points"):
+                imgui.text_colored((1, 0.65, 0.3, 1), "fp16 overflow: invalid points discarded")
         if xr_mode:
             imgui.text("Aim + trigger to select | stick to drive")
             imgui.text("B e-stop | X stop | A resume | Y recenter")
@@ -162,17 +170,6 @@ class Overlay:
             imgui.text("Tab release mouse" if captured else "Click scene / Tab for mouse-look")
             imgui.text("Space stop | E e-stop | R resume | F12 capture | Esc release mouse")
         selected = None
-        if live and imgui.tree_node("Scene settings"):
-            imgui.set_next_item_width(160)
-            _, self.max_splats = imgui.input_int("Max splats", self.max_splats, 1024, 16384)
-            imgui.same_line()
-            if imgui.button("Apply"):
-                if 1 <= self.max_splats <= (1 << 31) - 1:
-                    selected = self.max_splats
-                    self.error = None
-                else:
-                    self.error = "Choose a positive signed 32-bit slot count"
-            imgui.tree_pop()
         controls = [("Stop", "stop"), ("E-stop", "e_stop"), ("Resume", "resume")]
         if xr_mode:
             controls.append(("Recenter", "recenter"))
@@ -200,7 +197,6 @@ class Overlay:
                     self.error = "Could not launch simulation viewer"
             if self.simulation.viewer_error:
                 imgui.text_colored((1, 0.45, 0.4, 1), self.simulation.viewer_error)
-        self.diagnostic_controls()
         if request:
             imgui.text(request)
         if status.detail:
@@ -264,23 +260,6 @@ class Overlay:
         imgui.end()
         imgui.pop_style_var()
         imgui.pop_style_color(2)
-
-    def diagnostic_controls(self):
-        debug = diagnostics.current()
-        imgui.begin_disabled(debug.override is not None)
-        changed, enabled = imgui.checkbox("Diagnostic logging", debug.enabled)
-        self._placed("diagnostics")
-        hovered = imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled)
-        imgui.end_disabled()
-        if changed:
-            debug.set_enabled(enabled)
-        if debug.override is not None:
-            imgui.same_line()
-            imgui.text_disabled("ITO_DEBUG override")
-        if debug.error:
-            imgui.text_colored((1, 0.45, 0.4, 1), debug.error)
-        elif hovered:
-            imgui.set_tooltip(str(debug.path))
 
     def _audio(self, status):
         missing = [

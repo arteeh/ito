@@ -1,4 +1,4 @@
-"""Atomic preferences keyed by driver address and robot name."""
+"""Robot comfort preferences and remembered pairing credentials."""
 
 import hashlib
 import json
@@ -9,17 +9,16 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from ito.desktop.settings import settings_path
+from ito.desktop.settings import AppSettings, settings_path
 from ito.protocol import Credential, Model, Name
 
 RECENT = 6
 
 
-class Settings(Model):
+class Settings(AppSettings, Model):
     reconstruction: Literal["auto", "rgbd", "slam", "video"] = "auto"
     # SLAM tracking: the robot's own camera motion fused with vision, or vision alone (A/B).
     tracking: Literal["robot", "vision"] = "robot"
-    max_splats: int = Field(default=16384, ge=1, le=(1 << 31) - 1)
     fov: float = Field(default=70, ge=30, le=120)
     sensitivity: float = Field(default=0.0025, ge=0.0001, le=0.02)
     invert_y: bool = False
@@ -42,7 +41,12 @@ def robot_path(address, name):
 def load(address, name, defaults):
     path = robot_path(address, name)
     try:
-        return Settings.model_validate_json(path.read_text())
+        values = json.loads(path.read_text())
+        if not isinstance(values, dict):
+            raise ValueError("Robot settings must be an object")
+        for key in AppSettings.model_fields:
+            values.pop(key, None)
+        return Settings.model_validate(defaults.model_dump() | values)
     except FileNotFoundError:
         return defaults
     except (OSError, ValueError) as exc:
@@ -54,7 +58,7 @@ def save(address, name, settings):
     path = robot_path(address, name)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".tmp")
-    temporary.write_text(settings.model_dump_json() + "\n")
+    temporary.write_text(settings.model_dump_json(exclude=set(AppSettings.model_fields)) + "\n")
     temporary.replace(path)
 
 

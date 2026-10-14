@@ -64,6 +64,9 @@ class SLAMBackend(RGBDBackend):
         frame_delay=0.0,
         exposure=None,
         frontend=None,
+        precision="full",
+        input_resolution=100,
+        precision_report=None,
         aligner=None,
         oracle=None,
         **options,
@@ -71,7 +74,13 @@ class SLAMBackend(RGBDBackend):
         if frontend is None:
             from .mast3r_frontend import MASt3RFrontend
 
-            frontend = MASt3RFrontend(intrinsics, report)
+            frontend = MASt3RFrontend(
+                intrinsics,
+                report,
+                precision=precision,
+                input_resolution=input_resolution,
+                precision_report=precision_report,
+            )
         options["device"] = "cuda"
         super().__init__(capacity, intrinsics, **options)
         self.report = report

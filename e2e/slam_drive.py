@@ -78,6 +78,7 @@ _frames.FrameJoin.described = _counting_described
 # (gaze yaw degrees, gaze pitch degrees, held keys, seconds to hold once there).
 # Positive yaw looks left. The body follows the gaze once the head runs out of pan.
 ROUTES = {}
+ROUTES["pan"] = [(0, 0, "", 5), (-60, 0, "", 3), (60, 0, "", 3), (0, 0, "", 3)]
 ROUTES["short"] = [
     (0, 0, "", 2),
     (0, 0, "w", 3),
@@ -181,6 +182,8 @@ def main():
     parser.add_argument("--record", type=Path, help="save the frames reconstruction received")
     parser.add_argument("--route", choices=sorted(ROUTES), default="short")
     parser.add_argument("--laps", type=int, default=1)
+    parser.add_argument("--fps", type=int, default=60)
+    parser.add_argument("--max-splats", type=int)
     parser.add_argument(
         "--turn-rate", type=float, default=45, help="degrees/s the pilot's head turns"
     )
@@ -579,9 +582,10 @@ def main():
             "1280",
             "720",
             "--fps",
-            "60",
+            str(args.fps),
             "--reconstruction",
             args.reconstruction,
+            *(["--max-splats", str(args.max_splats)] if args.max_splats is not None else []),
             "--audio-source",
             "none",
             "--audio-sink",
