@@ -1,0 +1,14 @@
+# Upstream Pollen stack for the Microduck sim, unmodified. The gitlinks pin the
+# exact commits; drivers/microduck/setup-sim.sh reads them from here.
+[submodule "third_party/microduck"]
+	path = third_party/microduck
+	url = https://github.com/pollen-robotics/microduck
+	shallow = true
+[submodule "third_party/microduck_rl"]
+	path = third_party/microduck_rl
+	url = https://github.com/pollen-robotics/microduck_rl
+	shallow = true
+[submodule "third_party/gst-plugins-rs"]
+	path = third_party/gst-plugins-rs
+	url = https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs
+	shallow = true

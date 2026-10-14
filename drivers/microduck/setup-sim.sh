@@ -42,9 +42,15 @@ checkout() {
         echo "Unexpected revision in $dest; use a fresh prefix" >&2; exit 1;
     }
 }
-checkout "$prefix/microduck" https://github.com/pollen-robotics/microduck 77005fdeb330de64247fa4cc940ba90e2be3ea85
-checkout "$prefix/microduck_rl" https://github.com/pollen-robotics/microduck_rl 273afe0b31c4ab365b9ff806a927b63ac92b5ddd
-checkout "$prefix/gst-plugins-rs" https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs 18a88c81d1413562586a1e7458a3181a3bd31bd2
+# Pins are the third_party/ submodule gitlinks (upstream, unmodified).
+pinned() {
+    url=$(git -C "$source" config -f .gitmodules "submodule.third_party/$1.url")
+    revision=$(git -C "$source" rev-parse "HEAD:third_party/$1")
+    checkout "$prefix/$1" "$url" "$revision"
+}
+pinned microduck
+pinned microduck_rl
+pinned gst-plugins-rs
 # The body server needs MuJoCo, not the RL training stack or CUDA/PyTorch.
 uv venv --python 3.12 --allow-existing "$prefix/microduck_rl/.venv"
 uv pip install --python "$prefix/microduck_rl/.venv/bin/python" \
