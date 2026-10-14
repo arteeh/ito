@@ -8,7 +8,7 @@ import pygame
 from imgui_bundle import imgui
 from imgui_bundle.python_backends.pygame_backend import PygameRenderer
 
-from ito import clock
+from ito.ui import FADE, Theme
 
 
 @dataclass(frozen=True)
@@ -31,6 +31,7 @@ class PilotStatus:
     robot_microphone: bool = False
     robot_speaker: bool = False
     armed: bool = False  # Movement reaches the robot only after an explicit resume.
+    link_lagging: bool = False
     focus_hold: bool = False  # Stopped only because the window lost focus.
 
 
@@ -39,6 +40,7 @@ class Overlay:
         self.context = context
         self.imgui = imgui.create_context()
         imgui.get_io().set_ini_filename("")
+        self.theme = Theme()
         self.backend = PygameRenderer()
         self.backend.key_map.update(
             {getattr(pygame, f"K_{key}"): getattr(imgui.Key, key) for key in "acvxyz"}
@@ -46,10 +48,12 @@ class Overlay:
         self.max_splats = max_splats
         self.error = None
         self.commands = []
+        self._leave = False
         self.can_leave = self.leave = False  # Disconnect returns to the connect screen.
         self.simulation = None
         self.captured = False
         self.layout = {}  # Where the last frame drew each control, so e2e clicks what pilots see.
+        self.prompt_status = None
         self.nudged = -math.inf  # When the pilot last tried to move a robot that is stopped.
 
     def begin(self, events, size, captured, *, pointer=None):
@@ -91,7 +95,22 @@ class Overlay:
             self.backend.io.add_mouse_pos_event(x, y)
             self.backend.io.add_mouse_button_event(0, down)
         imgui.new_frame()
+        self.theme.begin(size)
         return imgui.get_io()
+
+    @property
+    def leave(self):
+        return self._leave and imgui.get_time() - self.theme.switched >= FADE
+
+    @leave.setter
+    def leave(self, requested):
+        self._leave = requested
+        if requested:
+            self.theme.leave()
+        elif self.theme.leaving:
+            self.theme.name = self.theme.previous = None
+            self.theme.leaving = False
+            self.theme.start_leave = False
 
     def draw(
         self,
@@ -105,11 +124,50 @@ class Overlay:
         live=False,
         performance: dict | None = None,
         target: moderngl.Framebuffer | None = None,
-        xr_mode: bool = False,
-        driving: bool = False,
+        xr_mode=False,
+        driving=False,
+        panel_shown=True,
     ) -> int | None:
         if target is not None:
             target.use()
+        if not self._leave:
+            self.theme.show("hud", "session")
+        _, alpha, leaving = self.theme.showing()
+        hud_alpha = self.theme.hud.show(panel_shown, self.theme.t)
+        selected = None
+        with self.theme.faded(alpha, leaving):
+            if hud_alpha > 0:
+                with self.theme.faded(hud_alpha, not panel_shown):
+                    selected = self._draw_hud(
+                        status,
+                        fps,
+                        count,
+                        age,
+                        captured,
+                        request,
+                        live=live,
+                        performance=performance,
+                        xr_mode=xr_mode,
+                        driving=driving,
+                    )
+            self._stopped_prompt(status, driving, xr_mode)
+        self.render()
+        return selected
+
+    def _draw_hud(
+        self,
+        status: PilotStatus,
+        fps: float,
+        count: int,
+        age: float | None,
+        captured: bool,
+        request: str | None,
+        *,
+        live=False,
+        performance: dict | None = None,
+        xr_mode: bool = False,
+        driving: bool = False,
+    ) -> int | None:
         safety = (
             "E-STOP LATCHED"
             if status.e_stop
@@ -126,18 +184,24 @@ class Overlay:
         else:
             imgui.set_next_window_pos((12, 12), imgui.Cond_.always)
         imgui.set_next_window_bg_alpha(0.9)
-        imgui.begin(
-            "Ito",
-            flags=imgui.WindowFlags_.always_auto_resize
-            | imgui.WindowFlags_.no_move
-            | imgui.WindowFlags_.no_collapse,
-        )
+        with self.theme.font("title"):
+            imgui.begin(
+                "Ito",
+                flags=imgui.WindowFlags_.always_auto_resize
+                | imgui.WindowFlags_.no_move
+                | imgui.WindowFlags_.no_collapse,
+            )
+        self.theme.window("Ito", "hud", "under")
         latency = "--" if status.latency_ms is None else f"{status.latency_ms:.0f} ms"
-        imgui.text(f"{status.link} | RTT {latency} | {fps:.0f} fps | {status.robot}")
-        imgui.text_colored((1, 0.45, 0.4, 1) if status.e_stop else (0.85, 0.9, 0.95, 1), safety)
+        with self.theme.font("numeric"):
+            imgui.text(f"{status.link} | RTT {latency} | {fps:.0f} fps | {status.robot}")
+        imgui.text_colored(
+            self.theme.color("error") if status.e_stop else self.theme.color("safe"), safety
+        )
         if not live:
             scene_age = "file" if age is None else f"{age:.1f} s old"
-            imgui.text(f"{count:,} splats | scene {scene_age}")
+            with self.theme.font("numeric"):
+                imgui.text(f"{count:,} splats | scene {scene_age}")
         if live:
             values = performance or {}
             for label, key, unit in (
@@ -147,21 +211,25 @@ class Overlay:
             ):
                 value = values.get(key)
                 text = "--" if value is None else f"{value:.1f}"
-                imgui.text(f"{label}: {text} {unit}")
+                with self.theme.font("numeric"):
+                    imgui.text(f"{label}: {text} {unit}")
             # Splats in the scene of the limit now: Max splats, or less if VRAM is short.
             used, limit = values.get("slot_count"), values.get("splat_limit")
             splats = "--" if used is None or limit is None else f"{used:,} / {limit:,}"
             vram = values.get("vram")
             memory = "--" if vram is None else f"{vram[0] / 2**30:.1f} / {vram[1] / 2**30:.1f} GiB"
-            imgui.text(f"Splats: {splats} | VRAM {memory}")
+            with self.theme.font("numeric"):
+                imgui.text(f"Splats: {splats} | VRAM {memory}")
             if values.get("slam_precision"):
                 imgui.text(f"MASt3R: {values['slam_precision']}")
             if values.get("reconstruction_oom"):
                 imgui.text_colored(
-                    (1, 0.45, 0.4, 1), "Out of GPU memory: reconstruction is degraded"
+                    self.theme.color("error"), "Out of GPU memory: reconstruction is degraded"
                 )
             if values.get("network_nonfinite_points"):
-                imgui.text_colored((1, 0.65, 0.3, 1), "fp16 overflow: invalid points discarded")
+                imgui.text_colored(
+                    self.theme.color("warning"), "fp16 overflow: invalid points discarded"
+                )
         if xr_mode:
             imgui.text("Aim + trigger to select | stick to drive")
             imgui.text("B e-stop | X stop | A resume | Y recenter")
@@ -196,7 +264,7 @@ class Overlay:
                 except OSError:
                     self.error = "Could not launch simulation viewer"
             if self.simulation.viewer_error:
-                imgui.text_colored((1, 0.45, 0.4, 1), self.simulation.viewer_error)
+                imgui.text_colored(self.theme.color("error"), self.simulation.viewer_error)
         if request:
             imgui.text(request)
         if status.detail:
@@ -206,18 +274,27 @@ class Overlay:
             imgui.text_wrapped(status.reconstruction)
             imgui.pop_text_wrap_pos()
         if self.error:
-            imgui.text_colored((1, 0.45, 0.4, 1), self.error)
+            imgui.text_colored(self.theme.color("error"), self.error)
+        link = "cut" if status.link != "CONNECTED" else "slack" if status.link_lagging else "taut"
+        self.theme.window("Ito", "hud", "over", link=link)
         imgui.end()
-        self._stopped_prompt(status, driving, xr_mode)
-        self.render()
         return selected
 
     def _stopped_prompt(self, status, driving, xr_mode):
         """Movement is ignored until resume; the pilot must never have to guess why."""
         fault = status.detail.startswith("fault")
-        if status.link != "CONNECTED" or (status.armed and not status.e_stop and not fault):
+        visible = status.link == "CONNECTED" and (not status.armed or status.e_stop or fault)
+        alpha = self.theme.stopped.show(visible, self.theme.t)
+        if visible:
+            self.prompt_status = status
+        if alpha <= 0 or self.prompt_status is None:
             return
-        now = clock.now()
+        with self.theme.faded(alpha, not visible):
+            self._draw_prompt(self.prompt_status, driving and visible, xr_mode)
+
+    def _draw_prompt(self, status, driving, xr_mode):
+        fault = status.detail.startswith("fault")
+        now = self.theme.t
         if driving:
             self.nudged = now
         resume = "Press A" if xr_mode else "Press R (or gamepad A)"
@@ -235,14 +312,14 @@ class Overlay:
         # 2 Hz stays below photosensitivity limits; the headset gets a steady highlight,
         # since flashing in the pilot's view costs comfort.
         bright = nudged and (xr_mode or math.sin((now - self.nudged) * 4 * math.pi) > -0.3)
-        if status.e_stop or fault:
-            background = (0.85, 0.12, 0.08, 0.97) if bright else (0.55, 0.08, 0.06, 0.92)
-        else:
-            background = (0.95, 0.55, 0.05, 0.97) if bright else (0.32, 0.22, 0.02, 0.92)
+        role = "estop_bg" if status.e_stop or fault else "stop_bg"
+        background = self.theme.color(role + ("_bright" if bright else ""))
         width, height = imgui.get_io().display_size
         imgui.set_next_window_pos((width / 2, height - 24), imgui.Cond_.always, (0.5, 1))
         imgui.push_style_color(imgui.Col_.window_bg, background)
-        imgui.push_style_color(imgui.Col_.border, (1, 0.8, 0.3, 1) if nudged else (0, 0, 0, 0))
+        imgui.push_style_color(
+            imgui.Col_.border, self.theme.color("prompt_border") if nudged else (0, 0, 0, 0)
+        )
         imgui.push_style_var(imgui.StyleVar_.window_border_size, 3)
         imgui.begin(
             "Robot stopped",
@@ -252,11 +329,12 @@ class Overlay:
             | imgui.WindowFlags_.no_focus_on_appearing
             | imgui.WindowFlags_.no_nav,
         )
-        imgui.push_font(None, imgui.get_font_size() * 1.6)
-        imgui.text(title)
-        imgui.text(action)
-        imgui.pop_font()
+        self.theme.window("Robot stopped", "prompt", "under")
+        with self.theme.font("heading", 1.6):
+            imgui.text(title)
+            imgui.text(action)
         imgui.text("Movement is ignored until you resume.")
+        self.theme.window("Robot stopped", "prompt", "over")
         imgui.end()
         imgui.pop_style_var()
         imgui.pop_style_color(2)

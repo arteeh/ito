@@ -12,6 +12,7 @@ from ito.desktop.settings import AppSettings, load, save
 class SettingsScreen:
     def __init__(self, layout):
         self.layout = layout
+        self.theme = layout.theme
         self.placed = layout.placed
         self.settings = load()
         self.error = self.save_error = None
@@ -62,14 +63,14 @@ class SettingsScreen:
 
     def draw(self, *, xr_mode=False):
         s = self.settings
-        imgui.separator_text("MASt3R-SLAM")
+        self.theme.heading("MASt3R-SLAM")
         imgui.text("Precision")
         precision_widths = self.layout.row(1, 1)
         for index, value in enumerate(("full", "half")):
             if index:
                 imgui.same_line()
             if s.precision == value:
-                imgui.push_style_color(imgui.Col_.button, (0.18, 0.42, 0.65, 1))
+                imgui.push_style_color(imgui.Col_.button, self.theme.color("selected"))
             clicked = self.layout.button(value.title(), value, precision_widths[index])
             if s.precision == value:
                 imgui.pop_style_color()
@@ -84,21 +85,23 @@ class SettingsScreen:
             self.change(input_resolution=steps[index - 1])
         imgui.same_line()
         value = f"{s.input_resolution}%"
-        self.layout.button(value, "resolution value", value_width, disabled=True)
+        with self.theme.font("numeric"):
+            self.layout.button(value, "resolution value", value_width, disabled=True)
         imgui.same_line()
         if self.layout.button("+##resolution", "resolution plus", plus, disabled=index == 3):
             self.change(input_resolution=steps[index + 1])
         imgui.text_disabled("Lower: faster, less VRAM, blurrier. Keeps the whole frame.")
-        imgui.separator_text("Scene")
+        self.theme.heading("Scene")
         imgui.text("Max splats")
         minus, value_width, plus = self.layout.row(1, 1.85, 1)
         if self.layout.button("-##splats", "splats minus", minus, disabled=s.max_splats == 1):
             self.change(max_splats=max(1, ((s.max_splats - 1) // 100_000) * 100_000))
         imgui.same_line()
         if xr_mode:
-            self.layout.button(f"{s.max_splats:,}", "splats value", value_width, disabled=True)
+            with self.theme.font("numeric"):
+                self.layout.button(f"{s.max_splats:,}", "splats value", value_width, disabled=True)
         else:
-            with self.layout.field(value_width):
+            with self.theme.font("numeric"), self.layout.field(value_width):
                 edited, self.typed_splats = imgui.input_text("##max splats", self.typed_splats)
             self.placed("splats value")
             if edited:
@@ -113,7 +116,7 @@ class SettingsScreen:
             self.change(max_splats=min((1 << 31) - 1, (s.max_splats // 100_000 + 1) * 100_000))
         imgui.text_disabled("Higher: more scene detail, more VRAM and draw time.")
         imgui.text_disabled("The live VRAM manager may keep fewer splats.")
-        imgui.separator_text("Diagnostics")
+        self.theme.heading("Diagnostics")
         debug = diagnostics.current()
         imgui.text("Diagnostic logging")
         enabled = (
@@ -137,6 +140,6 @@ class SettingsScreen:
         imgui.same_line()
         back = self.layout.button("Back", "back", back_width)
         if self.error or self.save_error:
-            imgui.text_colored((1, 0.45, 0.4, 1), self.error or self.save_error)
+            imgui.text_colored(self.theme.color("error"), self.error or self.save_error)
             self.placed("settings error")
         return back

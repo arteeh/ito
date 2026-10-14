@@ -6,8 +6,9 @@ from imgui_bundle import imgui
 
 
 class MenuLayout:
-    def __init__(self, placed):
+    def __init__(self, placed, theme):
         self.placed = placed
+        self.theme = theme
         self.scale = 1.0
 
     @contextmanager
@@ -18,17 +19,20 @@ class MenuLayout:
         width = min(420 * self.scale + 2 * padding, size[0] - 2 * margin)
         imgui.set_next_window_pos((size[0] / 2, size[1] / 2), imgui.Cond_.always, (0.5, 0.5))
         imgui.set_next_window_size_constraints((width, 0), (width, size[1] - 2 * margin))
-        imgui.begin(
-            title,
-            flags=imgui.WindowFlags_.always_auto_resize
-            | imgui.WindowFlags_.no_move
-            | imgui.WindowFlags_.no_collapse,
-        )
+        with self.theme.font("title"):
+            imgui.begin(
+                title,
+                flags=imgui.WindowFlags_.always_auto_resize
+                | imgui.WindowFlags_.no_move
+                | imgui.WindowFlags_.no_collapse,
+            )
+        self.theme.window(title, "menu", "under")
         imgui.push_text_wrap_pos(0)
         try:
             yield
         finally:
             imgui.pop_text_wrap_pos()
+            self.theme.window(title, "menu", "over")
             imgui.end()
 
     def row(self, *weights):

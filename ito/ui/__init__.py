@@ -32,6 +32,8 @@ class Theme:
         self.t = 0.0
         self.name = self.previous = self.kind = None
         self.switched = 0.0
+        self.outgoing_alpha = 1.0
+        self.start_leave = False
         self.pending_intro = False
         self.entering_menu = False
         self.leaving = False
@@ -49,6 +51,10 @@ class Theme:
         if self.entering_menu:
             self.entering_menu = False
             self.switched = self.t
+        if self.start_leave:
+            self.start_leave = False
+            self.switched = self.t
+            self.art.screen(self.kind, "session", self.t)
         # Bake the known UI sizes on entry/scale changes, never during a session draw.
         scale = imgui.get_style().font_scale_main * imgui.get_style().font_scale_dpi
         if self.prepared != (size, scale):
@@ -71,6 +77,7 @@ class Theme:
         intro = self.kind != "menu"
         self.name = self.previous = None
         self.leaving = False
+        self.start_leave = False
         self.show("main", "menu")
         self.entering_menu = True
         self.pending_intro = intro
@@ -81,6 +88,7 @@ class Theme:
         if name == self.name:
             return
         self.art.screen(self.kind, kind, self.t)
+        self.outgoing_alpha = self.showing()[1] if self.name is not None else 1.0
         self.previous = self.name
         self.name, self.kind = name, kind
         self.switched = self.t
@@ -93,20 +101,23 @@ class Theme:
     def showing(self):
         elapsed = self.t - self.switched
         if self.leaving:
-            return self.name, max(0.0, 1.0 - elapsed / FADE), True
+            return self.name, self.outgoing_alpha * max(0.0, 1.0 - elapsed / FADE), True
         if self.previous is not None and elapsed < FADE:
-            return self.previous, 1.0 - elapsed / FADE, True
+            return self.previous, self.outgoing_alpha * (1.0 - elapsed / FADE), True
         offset = FADE if self.previous is not None else 0.0
         return self.name, min(1.0, max(0.0, (elapsed - offset) / FADE)), False
 
     def leave(self):
         if not self.leaving:
+            self.outgoing_alpha = self.showing()[1]
+            self.start_leave = True
             self.switched = self.t
             self.leaving = True
             self.art.screen(self.kind, "session", self.t)
 
     @contextmanager
     def faded(self, alpha, leaving=False):
+        leaving = leaving or alpha <= 0 or imgui.get_style().alpha <= 0
         imgui.push_style_var(imgui.StyleVar_.alpha, imgui.get_style().alpha * alpha)
         if leaving:
             imgui.push_style_var(imgui.StyleVar_.disabled_alpha, 1.0)

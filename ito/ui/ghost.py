@@ -347,7 +347,7 @@ class GhostRite:
         dl.add_text(font, size, (x - (g.x0 + g.x1) / 2, y - (g.y0 + g.y1) / 2), color, ch)
 
     def _shape_arc(self, text, radius, centre, upper, quote=None):
-        track = self.ring_track
+        track = self.ring_track if quote is not None else 0.0
         total = sum(self.ring_advance[c] + track for c in text) - track
         sign = 1 if upper else -1
         angle = centre - sign * total / 2 / radius
