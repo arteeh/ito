@@ -130,6 +130,7 @@ def load_model(weights, report, *, precision="full", precision_report=None):
             )
         model.to(device="cuda", dtype=network.dtype)
         if network.dtype != torch.float32:
+            network.fp32_norm_weights()
             network.native_positions()
             network.native_decoder()
             for name in ("_encode_image", "_decoder", "_downstream_head"):
@@ -179,6 +180,15 @@ class NetworkPrecision:
             key: torch.where(valid[..., None] if value.ndim == valid.ndim + 1 else valid, value, 0)
             for key, value in result.items()
         }
+
+    def fp32_norm_weights(self):
+        import torch
+
+        # Autocast already computes LayerNorm in fp32. Promote its rounded Half
+        # scale/bias once, preserving their values and avoiding casts at every call.
+        for module in self.model.modules():
+            if isinstance(module, torch.nn.LayerNorm):
+                module.float()
 
     def native_positions(self):
         import torch
