@@ -131,6 +131,7 @@ def load_model(weights, report, *, precision="full", precision_report=None):
         model.to(device="cuda", dtype=network.dtype)
         if network.dtype != torch.float32:
             network.native_positions()
+            network.native_decoder()
             for name in ("_encode_image", "_decoder", "_downstream_head"):
                 network.wrap(name)
         if network.dtype == torch.float16:
@@ -145,7 +146,7 @@ def load_model(weights, report, *, precision="full", precision_report=None):
 
 
 class NetworkPrecision:
-    """Low precision ends at each network call; tracking and native kernels receive fp32."""
+    """Keep features inside the Half network; tracking and native kernels receive fp32."""
 
     def __init__(self, model, report):
         import torch
@@ -200,6 +201,24 @@ class NetworkPrecision:
 
             rope.forward = positions
 
+    @staticmethod
+    def native_decoder():
+        import torch
+        from mast3r_slam import mast3r_utils
+
+        @torch.inference_mode()
+        def decoder(model, feat1, feat2, pos1, pos2, shape1, shape2):
+            # Upstream's decoder promotes every token to fp32 before the heads,
+            # only for autocast to demote it again. These are network internals;
+            # only head outputs cross the boundary to fp32 camera/solver math.
+            dec1, dec2 = model._decoder(feat1, pos1, feat2, pos2)
+            return (
+                model._downstream_head(1, dec1, shape1),
+                model._downstream_head(2, dec2, shape2),
+            )
+
+        mast3r_utils.decoder = decoder
+
     def wrap(self, name):
         import torch
 
@@ -209,7 +228,8 @@ class NetworkPrecision:
         def inference(*args, **kwargs):
             with torch.autocast("cuda", dtype=self.dtype):
                 result = original(*args, **kwargs)
-            result = tensors(result, lambda t: t.float() if t.is_floating_point() else t)
+            if name == "_downstream_head":
+                result = tensors(result, lambda t: t.float() if t.is_floating_point() else t)
             # bf16 has fp32 range. fp16 cleanup and its counter stay entirely on
             # the device; converting a reduction to bool would fence every call.
             if name == "_downstream_head" and self.dtype == torch.float16:

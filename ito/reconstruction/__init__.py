@@ -171,7 +171,6 @@ def _run(recon):
                 if dropped:
                     # The failed call's traceback and temporaries are gone before
                     # releasing cached blocks. No weights or precision are changed.
-                    torch.cuda.empty_cache()
                     if robot_first:
                         node = backend.graph.current
                         if node is not None and node not in backend.graph.keyframes:
@@ -179,6 +178,7 @@ def _run(recon):
                     tracker = getattr(frontend, "tracker", None)
                     if tracker is not None:
                         tracker.reset_idx_f2k()
+                    torch.cuda.empty_cache()
                     if timeline:
                         timeline.write(
                             json.dumps(dict(seq=sequence, outcome="out_of_memory")) + "\n"
