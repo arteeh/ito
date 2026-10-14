@@ -85,6 +85,43 @@ class Publication:
                 self.cursor = int(ids[-1]) + 1
 
 
+class MainPublication:
+    """The same stable-slot eviction-first publication loop as Reconstruction._run."""
+
+    def __init__(self, backend):
+        self.backend = backend
+        self.cursor = self.revision = 0
+        self.slots = -1
+
+    def flush(self, ring, captured):
+        backend = self.backend
+        for _ in range(ring.slots):
+            dirty = np.flatnonzero(backend.dirty)
+            split = np.searchsorted(dirty, self.cursor)
+            ordered = np.concatenate((dirty[split:], dirty[:split]))
+            eviction = backend.sequences[ordered] == 0
+            indices = np.concatenate((ordered[eviction], ordered[~eviction]))[: ring.batch]
+            if not len(indices) and self.slots == len(backend.keys):
+                break
+            if not ring.publish(
+                indices,
+                backend.records[indices],
+                len(backend.keys),
+                backend.count,
+                self.revision,
+                captured,
+                backend.sequences[indices],
+                backend.captures[indices],
+            ):
+                break
+            self.slots = len(backend.keys)
+            backend.retire_revision[indices[backend.retiring[indices]]] = self.revision
+            backend.dirty[indices] = False
+            if len(indices):
+                self.cursor = int(indices[-1]) + 1
+            self.revision += 1
+
+
 def worker(args, ring, admission, ready, start, stopped, status):
     try:
         import cupy as cp
@@ -126,7 +163,7 @@ def worker(args, ring, admission, ready, start, stopped, status):
             torch.cuda.memory_reserved() + cp.get_default_memory_pool().total_bytes()
         )
         vram = VRAM(cp, torch, print, slot_bytes=96 if main else 400)
-        pub = Publication(args.max_splats)
+        pub = MainPublication(engine) if main else Publication(args.max_splats)
         rng = np.random.default_rng(40)
         step_costs, add_costs = [], []
         log = (args.out / "mapping.jsonl").open("w", buffering=1)
@@ -157,8 +194,15 @@ def worker(args, ring, admission, ready, start, stopped, status):
             now = time.perf_counter() - epoch
             if now > args.seconds:
                 break
+            if main:
+                engine.expire(now, ring.last_acknowledged())
+                if len(engine.keys) > engine.budget:
+                    engine.compact()
             with admission.integration():
-                fit = vram.check(engine.count, True)
+                fit = vram.check(
+                    len(engine.keys) if main else engine.count,
+                    not main or len(engine.keys) <= engine.budget,
+                )
                 limit = args.max_splats if fit is None else min(args.max_splats, fit)
                 if limit != engine.budget:
                     engine.resize(limit, now) if main else engine.resize(limit)
@@ -283,11 +327,7 @@ def worker(args, ring, admission, ready, start, stopped, status):
                         )
                     step_costs.append((time.perf_counter() - began) * 1000)
                 if now - last_publish >= 0.1 and admitted:
-                    if main:
-                        records = engine.records.copy()
-                        live = engine.keys >= 0
-                        pub.update({0: records[live]})
-                    else:
+                    if not main:
                         pub.update(engine.records_for(engine.keys()))
                     last_publish = now
                     log.write(
@@ -422,6 +462,7 @@ def main():
         if not status.empty():
             raise RuntimeError(status.get())
         start.value = time.perf_counter()
+        ring.epoch = start.value
         deadline = start.value
         previous_index = -1
         last_completion = 0
@@ -459,6 +500,10 @@ def main():
                     r = np.zeros((packet.capacity, 4, 4), np.float32)
                     r[: min(len(r), len(records))] = records[: len(r)]
                     records = r
+                retiring = packet.records[:, 3, 3] == 1
+                packet.records[retiring, 1, 3] = np.minimum(
+                    packet.records[retiring, 1, 3], time.perf_counter() - start.value + 0.5
+                )
                 if not renderer.apply(packet):
                     raise RuntimeError("GL upload rejected a packet")
                 records[packet.indices] = packet.records
@@ -570,6 +615,11 @@ def main():
         gl.release()
         pygame.quit()
     for moment, at, index, snapshot in captures:
+        # CPU snapshots must include the fade the live GL shader actually displayed.
+        retiring = snapshot[:, 3, 3] == 1
+        snapshot[retiring, 0, 3] *= np.clip((snapshot[retiring, 1, 3] - at) / 0.5, 0, 1)
+        snapshot[:, 3, 3] = 0
+        snapshot[:, 1, 3] = 1e30
         np.savez_compressed(
             args.out / f"snapshot-{moment:.1f}.npz",
             records=snapshot,
