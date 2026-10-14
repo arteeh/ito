@@ -51,13 +51,25 @@ pinned() {
 pinned microduck
 pinned microduck_rl
 pinned gst-plugins-rs
-# The body server needs MuJoCo, not the RL training stack or CUDA/PyTorch.
+# The body server needs MuJoCo, not the RL training stack or CUDA/PyTorch: install only its
+# packages, at the versions upstream's own uv.lock pins (what `duck-sim` runs after `uv sync`).
+locked() {
+    awk -v n="$1" '$0 == "name = \"" n "\"" {getline; gsub(/[^0-9.]/, ""); print; exit}' \
+        "$prefix/microduck_rl/uv.lock"
+}
+body_packages=
+for package in mujoco numpy onnxruntime pillow; do
+    version=$(locked "$package")
+    [ -n "$version" ] || { echo "$package is not in microduck_rl/uv.lock" >&2; exit 1; }
+    body_packages="$body_packages $package==$version"
+done
 uv venv --python 3.12 --allow-existing "$prefix/microduck_rl/.venv"
-uv pip install --python "$prefix/microduck_rl/.venv/bin/python" \
-    mujoco==3.3.7 numpy==2.2.6 onnxruntime==1.24.4 pillow==11.3.0
+# shellcheck disable=SC2086
+uv pip install --python "$prefix/microduck_rl/.venv/bin/python" $body_packages
 uv venv --python 3.12 --allow-existing "$prefix/ito-venv"
+# Editable: the simulator runs this checkout's driver, never a stale copy of it.
 uv pip install --python "$prefix/ito-venv/bin/python" --no-cache \
-    --reinstall-package ito-driver-microduck "$source/drivers/microduck"
+    --reinstall-package ito-driver-microduck --editable "$source/drivers/microduck"
 nice -n 15 cargo +1.95.0 build --manifest-path "$prefix/microduck/Cargo.toml" \
     --locked -p robotd -p robotctl -p mediad -j 2
 nice -n 15 cargo +1.95.0 build --manifest-path "$prefix/gst-plugins-rs/Cargo.toml" \
