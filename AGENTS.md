@@ -49,12 +49,16 @@ starting, and keep it current while you work.
   - `backlog` — handpicked by the owner to be worked on. Only the owner moves issues here.
   - `in-progress` — someone is working on it. A PR is not required yet.
   - `in-review` — a PR with `Closes #N` is open.
-  - `in-main` — merged to main. For now merging also closes the issue.
+  - `in-main` — merged to main. For now the issue is closed here too (see Automation).
   - `in-beta`, `released` — unused until 1.0 (later: beta branch off main with feature freeze,
     then closed in a release).
 - Take work from `backlog`. Move the issue to `in-progress` when you start and to `in-review` when
   the PR opens; the merge moves it to `in-main`. A research or prototype result that is not merged
   stays in `in-review` or goes back to `issues`, with the outcome written on the issue.
+- **Automation** (board workflows): new issues are added to the board automatically. A merged PR
+  moves its issue to `in-main`, and reaching `in-main` closes the issue. So don't move or close
+  issues by hand after a merge. Moving an issue to `in-main` by hand also closes it: only do that
+  for work that really is on main (e.g. a direct commit with no PR).
 - New problems or ideas found along the way become new issues in `issues`, not scope added to
   the current one.
 - With `gh`: `gh project item-add 1 --owner arteeh --url <issue-url>`, then
