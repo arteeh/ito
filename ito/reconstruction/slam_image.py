@@ -52,5 +52,7 @@ class SLAMImage:
         normalized = (
             pixels.to(device="cuda", dtype=torch.float32).permute(2, 0, 1)[None] / 127.5 - 1
         )
-        shape = torch.tensor([[self.height, self.width]], device="cuda", dtype=torch.int32)
+        # Dimensions are host metadata. The heads inspect them on the CPU; a
+        # CUDA shape would add a fence to every head, in Full and Half alike.
+        shape = torch.tensor([[self.height, self.width]], dtype=torch.int32)
         return Frame(index, normalized, shape, shape.clone(), pixels.float() / 255, transform)
