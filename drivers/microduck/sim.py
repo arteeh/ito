@@ -85,8 +85,10 @@ def simulation(
     if truth is not None:
         sim_env["ITO_MICRODUCK_TRUTH"] = str(Path(truth).resolve())
     sim_env["ITO_MICRODUCK_BLUR"] = str(blur)
-    if Path("/dev/dxg").exists() and "GALLIUM_DRIVER" not in os.environ:
+    on_screen = sim_env["MUJOCO_GL"] == "glfw"
+    if on_screen and Path("/dev/dxg").exists() and "GALLIUM_DRIVER" not in os.environ:
         # WSL's Mesa defaults to llvmpipe; d3d12 renders the viewer and head camera on the GPU.
+        # Only on screen: OSMesa and EGL segfault with d3d12, so headless stays on llvmpipe.
         sim_env["GALLIUM_DRIVER"] = "d3d12"
     ort = list(
         (rl / ".venv/lib").glob("python*/site-packages/onnxruntime/capi/libonnxruntime.so.*")
