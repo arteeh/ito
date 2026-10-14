@@ -67,9 +67,8 @@ uv venv --python 3.12 --allow-existing "$prefix/microduck_rl/.venv"
 # shellcheck disable=SC2086
 uv pip install --python "$prefix/microduck_rl/.venv/bin/python" $body_packages
 uv venv --python 3.12 --allow-existing "$prefix/ito-venv"
-# Editable: the simulator runs this checkout's driver, never a stale copy of it.
 uv pip install --python "$prefix/ito-venv/bin/python" --no-cache \
-    --reinstall-package ito-driver-microduck --editable "$source/drivers/microduck"
+    --reinstall-package ito-driver-microduck "$source/drivers/microduck"
 nice -n 15 cargo +1.95.0 build --manifest-path "$prefix/microduck/Cargo.toml" \
     --locked -p robotd -p robotctl -p mediad -j 2
 nice -n 15 cargo +1.95.0 build --manifest-path "$prefix/gst-plugins-rs/Cargo.toml" \
@@ -79,12 +78,14 @@ for policy in velstand alpha_sitstand alpha_ground_pick ball_kick_left ball_kick
     test -s "$prefix/policies/current/$policy.onnx"
 done
 # Quote paths through Python so prefixes containing spaces work in the generated launcher.
-"$prefix/ito-venv/bin/python" - "$prefix" <<'PY'
+"$prefix/ito-venv/bin/python" - "$prefix" "$source" <<'PY'
 import pathlib, shlex, sys
-p = pathlib.Path(sys.argv[1])
+p, source = pathlib.Path(sys.argv[1]), sys.argv[2]
 q = lambda suffix: shlex.quote(str(p / suffix))
 (p / 'microduck-sim').write_text(
     '#!/bin/sh\nset -eu\n'
+    # This checkout's code goes ahead of the venv's installed copy, so the sim is never stale.
+    f'export PYTHONPATH={shlex.quote(source)}${{PYTHONPATH:+:$PYTHONPATH}}\n'
     f'export GST_PLUGIN_PATH={q("gst-plugins-rs/target/debug")}${{GST_PLUGIN_PATH:+:$GST_PLUGIN_PATH}}\n'
     f'exec {q("ito-venv/bin/python")} -m drivers.microduck.sim '
     f'--microduck {q("microduck")} --rl {q("microduck_rl")} '
