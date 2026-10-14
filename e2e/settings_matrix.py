@@ -64,7 +64,12 @@ def inject(self, *args, **kwargs):
         nonlocal calls
         calls += 1
         if 8 <= calls <= 10:
-            raise torch.cuda.OutOfMemoryError('Injected network allocation failure')
+            torch.cuda.set_per_process_memory_fraction(0)
+            try:
+                # Force a real allocator OOM inside the call, even on a roomy GPU.
+                return torch.empty(2**32, device='cuda', dtype=torch.uint8)
+            finally:
+                torch.cuda.set_per_process_memory_fraction(1)
         return encoder(*args, **kwargs)
     self.model._encode_image = fail
 """
