@@ -88,7 +88,8 @@ def _noise(*keys):
 
 # The ring carries quotes as lowercase hex byte pairs, never plain text, "//" between them.
 # Upper arc: Pico della Mirandola, Oration on the Dignity of Man (1486). Lower arc: the
-# Puppet Master, Ghost in the Shell (1995). Both arcs read left to right, like a coin.
+# Puppet Master, Ghost in the Shell (1995). All glyphs stand with their tops outwards and run
+# clockwise, so whichever stretch of the turning ring is at the top reads upright.
 QUOTES = (
     "be the free and proud shaper of your own being.",
     "your effort to remain what you are is what limits you.",
@@ -97,19 +98,6 @@ QUOTES = (
 
 def _hex(text):
     return " ".join(f"{b:02x}" for b in text.encode())
-
-
-def _stitch(dl, a, b, color, u, on=7.0, off=5.0):
-    """A running stitch (sashiko): short dashes along a to b."""
-    length = math.dist(a, b)
-    if length <= 0:
-        return
-    dx, dy = (b[0] - a[0]) / length, (b[1] - a[1]) / length
-    s = off * u / 2
-    while s < length:
-        e = min(s + on * u, length)
-        dl.add_line((a[0] + dx * s, a[1] + dy * s), (a[0] + dx * e, a[1] + dy * e), color, 2 * u)
-        s = e + off * u
 
 
 def link_thread(dl, a, b, state, u, t=0.0):
@@ -339,7 +327,7 @@ class GhostRite:
         lean = (spans[0] - spans[1]) / 4
         self.inscriptions = (
             self._shape_arc(HEX_QUOTES[0], radius, -math.pi / 2, True, 0),
-            self._shape_arc(HEX_QUOTES[1], radius, math.pi / 2, False, 1),
+            self._shape_arc(HEX_QUOTES[1], radius, math.pi / 2, True, 1),
             self._shape_arc("//", radius, lean, True),
             self._shape_arc("//", radius, math.pi - lean, True),
         )
@@ -424,12 +412,12 @@ class GhostRite:
         u = imgui.get_font_size() / BASE
         e = self._since(t)  # seconds into the intro; huge once settled
         # Leaving for a session the whole circle fades with the panel; between menu pages it stays.
-        k = 1.0 if self.leaving is None else 1 - _ramp(t - self.leaving, 0.0, FADE)
-        if k <= 0:
+        fade = 1.0 if self.leaving is None else 1 - _ramp(t - self.leaving, 0.0, FADE)
+        if fade <= 0:
             return
 
         def c(hex_value, alpha):
-            return col(hex_value, alpha * k)
+            return col(hex_value, alpha * fade)
 
         panel = imgui.get_style().alpha
         # The circle belongs to the screen, not the panel: same place and size on every menu
@@ -494,8 +482,8 @@ class GhostRite:
         self._arc_text(bg, self.inscriptions[3], cx, cy, turn, joins, e, step)
 
         # 1.15-1.8 s: marionette threads drop from the outer orbit to the panel, knotted at the end.
-        for k, (deg, fx) in enumerate(((-120, 0.16), (-90, 0.5), (-60, 0.84))):
-            p = _ease(_ramp(e, 1.15 + 0.1 * k, 0.45)) * (panel > 0)
+        for n, (deg, fx) in enumerate(((-120, 0.16), (-90, 0.5), (-60, 0.84))):
+            p = _ease(_ramp(e, 1.15 + 0.1 * n, 0.45)) * (panel > 0)
             if p <= 0:
                 continue
             thread = c("00E5FF", 0.28 * panel)  # threads belong to the panel
@@ -535,8 +523,8 @@ class GhostRite:
         sd = r + 78 * u + 70 * u
         if cx - sd - 60 * u < 0:
             return
-        for k, side in enumerate((-1, 1)):
-            f = _ease(_ramp(e, 1.5 + 0.15 * k, 0.5))
+        for n, side in enumerate((-1, 1)):
+            f = _ease(_ramp(e, 1.5 + 0.15 * n, 0.5))
             if f > 0:
                 self._seal(
                     bg,
@@ -571,30 +559,9 @@ class GhostRite:
         else:
             hi = packed(PHOSPHOR_HI)
             th = imgui.get_frame_height()
-            # Phosphor bar on the left of the title band and a cut-corner mark at its right.
+            # Phosphor bar on the left of the title band.
             draw_list.add_rect_filled((x, y), (x + 4 * u, y + th), hi)
-            draw_list.add_line(
-                (x + w - 22 * u, y + th - 5 * u), (x + w - 8 * u, y + th - 5 * u), hi, 3 * u
-            )
-            draw_list.add_line(
-                (x + w - 8 * u, y + th - 5 * u), (x + w - 8 * u, y + 6 * u), hi, 3 * u
-            )
-            # Bottom-left corner tab: the panel's "cable in" mark.
-            draw_list.add_line((x, y + h - 2 * u), (x + 36 * u, y + h - 2 * u), hi, 3 * u)
-            draw_list.add_line((x + 2 * u, y + h), (x + 2 * u, y + h - 24 * u), hi, 3 * u)
-            if kind == "menu":
-                # Running stitch just inside the border, below the title band.
-                st = packed(rgba("1F8494", 0.85))
-                i = 6 * u
-                top, bot, lft, rgt = y + th + i, y + h - i, x + i, x + w - i
-                for a, b in (
-                    ((lft, top), (rgt, top)),
-                    ((rgt, top), (rgt, bot)),
-                    ((rgt, bot), (lft + 40 * u, bot)),
-                    ((lft, bot - 28 * u), (lft, top)),
-                ):
-                    _stitch(draw_list, a, b, st, u)
-            elif kind == "hud":
+            if kind == "hud":
                 # The title thread reflects the link without moving the HUD.
                 link_thread(
                     draw_list, (x + 48 * u, y + th / 2), (x + w - 34 * u, y + th / 2), link, u, t
