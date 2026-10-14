@@ -31,6 +31,7 @@ def main():
     parser.add_argument("--record", action="store_true")
     parser.add_argument("--fps", type=int, default=90)
     parser.add_argument("--baseline", action="store_true")
+    parser.add_argument("--profile-network", action="store_true")
     parser.add_argument("--network-fault", choices=("oom", "nan"))
     parser.add_argument("--fp16", action="store_true", help="exercise the non-bf16 GPU path")
     parser.add_argument("--limit-gib", type=float)
@@ -81,6 +82,33 @@ def inject(self, *args, **kwargs):
     self.model._downstream_head = poison
 """
         fault += "runtime.NetworkPrecision.__init__ = inject\n"
+    if args.profile_network:
+        fault += """from ito.reconstruction import mast3r_runtime as runtime
+load = runtime.load_model
+def measured_load(*args, **kwargs):
+    import json, torch
+    from mast3r_slam import mast3r_utils
+    model = load(*args, **kwargs)
+    decode = mast3r_utils.decoder
+    calls = 0
+    def measured(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls != 4:
+            return decode(*args, **kwargs)
+        with torch.profiler.profile(activities=[
+            torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA
+        ]) as profile:
+            result = decode(*args, **kwargs)
+        records = [dict(name=e.key, count=e.count, cpu_us=e.self_cpu_time_total,
+                        gpu_us=e.self_device_time_total) for e in profile.key_averages()]
+        with open(PROFILE_OUTPUT, 'w') as output:
+            json.dump(records, output, indent=2)
+        return result
+    mast3r_utils.decoder = measured
+    return model
+runtime.load_model = measured_load
+""".replace("PROFILE_OUTPUT", repr(str(args.out / "network-profile.json")))
     if args.fp16:
         fault = "import torch\ntorch.cuda.is_bf16_supported = lambda **kwargs: False\n" + fault
     bootstrap.write_text(
