@@ -59,8 +59,10 @@ starting, and keep it current while you work.
   moves its issue to `in-main`, and reaching `in-main` closes the issue. So don't move or close
   issues by hand after a merge. Moving an issue to `in-main` by hand also closes it: only do that
   for work that really is on main (e.g. a direct commit with no PR).
-- New problems or ideas found along the way become new issues in `issues`, not scope added to
-  the current one.
+- Only the owner and the coordinator file issues. Agents working on an issue (Codex jobs,
+  subagents) never open, comment on or edit issues or PRs: they report problems found along the
+  way in their final message, and don't add them as scope to the current work. The coordinator
+  fixes important ones right away; the rest it brings to the owner.
 - With `gh`: `gh project item-add 1 --owner arteeh --url <issue-url>`, then
   `gh project item-edit` on the Status field. The token needs the `project` scope.
 
