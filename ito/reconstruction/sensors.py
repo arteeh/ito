@@ -3,10 +3,13 @@
 Both are optional: a robot without them sends none, and tracking works from the camera and the
 robot's motion alone, as before.
 
-IMU: its gyro, turned into the camera's axes by the mount, is how fast the camera turned at a
-frame's exposure. The motion samples' angular velocity is the robot's guess at it (head
-kinematics, or whatever gyro the driver had); the IMU's own samples, at its own rate and dated
-when the chip read them, say it directly, and the blur gate (slam.py) believes them first.
+IMU: it rides on the camera's own link, so it measures the camera's turns directly, where the
+robot's motion samples infer them through every joint between trunk and camera, gear play and
+all. Its gyro, turned into the camera's axes by the mount and integrated between two frames'
+exposures, is how the camera turned between them, good to its bias times the interval; its
+own fusion's gravity says how the camera is tilted. Both become factors in fusion.py, tighter
+than the robot's where the IMU covers the frames. The gyro at an exposure is also how fast the
+camera turned then, which the blur gate (slam.py) believes before the motion samples.
 
 ToF: each zone's range, along its ray, is a metric depth at a known spot in the frame. The
 front end's points there, the zone's footprint of them, are in the front end's units; the
@@ -19,9 +22,16 @@ import math
 from collections import deque
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 # How far apart in time a sensor reading and a frame's exposure may be.
 IMU_MATCH = 0.03
+# An IMU gap longer than this is unobserved rotation: no factor spans it.
+IMU_GAP = 0.06
+# A chip's own gravity fusion is off by about this during a walk's accelerations; its gyro
+# integration by this much on top of bias x time.
+TILT_SIGMA = math.radians(1.0)
+TURN_SIGMA = math.radians(0.1)
 RANGE_MATCH = 0.05
 # A zone counts when this share of its footprint's samples has a point, their depths spread
 # less than this fraction (a flat patch, not an edge), and at least this many zones agree.
@@ -43,19 +53,27 @@ class HeadSensors:
     def __init__(self, seconds=10.0):
         self.seconds = seconds
         self.gyro = deque()  # (time, rad/s in camera axes)
+        self.tilts = deque()  # (time, up in camera axes) from the chip's fusion
+        self.gyro_sigma = None
         self.grids = deque(maxlen=32)
         self.ranged = 0  # frames the ToF gave a scale
 
     def add(self, imu, ranges):
         """imu and ranges as Pilot._sensors sends them."""
-        for unit in imu:
+        for unit in imu[:1]:  # One IMU per camera is all fusion takes.
             rotation = unit["mount"][:3, :3]
-            for when, spin, _, _ in unit["samples"]:
+            self.gyro_sigma = unit["gyro_sigma"]
+            for when, spin, _, orientation in unit["samples"]:
                 if self.gyro and when <= self.gyro[-1][0]:
                     continue
                 self.gyro.append((when, rotation @ np.asarray(spin, dtype=float)))
-        while self.gyro and self.gyro[-1][0] - self.gyro[0][0] > self.seconds:
-            self.gyro.popleft()
+                if orientation is not None:
+                    # World-from-sensor, yaw arbitrary: the world's up in the camera.
+                    world = Rotation.from_quat(orientation).as_matrix() @ rotation.T
+                    self.tilts.append((when, world.T @ np.array([0.0, 1.0, 0.0])))
+        for history in (self.gyro, self.tilts):
+            while history and history[-1][0] - history[0][0] > self.seconds:
+                history.popleft()
         for grid in ranges:
             self.grids.append(grid)
 
@@ -65,6 +83,37 @@ class HeadSensors:
             return None
         when, spin = min(self.gyro, key=lambda sample: abs(sample[0] - t))
         return spin if abs(when - t) <= IMU_MATCH else None
+
+    def turn(self, t0, t1):
+        """The camera's rotation from t0 to t1 (camera at t0 from camera at t1) by its gyro,
+        and its one-sigma error in radians; None where the IMU does not cover both."""
+        if not self.gyro or t1 <= t0:
+            return None
+        times = np.fromiter((g[0] for g in self.gyro), float, len(self.gyro))
+        if times[0] > t0 or times[-1] < t1 - IMU_GAP:
+            return None
+        first, last = np.searchsorted(times, (t0, t1))
+        if first == 0:
+            return None
+        edges = np.concatenate(([t0], times[first:last], [t1]))
+        if np.diff(edges).max() > IMU_GAP:
+            return None
+        rotation = Rotation.identity()
+        for start, end in zip(edges[:-1], edges[1:], strict=True):
+            # Each interval turns at the rate of the sample that ends it (gyros report the
+            # rate over the period just read), the last one at the newest rate.
+            spin = self.gyro[min(int(np.searchsorted(times, end)), len(times) - 1)][1]
+            rotation = rotation * Rotation.from_rotvec(spin * (end - start))
+        sigma = math.hypot(self.gyro_sigma * (t1 - t0), TURN_SIGMA)
+        return rotation, sigma
+
+    def up(self, t):
+        """The world's up in the camera at t by the chip's own gravity fusion, and its sigma;
+        None if it fused nothing near then."""
+        if not self.tilts:
+            return None
+        when, up = min(self.tilts, key=lambda sample: abs(sample[0] - t))
+        return (up, TILT_SIGMA) if abs(when - t) <= IMU_MATCH else None
 
     def range_scale(self, cloud, t, motion):
         """Metres per front-end unit in a frame's cloud, exposed at t, from the ToF reading

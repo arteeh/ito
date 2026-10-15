@@ -96,11 +96,13 @@ class SLAMBackend(RGBDBackend):
         # A keyframe needs the robot's motion back to its exposure; a minute outlasts any
         # look around the room.
         self.motion = MotionBuffer(motion_noise, seconds=60.0)
-        self.sensors = HeadSensors()
+        self.sensors = HeadSensors(seconds=60.0)
         # The frame delay is estimated online, against the robot's motion: visual turns
         # only line up with the robot's at the right delay.
         bounds = (max(0.0, frame_delay + DELAY_RANGE[0]), frame_delay + DELAY_RANGE[1])
-        self.graph = PoseGraph(self.motion, td=frame_delay, td_bounds=bounds, estimate_td=True)
+        self.graph = PoseGraph(
+            self.motion, td=frame_delay, td_bounds=bounds, estimate_td=True, inertial=self.sensors
+        )
         self.focal = float(intrinsics.fx)
         self.exposure = EXPOSURE if exposure is None else float(exposure)
         self.camera_pose = np.eye(4, dtype=np.float32)

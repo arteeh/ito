@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import logging
 import math
 import os
 from collections import deque
@@ -24,6 +25,8 @@ from ito.rates import Rate
 from . import frames, gaze, sensors
 from .camera import Camera, Track
 from .remote import Remote, RemoteError
+
+log = logging.getLogger(__name__)
 
 # Alpha MJCF travel limits. robot.look applies the robot's own IK and joint limits as well.
 HEAD_LIMITS = {
@@ -305,8 +308,10 @@ class MicroduckAdapter(Adapter):
             answer = {"unavailable": str(exc)}
         chip = answer.get("sensor")
         if chip:
+            log.info("Microduck %s: %s at %s Hz", method, chip, answer.get("hz"))
             return chip
         reason = answer.get("unavailable") or "no sensor fitted"
+        log.info("Microduck %s unavailable, carrying on without it: %s", method, reason)
         if required:
             raise RuntimeError(f"Microduck {method} unavailable: {reason}")
         self._telemetry[f"{method.split('.')[0]}_unavailable"] = str(reason)[:256]

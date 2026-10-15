@@ -18,6 +18,10 @@ rotation between the same two frames matches it only at the right delay. A delay
 milliseconds off turns every frame of a fast turn by the turn rate times the error, so it
 has to settle within the first turn, not over a window's slow keyframes.
 
+A head IMU on the camera's own link (sensors.HeadSensors), where the robot has one, adds two
+more: the gyro's turn between consecutive nodes and the chip's gravity per node, both much
+tighter than the robot's, which reaches the camera through every geared joint on the way.
+
 A map aligner (the Gaussian map rendered at a frame's pose and compared with its image)
 adds a map factor: the frame's pose in the world the map was built in, with its sigma,
 under the same Cauchy loss as a visual factor.
@@ -92,8 +96,9 @@ def _cauchy(whitened):
 
 
 class PoseGraph:
-    def __init__(self, motion, td=0.0, td_bounds=(0.0, 0.3), estimate_td=False):
+    def __init__(self, motion, td=0.0, td_bounds=(0.0, 0.3), estimate_td=False, inertial=None):
         self.motion = motion
+        self.inertial = inertial  # sensors.HeadSensors, or None
         self.td = float(td)
         self.td_bounds = td_bounds
         self.estimate_td = estimate_td
@@ -373,6 +378,15 @@ class PoseGraph:
             ]
         ).reshape(-1, 6)
         gravity_sigma = np.array([self.motion.gravity_sigma(times[i] - td) for i in rows])
+        turns, ups = self._inertial(times - td, chain, rows)
+        if turns:
+            ti, tj = (np.array([t[k] for t in turns], dtype=int) for k in (0, 1))
+            turn_inv = Rotation.concatenate([t[2] for t in turns])
+            turn_sigma = np.array([t[3] for t in turns])[:, None]
+        if ups:
+            ui = np.array([u[0] for u in ups], dtype=int)
+            up_seen = np.array([u[1] for u in ups])
+            up_sigma = np.array([u[2] for u in ups])[:, None]
         robot_r, robot_p = self.motion.poses(times - td)
         vi = np.array([index[v.reference] for v in visual], dtype=int)
         vj = np.array([index[v.frame] for v in visual], dtype=int)
@@ -416,6 +430,13 @@ class PoseGraph:
                 # Gravity: pitch and roll (world x and z) of each free node against the robot's.
                 error = (rotations[rows] * robot_r[rows].inv()).as_rotvec()
                 blocks.append((error[:, [0, 2]] / gravity_sigma[:, None]).ravel())
+            if turns:
+                # The IMU's turn between consecutive nodes, in the earlier one's frame.
+                error = (turn_inv * rotations[ti].inv() * rotations[tj]).as_rotvec()
+                blocks.append(_cauchy(error / turn_sigma).ravel())
+            if ups:
+                error = np.cross(rotations[ui].inv().apply(UP), up_seen)
+                blocks.append(_cauchy(error / up_sigma).ravel())
             if anchored:
                 error = (anchor_r * rotations[0]).as_rotvec()
                 blocks.append(error / ANCHOR_ROTATION)
@@ -442,7 +463,15 @@ class PoseGraph:
             None
             if frame_only
             else self._sparsity(
-                order, free_index, chain_nodes, visual, mapped, anchored, estimate_scale
+                order,
+                free_index,
+                chain_nodes,
+                visual,
+                mapped,
+                anchored,
+                estimate_scale,
+                [(order[i], order[j]) for i, j, _, _ in turns],
+                [order[i] for i, _, _ in ups],
             )
         )
         result = least_squares(
@@ -465,7 +494,26 @@ class PoseGraph:
             self.nodes[node].pose = pose
         self.solves += 1
 
-    def _sparsity(self, order, free_index, chain, visual, mapped, anchored, scale):
+    def _inertial(self, exposures, chain, rows):
+        """The head IMU's factors for this solve: (i, j, inverse turn, sigma) per chain pair
+        and (i, up in the camera, sigma) per free node, by solve index."""
+        if self.inertial is None:
+            return [], []
+        turns = []
+        for i, j in chain:
+            found = self.inertial.turn(exposures[i], exposures[j])
+            if found is not None:
+                turns.append((i, j, found[0].inv(), found[1]))
+        ups = []
+        for i in rows:
+            found = self.inertial.up(exposures[i])
+            if found is not None:
+                ups.append((i, *found))
+        return turns, ups
+
+    def _sparsity(
+        self, order, free_index, chain, visual, mapped, anchored, scale, turns=(), ups=()
+    ):
         rows = []
         size = 6 * len(free_index) + int(scale)
 
@@ -482,6 +530,10 @@ class PoseGraph:
             block(6, (a, b))
         for node in free_index:
             block(2, (node,))
+        for a, b in turns:
+            block(3, (a, b))
+        for node in ups:
+            block(3, (node,))
         if anchored:
             block(6, (order[0],))
         for v in visual:
