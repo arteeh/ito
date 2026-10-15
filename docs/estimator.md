@@ -127,12 +127,20 @@ The floor-assumption removal and independent publication are implemented. The co
 
 ## Round 4: DPVO on Ceres
 
-DPVO now builds in the worktree's Linux `.venv`: the first native build completed in 115 seconds with `MAX_JOBS=3`, `NVCC_THREADS=2`, CUDA 12.4, GCC 13 and Torch 2.5.1+cu124. The job limit was 14,408,482,816 bytes; `memory.high=max`. The earlier three failures were under the old 5 GB job limit. No DPVO dependency is imported by the application or Windows release; this remains an explicit e2e challenger, not a bundled Windows tracker.
+DPVO now builds in the worktree's Linux `.venv`: the first successful native build reused surviving object files and completed in 115 seconds with `MAX_JOBS=3`, `NVCC_THREADS=2`, CUDA 12.4, GCC 13 and Torch 2.5.1+cu124. The job limit was 14,408,482,816 bytes; `memory.high=max`. The earlier three failures were under the old 5 GB job limit. No DPVO dependency is imported by the application or Windows release; this remains an explicit e2e challenger, not a bundled Windows tracker.
 
 Reproduction uses the official [DPVO source](https://github.com/princeton-vl/DPVO/tree/0ac95b656d1fda91c271d2a106460d19ad966fc7), pinned at `0ac95b656d1fda91c271d2a106460d19ad966fc7`, Eigen 3.4.0 under its `thirdparty/`, and the official `dpvo.pth` (SHA256 `30d02dc2b88a321cf99aad8e4ea1152a44d791b5b65bf95ad036922819c0ff12`). No viewer, retrieval or classical loop-closure extensions are needed. Existing Ceres inputs are under `~/Projects/ito/out/recon-40-41/estimator/{dpvo,dpvo-weights,cuda-dpvo}`.
 
 ```bash
-# After cloning the pinned source recursively and unpacking Eigen 3.4.0:
+export DPVO_ROOT="$HOME/Projects/ito/out/recon-40-41/estimator/dpvo"
+# For a fresh checkout (keep weights outside the Ito repository):
+git clone --recursive https://github.com/princeton-vl/DPVO.git "$DPVO_ROOT"
+git -C "$DPVO_ROOT" checkout 0ac95b656d1fda91c271d2a106460d19ad966fc7
+git -C "$DPVO_ROOT" submodule update --init --recursive
+curl -fL https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.zip \
+  -o "$DPVO_ROOT/thirdparty/eigen.zip"
+.venv/bin/python -m zipfile -e "$DPVO_ROOT/thirdparty/eigen.zip" "$DPVO_ROOT/thirdparty"
+git -C "$DPVO_ROOT" apply "$PWD/e2e/dpvo-build.patch"
 uv pip install --python .venv/bin/python --no-deps \
   'torch-scatter==2.1.2+pt25cu124' \
   -f https://data.pyg.org/whl/torch-2.5.1+cu124.html
@@ -150,6 +158,30 @@ flock "$HOME/Projects/ito/ceres.lock" uv pip install --python .venv/bin/python \
   --no-deps --no-build-isolation "$DPVO_ROOT"
 ```
 
-Two source/toolchain adaptations are required on this host. In DPVO's `setup.py`, add `['dpvo.loop_closure']` to `find_packages()` (upstream otherwise omits an imported directory), and add `'--threads=2'` to all three `nvcc` argument lists. The Ceres glibc 2.43 headers conflict with CUDA 12.4's six declarations: in a **private copy** of the toolkit, append `noexcept` before the semicolon of the `extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__` declarations for `rsqrt`, `rsqrtf`, `sinpi`, `sinpif`, `cospi`, `cospif` in `include/crt/math_functions.h`. Ceres's shared toolkit was not edited. The private toolkit copies `bin/` and `include/`; other toolkit directories are symlinks to the original. On a compatible glibc/toolkit pair that header adaptation is unnecessary. The package-manifest fix then rebuilds/reinstalls in about four seconds from the object cache.
+Two source/toolchain adaptations are required on this host; the committed `e2e/dpvo-build.patch` contains the exact source edits. In DPVO's `setup.py`, add `['dpvo.loop_closure']` to `find_packages()` (upstream otherwise omits an imported directory), and add `'--threads=2'` to all three `nvcc` argument lists. The Ceres glibc 2.43 headers conflict with CUDA 12.4's six declarations: in a **private copy** of the toolkit, append `noexcept` before the semicolon of the `extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__` declarations for `rsqrt`, `rsqrtf`, `sinpi`, `sinpif`, `cospi`, `cospif` in `include/crt/math_functions.h`. Ceres's shared toolkit was not edited. The private toolkit copies `bin/` and `include/`; other toolkit directories are symlinks to the original. The exact private-copy preparation is:
+
+```python
+# Run with the worktree Python before the install above.
+from pathlib import Path
+import re, shutil
+source = Path.home() / "Projects/ito/out/oracle-40/cuda"
+private = Path.home() / "Projects/ito/out/recon-40-41/estimator/cuda-dpvo"
+private.mkdir(exist_ok=True)
+for entry in source.iterdir():
+    target = private / entry.name
+    if not target.exists():
+        if entry.name in {"bin", "include"}:
+            shutil.copytree(entry, target)  # Dereference; shared files stay untouched.
+        else:
+            target.symlink_to(entry.resolve(), target_is_directory=entry.is_dir())
+header = private / "include/crt/math_functions.h"
+text = header.read_text()
+for name in ("rsqrt", "rsqrtf", "sinpi", "sinpif", "cospi", "cospif"):
+    pattern = rf"(extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ [^;\n]*\b{name}\([^;\n]*\))([ \t]*);"
+    text = re.sub(pattern, r"\1 noexcept;", text)
+header.write_text(text)
+```
+
+ On a compatible glibc/toolkit pair that header adaptation is unnecessary. The package-manifest fix then rebuilds/reinstalls in about four seconds from the object cache.
 
 `e2e/estimator_dpvo.py` runs calibrated 288×512 BGR, 96 patches, a ten-frame optimization window, no loop closure and no map alignment. Full precision also disables upstream's hard-coded update autocast. Each pose is frozen when that call returns, without `terminate()` or retrospective trajectory reconstruction. Arrivals while busy are dropped. It retains raw monocular poses and a separate uncertainty-gated rotation-only correction; metric translation is explicitly the generic robot prior. Startup, skipped observations and fallback are labelled. Concurrent live tracker/mapper contention and a Windows DPVO bundle are untested; neither is implied by isolated replay throughput.

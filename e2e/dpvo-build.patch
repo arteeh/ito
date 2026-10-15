@@ -1,0 +1,36 @@
+diff --git a/setup.py b/setup.py
+index 86fe6ca..cad42c2 100644
+--- a/setup.py
++++ b/setup.py
+@@ -8,19 +8,19 @@ ROOT = osp.dirname(osp.abspath(__file__))
+ 
+ setup(
+     name='dpvo',
+-    packages=find_packages(),
++    packages=find_packages() + ['dpvo.loop_closure'],
+     ext_modules=[
+         CUDAExtension('cuda_corr',
+             sources=['dpvo/altcorr/correlation.cpp', 'dpvo/altcorr/correlation_kernel.cu'],
+             extra_compile_args={
+                 'cxx':  ['-O3'], 
+-                'nvcc': ['-O3'],
++                'nvcc': ['-O3', '--threads=2'],
+             }),
+         CUDAExtension('cuda_ba',
+             sources=['dpvo/fastba/ba.cpp', 'dpvo/fastba/ba_cuda.cu', 'dpvo/fastba/block_e.cu'],
+             extra_compile_args={
+                 'cxx':  ['-O3'], 
+-                'nvcc': ['-O3'],
++                'nvcc': ['-O3', '--threads=2'],
+             },
+             include_dirs=[
+                 osp.join(ROOT, 'thirdparty/eigen-3.4.0')]
+@@ -33,7 +33,7 @@ setup(
+                 'dpvo/lietorch/src/lietorch.cpp', 
+                 'dpvo/lietorch/src/lietorch_gpu.cu',
+                 'dpvo/lietorch/src/lietorch_cpu.cpp'],
+-            extra_compile_args={'cxx': ['-O3'], 'nvcc': ['-O3'],}),
++            extra_compile_args={'cxx': ['-O3'], 'nvcc': ['-O3', '--threads=2'],}),
+     ],
+     cmdclass={
+         'build_ext': BuildExtension
