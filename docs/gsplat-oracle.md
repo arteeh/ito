@@ -1,6 +1,6 @@
-# Oracle mapper: two prove/kill rounds
+# Oracle mapper: three prove/kill rounds
 
-Current verdict: see [round 2](#round-2--sharper-early-bounded-drawing-configuration-still-rejected). The original report below is preserved as round-1 history.
+Current verdict: see [round 3, joint #40/#41](#round-3-joint-4041). Rounds 1–2 below remain history.
 
 ## Round 1 — kill this configuration
 
@@ -151,3 +151,101 @@ Live-manager samples retain at least **10,202 MiB device free** across the visua
 Artifacts: `~/Projects/ito/out/oracle-40/round2/` (`visual/`, `native/`, `native-views/`, `review/`, `audit.json`, `NOTES.md`). Reproduce with `bash e2e/oracle_round2.sh ~/Projects/ito/out/oracle-40/round2` after the round-1 recording/estimate preparation; it takes `ceres.lock` around each GPU run. Reports use software GL only for snapshot comparisons; native captures independently check wide-FOV fidelity. All windows/processes started for this round are closed; the owner's virtual display remains running.
 
 **Owner checks / remaining work:** actual OpenXR and compositor misses with the estimator and changing map active; foreground rivalry at real IPD, head translation, LOD popping, fast turns and v8 waddle; physical ToF/camera delay, dynamics, long sessions and real pressure recovery. The native foreground distortion and TE/EE surface damage must be resolved before promotion. Re-run the unchanged mapper input interfaces on estimator-41 output when available. No issue/PR/board edits were made.
+
+
+## Round 3 (joint #40/#41)
+
+**Reject this mapper/scheduler configuration under the requested joint-round gate.** TT retains first-second sharpness and substantially improves the close cabinet/wall, but a close foreground edge remains pitted even with true inputs. TF still breaks surfaces at the close turn. This rejects the configuration, not optimized Gaussians as a representation. Estimated-input claims below concern the actual propagated pilot eye, never a truth-camera rendering of an estimated map.
+
+### Inputs and comparisons
+
+Ceres RTX 4070 Ti; **Full / Input 100% / Max splats 1,000,000**, separate **98,304 render cap**; **360p30**, upright **360×640**, velstand v8, real **62° long-side lens**, fitting **288×512**. The same two original live `ITO_RECORD` drives are reused; no new drive is implied. Every arm consumes the same frozen observations and causal availability schedule, including true-input arms. The final extraction uses estimator **9ba83fc** (inference core `2e852b6`), with **117 sweep / 534 tour** estimates; the display windows admit 117/514 observations over 17/85 seconds. Inputs, settings, source hashes and actual code revisions are retained in the manifest.
+
+First, all nine arms/controls were rerun with the unchanged round-2 mapper and merged estimator `9aea288`: sweep TE/EE lose much of the earlier shelf damage; tour TE still has floor creases, and tour EE develops a **worse black floor blotch**. [Initial tour EE](gsplat-oracle-round3-img/initial-before-tour-EE-50.jpg), rows 1–2, columns main | old round 2 | unchanged mapper/new estimates, records that failure. Better depth alone did not solve the mapper. These historical E cameras hold the published visual pose, as their captions state.
+
+The final paired comparisons use immutable mapper `0634bbd` and the round-3 mapper against **identical final frozen input files, release times and the same propagated-camera reader**. Columns are RGB | same-input point-map control | round-2 mapper | round-3 mapper; rows are 100 ms apart. The point control includes #41's provisional-appearance/carving changes; it is not claimed to be byte-identical main. Separate actual-main sheets retain main `9a4e7ac`'s old estimator and its own published camera. Historical and final schedules differ; historical comparisons align physical source time, not displayed age.
+
+For E poses, each available visual correction (`pose × inverse(motion_pose)`) applies to the latest received 50 Hz motion pose. Before a visual result, the correction is identity. No future motion or visual result is consulted. Map-side pose refinement never changes this pilot camera or the estimator's published path.
+
+### What changed
+
+Raw depth from three recent views supplies independent agreement weights and support counts. The fitted map cannot certify its own geometry. A nearer replacement needs two confirming raw observations, sufficient weight and unexplained RGB. Two independent contradictions can retire a provisional floater; supported surfaces are protected. A confidence-weighted Cauchy depth loss limits inconsistent observations' influence.
+
+Unknown neural depth retains **provisional colour in uncovered space**, while remaining excluded from metric depth loss and destructive evidence. Dropping those rays initially produced black walls in TE/EE and was rejected. Explicit sparse-sensor modality prevents low-confidence dense images from accidentally invoking ToF interpolation. Missing confidence arrays remain compatible with earlier exports.
+
+The close-up diagnostic separated seeding from fitting: the same TT wall was flat before optimization and rippled after; disabling the render cap did not remove the ripple. Seed-local centre and normal priors, a two-times scale-growth bound, tighter depth-discontinuity footprint guards and a fixed initial map gauge reduce that drift. Other keyframes still refine bounded SE(3) corrections. These priors travel with anchor retirement, clone/split/prune and OOM rollback. Real anisotropic Gaussians, calibrated full-image batches, exposure fitting and retained source observations remain.
+
+ToF completion trials using RGB-guided interpolation, slope extrapolation, inverse-depth curvature and zone-median fitting were **rejected by eye and reverted**. Final ToF keeps linear inverse-depth completion inside the measured hull and nearest continuation outside it. Completed rays carry no centre/normal metric prior; raw zones retain a weak prior. This is colour-bearing initialization, not measured dense geometry. The same noisy delayed 8×8, 45°, 15 Hz sensor model is used throughout; no extra true depth is supplied.
+
+### Motion review
+
+Read rows 1–2, especially the rightmost round-3 column, against the point control and unchanged fitter beside it. No numerical image-quality gate is used.
+
+| Arm | Result and marginal evidence |
+|---|---|
+| **TT** | [Sweep first second](gsplat-oracle-round3-img/sweep180-TT-motion-0.9.jpg) and [tour first second](gsplat-oracle-round3-img/tour-TT-motion-0.9.jpg): plainly sharper books/poster than the point control. [Tour close-up](gsplat-oracle-round3-img/tour-TT-motion-76.0.jpg), both rows: cabinet stripes and wall corner straighten relative to the unchanged mapper, without the earlier large wall ripple. The later [native close-up](gsplat-oracle-round3-img/tour-native-78.0-camera-crop.jpg), middle row, retains a pitted side edge in both eyes. [Removing the cap](gsplat-oracle-round3-img/tour-TT-boundary-cap-check.jpg), both rows, reproduces it: stored geometry remains a limiter. [Sweep late](gsplat-oracle-round3-img/sweep180-TT-motion-10.0.jpg) retains sharp labels. |
+| **TE** | [Sweep](gsplat-oracle-round3-img/sweep180-TE-motion-10.0.jpg), both rows: most large wall floaters removed and shelf filled. [End turn](gsplat-oracle-round3-img/sweep180-TE-motion-15.0.jpg) still has jagged floor seams; [tour](gsplat-oracle-round3-img/tour-TE-motion-50.0.jpg) retains imperfect book/surface detail. True pose alone does not supply correct geometry. |
+| **ET** | [Sweep](gsplat-oracle-round3-img/sweep180-ET-motion-10.0.jpg) and [tour](gsplat-oracle-round3-img/tour-ET-motion-50.0.jpg), both rows: cleaner spines/outlines than the point control. Residual doubled/bent edges with true depth implicate pose or map-side fitting; these are not cured estimator poses. |
+| **EE** | [Tour](gsplat-oracle-round3-img/tour-EE-motion-50.0.jpg), both rows: earlier floor blotch removed; shelf and wall filled. [Sweep](gsplat-oracle-round3-img/sweep180-EE-motion-10.0.jpg): much less ceiling damage, but some books are softer than the unchanged fitter and poster ghosting remains. Floor seams remain. This is a partial robustness gain, not stable metric geometry. |
+| **TF** | [Sweep first second](gsplat-oracle-round3-img/sweep180-TF-motion-0.9.jpg) and [tour first second](gsplat-oracle-round3-img/tour-TF-motion-0.9.jpg): sharp colour arrives quickly. **Fails:** [tour close-up](gsplat-oracle-round3-img/tour-TF-motion-76.0.jpg), both rows, has pitted wall surfaces, broken stripes and floor-edge gaps where main is filled. [Sweep late](gsplat-oracle-round3-img/sweep180-TF-motion-10.0.jpg) also retains imperfect geometry. More interpolated colour is not more sensor evidence. |
+
+Actual main `9a4e7ac` with its old estimator remains visible in [sweep EE](gsplat-oracle-round3-img/sweep180-actual-main-EE.jpg) and [tour EE](gsplat-oracle-round3-img/tour-actual-main-EE.jpg): actual main | same-input point control | new mapper, each from its own camera. The final E close-up was also reviewed at 76/76.1 s in the retained output; the old giant wall floaters are suppressed, but estimated-depth cabinet stripes remain incomplete. No all-frames or headset quality pass is claimed.
+
+| Arm | Sweep 100/500 ms; 1/2 s | Tour 100/500 ms; 1/2 s |
+|---|---|---|
+| TT | [prefixes](gsplat-oracle-round3-img/sweep180-TT-prefix.jpg) | [prefixes](gsplat-oracle-round3-img/tour-TT-prefix.jpg) |
+| TE | [prefixes](gsplat-oracle-round3-img/sweep180-TE-prefix.jpg) | [prefixes](gsplat-oracle-round3-img/tour-TE-prefix.jpg) |
+| ET | [prefixes](gsplat-oracle-round3-img/sweep180-ET-prefix.jpg) | [prefixes](gsplat-oracle-round3-img/tour-ET-prefix.jpg) |
+| EE | [prefixes](gsplat-oracle-round3-img/sweep180-EE-prefix.jpg) | [prefixes](gsplat-oracle-round3-img/tour-EE-prefix.jpg) |
+| TF | [prefixes](gsplat-oracle-round3-img/sweep180-TF-prefix.jpg) | [prefixes](gsplat-oracle-round3-img/tour-TF-prefix.jpg) |
+
+Clocks start at first common estimate availability. Prefixes use the last completed GPU state before each deadline; a 100 ms cell may honestly be empty. Source-time and own-camera captions distinguish actual age from the displayed map's completion. Cells retain their real run commits: dense TT/ET paths were unchanged by the reverted ToF-only trials, and final E-depth cells include provisional-colour handling. The legacy adapter excludes zero-weight depth; the new adapter permits it for provisional colour. This handling is part of the mapper intervention, not a different frozen recording.
+
+### Throughput and limits
+
+| Arm | Sweep steps/s; image iterations/s; KFs ≥100 | Tour steps/s; image iterations/s; KFs ≥100 |
+|---|---|---|
+| TT | 65.1; 128.6; 16/26 | 62.9; 125.1; 85/91 |
+| TE | 65.5; 129.2; 16/26 | 62.5; 124.2; 85/91 |
+| ET | 65.7; 129.6; 16/26 | 62.8; 124.9; 85/90 |
+| EE | 65.9; 130.1; 16/26 | 63.3; 125.8; 85/90 |
+| TF | 38.2; 75.5; 8/26 | 37.1; 74.2; 45/91 |
+
+Dense-arm median keyframe iterations are 100. TF medians are 32.5/93; its sparse-depth CPU completion/addition work leaves less fitting time. Recent and unfinished keyframes remain in the denominators. Counts are full calibrated images, including both distinct views in a batched step. Robustness costs throughput compared with the unchanged fitter; this is not a measured scheduler-speed improvement. Recording readback is included in these live-fitting runs, and their GL miss counters are **not** native deadline acceptance.
+
+Latest estimator `92b8dba` is merged. Its report, assets and omitted-argument compatibility fix change no inference or producer code: `git diff 9ba83fc..92b8dba -- ito/reconstruction e2e/oracle_estimate.py` is empty. Final frozen inputs retain their actual extraction provenance and hashes; no inference rerun or different availability schedule is implied by the later report commit.
+
+### Native 90 Hz and memory
+
+Windows NVIDIA GL uses the same controlled load as round 2: two 2160×2160 RGBA8 eyes, 90° FOV, 64 mm IPD, ±3 cm head translation, one mid-eye sort and two 4,096-record uploads/frame, MMCSS Games/high. There is no timing readback. Each optimized arm draws its saved mature map while the real cold-prefix CUDA fitter runs and drains publications. **The drawn map is frozen; this excludes the live estimator, changing-map upload workload, OpenXR/compositor and scanout.** This is GL contention evidence, not headset acceptance.
+
+Missed 90 Hz GL deadlines in three 20-second repeats:
+
+| Saved map / concurrent workload | Sweep | Tour |
+|---|---|---|
+| main-TT | 0, 1, 0 | 1, 0, 1 |
+| main-EE | 1, 4, 0 | 900, 900, 900 |
+| TT | 0, 0, 0 | 0, 0, 0 |
+| TE | 0, 0, 0 | 0, 0, 0 |
+| ET | 0, 0, 0 | 0, 0, 0 |
+| EE | 0, 2, 0 | 0, 1, 1 |
+| TF | 1, 0, 0 | 0, 0, 0 |
+
+
+`main-TT`/`main-EE` above are the **same-input point controls**, without the new render cap; they are not full current-main process measurements. The uncapped new-input EE tour map runs at roughly half rate. Additional archived actual-main `9a4e7ac` EE maps, with the old estimator and original own camera, were rendered through the same uncapped GL harness: **sweep 0, 0, 0; tour 0, 0, 0** misses (p99 7.07–7.11 / 9.47–9.52 ms). This separates the actual-main map baseline from the changed-input point control. It does not establish a full live point-backend regression.
+
+Optimized TT/TE/ET record zero misses in all six runs each. **EE records four, TF one**; all individual results are retained, not replaced by a favourable repeat. Optimized completion p99 is 5.71–8.27 ms, but the isolated EE overruns relative to the archived-main EE control mean the **zero-new-miss requirement is not established**. No sustained overload appears in the bounded optimized renderer; no headset pass follows from that.
+
+Native left/right views preserve the actual 90° selection: [sweep whole eyes](gsplat-oracle-round3-img/sweep180-native-12.0-whole.jpg)/[explicit camera crops](gsplat-oracle-round3-img/sweep180-native-12.0-camera-crop.jpg), [tour whole eyes](gsplat-oracle-round3-img/tour-native-78.0-whole.jpg)/[crops](gsplat-oracle-round3-img/tour-native-78.0-camera-crop.jpg). Rows are point control | TT | TF. Corresponding contours are present, but the TT edge defect and TF surface damage preclude a complete foreground-shape claim. First-second native captures were also inspected and remain in the output; black outside previously observed space is not scored as a regression.
+
+All 18 normal visual runs and 30 loaded native mapper runs complete without OOM, under main's live VRAM manager and **no fixed VRAM cap**. Visual samples retain at least **10,048 MiB device free**. Real impossible-allocation faults after seeding and during refinement each produce exactly one OOM, retain **Half/bf16**, drop work and continue: 87/88 admitted observations and 827/823 optimizer steps. The refinement drive uses three anchor slots to exercise retirement/rollback. The [actual ImGui warning](gsplat-oracle-round3-img/half-oom-warning.png) is captured. These faults do not test genuine system pressure or eviction.
+
+### Verdict and reproduction
+
+**Kill this configuration; do not promote it as the pilot backend.** TT proves early sharpness, but its remaining true-input foreground defect identifies **boundary geometry/optimization** as a mapper bottleneck independent of the estimator. TE/EE add inconsistent-depth seams and incomplete close detail; ET's remaining bent edges show residual pose is secondary, not the sole problem. TF adds a sparse-depth initialization/optimization problem and reaches fewer keyframe iterations. The next mapper work should resolve occlusion boundaries and uncertainty without locking an incorrect initial surface into the map; its expensive sparse addition and rare EE deadline overruns also remain. These results do not establish that physical ToF is useless, or that better tracking alone will fix the map.
+
+`e2e/oracle_estimate.sh` freezes inputs; `e2e/oracle_joint.sh` replays the five arms and four same-input point controls. A second joint run with `ITO_ORACLE_ARMS='TT TE ET EE TF'` and `--mapper-revision 0634bbd` produces the immutable paired baseline. `e2e/oracle_native.sh` runs the 42 native checks. Use `e2e/oracle_audit.py` on `final/after`, then `e2e/oracle_joint_report.py --out OUT/final --stage after --images docs/gsplat-oracle-round3-img`; `oracle_closeup.py --camera CALIBRATION` isolates stored geometry from selection. Each helper's command/arguments are in its header or `--help`. Ceres uses the `feat-recon-40-41` Windows runtime and the existing gsplat binary; no new native build was performed.
+
+The [round-3 manifest](gsplat-oracle-round3-results.json) includes raw/frozen payload and schedule hashes, all confidence-array checks, actual per-cell revisions, before/paired/final iteration counts, memory, all 48 timing runs and image hashes. The committed review is **39 JPEGs plus the warning PNG, under 10 MB**. Complete drives, rejected trials, close-up probes, first-second native captures and exact finishing commands remain under `~/Projects/ito/out/recon-40-41/mapper/`; `NOTES.md` identifies archived failed configurations. The virtual DISPLAY5 stayed 1920×1080; only owned processes were started/closed.
+
+**Untested:** full live estimator + mapper + changing map + OpenXR/compositor/scanout; physical ToF/timing/extrinsics; Half image quality, long sessions and genuine GPU pressure. The owner should check sustained headset deadlines, near-object silhouettes at actual IPD during head translation, floor/edge breathing and fast-turn/reversal comfort. Headset acceptance remains owner-only.

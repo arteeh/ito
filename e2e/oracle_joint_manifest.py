@@ -1,6 +1,7 @@
 """Summarize audited joint replays, without turning image quality into a number.
 
-PYTHONPATH=. python e2e/oracle_joint_manifest.py OUT --estimator COMMIT --images DIR --output JSON
+PYTHONPATH=. python e2e/oracle_joint_manifest.py OUT --estimator COMMIT \
+    --extraction-estimator COMMIT --images DIR --output JSON
 OUT contains before/, final/{after,paired}/; run oracle_audit.py on final/after first.
 """
 

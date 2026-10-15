@@ -55,7 +55,8 @@ def main():
                         f"TT / prefix {float(data['deadline']):.1f}s / head +{offset:.2f}m\n"
                         f"{settings['precision'].title()} / Input{settings['input_resolution']} / "
                         f"Max{settings['max_splats']:,} / 360p30\n"
-                        f"code {settings['code_commit'][:7]} / GL {float(data['actual']):.3f}s\n"
+                        f"code {settings.get('code_commit', '0634bbd')[:7]} / "
+                        f"GL {float(data['actual']):.3f}s\n"
                         f"{'camera FOV' if args.camera else '90deg whole eye'} / "
                         f"visible cap {budget or 'none'}",
                     )
