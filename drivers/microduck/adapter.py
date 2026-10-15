@@ -70,6 +70,8 @@ MOTION_NOISE = MotionNoise(
 # roll goes to head_roll, the last joint, turning about the camera's own axis, so it leaves
 # the aim alone. Rolls within the dead band are the pilot's posture, not a gesture.
 ROLL_DEAD_BAND = math.radians(3)
+# robotd's idle look-around starts 2 s after the last head intent; hold the head well inside it.
+HEAD_HOLD = 0.5
 # A head-IMU sample this close to a robot.state tick turns the camera at that tick.
 HEAD_IMU_MATCH = 0.025
 # Odometry speeds that count as walking or turning in a motion sample's state.
@@ -194,6 +196,8 @@ class MicroduckAdapter(Adapter):
         self._measured_at = None
         self._neutral_done = asyncio.Event()
         self._gaze = None  # The joints robot.look chose last, which roll rides on.
+        self._head_at = 0.0  # When robotd last heard a head intent from us.
+        self._held = None  # The head joints the pilot's last look (and roll) left.
 
     def _exposure(self):
         """The simulator renders a frame at an instant (or averages --blur renders); the
@@ -262,6 +266,7 @@ class MicroduckAdapter(Adapter):
                 for work in (
                     self.camera.receive(self.remote.video),
                     self._commands(),
+                    self._hold_head(),
                     self._health(),
                 )
             ]
@@ -378,6 +383,7 @@ class MicroduckAdapter(Adapter):
             if roll and self._gaze is not None:
                 rolled = (("robot.head", self._gaze | {"head_roll": roll}),)
             sent = clock.now()
+            self._head_at = sent
             answer = await self.remote.call(
                 "robot.look",
                 {"x": x, "y": y, "z": z, "neck_pitch": 0.0},
@@ -387,6 +393,8 @@ class MicroduckAdapter(Adapter):
             head = answer.get("head") if isinstance(answer, dict) else None
             if isinstance(head, dict) and set(head) >= set(HEAD_LIMITS):
                 self._gaze = {name: float(head[name]) for name in HEAD_LIMITS}
+            if self._gaze is not None:
+                self._held = self._gaze | ({"head_roll": roll} if rolled else {})
             self._looks.tick()
             self._look_ms.append((clock.now() - sent) * 1000)
             # The gait and the tilt aimed at, trim included, show how the trim follows the
@@ -402,6 +410,24 @@ class MicroduckAdapter(Adapter):
                 pilot_roll=move.roll,
                 aimed_roll=roll if rolled else 0.0,
             )
+
+    async def _hold_head(self):
+        """Keep the head where the pilot left it.
+
+        robotd (daemon 0.17, robotd/src/idle_head.rs) takes the head over for an idle
+        look-around (glances, gaze nudges, yawns) once the robot stands still and no head
+        intent has arrived for 2 s. Ito sends looks only while the pilot holds the deadman,
+        so a pilot who stops, lets go or has not moved yet saw the duck look around on its
+        own. Re-sending the last aim well inside those 2 s keeps the camera where the
+        pilot pointed it; before the first look that is the head's straight-ahead pose.
+        """
+        while True:
+            await asyncio.sleep(HEAD_HOLD / 2)
+            if clock.now() - self._head_at < HEAD_HOLD:
+                continue
+            held = self._held or dict.fromkeys(HEAD_LIMITS, 0.0)
+            self._head_at = clock.now()
+            self.remote.notify("robot.head", held)
 
     async def _health(self):
         while True:

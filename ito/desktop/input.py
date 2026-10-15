@@ -1,9 +1,12 @@
 """Desktop tracking and input, using SDL's standardized controller mappings."""
 
+import json
 import logging
 import math
+import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 import pygame
@@ -34,6 +37,56 @@ class PilotInput:
     axes: dict[str, float] = field(default_factory=dict)
 
 
+class PilotScript:
+    """Opt-in scripted pilot for recorded by-eye tests: ITO_PILOT_SCRIPT=<file.json>.
+
+    The file is a list of steps run in order, each held for "for" seconds:
+    {"for": 3, "keys": "w", "turn": 30, "tilt": -10, "do": "resume", "note": "..."}
+    keys are held WASD letters; turn and tilt are head rates in degrees per second
+    (positive: right, up); do is a pilot command sent once as the step starts (resume,
+    stop, e_stop, recenter, quit). The clock starts at the first poll. The script owns
+    the input whatever window has focus, so a person can use the PC meanwhile; real
+    keys and the mouse still work alongside it. Pair it with ITO_RECORD.
+    """
+
+    KEYS = {"w": (0, 0, 1), "s": (0, 0, -1), "a": (-1, 0, 0), "d": (1, 0, 0)}
+
+    def __init__(self, steps: list[dict]):
+        self.steps = steps
+        self.started: float | None = None
+        self.index = -1
+
+    @classmethod
+    def from_env(cls) -> "PilotScript | None":
+        path = os.environ.get("ITO_PILOT_SCRIPT")
+        if not path:
+            return None
+        steps = json.loads(Path(path).read_text())
+        log.info(
+            "Scripted pilot: %d steps, %.0f s, from %s",
+            len(steps),
+            sum(s["for"] for s in steps),
+            path,
+        )
+        return cls(steps)
+
+    def step(self, now: float) -> tuple[dict | None, bool]:
+        """The step running now, and whether it just started."""
+        if self.started is None:
+            self.started = now
+        elapsed, end = now - self.started, 0.0
+        for index, step in enumerate(self.steps):
+            end += float(step["for"])
+            if elapsed < end:
+                fresh = index != self.index
+                if fresh:
+                    self.index = index
+                    diagnostics.event("pilot_script_step", index=index, note=step.get("note", ""))
+                    log.info("Pilot script step %d: %s", index, step.get("note", step))
+                return step, fresh
+        return None, self.index != len(self.steps)
+
+
 class DesktopInput:
     def __init__(self, speed: float = 1.5):
         self.speed = speed
@@ -52,6 +105,7 @@ class DesktopInput:
         self.keys: set[int] = set()
         self.pad = None
         self.pad_buttons: set[str] = set()
+        self.script = PilotScript.from_env()
         controller.init()
         self._connect_pad()
 
@@ -191,8 +245,35 @@ class DesktopInput:
                         self.refocus = False
                         commands.append(command)
             self.pad_buttons = buttons.copy()
-        movement /= max(1, float(np.linalg.norm(movement)))
         dt = min(max(dt, 0), 0.05)  # A window stall must never cause a camera teleport.
+        if self.script is not None:
+            self.active = True
+            commands = [c for c in commands if c != "focus_stop"]
+            step, fresh = self.script.step(clock.now())
+            if step is None:
+                if fresh:
+                    self.script.index = len(self.script.steps)
+                    quit_requested = True
+                    commands.append("stop")
+            else:
+                if fresh and step.get("do") == "recenter":
+                    self.recenter()
+                elif fresh and step.get("do") == "quit":
+                    quit_requested = True
+                    commands.append("stop")
+                elif fresh and step.get("do"):
+                    commands.append(step["do"])
+                for key in step.get("keys", ""):
+                    movement += PilotScript.KEYS[key]
+                self.yaw -= math.radians(float(step.get("turn", 0))) * dt
+                self.pitch = float(
+                    np.clip(
+                        self.pitch + math.radians(float(step.get("tilt", 0))) * dt,
+                        -math.pi * 0.49,
+                        math.pi * 0.49,
+                    )
+                )
+        movement /= max(1, float(np.linalg.norm(movement)))
         self.yaw -= look[0] * 1.8 * dt
         self.pitch = float(
             np.clip(self.pitch + look[1] * 1.8 * dt, -math.pi * 0.49, math.pi * 0.49)
