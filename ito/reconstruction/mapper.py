@@ -134,9 +134,10 @@ class GaussianMap:
 
         if not torch.cuda.is_available():
             raise RuntimeError("Optimized Gaussian mapping needs an NVIDIA CUDA device")
-        from scipy.interpolate import griddata
+        from scipy.interpolate import RBFInterpolator, griddata
 
         self.interpolate_depth = griddata
+        self.smooth_depth = RBFInterpolator
         from gsplat import rasterization
 
         self.rasterize = rasterization
@@ -554,11 +555,19 @@ class GaussianMap:
                 sites = np.stack((xx[valid_depth], yy[valid_depth]), -1)
                 inverse = 1 / frame.depth[valid_depth]
                 nearest = self.interpolate_depth(sites, inverse, (xx, yy), method="nearest")
-                dense = (
-                    self.interpolate_depth(sites, inverse, (xx, yy), method="linear")
-                    if np.linalg.matrix_rank(sites - sites.mean(0)) == 2
-                    else nearest
+                # Colour-guided regularization suppresses zone noise without claiming
+                # measured object boundaries. Original zones alone enter the depth loss.
+                i = frame.intrinsics
+                features = np.concatenate(
+                    (np.stack(((xx - i.cx) / i.fx, (yy - i.cy) / i.fy), -1), frame.rgb / 128), -1
                 )
+                dense = self.smooth_depth(
+                    features[valid_depth],
+                    inverse,
+                    kernel="linear",
+                    degree=0,
+                    smoothing=0.10,
+                )(features.reshape(-1, 5)).reshape(xx.shape)
                 dense = 1 / np.clip(np.where(np.isfinite(dense), dense, nearest), 0.25, 20)
                 i = frame.intrinsics
                 seed_points = np.stack(
