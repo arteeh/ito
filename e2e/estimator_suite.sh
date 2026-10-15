@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 output="${1:-$HOME/Projects/ito/out/estimator-41}"
 recordings="${ITO_ESTIMATOR_RECORDINGS:-$HOME/Projects/ito/out/oracle-40}"
-python=/mnt/c/Users/me/Projects/ito/builds/main/ito/runtime/python.exe
+python="${ITO_ESTIMATOR_PYTHON:-/mnt/c/Users/me/Projects/ito/builds/feat-recon-40-41/ito/runtime/python.exe}"
 for sequence in sweep180 tour; do
     duration=17
     if [[ "$sequence" == tour ]]; then duration=85; fi

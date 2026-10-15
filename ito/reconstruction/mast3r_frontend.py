@@ -193,8 +193,13 @@ class MASt3RFrontend:
         points = local * float(scale) * self.axes
         valid = torch.isfinite(points).all(dim=1) & (local[:, 2] > 0)
         colors = (frame.uimg.to("cuda").reshape(-1, 3) * 255).to(torch.uint8)
+        score = frame.get_average_conf().reshape(-1)
+        confidence = torch.nan_to_num(1 - score.clamp_min(1).reciprocal()).clamp(0, 1)
+        confidence = torch.where(valid, confidence, 0)
         fx, fy, cx, cy = (float(self.K[i, j]) for i, j in ((0, 0), (1, 1), (0, 2), (1, 2)))
-        return Cloud(points, colors, valid, tuple(frame.img.shape[-2:]), (fx, fy, cx, cy))
+        return Cloud(
+            points, colors, valid, tuple(frame.img.shape[-2:]), (fx, fy, cx, cy), confidence
+        )
 
     def _prior_weight(self, prior_sigma, scale):
         # Upstream's Sim3 tangent of the keyframe-from-frame pose: translation (in the

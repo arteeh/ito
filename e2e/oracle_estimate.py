@@ -26,6 +26,7 @@ def main():
     parser.add_argument("--input-resolution", type=int, default=100)
     parser.add_argument("--stamp-delay-ms", type=float, default=0)
     parser.add_argument("--frame-delay-ms", type=float, default=0)
+    parser.add_argument("--seconds", type=float, help="Bound a diagnostic by source exposure time")
     args = parser.parse_args()
     import cv2
     import torch
@@ -48,6 +49,7 @@ def main():
             "metric_scale.py",
             "depth_support.py",
             "__init__.py",
+            "tracking.py",
         }
     }
     torch.set_num_threads(2)
@@ -98,6 +100,8 @@ def main():
     manifest = []
     for row in rows:
         captured = row["captured"]
+        if args.seconds is not None and captured - origin > args.seconds:
+            break
         stamped = captured + args.stamp_delay_ms / 1000
         # 10 Hz fixed RGB admission. Motion arrives on its recorded independent clock.
         if captured < next_capture or captured < motions[0]["local"]:
@@ -137,6 +141,13 @@ def main():
         sw, sh = image.scaled
         z = z[image.top : image.top + sh, image.left : image.left + sw]
         depth = cv2.resize(z, (k.width, k.height), interpolation=cv2.INTER_NEAREST)
+        extra = {}
+        if getattr(cloud, "confidence", None) is not None:
+            confidence = cloud.confidence.reshape(h, w).cpu().numpy()
+            confidence = confidence[image.top : image.top + sh, image.left : image.left + sw]
+            extra["depth_confidence"] = cv2.resize(
+                confidence, (k.width, k.height), interpolation=cv2.INTER_NEAREST
+            ).astype(np.float32)
         name = row["file"]
         np.savez(
             args.out / name,
@@ -145,6 +156,7 @@ def main():
             rgb=frame["rgb"],
             true_depth=frame["depth"],
             true_pose=frame["camera"],
+            **extra,
         )
         manifest.append(
             dict(
@@ -184,6 +196,8 @@ def main():
                 exposure=0,
                 frame_delay=args.frame_delay_ms / 1000,
                 stamp_delay=args.stamp_delay_ms / 1000,
+                source_seconds=args.seconds,
+                depth_confidence="uncalibrated [0,1] weight; 1 - 1/mean MASt3R score; zero excludes",
                 estimator_source_sha256=estimator_source_hashes,
                 source_sha256=hashlib.sha256((source / "frames.jsonl").read_bytes()).hexdigest(),
                 origin=origin,

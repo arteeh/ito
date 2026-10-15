@@ -20,6 +20,7 @@ class Cloud(NamedTuple):
     valid: object  # (H*W,) bool
     shape: tuple[int, int]  # height, width of the image the points belong to
     intrinsics: tuple[float, float, float, float]  # fx, fy, cx, cy at that shape
+    confidence: object | None = None  # N weights in [0,1], zero excludes; not probabilities
 
 
 class VisualResult(NamedTuple):
