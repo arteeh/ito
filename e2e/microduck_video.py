@@ -16,6 +16,8 @@ from ito import clock
 class VideoEvidence:
     def __init__(self, sim, out):
         self.out = out
+        self.width, self.height = sim.sensor_size
+        self.rotate = sim.sensor_rotate
         command = next(child.args for name, child in sim.children if name == "body")
         self.port = int(command[command.index("--frame-port") + 1])
         self.stop = threading.Event()
@@ -55,12 +57,13 @@ class VideoEvidence:
                         if len(header) != 4:
                             raise RuntimeError("sensor closed before evidence capture ended")
                         length = struct.unpack("<I", header)[0]
-                        if length != 640 * 360 * 2:
+                        if length != self.width * self.height * 2:
                             raise RuntimeError(f"unexpected sensor frame length: {length}")
                         packed = stream.read(length)
-                        frame = np.frombuffer(packed, np.uint8).reshape(360, 640, 2)
+                        frame = np.frombuffer(packed, np.uint8).reshape(self.height, self.width, 2)
                         rgb = cv2.cvtColor(frame, cv2.COLOR_YUV2RGB_UYVY)
-                        rgb = np.ascontiguousarray(np.rot90(rgb, -1))
+                        if self.rotate:
+                            rgb = np.ascontiguousarray(np.rot90(rgb, -self.rotate // 90))
                         self.write("sensor", rgb)
                         captured = clock.now()
                         self.sensor_times.append(captured)

@@ -349,6 +349,8 @@ def simulation(
             children=children,
             code=code,
             port=driver_port,
+            sensor_size=(lens.width_for(camera_height), camera_height),
+            sensor_rotate=0 if board == "beta" else 90,
             tof_socket=tof_socket,
             robot_socket=robot_socket,
         )
