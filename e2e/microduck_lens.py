@@ -6,10 +6,8 @@
 The renderer (mujoco) and the driver (av, cv2) live in different environments, so the driver's
 intrinsics come from a subprocess.
 
-Red markers sit at known angles off the head camera's axis. Each is rendered by the simulator's
-head camera, at 360p, 720p and 1080p, and must land where the intrinsics Ito's Microduck driver
-derives from mediad's description of the twin (45 degrees vertical, which is wider than the lens)
-say it will; the long side must span the real lens's 62 degrees.
+Red markers at known rays must reproject within 2px with the delivered intrinsics.
+The zero3 lens is 62 degrees along its long side; beta uses its explicit placeholder FOV.
 """
 
 import argparse
@@ -22,7 +20,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-# Horizontal and vertical angles off the optical axis, in degrees. The long side is the lens's 62.
+# Horizontal and vertical angles off the optical axis, in degrees.
 MARKERS = [(0, 0), (28, 0), (-28, 0), (0, 15), (0, -15), (25, 14), (-25, -14)]
 DISTANCE = 1.0
 
@@ -49,6 +47,7 @@ def main():
 
     source = args.rl.resolve() / "src/mjlab_microduck/robot/microduck"
     failures = []
+    results = []
     hfov_setting = (
         args.beta_camera_hfov or lens.BETA_CAMERA_HFOV_DEG
         if args.board == "beta"
@@ -69,6 +68,9 @@ def main():
                 geom.set("group", "2" if geom.get("class") == "visual" else "3")
             robot.write(state / "robot_groundcontact.xml")
             scene = ET.parse(source / "scene.xml")
+            # Calibration targets below the horizon must not intersect the floor.
+            # A partly hidden sphere shifts the red centroid despite correct intrinsics.
+            scene.find("worldbody").remove(scene.find("worldbody/geom[@name='floor']"))
             for index in range(len(MARKERS)):
                 # Mocap bodies, because MuJoCo only places static geoms at load.
                 mocap = ET.SubElement(
@@ -107,7 +109,7 @@ def main():
                 camera.renderer.close()
             assert rgb.shape[:2] == (height, width), rgb.shape
 
-            # The driver's view of the twin: mediad's Intrinsics::sim, a 45 degree vertical field.
+            # The exact geometry supplied by mediad --sim-camera-hfov.
             nominal = width / 2 / math.tan(math.radians(hfov_setting / 2))
             info = {
                 "width": width,
@@ -140,6 +142,7 @@ def main():
             Image.fromarray(rgb).save(args.out / f"lens-{height}p.png")
             worst = 0.0
             seen = 0
+            errors = []
             for index, (across, up) in enumerate(MARKERS):
                 red = (
                     (rgb[..., 0] > 80)
@@ -160,16 +163,19 @@ def main():
                 seen += 1
                 error = math.hypot(xs.mean() - u, ys.mean() - v)
                 worst = max(worst, error)
+                errors.append(dict(marker=index, u=float(u), v=float(v), error_px=error))
             print(
                 f"{height}p {width}x{height}: driver hfov {hfov:.1f} deg, "
                 f"worst marker error {worst:.1f} px ({worst / height * 100:.2f}% of height)"
             )
-            if seen < 5:
+            results.append(dict(width=width, height=height, hfov=hfov, errors=errors))
+            if seen < len(MARKERS):
                 failures.append(f"{height}p only {seen} markers visible")
             if abs(hfov - hfov_setting) > 0.1:
                 failures.append(f"{height}p driver hfov {hfov:.2f}")
             if worst > 2.0:
                 failures.append(f"{height}p markers off by {worst:.1f} px")
+    (args.out / "markers.json").write_text(json.dumps(results, indent=2) + "\n")
     if failures:
         raise SystemExit("FAIL: " + "; ".join(failures))
     print("PASS: rendered markers reproject within 2px using the delivered intrinsics")
