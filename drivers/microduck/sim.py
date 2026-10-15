@@ -354,8 +354,11 @@ def simulation(
                 "--robot",
                 f"ws://127.0.0.1:{media_port}",
             ],
-            # The driver tells Ito whether its frames are sharp (Camera.exposure).
-            os.environ | {"ITO_MICRODUCK_BLUR": str(blur)},
+            # The driver tells Ito whether its frames are sharp (Camera.exposure): a render is
+            # an instant; --blur averages renders made back to back.
+            os.environ
+            | {"ITO_MICRODUCK_BLUR": str(blur)}
+            | ({"ITO_MICRODUCK_EXPOSURE": "0"} if blur == 1 else {}),
         )
         deadline = time.monotonic() + 30
         while True:

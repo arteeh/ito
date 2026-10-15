@@ -200,8 +200,13 @@ class MicroduckAdapter(Adapter):
         self._held = None  # The head joints the pilot's last look (and roll) left.
 
     def _exposure(self):
-        """The simulator renders a frame at an instant (or averages --blur renders); the
-        IMX219's auto-exposure time reaches nobody."""
+        """How long the sensor integrates a frame, or None: mediad's auto-exposure time
+        reaches nobody. The simulator renders a frame at an instant (or averages --blur
+        renders) and says so in ITO_MICRODUCK_EXPOSURE, since a simulated beta describes its
+        camera as a calibrated robot does."""
+        told = os.environ.get("ITO_MICRODUCK_EXPOSURE")
+        if told:
+            return float(told)
         if self.camera.source == "sim" and os.environ.get("ITO_MICRODUCK_BLUR", "1") == "1":
             return 0.0
         return None
