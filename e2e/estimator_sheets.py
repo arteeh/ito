@@ -45,7 +45,10 @@ def main():
     displays = [
         json.loads((root / "display.json").read_text()) for root in (args.main, args.branch)
     ]
-    width, image_height, row_height = 336, 597, 705
+    k = json.loads((args.recording / "source/camera.json").read_text())
+    width = 400 if k["width"] > k["height"] else 336
+    image_height = round(width * k["height"] / k["width"])
+    row_height = image_height + 125
     metadata = []
     for moment in args.at:
         candidates = sorted(common, key=lambda i: abs(after[i]["t"] - moment))
@@ -73,7 +76,7 @@ def main():
                     Image.fromarray(rgb),
                     (
                         f"RGB / source {i} / exposure +{stamp:.3f}s\n"
-                        "360p30 / real 62 deg lens / v8 policy"
+                        f"{k['width']}x{k['height']} source / sim lens / v8 policy"
                     ),
                 )
             ]

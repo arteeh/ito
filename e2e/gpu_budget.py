@@ -20,7 +20,8 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from measure_gl import View
-from observation_recording import robot_description
+
+from e2e.observation_recording import robot_description
 
 
 def fingerprint():

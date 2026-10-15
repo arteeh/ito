@@ -15,8 +15,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from observation_recording import motion_scale, robot_description
-
+from e2e.observation_recording import motion_scale, robot_description
 from ito import clock
 from ito.protocol import Intrinsics
 from ito.reconstruction import Reconstruction

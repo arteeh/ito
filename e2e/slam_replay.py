@@ -45,9 +45,9 @@ import time
 from pathlib import Path
 
 import numpy as np
-from observation_recording import motion_scale, robot_description
 from PIL import Image
 
+from e2e.observation_recording import motion_scale, robot_description
 from ito.app.pilot import TRACKING_LOST
 from ito.protocol import Intrinsics, RobotDescription
 from ito.reconstruction.slam_vision import heading

@@ -45,10 +45,12 @@ class HeadCamera(Camera):
         model.cam_fovy[camera_id] = np.degrees(
             2 * np.arctan(height / width * np.tan(np.radians(hfov / 2)))
         )
+        super().__init__(model, name, width, height)
+        # Pollen first corrects the CAD camera by 180 degrees around local X.
+        # Apply the upright beta roll afterwards; those rotations do not commute.
         if self.beta:
             q = model.cam_quat[camera_id].copy()
             mujoco.mju_mulQuat(model.cam_quat[camera_id], q, np.array([2**-0.5, 0, 0, 2**-0.5]))
-        super().__init__(model, name, width, height)
         # ITO_MICRODUCK_TRUTH names a file for one line per rendered frame: when it was taken
         # (perf_counter, the driver's clock), the camera's true pose and a thumbnail to find
         # it again among the frames the pilot received (e2e/truth.py).

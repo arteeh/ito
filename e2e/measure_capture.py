@@ -18,7 +18,7 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
-from observation_recording import robot_description
+from e2e.observation_recording import robot_description
 
 
 def digest(path):

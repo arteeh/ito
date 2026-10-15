@@ -17,7 +17,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
-from observation_recording import motion_scale, robot_description
+from e2e.observation_recording import motion_scale, robot_description
 
 
 def main():
@@ -134,7 +134,7 @@ def main():
         stamped = captured + args.stamp_delay_ms / 1000
         # 10 Hz fixed RGB admission. Motion arrives on its recorded independent clock.
         prior = args.observations.startswith("prior")
-        if captured < next_capture or (prior and captured < motions[0]["local"]):
+        if captured < next_capture or captured < motions[0]["local"]:
             continue
         # Wait causally for a motion sample covering the exact exposure.
         after = np.searchsorted([m["local"] for m in motions], captured)
@@ -249,6 +249,7 @@ def main():
                 frame_delay=args.frame_delay_ms / 1000,
                 stamp_delay=args.stamp_delay_ms / 1000,
                 source_seconds=args.seconds,
+                common_start=motions[0]["local"]-origin,
                 depth_confidence=getattr(
                     backend.frontend, "depth_confidence_kind", "network weight"
                 ),

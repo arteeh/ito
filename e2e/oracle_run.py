@@ -662,7 +662,9 @@ def main():
     estimated_poses = [np.load(args.estimates / r["file"])["pose"] for r in rows]
     # Source images, published poses and mapping must share the requested source clock.
     releases = np.array([r["available"] - view_start for r in rows])
-    propagated = all("motion_pose" in row for row in rows)
+    propagated = settings.get("observation_arm", "prior").startswith("prior") and all(
+        "motion_pose" in row for row in rows
+    )
     motions = []
     motion_arrivals = np.empty(0)
     corrections = []
