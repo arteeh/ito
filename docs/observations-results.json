@@ -1,0 +1,890 @@
+{
+  "date": "2026-10-15",
+  "base": "a7b8ea0",
+  "microduck": "5a4864f",
+  "microduck_rl": "288d83d1",
+  "cohort": "one fresh beta tour; exact same input for all arms; causal admissions differ with real inference duration",
+  "live_camera": {
+    "name": "head",
+    "track_id": "microduck-rgb",
+    "calibration": "pinhole",
+    "intrinsics": {
+      "width": 1920,
+      "height": 1080,
+      "fx": 1371.0220864724301,
+      "fy": 1371.0220864724301,
+      "cx": 960.0,
+      "cy": 540.0
+    },
+    "extrinsics": {
+      "position": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "orientation": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    "capture_delay": 0.09,
+    "exposure": 0.0
+  },
+  "evaluation_intrinsics": {
+    "width": 640,
+    "height": 360,
+    "fx": 457.00736215747673,
+    "fy": 457.00736215747673,
+    "cx": 320.0,
+    "cy": 180.0
+  },
+  "record_stride": 3,
+  "source_frames": 940,
+  "source_duration_s": 91.356336328,
+  "source_sha256": "047c4901a4fabf01c769847d50ab8c4a1f8a2fa915ed3495a7c2ed87dd38ab29",
+  "noise": {
+    "imu": 0,
+    "tof": 1,
+    "seed": 0
+  },
+  "sensor_summary": {
+    "board": "beta",
+    "live_camera_size": [
+      1920,
+      1080
+    ],
+    "evaluation_size": [
+      640,
+      360
+    ],
+    "samples": 5397,
+    "sample_hz": 59.99999880252292,
+    "quiet_specific_force_ms2": 9.80996702882842,
+    "gyro_peak_rads": 8.726516723632812,
+    "saturated_samples": 11,
+    "tof_frames": 1308,
+    "zone_counts": [
+      64
+    ],
+    "tof_valid_metres": [
+      0.118,
+      3.541
+    ],
+    "temperature_c": [
+      32.0
+    ]
+  },
+  "alignment": {
+    "recording": "capture/tour (raw data deleted after evaluation)",
+    "samples": 5397,
+    "views": 925,
+    "sample_period_s": {
+      "median": 0.016666666999299196,
+      "p95": 0.016666667001118185,
+      "max": 0.017110122999838495
+    },
+    "raw_inertial_rotation_deg": {
+      "median": 2.0786863451782143,
+      "p95": 21.068781856198235,
+      "max": 51.29569231890802
+    },
+    "range_center_axial_error_m": {
+      "median": 0.010832282984270414,
+      "p95": 0.041457095688588685,
+      "max": 1.0107812340991662
+    },
+    "range_comparisons": 9380,
+    "evaluation": "Source truth only for this diagnostic; first-pose rigid alignment; no scale fit; range centers exclude depth edges. Numbers locate review, not quality gates."
+  },
+  "gyro_alignment": {
+    "compared_intervals": 500,
+    "angular_rate_error_rads_median_p95": [
+      0.08655297847996501,
+      0.29010791488102045
+    ],
+    "direction_cosine_median": 0.9997798655828493,
+    "selection": "Evaluation only: true-camera turns between 0.2 and 2 rad/s, source intervals under 150 ms. Saturations remain in sensors-summary; no truth feeds inference."
+  },
+  "arms": {
+    "camera": {
+      "metrics": {
+        "root": "comparison/estimates/tour-camera",
+        "frames": 386,
+        "rotation_deg": {
+          "min": 2.4497731516231827e-16,
+          "median": 0.6379090114065992,
+          "p95": 176.74921803093378,
+          "max": 177.85287613660114
+        },
+        "translation_m": {
+          "min": 5.552639573108236e-17,
+          "median": 0.13801074031447386,
+          "p95": 0.37591047037406555,
+          "max": 0.4310426280493248
+        },
+        "depth_ratio": {
+          "min": 0.046119771897792816,
+          "median": 1.1813862919807434,
+          "p95": 1.4970324635505676,
+          "max": 1.5984392166137695
+        },
+        "depth_absolute_m": {
+          "min": 0.04459744691848755,
+          "median": 0.412782222032547,
+          "p95": 2.1881995797157288,
+          "max": 2.3405160903930664
+        },
+        "within_frame_ratio_p10_p90": [
+          0.9182038962841034,
+          1.3260004341602327
+        ],
+        "surface_hz": 4.37019662611602,
+        "surface_delay_ms": {
+          "min": 139.04220100084785,
+          "median": 190.66196750009112,
+          "p95": 524.6052252500704,
+          "max": 874.0079959989089
+        },
+        "scale": {
+          "min": 1.0,
+          "median": 1.0,
+          "p95": 1.0,
+          "max": 1.0
+        },
+        "scale_observations": 0,
+        "rejected_visual": 0,
+        "delay_ms": {
+          "min": 0.0,
+          "median": 0.0,
+          "p95": 0.0,
+          "max": 0.0
+        },
+        "propagated_pose_ms": {
+          "min": 0.9704000003694091,
+          "median": 2.7414000005592243,
+          "p95": 3.6337999995339487,
+          "max": 6.413099999917904
+        },
+        "corrected_pose_ms": {
+          "min": 77.54219999878842,
+          "median": 129.7637500001656,
+          "p95": 454.9312249991999,
+          "max": 789.8234000003868
+        },
+        "confidence_positive_fraction": {
+          "min": 0.0,
+          "median": 0.9881163194444444,
+          "p95": 0.9997645399305556,
+          "max": 1.0
+        },
+        "confidence_depth_absolute_m": {
+          "min": 0.0203687846660614,
+          "median": 0.41007906198501587,
+          "p95": 2.185386085510254,
+          "max": 2.3405160903930664
+        }
+      },
+      "settings": {
+        "observation_arm": "camera",
+        "precision": "full",
+        "input_resolution": 100,
+        "max_splats": 1000000,
+        "frame_admission_hz": 10,
+        "estimator": "independent motion/vision estimator, no map alignment",
+        "exposure": 0,
+        "frame_delay": 0.0,
+        "stamp_delay": 0.0,
+        "source_seconds": 90.0,
+        "common_start": 1.7298347369987823,
+        "depth_confidence": "uncalibrated [0,1] weight; provisional network weight times .25; accepted multi-view depth agreement promotes it; zero excludes contradictions",
+        "estimator_source_sha256": {
+          "mast3r_frontend.py": "5e9bf97bcd810660745959ac93fb7c9e74dc436b56b79425c4abfa146455e97a",
+          "metric_scale.py": "bfd63dc8211cad88b8038e636ff4ec0483db1e33b7d553c0e734ac00e0de8f1f",
+          "motion.py": "7f5e1b8ea382017ceecb912388150f549001e6db1324224e08f2059817a2d24c",
+          "__init__.py": "499dfb55a675e6f0740181cd00f32a0eeb1a0890a7120616466fc82a7e500a08",
+          "slam.py": "479d2a961798012adf1da6d4a2d96a5190dbe4b323823905688f0d145e7b96be",
+          "sensors.py": "b2484c85f7a30a790ba5091508bbf93004c07273259fe36c84662dff6300bd13",
+          "fusion.py": "c8bb84be1400f992c628a0b11519acea3c27be3d380af20501a7183e42824833",
+          "depth_support.py": "71105e0ced202a248b0a3bc0b4d654c08bbd60e41021183bb6997c4446c8345f",
+          "ring.py": "1eee317db84cacd5c59679b249119360e09e7e8e706f2047d0a49c2971308a04",
+          "tracking.py": "a41ef664f6914e5586b43a4bb53dbcb1f4ede9d2bc199cee7e4fe355f0498cc8"
+        },
+        "source_sha256": "047c4901a4fabf01c769847d50ab8c4a1f8a2fa915ed3495a7c2ed87dd38ab29",
+        "origin": 6296.167577112,
+        "estimated": 386
+      }
+    },
+    "imu": {
+      "metrics": {
+        "root": "comparison/estimates/tour-imu",
+        "frames": 362,
+        "rotation_deg": {
+          "min": 2.4497731516231827e-16,
+          "median": 0.814180056077549,
+          "p95": 18.50071675907665,
+          "max": 50.86318280677169
+        },
+        "translation_m": {
+          "min": 5.552639573108236e-17,
+          "median": 0.05993836692965859,
+          "p95": 0.3840408144358797,
+          "max": 0.5150207236089678
+        },
+        "depth_ratio": {
+          "min": 0.019139224663376808,
+          "median": 1.2621655464172363,
+          "p95": 1.373765766620636,
+          "max": 1.7119474411010742
+        },
+        "depth_absolute_m": {
+          "min": 0.06392323970794678,
+          "median": 0.3487696051597595,
+          "p95": 1.9131437420845032,
+          "max": 2.5101239681243896
+        },
+        "within_frame_ratio_p10_p90": [
+          1.050822365283966,
+          1.365276110172272
+        ],
+        "surface_hz": 4.099201052749088,
+        "surface_delay_ms": {
+          "min": 140.66120000097726,
+          "median": 206.74793949956438,
+          "p95": 647.9184090009767,
+          "max": 1065.209761000915
+        },
+        "scale": {
+          "min": 1.0,
+          "median": 1.0,
+          "p95": 1.0,
+          "max": 1.0
+        },
+        "scale_observations": 0,
+        "rejected_visual": 17,
+        "delay_ms": {
+          "min": 0.0,
+          "median": 0.0,
+          "p95": 0.0,
+          "max": 0.0
+        },
+        "propagated_pose_ms": {
+          "min": 1.8689999997150153,
+          "median": 3.4064999999827705,
+          "p95": 4.39842999976463,
+          "max": 5.623199998808559
+        },
+        "corrected_pose_ms": {
+          "min": 75.65579999936745,
+          "median": 138.76380000056088,
+          "p95": 577.59242000011,
+          "max": 1006.020200000421
+        },
+        "confidence_positive_fraction": {
+          "min": 0.27837673611111113,
+          "median": 0.962790798611111,
+          "p95": 0.9991302083333333,
+          "max": 1.0
+        },
+        "confidence_depth_absolute_m": {
+          "min": 0.06187164783477783,
+          "median": 0.3473508358001709,
+          "p95": 1.7399556040763855,
+          "max": 2.589773654937744
+        }
+      },
+      "settings": {
+        "observation_arm": "imu",
+        "precision": "full",
+        "input_resolution": 100,
+        "max_splats": 1000000,
+        "frame_admission_hz": 10,
+        "estimator": "independent motion/vision estimator, no map alignment",
+        "exposure": 0,
+        "frame_delay": 0.0,
+        "stamp_delay": 0.0,
+        "source_seconds": 90.0,
+        "common_start": 1.7298347369987823,
+        "depth_confidence": "uncalibrated [0,1] weight; provisional network weight times .25; accepted multi-view depth agreement promotes it; zero excludes contradictions",
+        "estimator_source_sha256": {
+          "mast3r_frontend.py": "5e9bf97bcd810660745959ac93fb7c9e74dc436b56b79425c4abfa146455e97a",
+          "metric_scale.py": "bfd63dc8211cad88b8038e636ff4ec0483db1e33b7d553c0e734ac00e0de8f1f",
+          "motion.py": "7f5e1b8ea382017ceecb912388150f549001e6db1324224e08f2059817a2d24c",
+          "__init__.py": "499dfb55a675e6f0740181cd00f32a0eeb1a0890a7120616466fc82a7e500a08",
+          "slam.py": "479d2a961798012adf1da6d4a2d96a5190dbe4b323823905688f0d145e7b96be",
+          "sensors.py": "b2484c85f7a30a790ba5091508bbf93004c07273259fe36c84662dff6300bd13",
+          "fusion.py": "c8bb84be1400f992c628a0b11519acea3c27be3d380af20501a7183e42824833",
+          "depth_support.py": "71105e0ced202a248b0a3bc0b4d654c08bbd60e41021183bb6997c4446c8345f",
+          "ring.py": "1eee317db84cacd5c59679b249119360e09e7e8e706f2047d0a49c2971308a04",
+          "tracking.py": "a41ef664f6914e5586b43a4bb53dbcb1f4ede9d2bc199cee7e4fe355f0498cc8"
+        },
+        "source_sha256": "047c4901a4fabf01c769847d50ab8c4a1f8a2fa915ed3495a7c2ed87dd38ab29",
+        "origin": 6296.167577112,
+        "estimated": 362
+      }
+    },
+    "imu-tof": {
+      "metrics": {
+        "root": "comparison/estimates/tour-imu-tof",
+        "frames": 361,
+        "rotation_deg": {
+          "min": 2.4497731516231827e-16,
+          "median": 0.8649119461030941,
+          "p95": 19.098301110756147,
+          "max": 145.3691476309157
+        },
+        "translation_m": {
+          "min": 5.552639573108236e-17,
+          "median": 0.022953865171508527,
+          "p95": 0.388633638060605,
+          "max": 0.4408096737071458
+        },
+        "depth_ratio": {
+          "min": 0.022674560546875,
+          "median": 1.0278794765472412,
+          "p95": 1.26292884349823,
+          "max": 1.8025481700897217
+        },
+        "depth_absolute_m": {
+          "min": 0.0014090090990066528,
+          "median": 0.14735686779022217,
+          "p95": 2.1392252445220947,
+          "max": 2.20760178565979
+        },
+        "within_frame_ratio_p10_p90": [
+          0.8789134979248047,
+          1.1101433515548706
+        ],
+        "surface_hz": 4.090210988771894,
+        "surface_delay_ms": {
+          "min": 143.71608999954333,
+          "median": 176.75084999973478,
+          "p95": 642.42214999922,
+          "max": 980.2011469992067
+        },
+        "scale": {
+          "min": 0.778583363852761,
+          "median": 0.8046722808996066,
+          "p95": 0.9231163463866358,
+          "max": 1.0
+        },
+        "scale_observations": 288,
+        "rejected_visual": 19,
+        "delay_ms": {
+          "min": 0.0,
+          "median": 0.0,
+          "p95": 0.0,
+          "max": 0.0
+        },
+        "propagated_pose_ms": {
+          "min": 1.8232999991596444,
+          "median": 3.4885000004578615,
+          "p95": 4.471700000067358,
+          "max": 5.196899999646121
+        },
+        "corrected_pose_ms": {
+          "min": 74.32200000039302,
+          "median": 104.30169999926875,
+          "p95": 573.8510999999562,
+          "max": 898.7230000002455
+        },
+        "confidence_positive_fraction": {
+          "min": 0.06137586805555555,
+          "median": 0.8075390625,
+          "p95": 0.9994748263888888,
+          "max": 1.0
+        },
+        "confidence_depth_absolute_m": {
+          "min": 0.0014088749885559082,
+          "median": 0.1442476511001587,
+          "p95": 1.9518811702728271,
+          "max": 2.3268051147460938
+        }
+      },
+      "settings": {
+        "observation_arm": "imu-tof",
+        "precision": "full",
+        "input_resolution": 100,
+        "max_splats": 1000000,
+        "frame_admission_hz": 10,
+        "estimator": "independent motion/vision estimator, no map alignment",
+        "exposure": 0,
+        "frame_delay": 0.0,
+        "stamp_delay": 0.0,
+        "source_seconds": 90.0,
+        "common_start": 1.7298347369987823,
+        "depth_confidence": "uncalibrated [0,1] weight; provisional network weight times .25; accepted multi-view depth agreement promotes it; zero excludes contradictions",
+        "estimator_source_sha256": {
+          "mast3r_frontend.py": "5e9bf97bcd810660745959ac93fb7c9e74dc436b56b79425c4abfa146455e97a",
+          "metric_scale.py": "bfd63dc8211cad88b8038e636ff4ec0483db1e33b7d553c0e734ac00e0de8f1f",
+          "motion.py": "7f5e1b8ea382017ceecb912388150f549001e6db1324224e08f2059817a2d24c",
+          "__init__.py": "499dfb55a675e6f0740181cd00f32a0eeb1a0890a7120616466fc82a7e500a08",
+          "slam.py": "479d2a961798012adf1da6d4a2d96a5190dbe4b323823905688f0d145e7b96be",
+          "sensors.py": "b2484c85f7a30a790ba5091508bbf93004c07273259fe36c84662dff6300bd13",
+          "fusion.py": "c8bb84be1400f992c628a0b11519acea3c27be3d380af20501a7183e42824833",
+          "depth_support.py": "71105e0ced202a248b0a3bc0b4d654c08bbd60e41021183bb6997c4446c8345f",
+          "ring.py": "1eee317db84cacd5c59679b249119360e09e7e8e706f2047d0a49c2971308a04",
+          "tracking.py": "a41ef664f6914e5586b43a4bb53dbcb1f4ede9d2bc199cee7e4fe355f0498cc8"
+        },
+        "source_sha256": "047c4901a4fabf01c769847d50ab8c4a1f8a2fa915ed3495a7c2ed87dd38ab29",
+        "origin": 6296.167577112,
+        "estimated": 361
+      }
+    },
+    "prior": {
+      "metrics": {
+        "root": "comparison/estimates/tour-prior",
+        "frames": 417,
+        "rotation_deg": {
+          "min": 1.668977993837013e-14,
+          "median": 0.5864553561948982,
+          "p95": 4.675719324436203,
+          "max": 9.281965716825468
+        },
+        "translation_m": {
+          "min": 5.722328270402351e-17,
+          "median": 0.038330550094166076,
+          "p95": 0.1416214410680126,
+          "max": 0.1678908411678336
+        },
+        "depth_ratio": {
+          "min": 0.03831900656223297,
+          "median": 1.0678925514221191,
+          "p95": 1.6228605031967163,
+          "max": 2.3799471855163574
+        },
+        "depth_absolute_m": {
+          "min": 0.011113405227661133,
+          "median": 0.27309757471084595,
+          "p95": 2.1816824436187745,
+          "max": 2.4244868755340576
+        },
+        "within_frame_ratio_p10_p90": [
+          0.9687848567962647,
+          1.1588706374168396
+        ],
+        "surface_hz": 4.725691498110158,
+        "surface_delay_ms": {
+          "min": 132.58320100067067,
+          "median": 166.4821469994422,
+          "p95": 555.4884743998626,
+          "max": 692.8550990005533
+        },
+        "scale": {
+          "min": 0.7310903304252389,
+          "median": 1.0,
+          "p95": 1.0,
+          "max": 1.0
+        },
+        "scale_observations": 12,
+        "rejected_visual": 0,
+        "delay_ms": {
+          "min": 0.0,
+          "median": 0.0,
+          "p95": 0.0,
+          "max": 0.0
+        },
+        "propagated_pose_ms": {
+          "min": 1.167899999927613,
+          "median": 3.0150999991747085,
+          "p95": 3.694859999086475,
+          "max": 4.497600000831881
+        },
+        "corrected_pose_ms": {
+          "min": 71.37089999923774,
+          "median": 95.64419999878737,
+          "p95": 490.249400000539,
+          "max": 625.4915000008623
+        },
+        "confidence_positive_fraction": {
+          "min": 0.09613715277777778,
+          "median": 0.7182986111111112,
+          "p95": 0.9988602430555555,
+          "max": 1.0
+        },
+        "confidence_depth_absolute_m": {
+          "min": 0.011134833097457886,
+          "median": 0.27838170528411865,
+          "p95": 2.155945920944214,
+          "max": 2.4161744117736816
+        }
+      },
+      "settings": {
+        "observation_arm": "prior",
+        "precision": "full",
+        "input_resolution": 100,
+        "max_splats": 1000000,
+        "frame_admission_hz": 10,
+        "estimator": "independent motion/vision estimator, no map alignment",
+        "exposure": 0,
+        "frame_delay": 0.0,
+        "stamp_delay": 0.0,
+        "source_seconds": 90.0,
+        "common_start": 1.7298347369987823,
+        "depth_confidence": "uncalibrated [0,1] weight; provisional network weight times .25; accepted multi-view depth agreement promotes it; zero excludes contradictions",
+        "estimator_source_sha256": {
+          "mast3r_frontend.py": "5e9bf97bcd810660745959ac93fb7c9e74dc436b56b79425c4abfa146455e97a",
+          "metric_scale.py": "bfd63dc8211cad88b8038e636ff4ec0483db1e33b7d553c0e734ac00e0de8f1f",
+          "motion.py": "7f5e1b8ea382017ceecb912388150f549001e6db1324224e08f2059817a2d24c",
+          "__init__.py": "499dfb55a675e6f0740181cd00f32a0eeb1a0890a7120616466fc82a7e500a08",
+          "slam.py": "479d2a961798012adf1da6d4a2d96a5190dbe4b323823905688f0d145e7b96be",
+          "sensors.py": "b2484c85f7a30a790ba5091508bbf93004c07273259fe36c84662dff6300bd13",
+          "fusion.py": "c8bb84be1400f992c628a0b11519acea3c27be3d380af20501a7183e42824833",
+          "depth_support.py": "71105e0ced202a248b0a3bc0b4d654c08bbd60e41021183bb6997c4446c8345f",
+          "ring.py": "1eee317db84cacd5c59679b249119360e09e7e8e706f2047d0a49c2971308a04",
+          "tracking.py": "a41ef664f6914e5586b43a4bb53dbcb1f4ede9d2bc199cee7e4fe355f0498cc8"
+        },
+        "source_sha256": "047c4901a4fabf01c769847d50ab8c4a1f8a2fa915ed3495a7c2ed87dd38ab29",
+        "origin": 6296.167577112,
+        "estimated": 417
+      }
+    },
+    "baseline": {
+      "metrics": {
+        "root": "comparison/estimates/tour-baseline",
+        "frames": 408,
+        "rotation_deg": {
+          "min": 1.668977993837013e-14,
+          "median": 0.5642299459827611,
+          "p95": 3.7914124555755055,
+          "max": 9.422912371770126
+        },
+        "translation_m": {
+          "min": 5.722328270402351e-17,
+          "median": 0.038578617539596634,
+          "p95": 0.11583684219327962,
+          "max": 0.14875496206862246
+        },
+        "depth_ratio": {
+          "min": 0.03646243363618851,
+          "median": 1.0872541069984436,
+          "p95": 1.3051661550998688,
+          "max": 2.8143773078918457
+        },
+        "depth_absolute_m": {
+          "min": 0.0016497373580932617,
+          "median": 0.22512882947921753,
+          "p95": 1.8983225703239441,
+          "max": 2.430723190307617
+        },
+        "within_frame_ratio_p10_p90": [
+          0.9377846002578736,
+          1.1443850457668305
+        ],
+        "surface_hz": 4.625276985084872,
+        "surface_delay_ms": {
+          "min": 133.42803199975606,
+          "median": 168.5485230004815,
+          "p95": 565.8739034989592,
+          "max": 702.9512990002331
+        },
+        "scale": {
+          "min": 0.7261490370736908,
+          "median": 1.0,
+          "p95": 1.0,
+          "max": 1.0
+        },
+        "scale_observations": 8,
+        "rejected_visual": 0,
+        "delay_ms": {
+          "min": 0.0,
+          "median": 0.0,
+          "p95": 0.0,
+          "max": 0.0
+        },
+        "propagated_pose_ms": {
+          "min": 1.1771000008593546,
+          "median": 2.8826500001741806,
+          "p95": 3.5780850002993243,
+          "max": 4.3668999987858115
+        },
+        "corrected_pose_ms": {
+          "min": 71.88680000035674,
+          "median": 95.93415000017558,
+          "p95": 498.17722000052527,
+          "max": 633.6329000005207
+        },
+        "confidence_positive_fraction": {
+          "min": 0.012643229166666667,
+          "median": 0.7455577256944445,
+          "p95": 0.9959908854166666,
+          "max": 1.0
+        },
+        "confidence_depth_absolute_m": {
+          "min": 0.0016525983810424805,
+          "median": 0.22042539715766907,
+          "p95": 1.9103669524192808,
+          "max": 2.4223480224609375
+        }
+      },
+      "settings": {
+        "precision": "full",
+        "input_resolution": 100,
+        "max_splats": 1000000,
+        "frame_admission_hz": 10,
+        "estimator": "independent motion/vision estimator, no map alignment",
+        "exposure": 0,
+        "frame_delay": 0.0,
+        "stamp_delay": 0.0,
+        "source_seconds": 90.0,
+        "depth_confidence": "uncalibrated [0,1] weight; provisional network weight times .25; accepted multi-view depth agreement promotes it; zero excludes contradictions",
+        "estimator_source_sha256": {
+          "mast3r_frontend.py": "5e9bf97bcd810660745959ac93fb7c9e74dc436b56b79425c4abfa146455e97a",
+          "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+          "__init__.py": "56694b4db16c3fc390b6a9bd84e8a81e7024aac8a8a956e27d97d32e78360413",
+          "slam.py": "2ac6f4e25c9bbd985e4cc0447041ac35af39e012c8d645729accac43751d8898",
+          "fusion.py": "c8bb84be1400f992c628a0b11519acea3c27be3d380af20501a7183e42824833",
+          "depth_support.py": "71105e0ced202a248b0a3bc0b4d654c08bbd60e41021183bb6997c4446c8345f",
+          "tracking.py": "a41ef664f6914e5586b43a4bb53dbcb1f4ede9d2bc199cee7e4fe355f0498cc8"
+        },
+        "source_sha256": "047c4901a4fabf01c769847d50ab8c4a1f8a2fa915ed3495a7c2ed87dd38ab29",
+        "origin": 6296.167577112,
+        "estimated": 408
+      }
+    },
+    "default": {
+      "metrics": {
+        "root": "comparison/estimates/tour-default",
+        "frames": 354,
+        "rotation_deg": {
+          "min": 1.668977993837013e-14,
+          "median": 0.5170644149068777,
+          "p95": 4.980126494197346,
+          "max": 9.264056399295207
+        },
+        "translation_m": {
+          "min": 5.722328270402351e-17,
+          "median": 0.03742791873751608,
+          "p95": 0.15350750418728606,
+          "max": 0.18006893093836293
+        },
+        "depth_ratio": {
+          "min": 0.035575173795223236,
+          "median": 1.0026811361312866,
+          "p95": 1.326348215341568,
+          "max": 2.186638832092285
+        },
+        "depth_absolute_m": {
+          "min": 0.001335635781288147,
+          "median": 0.22240203619003296,
+          "p95": 1.8222739100456238,
+          "max": 2.0536210536956787
+        },
+        "within_frame_ratio_p10_p90": [
+          0.8853765040636064,
+          1.076942354440689
+        ],
+        "surface_hz": 3.998508443533939,
+        "surface_delay_ms": {
+          "min": 142.7953879983761,
+          "median": 199.3724190001558,
+          "p95": 653.9621844500741,
+          "max": 793.8307759986856
+        },
+        "scale": {
+          "min": 0.7478280343892942,
+          "median": 0.7937290428531375,
+          "p95": 0.990085300976072,
+          "max": 1.0
+        },
+        "scale_observations": 261,
+        "rejected_visual": 0,
+        "delay_ms": {
+          "min": 0.0,
+          "median": 0.0,
+          "p95": 0.0,
+          "max": 0.0
+        },
+        "propagated_pose_ms": {
+          "min": 1.8359000005148118,
+          "median": 3.2529500003875,
+          "p95": 4.167494998910115,
+          "max": 5.134400000315509
+        },
+        "corrected_pose_ms": {
+          "min": 72.78179999957501,
+          "median": 121.35144999956538,
+          "p95": 576.2483550001889,
+          "max": 728.5205999996833
+        },
+        "confidence_positive_fraction": {
+          "min": 0.21250868055555555,
+          "median": 0.7321831597222223,
+          "p95": 0.9986655815972222,
+          "max": 1.0
+        },
+        "confidence_depth_absolute_m": {
+          "min": 0.0013424158096313477,
+          "median": 0.21836644411087036,
+          "p95": 1.8257031679153441,
+          "max": 2.0433170795440674
+        }
+      },
+      "settings": {
+        "observation_arm": "prior-imu-tof",
+        "precision": "full",
+        "input_resolution": 100,
+        "max_splats": 1000000,
+        "frame_admission_hz": 10,
+        "estimator": "independent motion/vision estimator, no map alignment",
+        "exposure": 0,
+        "frame_delay": 0.0,
+        "stamp_delay": 0.0,
+        "source_seconds": 90.0,
+        "common_start": 1.7298347369987823,
+        "depth_confidence": "uncalibrated [0,1] weight; provisional network weight times .25; accepted multi-view depth agreement promotes it; zero excludes contradictions",
+        "estimator_source_sha256": {
+          "mast3r_frontend.py": "5e9bf97bcd810660745959ac93fb7c9e74dc436b56b79425c4abfa146455e97a",
+          "metric_scale.py": "bfd63dc8211cad88b8038e636ff4ec0483db1e33b7d553c0e734ac00e0de8f1f",
+          "motion.py": "7f5e1b8ea382017ceecb912388150f549001e6db1324224e08f2059817a2d24c",
+          "__init__.py": "499dfb55a675e6f0740181cd00f32a0eeb1a0890a7120616466fc82a7e500a08",
+          "slam.py": "479d2a961798012adf1da6d4a2d96a5190dbe4b323823905688f0d145e7b96be",
+          "sensors.py": "b2484c85f7a30a790ba5091508bbf93004c07273259fe36c84662dff6300bd13",
+          "fusion.py": "c8bb84be1400f992c628a0b11519acea3c27be3d380af20501a7183e42824833",
+          "depth_support.py": "71105e0ced202a248b0a3bc0b4d654c08bbd60e41021183bb6997c4446c8345f",
+          "ring.py": "1eee317db84cacd5c59679b249119360e09e7e8e706f2047d0a49c2971308a04",
+          "tracking.py": "a41ef664f6914e5586b43a4bb53dbcb1f4ede9d2bc199cee7e4fe355f0498cc8"
+        },
+        "source_sha256": "047c4901a4fabf01c769847d50ab8c4a1f8a2fa915ed3495a7c2ed87dd38ab29",
+        "origin": 6296.167577112,
+        "estimated": 354
+      }
+    }
+  },
+  "reprojection": {
+    "imu-tof": {
+      "estimates": "comparison/estimates/tour-imu-tof",
+      "geometry": "estimated",
+      "matcher": "sift",
+      "attempted_features": 92013,
+      "supported_tracks": 18368,
+      "supported_fraction": 0.19962396617869213,
+      "exclusions": "mutual SIFT ratio >=0.7, LK refinement >3px; KLT status, forward-backward >0.5px, outside image, invalid depth; no reprojection-error cut",
+      "dense_depth_coverage_median": 1.0,
+      "confidence_coverage_median": 0.8075390625,
+      "common_region_samples": 1098730,
+      "confidence_common_region_fraction": 0.7148680749592712,
+      "confidence_supported_tracks": 14449,
+      "confidence_pixel_error": {
+        "median": 0.44926142465074753,
+        "p95": 4.15755197439355,
+        "max": 473.57827031227157
+      },
+      "pixel_error": {
+        "median": 0.4859688956521423,
+        "p95": 6.046299335317726,
+        "max": 473.57827031227157
+      }
+    },
+    "baseline": {
+      "estimates": "comparison/estimates/tour-baseline",
+      "geometry": "estimated",
+      "matcher": "sift",
+      "attempted_features": 104405,
+      "supported_tracks": 21066,
+      "supported_fraction": 0.20177194578803698,
+      "exclusions": "mutual SIFT ratio >=0.7, LK refinement >3px; KLT status, forward-backward >0.5px, outside image, invalid depth; no reprojection-error cut",
+      "dense_depth_coverage_median": 1.0,
+      "confidence_coverage_median": 0.7455577256944445,
+      "common_region_samples": 1249083,
+      "confidence_common_region_fraction": 0.6722579684456518,
+      "confidence_supported_tracks": 13940,
+      "confidence_pixel_error": {
+        "median": 0.5359769363466852,
+        "p95": 7.740155184512111,
+        "max": 486.4096502097042
+      },
+      "pixel_error": {
+        "median": 0.6555794220828136,
+        "p95": 10.347380900776221,
+        "max": 486.4096502097042
+      }
+    },
+    "default": {
+      "estimates": "comparison/estimates/tour-default",
+      "geometry": "estimated",
+      "matcher": "sift",
+      "attempted_features": 93011,
+      "supported_tracks": 18744,
+      "supported_fraction": 0.20152455085957574,
+      "exclusions": "mutual SIFT ratio >=0.7, LK refinement >3px; KLT status, forward-backward >0.5px, outside image, invalid depth; no reprojection-error cut",
+      "dense_depth_coverage_median": 1.0,
+      "confidence_coverage_median": 0.7321831597222223,
+      "common_region_samples": 1071036,
+      "confidence_common_region_fraction": 0.6294363588152032,
+      "confidence_supported_tracks": 9399,
+      "confidence_pixel_error": {
+        "median": 0.615989510373936,
+        "p95": 15.658927204425984,
+        "max": 473.5375692373115
+      },
+      "pixel_error": {
+        "median": 0.6068377389785586,
+        "p95": 15.627503592592651,
+        "max": 473.5375692373115
+      }
+    }
+  },
+  "lens_markers": [
+    {
+      "width": 1920,
+      "height": 1080,
+      "hfov": 70.0,
+      "errors": [
+        {
+          "marker": 0,
+          "u": 960.0,
+          "v": 540.0,
+          "error_px": 0.7660574470361156
+        },
+        {
+          "marker": 1,
+          "u": 1688.9853743935905,
+          "v": 540.0,
+          "error_px": 0.8995640639459838
+        },
+        {
+          "marker": 2,
+          "u": 231.01462560640937,
+          "v": 540.0,
+          "error_px": 1.407932857836307
+        },
+        {
+          "marker": 3,
+          "u": 960.0,
+          "v": 172.63573912447947,
+          "error_px": 0.9363418350699684
+        },
+        {
+          "marker": 4,
+          "u": 960.0,
+          "v": 907.3642608755206,
+          "error_px": 0.821151164039653
+        },
+        {
+          "marker": 5,
+          "u": 1599.3180984217388,
+          "v": 198.16580132593845,
+          "error_px": 1.0487146564336642
+        },
+        {
+          "marker": 6,
+          "u": 320.6819015782611,
+          "v": 881.8341986740616,
+          "error_px": 1.0922147790759387
+        }
+      ]
+    }
+  ],
+  "limits": [
+    "Physical beta chip translation and lens intrinsics unknown; nominal camera-coincident IMU and placeholder 70-degree FOV.",
+    "SFLP-like game fusion is an approximation, not bit-exact ST firmware; 32 C constant temperature.",
+    "No headset, real robot, thermal/IR/rolling-shutter model, full RL suite/training or aarch64 board test.",
+    "Camera-only loses the late turn; inertial-only orientation still drifts. ToF constrains scale, not dense boundaries.",
+    "No general visual acceptance; scene reprojection misses 2px. Inputs are evaluation-only 640x360 samples of live 1920x1080.",
+    "Capture had focus-stop/resume events; actual shared trajectory is retained in the recording metadata.",
+    "Large arrays and individual video frames are deleted after summaries; they cannot be replayed byte-for-byte from retained artifacts."
+  ],
+  "prior_checks": "Before disk incident: touched-crate cargo test/clippy/fmt, full workspace cargo test, six body-server pytest tests, beta driving/head/e-stop, camera-only and dropout process replays and wire e2e passed. Full workspace clippy found an existing robotctl/src/monitor.rs nonminimal_bool warning. Raw logs were deleted by owner. No Rust changes since those checks."
+}
