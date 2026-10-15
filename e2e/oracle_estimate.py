@@ -88,6 +88,23 @@ def main():
         input_resolution=args.input_resolution,
     )
     backend.cloud = None
+    vision = None
+    track = backend.frontend.track
+
+    def record_vision(*args, **kwargs):
+        nonlocal vision
+        result = track(*args, **kwargs)
+        vision = dict(
+            node=args[1],
+            reference=result.reference,
+            relative=None if result.relative is None else result.relative.tolist(),
+            sigma=None if result.relative is None else result.sigma.tolist(),
+            keyframe=bool(result.keyframe),
+            match=float(result.match),
+        )
+        return result
+
+    backend.frontend.track = record_vision
     publications = []
 
     def published(pose, correction, stamp):
@@ -122,6 +139,7 @@ def main():
         cursor = end
         frame = np.load(source / row["file"])
         backend.cloud = None
+        vision = None
         publications = []
         torch.cuda.synchronize()
         began = time.perf_counter()
@@ -176,7 +194,10 @@ def main():
                 scale_known=backend.depth_estimator.known,
                 reused_depth_pixels=getattr(backend.frontend, "fused_pixels", 0),
                 refined_depth_pixels=getattr(backend.frontend, "fused_pixels", 0),
+                frontend_scale=getattr(backend.frontend, "output_scale", 1),
+                unconstrained_bundle_scale_step=getattr(backend.frontend, "bundle_scale_step", 1),
                 graph_pose=backend.camera_pose.tolist(),
+                visual_factor=vision,
                 motion_pose=backend.motion.at(stamped - backend.graph.td).tolist(),
                 pose_publications=publications,
             )
@@ -197,8 +218,8 @@ def main():
                 frame_delay=args.frame_delay_ms / 1000,
                 stamp_delay=args.stamp_delay_ms / 1000,
                 source_seconds=args.seconds,
-                depth_confidence=(
-                    "uncalibrated [0,1] weight; 1 - 1/mean MASt3R score; zero excludes"
+                depth_confidence=getattr(
+                    backend.frontend, "depth_confidence_kind", "network weight"
                 ),
                 estimator_source_sha256=estimator_source_hashes,
                 source_sha256=hashlib.sha256((source / "frames.jsonl").read_bytes()).hexdigest(),

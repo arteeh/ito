@@ -95,6 +95,12 @@ class MASt3RFrontend:
         self.tracker = DepthTracker(self.model, self.frames, "cuda")
         self.depth_match = None
         self.fused_pixels = 0
+        self.output_scale = 1.0
+        self.bundle_scale_step = 1.0
+        self.depth_confidence_kind = (
+            "uncalibrated [0,1] weight; provisional network weight times .25; "
+            "accepted multi-view depth agreement promotes it; zero excludes contradictions"
+        )
         if not hasattr(self.tracker, "prior"):
             raise RuntimeError("MASt3R bundle predates robot-first tracking; rebuild it")
         from .slam_image import SLAMImage
@@ -259,6 +265,7 @@ class MASt3RFrontend:
                 if relative is not None
                 else UNKNOWN
             )
+            self.output_scale = float(scale)
             return VisualResult(
                 self.ids[reference], relative, sigma, match, self._cloud(frame, scale), becomes
             )
@@ -295,6 +302,13 @@ class MASt3RFrontend:
             for frame, transform in zip(window, previous, strict=True):
                 frame.T_WC = transform
             return None
+        self.bundle_scale_step = self.placed(window[-1].T_WC)[1] / self.placed(previous[-1])[1]
+        # The native image solve has a free Sim3 gauge. Keep the scale registered by
+        # the motion-prior tracker; an unconstrained window must not rescale depth.
+        for frame, transform in zip(window, previous, strict=True):
+            pose, _ = self.placed(frame.T_WC)
+            _, scale = self.placed(transform)
+            frame.T_WC = self.unplaced(pose, scale)
         reference_pose, _ = self.placed(self.frames[reference].T_WC)
         new_pose, _ = self.placed(self.frames[-1].T_WC)
         if reference_pose is None or new_pose is None:
@@ -321,7 +335,7 @@ class MASt3RFrontend:
         """
         self.fused_pixels = 0
         if self.depth_match is None or reference not in self.ids:
-            return cloud
+            return cloud._replace(confidence=cloud.confidence * 0.25)
         node, frame, indices, valid = self.depth_match
         if node != reference:
             return cloud
@@ -344,6 +358,8 @@ class MASt3RFrontend:
             accepted &= (indices >= 0) & (indices < h * w)
             indices = indices.clamp(0, h * w - 1)
             accepted &= cloud.valid[indices]
+            candidates = torch.zeros(h * w, device="cuda")
+            candidates.scatter_add_(0, indices, accepted.float())
             accepted &= (u - indices.remainder(w)).square() + (
                 v - indices.div(w, rounding_mode="floor")
             ).square() < 9
@@ -352,18 +368,29 @@ class MASt3RFrontend:
             confidence = torch.where(accepted, confidence, 0)
             weighted = torch.zeros(h * w, device="cuda")
             weight = torch.zeros_like(weighted)
+            second = torch.zeros_like(weighted)
             weighted.scatter_add_(0, indices, torch.where(accepted, z * confidence, 0))
+            second.scatter_add_(0, indices, torch.where(accepted, z.square() * confidence, 0))
             weight.scatter_add_(0, indices, confidence)
             current = frame.get_average_conf().reshape(-1).clamp(0.1, 10)
             depth = -cloud.points[:, 2]
             fused = (weighted + current * depth) / (weight + current)
+            variance = (second + current * depth.square()) / (weight + current) - fused.square()
+            variance = variance.clamp_min(0) / fused.square().clamp_min(1e-8)
+            reliable = (weight > 0) & (variance < 0.15**2)
+            certainty = torch.where(
+                reliable,
+                cloud.confidence * torch.exp(-variance / 0.15**2),
+                torch.where(candidates > 0, 0, cloud.confidence * 0.25),
+            )
+            fused = torch.where(reliable, fused, depth)
             points = cloud.points * (fused / depth.clamp_min(1e-6))[:, None]
-            self.fused_pixels = int((weight > 0).sum())
+            self.fused_pixels = int(reliable.sum())
             # The retained frame now carries all contributing views, rather than
             # reverting to its first network prediction when it becomes a reference.
             _, own = self.placed(frame.T_WC)
             frame.X_canon = points * self.axes / own
-            return cloud._replace(points=points)
+            return cloud._replace(points=points, confidence=certainty)
 
     def forget(self, nodes):
         keep = [i for i, node in enumerate(self.ids) if node not in set(nodes)]
