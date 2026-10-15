@@ -62,7 +62,6 @@ class Keyframe:
     depth: np.ndarray | None = None  # optional registered axial metres (driver depth)
     anchor: int | None = None
     sparse_depth: bool = False  # sensor zones; zero-confidence dense pixels stay excluded
-    depth_zones: np.ndarray | None = None  # N,5: registered x0,y0,x1,y1,median axial metres
 
     def __post_init__(self):
         i = self.intrinsics
@@ -83,7 +82,6 @@ class View:
     intrinsics: Intrinsics
     captured_at: float
     depth: object = None
-    depth_zones: object = None
     depth_weight: object = None
     depth_support: object = None
     steps: int = 0
@@ -449,7 +447,6 @@ class GaussianMap:
             frame.intrinsics,
             float(frame.captured_at),
             None if frame.depth is None else self.tensor(frame.depth),
-            depth_zones=None if frame.depth_zones is None else self.tensor(frame.depth_zones),
             depth_weight=depth_weight,
             depth_support=depth_support,
             relative_gpu=self.tensor(relative),
@@ -482,9 +479,6 @@ class GaussianMap:
         confidence = self.tensor(frame.confidence).reshape(depth.shape).clamp(0, 1)
         valid = torch.isfinite(depth) & (depth > 0) & torch.isfinite(confidence)
         confidence = torch.where(valid, confidence, 0)
-        if frame.depth_zones is not None:
-            # A zone median is not evidence about its centre ray or a per-pixel normal.
-            return confidence, torch.zeros_like(depth)
         depth = torch.where(valid, depth, 0)
         support = torch.zeros_like(depth)
         covered = torch.zeros_like(valid)
@@ -523,7 +517,7 @@ class GaussianMap:
 
     def _check_surfaces(self, frame):
         """Two contradictory views can retire a provisional floater, not a supported wall."""
-        if not self.count or frame.depth is None or frame.depth_zones is not None:
+        if not self.count or frame.depth is None:
             return
         torch = self.torch
         with torch.no_grad():
@@ -691,8 +685,6 @@ class GaussianMap:
                 filter=z / i.fx * FILTER,
                 depth_prior=torch.ones(n, device="cuda")
                 if measured_depth is None
-                else torch.zeros(n, device="cuda")
-                if frame.depth_zones is not None
                 else 0.05 * measured_depth[sv, su].float(),
                 origin=values["means"].detach().clone(),
                 normal=normal @ rotation.T,
@@ -978,42 +970,7 @@ class GaussianMap:
                 .mean()
             )
         for b, depth in enumerate(depths):
-            zones = views[b].depth_zones
-            if zones is not None and len(zones):
-                # Stratified quadrature of the registered zone support, not a fabricated
-                # precise centre ray. Occluded/empty zones do not constrain the map.
-                ticks = (torch.arange(8, device="cuda") + 0.5) / 8
-                u = (
-                    zones[:, 0, None, None]
-                    + (zones[:, 2] - zones[:, 0])[:, None, None] * ticks[None, None, :]
-                )
-                v = (
-                    zones[:, 1, None, None]
-                    + (zones[:, 3] - zones[:, 1])[:, None, None] * ticks[None, :, None]
-                )
-                grid = torch.stack((u.expand(-1, 8, -1), v.expand(-1, -1, 8)), -1)
-                grid = (grid / self.tensor([width, height]) * 2 - 1).reshape(1, -1, 8, 2)
-                sampled = torch.nn.functional.grid_sample(
-                    pred[b : b + 1, ..., 3][:, None],
-                    grid,
-                    align_corners=False,
-                ).reshape(-1, 64)
-                covered = (
-                    torch.nn.functional.grid_sample(
-                        alpha[b : b + 1].permute(0, 3, 1, 2),
-                        grid,
-                        align_corners=False,
-                    ).reshape(-1, 64)
-                    > 0.5
-                )
-                median = torch.where(covered, sampled, torch.inf).median(-1).values
-                valid_zone = covered.sum(-1) >= 32
-                median = torch.where(valid_zone, median, zones[:, 4])
-                error = (median - zones[:, 4]).abs() / zones[:, 4].clamp_min(0.1)
-                loss = loss + 0.0025 * (
-                    torch.log1p((error / 0.05).square()) * valid_zone
-                ).sum() / valid_zone.sum().clamp_min(1)
-            elif depth is not None:
+            if depth is not None:
                 mask = torch.isfinite(depth) & (depth > 0)
                 measured = torch.where(mask, depth, 1)
                 difference = (pred[b, ..., 3] - measured).abs() / measured.clamp_min(0.1)

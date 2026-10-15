@@ -338,13 +338,9 @@ def worker(args, ring, admission, ready, start, stopped, status):
                         pose = alignment @ data["true_pose"] if arm[0] == "T" else data["pose"]
                         depth = data["true_depth"] if arm[1] == "T" else data["depth"]
                         tof_source = None
-                        depth_zones = None
                         if arm == "TF":
                             rawrow = dict(row, captured=row["captured"], file=row["file"])
-                            depth_zones = []
-                            depth, tof_source = tof(
-                                source_rows, path, rawrow, k, origin, rng, zones=depth_zones
-                            )
+                            depth, tof_source = tof(source_rows, path, rawrow, k, origin, rng)
                         confidence = depth_weights(
                             data,
                             depth,
@@ -422,11 +418,6 @@ def worker(args, ring, admission, ready, start, stopped, status):
                                 depth_options = dict(depth=z)
                                 if "sparse_depth" in Keyframe.__dataclass_fields__:
                                     depth_options["sparse_depth"] = arm == "TF"
-                                if depth_zones and "depth_zones" in Keyframe.__dataclass_fields__:
-                                    zones = np.asarray(depth_zones, dtype=np.float32)
-                                    zones[:, [0, 2]] *= model_k.width / k.width
-                                    zones[:, [1, 3]] *= model_k.height / k.height
-                                    depth_options["depth_zones"] = zones
                                 try:
                                     engine.add(
                                         Keyframe(
