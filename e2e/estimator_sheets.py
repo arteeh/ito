@@ -27,7 +27,7 @@ def main():
     parser.add_argument("--branch", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--labels", default="main,estimator")
-    parser.add_argument("--commits", default="unspecified,unspecified")
+    parser.add_argument("--commits", help="Override the revisions recorded by each replay")
     parser.add_argument("--at", type=float, nargs="+", required=True)
     args = parser.parse_args()
     before, after = index(args.main), index(args.branch)
@@ -41,10 +41,17 @@ def main():
     args.out.mkdir(parents=True, exist_ok=True)
     font = ImageFont.truetype("DejaVuSans.ttf", 12)
     labels = args.labels.split(",")
-    commits = args.commits.split(",")
     displays = [
         json.loads((root / "display.json").read_text()) for root in (args.main, args.branch)
     ]
+    commits = (
+        args.commits.split(",")
+        if args.commits
+        else [
+            display.get("settings", {}).get("code_commit", "unspecified")[:7]
+            for display in displays
+        ]
+    )
     width, image_height, row_height = 336, 597, 705
     metadata = []
     for moment in args.at:

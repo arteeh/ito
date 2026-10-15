@@ -147,14 +147,28 @@ def main():
             node = graph.add_frame(captured)
             reference = graph.latest_keyframe()
             if usable and reference in native_keyframes:
-                relative = np.linalg.inv(native_keyframes[reference]) @ native
+                # Both endpoints of a new factor must come from this call's BA state.
+                # Reusing yesterday's reference pose invents motion when BA refines it.
+                reference_ordinal = native_keyframes[reference]
+                chain = []
+                active = {int(t): i for i, t in enumerate(tracker.pg.tstamps_[: tracker.n])}
+                while reference_ordinal not in active:
+                    reference_ordinal, delta = tracker.pg.delta[reference_ordinal]
+                    chain.append(delta)
+                reference_pose = SE3(tracker.pg.poses_[active[reference_ordinal]])
+                for delta in reversed(chain):
+                    reference_pose = delta * reference_pose
+                reference_native = (
+                    alignment @ axes @ reference_pose.inv().matrix().cpu().numpy() @ axes
+                )
+                relative = np.linalg.inv(reference_native) @ native
                 sigma = np.repeat((np.radians(0.5), 1e6), 3)
                 graph.add_visual(reference, node, relative, sigma)
             graph.solve_frame()
             if usable and when >= next_keyframe:
                 dropped = graph.promote()
                 graph.solve_window()
-                native_keyframes[node] = native.copy()
+                native_keyframes[node] = ordinal
                 for old in dropped:
                     native_keyframes.pop(old, None)
                 next_keyframe = when + 0.5
