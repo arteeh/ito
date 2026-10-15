@@ -1,0 +1,1297 @@
+{
+  "baseline": "ff9993b70063b9755815bf68a9954344157e48e6",
+  "settings": {
+    "precision": "full",
+    "input_resolution": 100,
+    "max_splats": 1000000
+  },
+  "sim": {
+    "camera": "360p30; upright 360x640",
+    "long_side_fov_degrees": 62,
+    "policy": "velstand v8 / 3750776"
+  },
+  "inputs": {
+    "sweep180": {
+      "observations": 103,
+      "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+      "schedule_sha256": "142b7ee450a8a7b338b63b4c4622bcc8ca5715cefc36ed8bf13c7ca19999ec4b",
+      "settings": {
+        "precision": "full",
+        "input_resolution": 100,
+        "max_splats": 1000000,
+        "frame_admission_hz": 10,
+        "estimator": "main SLAMBackend, no map alignment",
+        "exposure": 0,
+        "frame_delay": 0,
+        "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+        "origin": 46939.853988204,
+        "estimated": 103
+      }
+    },
+    "tour": {
+      "observations": 508,
+      "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+      "schedule_sha256": "d4950787d7baec709685f0e9a6d4db8e24ac6be1d1a2811cdfd6b0be41860fa2",
+      "settings": {
+        "precision": "full",
+        "input_resolution": 100,
+        "max_splats": 1000000,
+        "frame_admission_hz": 10,
+        "estimator": "main SLAMBackend, no map alignment",
+        "exposure": 0,
+        "frame_delay": 0,
+        "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+        "origin": 47006.906425362,
+        "estimated": 508
+      }
+    }
+  },
+  "visual": {
+    "sweep180-TT": {
+      "observations": 103,
+      "final_steps": 1006,
+      "final_count": 243324,
+      "min_free_mib": 10496.0,
+      "torch_peak_mib": 438.0,
+      "final_worker_summary": true,
+      "recording_display": {
+        "arm": "TT",
+        "settings": {
+          "precision": "full",
+          "input_resolution": 100,
+          "max_splats": 1000000,
+          "frame_admission_hz": 10,
+          "estimator": "main SLAMBackend, no map alignment",
+          "exposure": 0,
+          "frame_delay": 0,
+          "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+          "origin": 46939.853988204,
+          "estimated": 103
+        },
+        "GL": "D3D12 (NVIDIA GeForce RTX 4070 Ti)",
+        "eye_size": 2160,
+        "recording": true,
+        "frames": 1015,
+        "missed": 516,
+        "longest_consecutive": 139,
+        "completion_ms": {
+          "p50": 11.11010860040551,
+          "p95": 16.492639604257416,
+          "p99": 19.002289827622008,
+          "p99.9": 26.227088529413273
+        },
+        "service_ms": {
+          "p50": 10.29027599724941,
+          "p95": 15.574065097462151,
+          "p99": 17.22490310348803,
+          "p99.9": 25.81617035871085
+        },
+        "max_ms": 91.54507766652387
+      }
+    },
+    "sweep180-TE": {
+      "observations": 103,
+      "final_steps": 1010,
+      "final_count": 278415,
+      "min_free_mib": 10472.0,
+      "torch_peak_mib": 462.0,
+      "final_worker_summary": true,
+      "recording_display": {
+        "arm": "TE",
+        "settings": {
+          "precision": "full",
+          "input_resolution": 100,
+          "max_splats": 1000000,
+          "frame_admission_hz": 10,
+          "estimator": "main SLAMBackend, no map alignment",
+          "exposure": 0,
+          "frame_delay": 0,
+          "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+          "origin": 46939.853988204,
+          "estimated": 103
+        },
+        "GL": "D3D12 (NVIDIA GeForce RTX 4070 Ti)",
+        "eye_size": 2160,
+        "recording": true,
+        "frames": 1057,
+        "missed": 473,
+        "longest_consecutive": 82,
+        "completion_ms": {
+          "p50": 10.173687202041037,
+          "p95": 19.40577011846471,
+          "p99": 23.018654091865773,
+          "p99.9": 63.601833368191734
+        },
+        "service_ms": {
+          "p50": 9.376330002851319,
+          "p95": 16.157907604065255,
+          "p99": 18.96811523823999,
+          "p99.9": 59.59610422974795
+        },
+        "max_ms": 83.77217666566139
+      }
+    },
+    "sweep180-ET": {
+      "observations": 103,
+      "final_steps": 1027,
+      "final_count": 235697,
+      "min_free_mib": 10498.0,
+      "torch_peak_mib": 436.0,
+      "final_worker_summary": true,
+      "recording_display": {
+        "arm": "ET",
+        "settings": {
+          "precision": "full",
+          "input_resolution": 100,
+          "max_splats": 1000000,
+          "frame_admission_hz": 10,
+          "estimator": "main SLAMBackend, no map alignment",
+          "exposure": 0,
+          "frame_delay": 0,
+          "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+          "origin": 46939.853988204,
+          "estimated": 103
+        },
+        "GL": "D3D12 (NVIDIA GeForce RTX 4070 Ti)",
+        "eye_size": 2160,
+        "recording": true,
+        "frames": 1010,
+        "missed": 521,
+        "longest_consecutive": 122,
+        "completion_ms": {
+          "p50": 11.164859981363406,
+          "p95": 16.60430163319688,
+          "p99": 19.67449285453767,
+          "p99.9": 32.83046850087728
+        },
+        "service_ms": {
+          "p50": 10.320646997570293,
+          "p95": 15.439226452508592,
+          "p99": 16.616175815288443,
+          "p99.9": 32.72538988929618
+        },
+        "max_ms": 87.94632166973315
+      }
+    },
+    "sweep180-EE": {
+      "observations": 103,
+      "final_steps": 997,
+      "final_count": 281411,
+      "min_free_mib": 10474.0,
+      "torch_peak_mib": 460.0,
+      "final_worker_summary": true,
+      "recording_display": {
+        "arm": "EE",
+        "settings": {
+          "precision": "full",
+          "input_resolution": 100,
+          "max_splats": 1000000,
+          "frame_admission_hz": 10,
+          "estimator": "main SLAMBackend, no map alignment",
+          "exposure": 0,
+          "frame_delay": 0,
+          "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+          "origin": 46939.853988204,
+          "estimated": 103
+        },
+        "GL": "D3D12 (NVIDIA GeForce RTX 4070 Ti)",
+        "eye_size": 2160,
+        "recording": true,
+        "frames": 1054,
+        "missed": 477,
+        "longest_consecutive": 86,
+        "completion_ms": {
+          "p50": 10.219234889518702,
+          "p95": 19.17584171496855,
+          "p99": 25.90785519503698,
+          "p99.9": 66.66945050067805
+        },
+        "service_ms": {
+          "p50": 9.296723499574,
+          "p95": 16.658616351196535,
+          "p99": 19.41650225868217,
+          "p99.9": 57.467091076887385
+        },
+        "max_ms": 84.36572266509756
+      }
+    },
+    "sweep180-TF": {
+      "observations": 103,
+      "final_steps": 1440,
+      "final_count": 70575,
+      "min_free_mib": 10580.0,
+      "torch_peak_mib": 354.0,
+      "final_worker_summary": true,
+      "recording_display": {
+        "arm": "TF",
+        "settings": {
+          "precision": "full",
+          "input_resolution": 100,
+          "max_splats": 1000000,
+          "frame_admission_hz": 10,
+          "estimator": "main SLAMBackend, no map alignment",
+          "exposure": 0,
+          "frame_delay": 0,
+          "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+          "origin": 46939.853988204,
+          "estimated": 103
+        },
+        "GL": "D3D12 (NVIDIA GeForce RTX 4070 Ti)",
+        "eye_size": 2160,
+        "recording": true,
+        "frames": 1519,
+        "missed": 11,
+        "longest_consecutive": 5,
+        "completion_ms": {
+          "p50": 3.3760071310098283,
+          "p95": 7.048945043788987,
+          "p99": 8.890380039811133,
+          "p99.9": 21.384467541198582
+        },
+        "service_ms": {
+          "p50": 3.190586001437623,
+          "p95": 6.700198799808275,
+          "p99": 7.976135882781815,
+          "p99.9": 21.24691120079872
+        },
+        "max_ms": 65.04290811426472
+      }
+    },
+    "sweep180-main-TT": {
+      "observations": 103,
+      "final_steps": 0,
+      "final_count": 127398,
+      "min_free_mib": 10908.0,
+      "torch_peak_mib": 24.0,
+      "final_worker_summary": true,
+      "recording_display": {
+        "arm": "main-TT",
+        "settings": {
+          "precision": "full",
+          "input_resolution": 100,
+          "max_splats": 1000000,
+          "frame_admission_hz": 10,
+          "estimator": "main SLAMBackend, no map alignment",
+          "exposure": 0,
+          "frame_delay": 0,
+          "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+          "origin": 46939.853988204,
+          "estimated": 103
+        },
+        "GL": "D3D12 (NVIDIA GeForce RTX 4070 Ti)",
+        "eye_size": 2160,
+        "recording": true,
+        "frames": 1473,
+        "missed": 57,
+        "longest_consecutive": 11,
+        "completion_ms": {
+          "p50": 6.432595684600528,
+          "p95": 10.218819500005333,
+          "p99": 14.421500671596727,
+          "p99.9": 30.23606122448323
+        },
+        "service_ms": {
+          "p50": 5.854697999893688,
+          "p95": 8.848384200246068,
+          "p99": 11.90570924285566,
+          "p99.9": 27.127348207461882
+        },
+        "max_ms": 123.58413922629552
+      }
+    },
+    "sweep180-main-EE": {
+      "observations": 103,
+      "final_steps": 0,
+      "final_count": 329935,
+      "min_free_mib": 10800.0,
+      "torch_peak_mib": 24.0,
+      "final_worker_summary": true,
+      "recording_display": {
+        "arm": "main-EE",
+        "settings": {
+          "precision": "full",
+          "input_resolution": 100,
+          "max_splats": 1000000,
+          "frame_admission_hz": 10,
+          "estimator": "main SLAMBackend, no map alignment",
+          "exposure": 0,
+          "frame_delay": 0,
+          "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+          "origin": 46939.853988204,
+          "estimated": 103
+        },
+        "GL": "D3D12 (NVIDIA GeForce RTX 4070 Ti)",
+        "eye_size": 2160,
+        "recording": true,
+        "frames": 1293,
+        "missed": 237,
+        "longest_consecutive": 109,
+        "completion_ms": {
+          "p50": 8.503998062224127,
+          "p95": 13.58249143522698,
+          "p99": 19.490505993890086,
+          "p99.9": 46.324392794865716
+        },
+        "service_ms": {
+          "p50": 5.718139000236988,
+          "p95": 9.95994439872447,
+          "p99": 12.114134161965914,
+          "p99.9": 44.42634814555813
+        },
+        "max_ms": 75.74998711788794
+      }
+    },
+    "tour-TT": {
+      "observations": 488,
+      "final_steps": 3604,
+      "final_count": 592962,
+      "min_free_mib": 10194.0,
+      "torch_peak_mib": 778.0,
+      "final_worker_summary": true,
+      "recording_display": {
+        "arm": "TT",
+        "settings": {
+          "precision": "full",
+          "input_resolution": 100,
+          "max_splats": 1000000,
+          "frame_admission_hz": 10,
+          "estimator": "main SLAMBackend, no map alignment",
+          "exposure": 0,
+          "frame_delay": 0,
+          "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+          "origin": 47006.906425362,
+          "estimated": 508
+        },
+        "GL": "D3D12 (NVIDIA GeForce RTX 4070 Ti)",
+        "eye_size": 2160,
+        "recording": true,
+        "frames": 3305,
+        "missed": 4346,
+        "longest_consecutive": 3373,
+        "completion_ms": {
+          "p50": 16.31745681515895,
+          "p95": 40.000092683476396,
+          "p99": 51.70375596324449,
+          "p99.9": 78.37563503423138
+        },
+        "service_ms": {
+          "p50": 14.398802995856386,
+          "p95": 31.30605260084848,
+          "p99": 38.67465659423033,
+          "p99.9": 48.93914612982254
+        },
+        "max_ms": 86.03804212179966
+      }
+    },
+    "tour-TE": {
+      "observations": 488,
+      "final_steps": 3260,
+      "final_count": 635454,
+      "min_free_mib": 9985.421875,
+      "torch_peak_mib": 846.0,
+      "final_worker_summary": true,
+      "recording_display": {
+        "arm": "TE",
+        "settings": {
+          "precision": "full",
+          "input_resolution": 100,
+          "max_splats": 1000000,
+          "frame_admission_hz": 10,
+          "estimator": "main SLAMBackend, no map alignment",
+          "exposure": 0,
+          "frame_delay": 0,
+          "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+          "origin": 47006.906425362,
+          "estimated": 508
+        },
+        "GL": "D3D12 (NVIDIA GeForce RTX 4070 Ti)",
+        "eye_size": 2160,
+        "recording": true,
+        "frames": 3145,
+        "missed": 4511,
+        "longest_consecutive": 3569,
+        "completion_ms": {
+          "p50": 18.673157683224417,
+          "p95": 45.54364245705074,
+          "p99": 60.71458983264164,
+          "p99.9": 100.7033847965086
+        },
+        "service_ms": {
+          "p50": 15.298968995921314,
+          "p95": 37.911972599977155,
+          "p99": 51.751935198844784,
+          "p99.9": 92.88152531528725
+        },
+        "max_ms": 178.37677123316098
+      }
+    },
+    "tour-ET": {
+      "observations": 488,
+      "final_steps": 3498,
+      "final_count": 555285,
+      "min_free_mib": 10194.0,
+      "torch_peak_mib": 740.0,
+      "final_worker_summary": true,
+      "recording_display": {
+        "arm": "ET",
+        "settings": {
+          "precision": "full",
+          "input_resolution": 100,
+          "max_splats": 1000000,
+          "frame_admission_hz": 10,
+          "estimator": "main SLAMBackend, no map alignment",
+          "exposure": 0,
+          "frame_delay": 0,
+          "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+          "origin": 47006.906425362,
+          "estimated": 508
+        },
+        "GL": "D3D12 (NVIDIA GeForce RTX 4070 Ti)",
+        "eye_size": 2160,
+        "recording": true,
+        "frames": 3203,
+        "missed": 4449,
+        "longest_consecutive": 3499,
+        "completion_ms": {
+          "p50": 17.875152290798724,
+          "p95": 39.79475882515544,
+          "p99": 47.37089476548135,
+          "p99.9": 76.49621043348688
+        },
+        "service_ms": {
+          "p50": 15.525878006883431,
+          "p95": 31.89572420378679,
+          "p99": 38.57598994189175,
+          "p99.9": 45.43465712830978
+        },
+        "max_ms": 107.78049225336872
+      }
+    },
+    "tour-EE": {
+      "observations": 488,
+      "final_steps": 3432,
+      "final_count": 535147,
+      "min_free_mib": 10250.0,
+      "torch_peak_mib": 684.0,
+      "final_worker_summary": true,
+      "recording_display": {
+        "arm": "EE",
+        "settings": {
+          "precision": "full",
+          "input_resolution": 100,
+          "max_splats": 1000000,
+          "frame_admission_hz": 10,
+          "estimator": "main SLAMBackend, no map alignment",
+          "exposure": 0,
+          "frame_delay": 0,
+          "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+          "origin": 47006.906425362,
+          "estimated": 508
+        },
+        "GL": "D3D12 (NVIDIA GeForce RTX 4070 Ti)",
+        "eye_size": 2160,
+        "recording": true,
+        "frames": 3184,
+        "missed": 4471,
+        "longest_consecutive": 3563,
+        "completion_ms": {
+          "p50": 16.421785607235506,
+          "p95": 47.231211607140715,
+          "p99": 59.36916857011967,
+          "p99.9": 74.65530651580141
+        },
+        "service_ms": {
+          "p50": 14.446519500779686,
+          "p95": 38.9644242462964,
+          "p99": 46.67614369136572,
+          "p99.9": 61.76745410302864
+        },
+        "max_ms": 92.26425358065171
+      }
+    },
+    "tour-TF": {
+      "observations": 488,
+      "final_steps": 5207,
+      "final_count": 438856,
+      "min_free_mib": 10320.0,
+      "torch_peak_mib": 614.0,
+      "final_worker_summary": true,
+      "recording_display": {
+        "arm": "TF",
+        "settings": {
+          "precision": "full",
+          "input_resolution": 100,
+          "max_splats": 1000000,
+          "frame_admission_hz": 10,
+          "estimator": "main SLAMBackend, no map alignment",
+          "exposure": 0,
+          "frame_delay": 0,
+          "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+          "origin": 47006.906425362,
+          "estimated": 508
+        },
+        "GL": "D3D12 (NVIDIA GeForce RTX 4070 Ti)",
+        "eye_size": 2160,
+        "recording": true,
+        "frames": 5210,
+        "missed": 2440,
+        "longest_consecutive": 330,
+        "completion_ms": {
+          "p50": 9.981745053664781,
+          "p95": 19.07809175354487,
+          "p99": 23.76027417347359,
+          "p99.9": 33.848995401771695
+        },
+        "service_ms": {
+          "p50": 7.851025999116246,
+          "p95": 14.590310301719002,
+          "p99": 17.00760219886433,
+          "p99.9": 23.85697819836827
+        },
+        "max_ms": 76.53373453649692
+      }
+    },
+    "tour-main-TT": {
+      "observations": 488,
+      "final_steps": 0,
+      "final_count": 418921,
+      "min_free_mib": 10404.0,
+      "torch_peak_mib": null,
+      "final_worker_summary": false,
+      "recording_display": {
+        "arm": "main-TT",
+        "settings": {
+          "precision": "full",
+          "input_resolution": 100,
+          "max_splats": 1000000,
+          "frame_admission_hz": 10,
+          "estimator": "main SLAMBackend, no map alignment",
+          "exposure": 0,
+          "frame_delay": 0,
+          "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+          "origin": 47006.906425362,
+          "estimated": 508
+        },
+        "GL": "D3D12 (NVIDIA GeForce RTX 4070 Ti)",
+        "eye_size": 2160,
+        "recording": true,
+        "frames": 5182,
+        "missed": 2468,
+        "longest_consecutive": 726,
+        "completion_ms": {
+          "p50": 9.364362027554307,
+          "p95": 19.02335860795574,
+          "p99": 29.1672398053196,
+          "p99.9": 50.72383054963625
+        },
+        "service_ms": {
+          "p50": 7.67818299937062,
+          "p95": 14.74086620255548,
+          "p99": 25.452154520462397,
+          "p99.9": 44.82875004010586
+        },
+        "max_ms": 75.28285955777392
+      }
+    },
+    "tour-main-EE": {
+      "observations": 488,
+      "final_steps": 0,
+      "final_count": 904672,
+      "min_free_mib": 10222.0,
+      "torch_peak_mib": 24.0,
+      "final_worker_summary": true,
+      "recording_display": {
+        "arm": "main-EE",
+        "settings": {
+          "precision": "full",
+          "input_resolution": 100,
+          "max_splats": 1000000,
+          "frame_admission_hz": 10,
+          "estimator": "main SLAMBackend, no map alignment",
+          "exposure": 0,
+          "frame_delay": 0,
+          "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+          "origin": 47006.906425362,
+          "estimated": 508
+        },
+        "GL": "D3D12 (NVIDIA GeForce RTX 4070 Ti)",
+        "eye_size": 2160,
+        "recording": true,
+        "frames": 4089,
+        "missed": 3562,
+        "longest_consecutive": 2539,
+        "completion_ms": {
+          "p50": 15.583487554977182,
+          "p95": 21.119663277931977,
+          "p99": 26.870113293407474,
+          "p99.9": 37.11018927092675
+        },
+        "service_ms": {
+          "p50": 10.628898999129888,
+          "p95": 14.832539201597681,
+          "p99": 18.904100722575087,
+          "p99.9": 27.878144750080587
+        },
+        "max_ms": 90.45879411132773
+      }
+    }
+  },
+  "native": {
+    "sweep180-TT-1": {
+      "renderer": "NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2",
+      "sequence": "sweep180",
+      "arm": "TT",
+      "optimizer": true,
+      "scope": "native frozen map, controlled uploads, online optimizer; no compositor",
+      "scheduling": "MMCSS Games/high",
+      "settings": {
+        "precision": "full",
+        "input_resolution": 100,
+        "max_splats": 1000000
+      },
+      "seconds": 20.0,
+      "eye_size": 2160,
+      "occupied": 192512,
+      "capacity": 262144,
+      "frames": 1513,
+      "missed": 287,
+      "longest": 3,
+      "completion_ms": {
+        "p50": 10.333155638363678,
+        "p95": 11.776362397358753,
+        "p99": 12.390877084690143,
+        "p99.9": 13.59330561058599
+      },
+      "service_ms": {
+        "p50": 10.037500003818423,
+        "p95": 11.496079999778884,
+        "p99": 12.066552003961986,
+        "p99.9": 13.136027998465604
+      },
+      "max_ms": 14.443122352531645
+    },
+    "sweep180-TT-2": {
+      "renderer": "NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2",
+      "sequence": "sweep180",
+      "arm": "TT",
+      "optimizer": true,
+      "scope": "native frozen map, controlled uploads, online optimizer; no compositor",
+      "scheduling": "MMCSS Games/high",
+      "settings": {
+        "precision": "full",
+        "input_resolution": 100,
+        "max_splats": 1000000
+      },
+      "seconds": 20.0,
+      "eye_size": 2160,
+      "occupied": 192512,
+      "capacity": 262144,
+      "frames": 1530,
+      "missed": 270,
+      "longest": 5,
+      "completion_ms": {
+        "p50": 10.328294581995578,
+        "p95": 11.84900906700932,
+        "p99": 12.307240115333116,
+        "p99.9": 12.633674493081356
+      },
+      "service_ms": {
+        "p50": 10.029149998445064,
+        "p95": 11.485769997307216,
+        "p99": 11.941396001639077,
+        "p99.9": 12.225243803186476
+      },
+      "max_ms": 12.804255762603134
+    },
+    "sweep180-TT-3": {
+      "renderer": "NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2",
+      "sequence": "sweep180",
+      "arm": "TT",
+      "optimizer": true,
+      "scope": "native frozen map, controlled uploads, online optimizer; no compositor",
+      "scheduling": "MMCSS Games/high",
+      "settings": {
+        "precision": "full",
+        "input_resolution": 100,
+        "max_splats": 1000000
+      },
+      "seconds": 20.0,
+      "eye_size": 2160,
+      "occupied": 192512,
+      "capacity": 262144,
+      "frames": 1503,
+      "missed": 298,
+      "longest": 5,
+      "completion_ms": {
+        "p50": 10.38316671474604,
+        "p95": 11.817660197993973,
+        "p99": 12.428577430982841,
+        "p99.9": 13.1441399365286
+      },
+      "service_ms": {
+        "p50": 10.071299999253824,
+        "p95": 11.508630000753328,
+        "p99": 12.049289999413304,
+        "p99.9": 12.543896401082762
+      },
+      "max_ms": 13.727566903980915
+    },
+    "sweep180-TT-frozen-1": {
+      "renderer": "NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2",
+      "sequence": "sweep180",
+      "arm": "TT",
+      "optimizer": false,
+      "scope": "native frozen map, controlled uploads, online optimizer; no compositor",
+      "scheduling": "MMCSS Games/high",
+      "settings": {
+        "precision": "full",
+        "input_resolution": 100,
+        "max_splats": 1000000
+      },
+      "seconds": 20.0,
+      "eye_size": 2160,
+      "occupied": 192512,
+      "capacity": 262144,
+      "frames": 1797,
+      "missed": 3,
+      "longest": 3,
+      "completion_ms": {
+        "p50": 7.29355570365442,
+        "p95": 7.916771247982979,
+        "p99": 8.134843676525634,
+        "p99.9": 8.91695408007949
+      },
+      "service_ms": {
+        "p50": 7.037300005322322,
+        "p95": 7.607220001227688,
+        "p99": 7.782971997803543,
+        "p99.9": 8.702533600589966
+      },
+      "max_ms": 35.34585556189995
+    },
+    "sweep180-TT-frozen-2": {
+      "renderer": "NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2",
+      "sequence": "sweep180",
+      "arm": "TT",
+      "optimizer": false,
+      "scope": "native frozen map, controlled uploads, online optimizer; no compositor",
+      "scheduling": "MMCSS Games/high",
+      "settings": {
+        "precision": "full",
+        "input_resolution": 100,
+        "max_splats": 1000000
+      },
+      "seconds": 20.0,
+      "eye_size": 2160,
+      "occupied": 192512,
+      "capacity": 262144,
+      "frames": 1800,
+      "missed": 0,
+      "longest": 0,
+      "completion_ms": {
+        "p50": 7.254472489876207,
+        "p95": 7.895156885206234,
+        "p99": 8.162567203689832,
+        "p99.9": 8.64626617400069
+      },
+      "service_ms": {
+        "p50": 7.031650002318202,
+        "p95": 7.5880450051045045,
+        "p99": 7.771549999888521,
+        "p99.9": 8.513326202504707
+      },
+      "max_ms": 9.051933469891082
+    },
+    "sweep180-TT-frozen-3": {
+      "renderer": "NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2",
+      "sequence": "sweep180",
+      "arm": "TT",
+      "optimizer": false,
+      "scope": "native frozen map, controlled uploads, online optimizer; no compositor",
+      "scheduling": "MMCSS Games/high",
+      "settings": {
+        "precision": "full",
+        "input_resolution": 100,
+        "max_splats": 1000000
+      },
+      "seconds": 20.0,
+      "eye_size": 2160,
+      "occupied": 192512,
+      "capacity": 262144,
+      "frames": 1800,
+      "missed": 0,
+      "longest": 0,
+      "completion_ms": {
+        "p50": 7.233116739371326,
+        "p95": 7.840186147586792,
+        "p99": 8.09312975143257,
+        "p99.9": 8.96011054826525
+      },
+      "service_ms": {
+        "p50": 7.02369999999064,
+        "p95": 7.572219996654894,
+        "p99": 7.827131000449299,
+        "p99.9": 8.838187702560452
+      },
+      "max_ms": 9.214333615091164
+    },
+    "sweep180-main-TT-1": {
+      "renderer": "NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2",
+      "sequence": "sweep180",
+      "arm": "main-TT",
+      "optimizer": false,
+      "scope": "native frozen map, controlled uploads, online optimizer; no compositor",
+      "scheduling": "MMCSS Games/high",
+      "settings": {
+        "precision": "full",
+        "input_resolution": 100,
+        "max_splats": 1000000
+      },
+      "seconds": 20.0,
+      "eye_size": 2160,
+      "occupied": 116144,
+      "capacity": 281992,
+      "frames": 1799,
+      "missed": 1,
+      "longest": 1,
+      "completion_ms": {
+        "p50": 6.694466770568397,
+        "p95": 7.53526468979544,
+        "p99": 7.950682095543016,
+        "p99.9": 9.685237786689097
+      },
+      "service_ms": {
+        "p50": 6.540800000948366,
+        "p95": 7.284710001840722,
+        "p99": 7.720049999188632,
+        "p99.9": 9.210443400152291
+      },
+      "max_ms": 11.672533495584503
+    },
+    "sweep180-main-TT-2": {
+      "renderer": "NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2",
+      "sequence": "sweep180",
+      "arm": "main-TT",
+      "optimizer": false,
+      "scope": "native frozen map, controlled uploads, online optimizer; no compositor",
+      "scheduling": "MMCSS Games/high",
+      "settings": {
+        "precision": "full",
+        "input_resolution": 100,
+        "max_splats": 1000000
+      },
+      "seconds": 20.0,
+      "eye_size": 2160,
+      "occupied": 116144,
+      "capacity": 281992,
+      "frames": 1800,
+      "missed": 0,
+      "longest": 0,
+      "completion_ms": {
+        "p50": 6.7373779602348804,
+        "p95": 7.687710842219531,
+        "p99": 8.56763746975048,
+        "p99.9": 9.20083562874061
+      },
+      "service_ms": {
+        "p50": 6.54835000023013,
+        "p95": 7.434965005086269,
+        "p99": 8.22751100640744,
+        "p99.9": 8.890275096804583
+      },
+      "max_ms": 9.738422362715937
+    },
+    "sweep180-main-TT-3": {
+      "renderer": "NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2",
+      "sequence": "sweep180",
+      "arm": "main-TT",
+      "optimizer": false,
+      "scope": "native frozen map, controlled uploads, online optimizer; no compositor",
+      "scheduling": "MMCSS Games/high",
+      "settings": {
+        "precision": "full",
+        "input_resolution": 100,
+        "max_splats": 1000000
+      },
+      "seconds": 20.0,
+      "eye_size": 2160,
+      "occupied": 116144,
+      "capacity": 281992,
+      "frames": 1800,
+      "missed": 0,
+      "longest": 0,
+      "completion_ms": {
+        "p50": 6.757989165635081,
+        "p95": 7.666416373467655,
+        "p99": 8.33125492099498,
+        "p99.9": 8.934957976911413
+      },
+      "service_ms": {
+        "p50": 6.594500002393033,
+        "p95": 7.485830000950955,
+        "p99": 8.183586000377545,
+        "p99.9": 8.866343100380623
+      },
+      "max_ms": 9.811622323468328
+    },
+    "tour-TT-1": {
+      "renderer": "NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2",
+      "sequence": "tour",
+      "arm": "TT",
+      "optimizer": true,
+      "scope": "native frozen map, controlled uploads, online optimizer; no compositor",
+      "scheduling": "MMCSS Games/high",
+      "settings": {
+        "precision": "full",
+        "input_resolution": 100,
+        "max_splats": 1000000
+      },
+      "seconds": 20.0,
+      "eye_size": 2160,
+      "occupied": 798087,
+      "capacity": 1000000,
+      "frames": 887,
+      "missed": 913,
+      "longest": 913,
+      "completion_ms": {
+        "p50": 19.067589091719128,
+        "p95": 21.634997911314713,
+        "p99": 22.67523927075672,
+        "p99.9": 24.248624209823905
+      },
+      "service_ms": {
+        "p50": 18.78479999868432,
+        "p95": 21.38369000240345,
+        "p99": 22.48571800184436,
+        "p99.9": 24.065365200454842
+      },
+      "max_ms": 24.276789161376655
+    },
+    "tour-TT-2": {
+      "renderer": "NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2",
+      "sequence": "tour",
+      "arm": "TT",
+      "optimizer": true,
+      "scope": "native frozen map, controlled uploads, online optimizer; no compositor",
+      "scheduling": "MMCSS Games/high",
+      "settings": {
+        "precision": "full",
+        "input_resolution": 100,
+        "max_splats": 1000000
+      },
+      "seconds": 20.0,
+      "eye_size": 2160,
+      "occupied": 798087,
+      "capacity": 1000000,
+      "frames": 893,
+      "missed": 908,
+      "longest": 908,
+      "completion_ms": {
+        "p50": 19.025955654797144,
+        "p95": 21.59608895308338,
+        "p99": 22.62424637330696,
+        "p99.9": 23.712044919346287
+      },
+      "service_ms": {
+        "p50": 18.774100004520733,
+        "p95": 21.268500000587665,
+        "p99": 22.23374800261809,
+        "p99.9": 23.45375959837118
+      },
+      "max_ms": 24.619555631943513
+    },
+    "tour-TT-3": {
+      "renderer": "NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2",
+      "sequence": "tour",
+      "arm": "TT",
+      "optimizer": true,
+      "scope": "native frozen map, controlled uploads, online optimizer; no compositor",
+      "scheduling": "MMCSS Games/high",
+      "settings": {
+        "precision": "full",
+        "input_resolution": 100,
+        "max_splats": 1000000
+      },
+      "seconds": 20.0,
+      "eye_size": 2160,
+      "occupied": 798087,
+      "capacity": 1000000,
+      "frames": 887,
+      "missed": 914,
+      "longest": 914,
+      "completion_ms": {
+        "p50": 19.17636676807888,
+        "p95": 21.86079679231625,
+        "p99": 23.016176155069843,
+        "p99.9": 24.802201834201696
+      },
+      "service_ms": {
+        "p50": 18.93030000064755,
+        "p95": 21.549329997651512,
+        "p99": 22.53996400220785,
+        "p99.9": 24.376218204342877
+      },
+      "max_ms": 24.802300278679468
+    },
+    "tour-TT-frozen-1": {
+      "renderer": "NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2",
+      "sequence": "tour",
+      "arm": "TT",
+      "optimizer": false,
+      "scope": "native frozen map, controlled uploads, online optimizer; no compositor",
+      "scheduling": "MMCSS Games/high",
+      "settings": {
+        "precision": "full",
+        "input_resolution": 100,
+        "max_splats": 1000000
+      },
+      "seconds": 20.0,
+      "eye_size": 2160,
+      "occupied": 798087,
+      "capacity": 1000000,
+      "frames": 900,
+      "missed": 900,
+      "longest": 900,
+      "completion_ms": {
+        "p50": 13.071533456241013,
+        "p95": 15.066520110849524,
+        "p99": 15.371205487681436,
+        "p99.9": 16.453746100414726
+      },
+      "service_ms": {
+        "p50": 12.834200002544094,
+        "p95": 14.82483500331,
+        "p99": 15.064002997023636,
+        "p99.9": 16.2470943976514
+      },
+      "max_ms": 16.51408915495267
+    },
+    "tour-TT-frozen-2": {
+      "renderer": "NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2",
+      "sequence": "tour",
+      "arm": "TT",
+      "optimizer": false,
+      "scope": "native frozen map, controlled uploads, online optimizer; no compositor",
+      "scheduling": "MMCSS Games/high",
+      "settings": {
+        "precision": "full",
+        "input_resolution": 100,
+        "max_splats": 1000000
+      },
+      "seconds": 20.0,
+      "eye_size": 2160,
+      "occupied": 798087,
+      "capacity": 1000000,
+      "frames": 900,
+      "missed": 900,
+      "longest": 900,
+      "completion_ms": {
+        "p50": 13.024677922658157,
+        "p95": 15.054435028650914,
+        "p99": 15.311529045065981,
+        "p99.9": 16.02494039425078
+      },
+      "service_ms": {
+        "p50": 12.80600000245613,
+        "p95": 14.775924994319212,
+        "p99": 15.036790001613554,
+        "p99.9": 15.992785603324629
+      },
+      "max_ms": 16.387666742957663
+    },
+    "tour-TT-frozen-3": {
+      "renderer": "NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2",
+      "sequence": "tour",
+      "arm": "TT",
+      "optimizer": false,
+      "scope": "native frozen map, controlled uploads, online optimizer; no compositor",
+      "scheduling": "MMCSS Games/high",
+      "settings": {
+        "precision": "full",
+        "input_resolution": 100,
+        "max_splats": 1000000
+      },
+      "seconds": 20.0,
+      "eye_size": 2160,
+      "occupied": 798087,
+      "capacity": 1000000,
+      "frames": 900,
+      "missed": 900,
+      "longest": 900,
+      "completion_ms": {
+        "p50": 13.062633526715217,
+        "p95": 15.022383367249859,
+        "p99": 15.317599670161144,
+        "p99.9": 16.246181294838657
+      },
+      "service_ms": {
+        "p50": 12.822849999793107,
+        "p95": 14.78708999711671,
+        "p99": 15.01200600345328,
+        "p99.9": 16.159209400633717
+      },
+      "max_ms": 16.65466673875926
+    },
+    "tour-main-TT-1": {
+      "renderer": "NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2",
+      "sequence": "tour",
+      "arm": "main-TT",
+      "optimizer": false,
+      "scope": "native frozen map, controlled uploads, online optimizer; no compositor",
+      "scheduling": "MMCSS Games/high",
+      "settings": {
+        "precision": "full",
+        "input_resolution": 100,
+        "max_splats": 1000000
+      },
+      "seconds": 20.0,
+      "eye_size": 2160,
+      "occupied": 356696,
+      "capacity": 563100,
+      "frames": 1800,
+      "missed": 0,
+      "longest": 0,
+      "completion_ms": {
+        "p50": 6.80998903044383,
+        "p95": 8.075632874897565,
+        "p99": 8.572722001408692,
+        "p99.9": 9.337061315964117
+      },
+      "service_ms": {
+        "p50": 6.59789999917848,
+        "p95": 7.793060003314167,
+        "p99": 8.255955000204267,
+        "p99.9": 9.171962503205643
+      },
+      "max_ms": 9.453511251194868
+    },
+    "tour-main-TT-2": {
+      "renderer": "NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2",
+      "sequence": "tour",
+      "arm": "main-TT",
+      "optimizer": false,
+      "scope": "native frozen map, controlled uploads, online optimizer; no compositor",
+      "scheduling": "MMCSS Games/high",
+      "settings": {
+        "precision": "full",
+        "input_resolution": 100,
+        "max_splats": 1000000
+      },
+      "seconds": 20.0,
+      "eye_size": 2160,
+      "occupied": 356696,
+      "capacity": 563100,
+      "frames": 1800,
+      "missed": 0,
+      "longest": 0,
+      "completion_ms": {
+        "p50": 6.839083580416627,
+        "p95": 8.143506928536226,
+        "p99": 8.669319130276563,
+        "p99.9": 9.331969287115552
+      },
+      "service_ms": {
+        "p50": 6.637200000113808,
+        "p95": 7.905964997189585,
+        "p99": 8.356353000708623,
+        "p99.9": 9.04897899726352
+      },
+      "max_ms": 9.98587794310879
+    },
+    "tour-main-TT-3": {
+      "renderer": "NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2",
+      "sequence": "tour",
+      "arm": "main-TT",
+      "optimizer": false,
+      "scope": "native frozen map, controlled uploads, online optimizer; no compositor",
+      "scheduling": "MMCSS Games/high",
+      "settings": {
+        "precision": "full",
+        "input_resolution": 100,
+        "max_splats": 1000000
+      },
+      "seconds": 20.0,
+      "eye_size": 2160,
+      "occupied": 356696,
+      "capacity": 563100,
+      "frames": 1800,
+      "missed": 0,
+      "longest": 0,
+      "completion_ms": {
+        "p50": 6.830555797932902,
+        "p95": 8.112027412062162,
+        "p99": 8.744821264408529,
+        "p99.9": 9.45998293594312
+      },
+      "service_ms": {
+        "p50": 6.636950005486142,
+        "p95": 7.898900002328446,
+        "p99": 8.48428999663156,
+        "p99.9": 9.393466097644716
+      },
+      "max_ms": 10.46884462266462
+    }
+  },
+  "half_fault": {
+    "oom": 1,
+    "loss_dtype": "torch.bfloat16",
+    "observations_after_recovery": 17
+  },
+  "native_scope": "Frozen mature production-GL map, two upload packets/frame, real cold-prefix online optimizer when enabled; no estimator contention, compositor or scanout",
+  "artifacts": {
+    "half-oom-warning.png": "ed1cbf5189d8ada855e671f71c9f101847d150d3c8d8defc2b4f01510c16887b",
+    "sweep180-EE-motion-10.0.jpg": "dc26e59d721cc11ccc5c13633726b9c971e2cfb31b7dfeeae93f4c98abbb0021",
+    "sweep180-EE-prefix-1.jpg": "2ec379476fd188f5d3b6e3147d11a1ec9dad41ff1bce09b146f3883ad1d17e3b",
+    "sweep180-EE-prefix-2.jpg": "aba1b54844746e6e08b27b0f4086b2b6af57a0bf966eef70e38c0b08fd2dd584",
+    "sweep180-EE-v-main-EE-motion.jpg": "929a52690d494fb75c1901c82b535869adc51220215537ff8a9610c29aaf02c3",
+    "sweep180-ET-motion-10.0.jpg": "4f0b9271c79fdf1249e561910e943ba7718b1ea0c38d917cabd7a3beeec4b94d",
+    "sweep180-ET-prefix-1.jpg": "db0be1d1739b51448100707df774c26c019b27385a22b3eb6125ebadd032aa11",
+    "sweep180-ET-prefix-2.jpg": "daea000f9995db00fc04e158d749162fad0057fa950b73b1ee36de11f3432e51",
+    "sweep180-TE-motion-10.0.jpg": "5553695bf2b90e8d0b5cca048232bfa84d310429f4730ffa6ca53166578e8793",
+    "sweep180-TE-prefix-1.jpg": "8040802046b3f1b4d57b61757dbd617477b5a25aec6bbb00748f840cbb070bb3",
+    "sweep180-TE-prefix-2.jpg": "5b3b82996fb50cc2bba7062ffb071d0fec732e7d7a6f300e8317bb3eeb1432f7",
+    "sweep180-TF-motion-10.0.jpg": "640940ea55058396e80ab0023cf037686acda8646dcabe0265586604c1c0373e",
+    "sweep180-TF-prefix-1.jpg": "1ce9a3fa732e2437ea8d105fe05b9a38aa0af8abc016e5c6058c30b9fa13f68c",
+    "sweep180-TF-prefix-2.jpg": "fa821a661ecc1bedfda047a9e523788ba2aac475cc7f69c4b4e787e5d8c59697",
+    "sweep180-TT-motion-0.9.jpg": "17b76a1f0a4679dab2fab87189fbdd900381ce6215a1c6938d6bffd84be7cc56",
+    "sweep180-TT-motion-1.9.jpg": "ff3e945dabf0fca0f04f0df20260c2f473d1edc640bc727360379487eec84b2c",
+    "sweep180-TT-motion-10.0.jpg": "9eebe888dff1adf9a2b86f9cd817a7cef5ca72193f9263f392fb8ced09babe8b",
+    "sweep180-TT-prefix-1.jpg": "6eb2246123944c3d94a36e28ae53334dc3063ed9997a0c0b5a84fb50d81155ee",
+    "sweep180-TT-prefix-2.jpg": "0329d5b3097e70d2696eaa4ceb612492d55788ed7f6fa431a34105cf65348bdb",
+    "sweep180-TT-stereo.jpg": "2c3fc59ab2b1d60d1cd8db66ffc9ebf71605011a0c294597708c604f724f0fd1",
+    "sweep180-interventions-1.0.jpg": "23f4a809b6dd8f97a5d5360a4857b4711f567819fbbb907b9d2f890b950bab09",
+    "sweep180-interventions-12.0.jpg": "6fd2e996ff0e578e0836e0ddb0fb7944de84f78e3d0d8b839592dba05de53e30",
+    "tour-EE-motion-50.0.jpg": "f5a82ec5dcd5f58012a8fb303ef3c93a5dcacf1a28fab39439bcd44fbb52ba6f",
+    "tour-EE-prefix-1.jpg": "42616c90aa06ebb8accefe8f9ec79d3b81929521d3965da3936dee3aced77519",
+    "tour-EE-prefix-2.jpg": "9618c872c35eebb75c9992c58331665638a0232aff32bd3c9fc66b17703fcb91",
+    "tour-EE-v-main-EE-motion.jpg": "dc1fee67d2793921f810dfae60369586b5163e42cf54cdf0f67702af6574e293",
+    "tour-ET-motion-50.0.jpg": "2c6ab100c7a0c86eb4b188bbf584ab6b7d30c04e507dd517bcedbd8138ad851b",
+    "tour-ET-prefix-1.jpg": "7863c3bc2673faa05ee45a54a92d77b0eebd04e69e598a5a4656f67365deb926",
+    "tour-ET-prefix-2.jpg": "d4e42f6be69f4931247116d28768db861217011871f430edd93a4674464d5b21",
+    "tour-TE-motion-50.0.jpg": "44492ee2d2f68365c823aef9e3bbf90f5a4f9efe14bd6982884345f2f56fc547",
+    "tour-TE-prefix-1.jpg": "8990e235198540ecf4725d7ed24adcb7a73fa3dc2ca89c31f8834a32a8e58636",
+    "tour-TE-prefix-2.jpg": "85c6204500a8ad235b0138dc27b0a11f9c628326a62e19effc47b1138288a540",
+    "tour-TF-motion-50.0.jpg": "67f87d555ecf78cac88c3286f020baccf821afec38121f294e635bb53d94e4d1",
+    "tour-TF-prefix-1.jpg": "616f0df88f87a83e4faff9d0c9bfadcc56a8c84235ce842a6d18e0fa027c2259",
+    "tour-TF-prefix-2.jpg": "60dfe5931020e78d126cf05b94b93c186f1de3825c4e265ea58a3d895bb10f00",
+    "tour-TT-motion-0.9.jpg": "e97469afaffe532cb776c53400b8483600d29f70f99b93b108d71f9160afdd68",
+    "tour-TT-motion-1.9.jpg": "12d524c7223fbaab6d80b30d81ffb0c2ba8438605cdae19bad1df3762d4f2808",
+    "tour-TT-motion-50.0.jpg": "bcc45fdb3be9dae78784d8d8d18a1936745bb1371496f1dbe8ef36c411d2fb90",
+    "tour-TT-prefix-1.jpg": "e8bbf71223197430d8d47f0411f193d5584ca87ae222e1bbb9aa79a5407312da",
+    "tour-TT-prefix-2.jpg": "c356626a9a0ddb8e29a0ae199dd52dde9aa6cf7d816a617439369e3f5c1b040c",
+    "tour-TT-stereo.jpg": "1a45705dce8fe847306f15e50ca508b4f50df8c864ee617bb9bac438d5050ce5",
+    "tour-interventions-1.0.jpg": "8cfbffc7244ea8120586abfb530713aea6016fd5743d65464bf3b9f5e269d78c",
+    "tour-interventions-52.0.jpg": "9c2cf90ee0f7717167f014df396e35befdd635714235edafdc7b2dc5c3ec3931",
+    "tour-interventions-78.0.jpg": "4a135b59c4c990bac3c5ddba69e96d9a0436e67d1f299897a311a9ac46aff3ac"
+  },
+  "discarded": "Initial main adapters without retirement/ack and all WSL-only timing proxies; corrected baselines and fresh native cohort replace them",
+  "measurement_code_commit": "e0b01843c12ce39525ab7788cbda7fa0eba731a4",
+  "audited_code_commit": "e3abf14b1b4f12b30fa9d92fb6f2d9b093948e7d",
+  "half_refinement_fault": {
+    "oom": 1,
+    "loss_dtype": "torch.bfloat16",
+    "steps_after_recovery": 108,
+    "observations_after_recovery": 10
+  },
+  "code_note": "Visual and native cohort precede final allocation-failure hardening; seeding and densification recovery were driven separately. Normal mapper math and settings are unchanged."
+}
