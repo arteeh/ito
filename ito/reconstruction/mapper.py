@@ -441,9 +441,11 @@ class GaussianMap:
     def _seed(self, frame, slot, pose, relative):
         torch = self.torch
         seed_points, seed_confidence = frame.points, frame.confidence
+        measured_depth = None
         if frame.depth is not None:
             valid_depth = np.isfinite(frame.depth) & (frame.depth > 0)
             if 4 <= np.count_nonzero(valid_depth) < frame.depth.size // 20:
+                measured_depth = self.tensor(valid_depth).bool()
                 # ToF supplies zones, not object boundaries. This smooth inverse-depth
                 # prior initializes colour-bearing surfaces; only measured zones enter
                 # the depth loss. RGB observations subsequently refine the geometry.
@@ -493,7 +495,12 @@ class GaussianMap:
             with torch.no_grad():
                 _, depth, alpha, _ = self.render(pose, i)
             # Expected depth is already normalised by alpha.
-            fresh = (alpha[v, u] < SEED_COVERED) | (z < SEED_NEARER * depth[v, u])
+            nearer = z < SEED_NEARER * depth[v, u]
+            if measured_depth is not None:
+                # Completed ToF rays are initialization priors, not new metric evidence.
+                # Noise or extrapolation must not stack opaque replacement surfaces.
+                nearer &= measured_depth[v, u]
+            fresh = (alpha[v, u] < SEED_COVERED) | nearer
             points, colors, z = points[fresh], colors[fresh], z[fresh]
         # Sample a regular two-pixel grid, retaining one-pixel detail at colour edges.
         # Unlike random sparse seeds this supplies a defined calibrated footprint.

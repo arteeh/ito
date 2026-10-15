@@ -326,7 +326,7 @@ def worker(args, ring, admission, ready, start, stopped, status):
                             + "\n"
                         )
                         cursor += 1
-                    if not main:
+                    if not main and not getattr(args, "no_opt", False):
                         began = time.perf_counter()
                         try:
                             engine.step()
@@ -417,6 +417,7 @@ def main():
     parser.add_argument("--seconds", type=float, default=20)
     parser.add_argument("--max-splats", type=int, default=1_000_000)
     parser.add_argument("--record", action="store_true")
+    parser.add_argument("--no-opt", action="store_true", help="labelled seeding-only ablation")
     parser.add_argument("--precision", choices=("full", "half"))
     parser.add_argument(
         "--oom-at",
@@ -692,6 +693,7 @@ def main():
                 eye_size=args.eye_size,
                 recording=args.record,
                 camera_mode="own published pose; map-side correction excluded",
+                optimization=not args.no_opt,
                 render_budget=renderer.render_budget,
                 frames=len(costs),
                 missed=misses,
