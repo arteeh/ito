@@ -13,6 +13,7 @@ from OpenGL import GL
 from xr.utils import GraphicsAPI, Matrix4x4f
 
 from ito import clock, diagnostics
+from ito.app.menu_layout import MenuLayout
 from ito.desktop import DesktopWindow
 from ito.desktop.window import DesktopState
 from ito.reconstruction import SplatUpdate
@@ -23,7 +24,7 @@ from ito.render.pose import quaternion
 
 from .dispatch import XRDispatch
 from .input import VALID, Actions
-from .session import HEADSET_POLL, HEADSET_WAIT, Session
+from .session import HEADSET_POLL, HEADSET_WAIT, HUD_PANEL_PIXELS, Session
 
 log = logging.getLogger(__name__)
 PANEL_LINGER = 0.5  # The panel stays this long after the controller stops pointing at it.
@@ -31,7 +32,7 @@ PANEL_LINGER = 0.5  # The panel stays this long after the controller stops point
 # them, so it is centred and readable with a glance down but never covers the scene ahead.
 PANEL_DISTANCE = 1.2
 PANEL_DROP = math.radians(25)
-PANEL_SIZE = (1.05, 1.05 * 440 / 768)
+PANEL_SIZE = (1.05, 1.05 * HUD_PANEL_PIXELS[1] / HUD_PANEL_PIXELS[0])
 # It follows the head lazily: it starts to follow once the gaze leaves it by SLACK, glides
 # with time constant FOLLOW until it is centred again (within SETTLED), and holds still while
 # a controller points at a control on it. A glance down at it, a pitch of up to the drop,
@@ -96,6 +97,8 @@ class XRWindow(DesktopWindow):
         super().__init__(*args, **kwargs)
         try:
             self.xr = Session(self.context, reference_space, waiting=self._waiting)
+            if self.overlay.theme.name == "waiting":
+                self._finish_waiting()
             self.actions = Actions(self.xr)
             self.input.translate = False
             self.centered = False
@@ -119,37 +122,56 @@ class XRWindow(DesktopWindow):
     def _waiting(self, runtime, waited):
         """The companion window while the runtime has no headset yet; False on Cancel."""
         pygame.display.set_caption("Ito — waiting for the headset")
+        theme = self.overlay.theme
+        if theme.name != "waiting":
+            theme.show("waiting", "menu", intro=True)
+            self.waiting_layout = MenuLayout(lambda _: None, theme)
+        self.waiting_status = runtime, waited
         until = time.monotonic() + HEADSET_POLL
-        while time.monotonic() < until:
+        cancelled = False
+        pacing = pygame.time.Clock()
+        while time.monotonic() < until or cancelled:
             events = pygame.event.get()
             if any(
                 e.type == pygame.QUIT or (e.type == pygame.KEYDOWN and e.key == pygame.K_ESCAPE)
                 for e in events
             ):
+                cancelled = True
+                theme.leave()
+            if self._waiting_frame(events):
+                cancelled = True
+                theme.leave()
+            if cancelled and theme.showing()[1] <= 0:
                 return False
-            size = pygame.display.get_window_size()
-            self.overlay.begin(events, size, False)
-            imgui.set_next_window_pos((size[0] / 2, size[1] / 2), imgui.Cond_.always, (0.5, 0.5))
-            imgui.begin(
-                "Ito",
-                flags=imgui.WindowFlags_.always_auto_resize
-                | imgui.WindowFlags_.no_move
-                | imgui.WindowFlags_.no_collapse,
-            )
-            imgui.text(f"Waiting for a headset on {runtime}")
-            imgui.text_disabled("Connect it: Steam Link, Virtual Desktop or its cable.")
-            imgui.text_disabled(f"{waited:.0f} of {HEADSET_WAIT:.0f} s")
-            cancel = imgui.button("Cancel", (380, 0))
-            imgui.end()
-            self.context.screen.use()
-            self.context.viewport = (0, 0, *size)
-            self.context.clear(0.05, 0.06, 0.07)
-            self.overlay.render()
-            pygame.display.flip()
-            if cancel:
-                return False
-            time.sleep(1 / 30)
+            pacing.tick(self.fps)
         return True
+
+    def _waiting_frame(self, events):
+        size = pygame.display.get_window_size()
+        self.overlay.begin(events, size, False)
+        theme = self.overlay.theme
+        runtime, waited = self.waiting_status
+        _, alpha, leaving = theme.showing()
+        with theme.faded(alpha, leaving):
+            with self.waiting_layout.window("Ito", size):
+                imgui.text(f"Waiting for a headset on {runtime}")
+                imgui.text_disabled("Connect it: Steam Link, Virtual Desktop or its cable.")
+                with theme.font("numeric"):
+                    imgui.text_disabled(f"{waited:.0f} of {HEADSET_WAIT:.0f} s")
+                cancel = self.waiting_layout.button("Cancel", "cancel")
+        self.context.screen.use()
+        self.context.viewport = (0, 0, *size)
+        self.context.clear(*theme.color("clear"))
+        self.overlay.render()
+        pygame.display.flip()
+        return cancel
+
+    def _finish_waiting(self):
+        self.overlay.theme.leave()
+        pacing = pygame.time.Clock()
+        while self.overlay.theme.showing()[1] > 0:
+            self._waiting_frame(pygame.event.get())
+            pacing.tick(self.fps)
 
     def aiming_hand(self):
         """Right aim takes precedence; without a tracked controller nothing points."""
@@ -208,7 +230,9 @@ class XRWindow(DesktopWindow):
 
         def draw(size):
             nonlocal choice
-            choice = menu.draw(size, xr_mode=True)
+            selected = menu.draw(size, xr_mode=True)
+            if selected is not None:
+                choice = selected
             self.overlay.render()
             if choice:
                 self.overlay.leave = True
@@ -424,6 +448,7 @@ class XRWindow(DesktopWindow):
                                 xr_mode=True,
                                 performance=self.performance.last,
                                 driving=any(value.movement),
+                                panel_shown=self.panel_visible,
                             )
                             if budget is not None:
                                 if budget <= self.splat_limit:
@@ -449,7 +474,11 @@ class XRWindow(DesktopWindow):
                             GL.GL_LINEAR,
                         )
                         pygame.display.flip()
-                    if self.panel_visible:
+                    if (
+                        menu
+                        or self.panel_visible
+                        or self.overlay.theme.hud.alpha(self.overlay.theme.t) > 0
+                    ):
                         layers.append(
                             xr.CompositionLayerQuad(
                                 layer_flags=xr.CompositionLayerFlags.BLEND_TEXTURE_SOURCE_ALPHA_BIT,
