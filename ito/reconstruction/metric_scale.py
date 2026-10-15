@@ -76,11 +76,11 @@ class MetricScale:
                 a[good], b[good], K, method=cv2.RANSAC, prob=0.999, threshold=0.5
             )
             if essential is not None and essential.shape == (3, 3):
-                count, rotation, direction, _ = cv2.recoverPose(
+                count, image_rotation, direction, _ = cv2.recoverPose(
                     essential, a[good], b[good], K, mask=inliers
                 )
-                candidate_R = rotation.T
-                candidate_t = -rotation.T @ direction[:, 0] * baseline
+                candidate_R = image_rotation.T
+                candidate_t = -image_rotation.T @ direction[:, 0] * baseline
                 angle = math.acos(np.clip((np.trace(R.T @ candidate_R) - 1) / 2, -1, 1))
                 moved = np.sum((candidate_t - t) ** 2 / np.maximum(sigma[3:] ** 2, 1e-12))
                 if count >= 30 and angle < 3 * np.linalg.norm(sigma[:3]) and moved < 16.27:
