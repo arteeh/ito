@@ -3,7 +3,7 @@
 import numpy as np
 
 
-def tof(source_rows, source, row, k, origin, rng):
+def tof(source_rows, source, row, k, origin, rng, *, zones=None):
     # The 15 Hz sensor integrates before its 100 ms transport delay. Use only that prefix.
     stamp = np.floor((row["captured"] - 0.100) * 15) / 15
     captured = np.array([r["captured"] - origin for r in source_rows])
@@ -38,4 +38,26 @@ def tof(source_rows, source, row, k, origin, rng):
             ).astype(int)
             if 0 <= u < k.width and 0 <= v < k.height:
                 result[v, u] = -point[2]
+                if zones is not None:
+                    corners = (
+                        np.array(
+                            [
+                                [a * z, -b * z, -z, 1]
+                                for a in edges[x : x + 2]
+                                for b in edges[y : y + 2]
+                            ]
+                        )
+                        @ camera.T
+                    )
+                    uv = np.stack(
+                        (
+                            k.fx * corners[:, 0] / -corners[:, 2] + k.cx,
+                            k.cy - k.fy * corners[:, 1] / -corners[:, 2],
+                        ),
+                        -1,
+                    )
+                    lo = np.maximum(uv.min(0), 0)
+                    hi = np.minimum(uv.max(0), (k.width, k.height))
+                    if np.all(corners[:, 2] < -0.01) and np.all(hi - lo > 1):
+                        zones.append([*lo, *hi, -point[2]])
     return result, int(source_rows[index]["source_frame_id"])
