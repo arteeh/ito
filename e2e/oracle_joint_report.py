@@ -49,10 +49,10 @@ def label(meta, name, arm, age, source_time, shown):
         else "held visual"
     )
     return (
-        f"{name} {arm} / age {age:.3f}s / GL {shown:.3f}s\n"
-        f"source time {source_time:.3f}s / own {arm.removeprefix('main-')[0]} pose\n"
+        f"{name} {arm} / age{age:.3f} / GL{shown:.3f}\n"
+        f"src{source_time:.3f}s / own {arm.removeprefix('main-')[0]} {mode}\n"
         f"{s['precision'].title()} / Input{s['input_resolution']}% / Max{s['max_splats']:,}\n"
-        f"360p30 raw360x640 / fit288x512 / code {code}\n"
+        f"360p30 360x640 > 288x512 / code {code}\n"
         f"map {s.get('mapper_commit', code)[:7]} / cap {meta.get('render_budget') or 'none'}"
     )
 
@@ -174,8 +174,8 @@ def main():
     ]
     if args.stage == "after":
         roots = [
-            (args.out / "paired", "R2 mapper latestE"),
-            (args.out / "after", "R3 mapper latestE"),
+            (args.out / "paired", "R2 sameE"),
+            (args.out / "after", "R3 sameE"),
         ]
     for seq in [args.sequence] if args.sequence else ("sweep180", "tour"):
         for arm in ("TT", "TE", "ET", "EE", "TF"):
@@ -183,7 +183,14 @@ def main():
                 0.9,
                 10.0 if seq == "sweep180" else 76.0 if arm in ("TT", "TF") else 50.0,
             ):
-                motion(roots, seq, arm, moment, image_root / f"{seq}-{arm}-motion-{moment:.1f}.jpg")
+                motion(
+                    roots,
+                    seq,
+                    arm,
+                    moment,
+                    image_root / f"{seq}-{arm}-motion-{moment:.1f}.jpg",
+                    rgb=args.stage == "after",
+                )
             if args.stage == "after":
                 prefixes(roots[-1][0], seq, arm, image_root / f"{seq}-{arm}-prefix.jpg")
         if args.stage == "after":
