@@ -9,6 +9,7 @@ Radxa prototype: IMX219 a quarter turn off, VL53L5CX, BMI088 read by tofd when a
 import argparse
 import contextlib
 import json
+import math
 import os
 import signal
 import socket
@@ -206,6 +207,7 @@ def simulation(
         robot_model = ET.parse(source_scene.parent / "robot_groundcontact.xml")
         for geom in robot_model.findall(".//worldbody//geom"):
             geom.set("group", "2" if geom.get("class") == "visual" else "3")
+        gear_play(robot_model)
         robot_model.write(state / "robot_groundcontact.xml")
         scene = furnish(source_scene)
         ET.SubElement(scene.find("visual"), "quality", shadowsize="256", offsamples="1")
@@ -375,6 +377,45 @@ def simulation(
         yield SimpleNamespace(
             body=body, board=board, children=children, code=code, port=driver_port
         )
+
+
+# The head's four servos. Each has gear play between its output, which its encoder reads and
+# robotd's kinematics place the camera by, and the link it turns: ~2 degrees total per servo,
+# upstream's own model of the real robot (microduck_rl's add_backlash.py). The camera, the head
+# IMU and the ToF ride on the links, so the twin's head wobbles off its kinematics the way a
+# duck's does, which is what a head IMU is for. The legs keep the play-free model the walking
+# policy was trained on.
+HEAD_JOINTS = ("neck_pitch", "head_pitch", "head_yaw", "head_roll")
+GEAR_PLAY = math.radians(1.0)  # each way
+
+
+def gear_play(robot):
+    """Add upstream's backlash joint, unactuated, after each head servo's joint."""
+    defaults = robot.getroot().find("default")
+    play = ET.SubElement(ET.SubElement(defaults, "default", {"class": "backlash"}), "joint")
+    # add_backlash.py's: a nearly rigid tooth contact at either end of the play.
+    play.attrib.update(
+        damping="0.01",
+        frictionloss="0",
+        armature="0.001",
+        limited="true",
+        range=f"{-GEAR_PLAY!r} {GEAR_PLAY!r}",
+        solreflimit="0.01 1",
+        solimplimit="0.95 0.999 0.0001 0.5 2",
+    )
+    for body in robot.getroot().iter("body"):
+        for joint in list(body.findall("joint")):
+            if joint.get("name") in HEAD_JOINTS:
+                passive = ET.Element(
+                    "joint",
+                    {
+                        "axis": joint.get("axis"),
+                        "name": f"passive_{joint.get('name')}_backlash",
+                        "type": "hinge",
+                        "class": "backlash",
+                    },
+                )
+                body.insert(list(body).index(joint) + 1, passive)
 
 
 def arguments(parser):
