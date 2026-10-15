@@ -109,7 +109,11 @@ class SLAMBackend(RGBDBackend):
         self.unmatched_since = None
         self.recalls = 0
         self.waiting = False
-        report("MASt3R ready; waiting for camera and robot motion")
+        report(
+            "MASt3R ready; waiting for camera"
+            if motion_noise is None
+            else "MASt3R ready; waiting for camera and robot motion"
+        )
 
     def bind_admission(self, admission):
         super().bind_admission(admission)

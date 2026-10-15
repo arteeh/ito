@@ -18,7 +18,6 @@ class Sensors:
         self.imu = deque(maxlen=6000)
         self.ranges = deque(maxlen=240)
         self.last = {}
-        self.yaw_origin = None
         self.range_updates = 0
         self.range_used = None
 
@@ -38,23 +37,26 @@ class Sensors:
                 mount = Rotation.from_quat(sample.mount.orientation)
                 spin = mount.apply(sample.angular_velocity)
                 force = mount.apply(sample.specific_force)
-                if sample.orientation is not None:
-                    rotation = Rotation.from_quat(sample.orientation) * mount.inv()
-                    if self.yaw_origin is None:
-                        matrix = rotation.as_matrix()
-                        yaw = math.atan2(matrix[0, 2], matrix[2, 2])
-                        self.yaw_origin = Rotation.from_rotvec(-UP * yaw)
-                    rotation = self.yaw_origin * rotation
-                elif history:
-                    dt = sample.time - history[-1][0]
-                    if dt > 0.1:
-                        continue  # No integration across an unobserved sensor gap.
-                    rotation = history[-1][1] * Rotation.from_rotvec(spin * dt)
-                else:
-                    # Gravity initializes tilt only near rest; yaw remains unobserved.
+                if not history:
+                    # Initialize from the observations available at this connection,
+                    # not a chip fusion transient from a saturated boot/stand-up turn.
                     rotation = Rotation.identity()
                     if abs(np.linalg.norm(force) - 9.81) < 1:
                         rotation, _ = Rotation.align_vectors([UP], [force])
+                else:
+                    previous = history[-1]
+                    dt = sample.time - previous[0]
+                    rotation = previous[1]
+                    if dt <= 0.1:
+                        average = (previous[2] + spin) / 2
+                        magnitude = np.linalg.norm(force)
+                        correction = np.zeros(3)
+                        if abs(magnitude - 9.81) < 0.5 and np.linalg.norm(spin) < 0.3:
+                            expected = rotation.inv().apply(UP)
+                            correction = 0.5 * np.cross(force / magnitude, expected)
+                        rotation = rotation * Rotation.from_rotvec((average + correction) * dt)
+                    # A gap is unobserved rotation: retain the pose and resume at
+                    # the new stamp instead of integrating a fictitious long turn.
                 history.append((sample.time, rotation, spin, force, sample))
 
     def covers(self, time, slack=0.05):
@@ -146,9 +148,13 @@ class Sensors:
         if hasattr(depth, "detach"):
             depth, valid = depth.detach().cpu().numpy(), valid.detach().cpu().numpy()
         depth = np.where(valid & np.isfinite(depth) & (depth > 0), depth, np.nan)
-        with np.errstate(invalid="ignore"):
-            middle = np.nanmedian(depth, axis=1)
-            low, high = np.nanquantile(depth, [0.1, 0.9], axis=1)
+        supported = np.isfinite(depth).sum(axis=1) >= 15
+        if supported.sum() < 6:
+            return None
+        depth = depth[supported]
+        targets = np.array(targets)[supported]
+        middle = np.nanmedian(depth, axis=1)
+        low, high = np.nanquantile(depth, [0.1, 0.9], axis=1)
         good = np.isfinite(middle) & (middle > 0) & ((high - low) < 0.15 * middle)
         ratios = np.log(np.array(targets)[good] / middle[good])
         if len(ratios) < 6:
