@@ -284,7 +284,7 @@ def worker(args, ring, admission, ready, start, stopped, status):
         if main:
             engine = RGBDBackend(args.max_splats, k, device="cuda")
             engine.torch = torch
-            if args.depth_support:
+            if getattr(args, "depth_support", False):
                 from ito.reconstruction.depth_support import DepthSupport
 
                 engine.depth_support = DepthSupport()
@@ -341,8 +341,13 @@ def worker(args, ring, admission, ready, start, stopped, status):
                         if arm == "TF":
                             rawrow = dict(row, captured=row["captured"], file=row["file"])
                             depth, tof_source = tof(source_rows, path, rawrow, k, origin, rng)
-                        confidence = depth_weights(data, depth, arm[1] == "E")
-                        depth = np.where(confidence > 0, depth, 0)
+                        confidence = depth_weights(
+                            data,
+                            depth,
+                            arm[1] == "E" and not getattr(args, "ignore_depth_confidence", False),
+                        )
+                        if not main:
+                            depth = np.where(confidence > 0, depth, 0)
                         rgb = data["rgb"]
                         began = time.perf_counter()
                         try:
@@ -368,6 +373,12 @@ def worker(args, ring, admission, ready, start, stopped, status):
                                     colors=torch.as_tensor(c.reshape(-1, 3), device="cuda"),
                                     valid=torch.as_tensor(
                                         (np.isfinite(d) & (d > 0)).ravel(), device="cuda"
+                                    ),
+                                    confidence=torch.as_tensor(
+                                        cv2.resize(
+                                            confidence, (sw, sh), interpolation=cv2.INTER_AREA
+                                        ).ravel(),
+                                        device="cuda",
                                     ),
                                     intrinsics=(fx, fy, cx, cy),
                                     shape=(sh, sw),
@@ -553,6 +564,11 @@ def main():
     parser.add_argument("--anchor-slots", type=int, default=128)
     parser.add_argument("--mapper-revision", help="immutable Git mapper revision for paired A/B")
     parser.add_argument("--record", action="store_true")
+    parser.add_argument(
+        "--ignore-depth-confidence",
+        action="store_true",
+        help="labelled diagnostic: retain all provisional depth, ignoring estimator weights",
+    )
     parser.add_argument("--no-opt", action="store_true", help="labelled seeding-only ablation")
     parser.add_argument(
         "--depth-support",
@@ -627,6 +643,9 @@ def main():
         (args.estimates / "frames.json").read_bytes()
     ).hexdigest()
     settings["depth_support"] = args.depth_support
+    settings["ignore_depth_confidence"] = args.ignore_depth_confidence
+    if args.arm.startswith("main-"):
+        settings["point_depth_policy"] = "provisional appearance; confidence gates carving"
     if args.precision:
         settings["precision"] = args.precision
     settings["max_splats"] = args.max_splats

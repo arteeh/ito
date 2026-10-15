@@ -83,6 +83,8 @@ def main():
             ):
                 entry = entries[i]
                 settings = entry["settings"]
+                budget = display.get("render_budget")
+                render_cap = "uncapped" if budget is None else f"{budget:,}"
                 camera_mode = entry.get("camera_mode", "legacy camera: see report")
                 if camera_mode == "own published pose":
                     camera_mode = (
@@ -96,8 +98,10 @@ def main():
                     f"{settings['precision']} / Input {settings['input_resolution']}% / "
                     f"Max {settings['max_splats']:,}\n"
                     f"{camera_mode}\n"
-                    f"code {commit} / render cap {display.get('render_budget', 'legacy')}"
+                    f"code {commit} / render cap {render_cap}"
                 )
+                if settings.get("ignore_depth_confidence"):
+                    caption += "\nconfidence IGNORED (ablation)"
                 values.append(
                     (Image.open(root / "motion/pilot" / entry["file"]).convert("RGB"), caption)
                 )
