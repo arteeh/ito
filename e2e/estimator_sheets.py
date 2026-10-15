@@ -95,6 +95,8 @@ def main():
                         if entry["arm"].removeprefix("main-")[0] == "T"
                         else "last visual pose (legacy replay)"
                     )
+                if camera_mode == "last visual pose (main)":
+                    camera_mode = "last available visual pose"
                 caption = (
                     f"{label} / {entry['arm']} / source {i}\n"
                     f"display +{entry['t']:.3f}s / exposure +{stamp:.3f}s\n"

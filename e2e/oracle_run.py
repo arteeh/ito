@@ -685,7 +685,7 @@ def main():
         if args.arm.removeprefix("main-")[0] == "T"
         else "motion propagated / delayed vision"
         if propagated
-        else "last visual pose (main)"
+        else "last available visual pose"
     )
     camera_support = {}
 
