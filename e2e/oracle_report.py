@@ -21,7 +21,16 @@ from PIL import Image, ImageDraw, ImageFont
 from ito.protocol import Intrinsics
 
 ARMS = ("TT", "TE", "ET", "EE", "TF")
-SETTINGS = "Full / Input 100% / Max 1,000,000"
+
+
+def settings_label(out, seq, arm):
+    settings = json.loads((out / "visual" / f"{seq}-{arm}" / "display.json").read_text())[
+        "settings"
+    ]
+    return (
+        f"{settings['precision'].title()} / Input {settings['input_resolution']}% / "
+        f"Max {settings['max_splats']:,}"
+    )
 
 
 def rows(path):
@@ -73,12 +82,13 @@ def motion(out, seq, arm, start, output, baseline_arm="main-TT"):
                 (
                     main,
                     f"{baseline_arm} / t={t:.2f}s / shown {mr['t']:.3f}s\n"
-                    f"{SETTINGS}\nown published camera / production GL",
+                    f"{settings_label(out, seq, baseline_arm)}\n"
+                    "own published camera / main uncapped",
                 ),
                 (
                     mapped,
                     f"{arm} / t={t:.2f}s / shown {rr['t']:.3f}s\n"
-                    f"{SETTINGS}\nown published camera / cap 131,072",
+                    f"{settings_label(out, seq, arm)}\nown published camera / cap 131,072",
                 ),
             ]
         )
@@ -96,14 +106,13 @@ def prefixes(out, seq, arm, output, baseline_arm="main-TT"):
                 snap = np.load(out / "visual" / f"{seq}-{name}" / f"snapshot-{t:.1f}.npz")
                 assert float(snap["actual"]) <= t
                 r = snap["records"]
-                r = r[r[:, 0, 3] > 0]
                 view.renderer.render_budget = (
                     int(snap["render_budget"]) or None if "render_budget" in snap else None
                 )
-                view.upload(r)
+                view.upload(r, stable_slots=True)
                 rgb, _ = view.draw(snap["camera"])
                 label = (
-                    f"{name} / prefix {t:.1f}s\n{SETTINGS}\n"
+                    f"{name} / prefix {t:.1f}s\n{settings_label(out, seq, name)}\n"
                     f"own camera / GL {float(snap['actual']):.4f}s"
                 )
                 row.append((Image.fromarray((rgb * 255).astype(np.uint8)), label))
@@ -127,11 +136,10 @@ def stereo(out, seq, arm, moment, output, baseline_arm="main-TT"):
         for name in (baseline_arm, arm):
             snap = np.load(out / "visual" / f"{seq}-{name}" / f"snapshot-{moment:.1f}.npz")
             r = snap["records"]
-            r = r[r[:, 0, 3] > 0]
             view.renderer.render_budget = (
                 int(snap["render_budget"]) or None if "render_budget" in snap else None
             )
-            view.upload(r)
+            view.upload(r, stable_slots=True)
             row = []
             for offset in (-0.032, 0.032):
                 camera = snap["camera"].copy()
@@ -141,7 +149,8 @@ def stereo(out, seq, arm, moment, output, baseline_arm="main-TT"):
                     (
                         Image.fromarray((rgb * 255).astype(np.uint8)),
                         f"{name} / prefix {moment:.1f}s / {'LEFT' if offset < 0 else 'RIGHT'}\n"
-                        f"{SETTINGS}\n64mm IPD / calibrated camera FOV / frozen map",
+                        f"{settings_label(out, seq, name)}\n"
+                        "64mm IPD / calibrated camera FOV / frozen map",
                     )
                 )
             cells.append(row)
@@ -168,12 +177,12 @@ def interventions(out, seq, moment, output):
                 view.renderer.render_budget = (
                     int(snap["render_budget"]) or None if "render_budget" in snap else None
                 )
-                view.upload(records[records[:, 0, 3] > 0])
+                view.upload(records, stable_slots=True)
                 rgb, _ = view.draw(snap["camera"])
                 row.append(
                     (
                         Image.fromarray((rgb * 255).astype(np.uint8)),
-                        f"{name} / {seq} / prefix {moment:.1f}s\n{SETTINGS}\n"
+                        f"{name} / {seq} / prefix {moment:.1f}s\n{settings_label(out, seq, name)}\n"
                         f"latest GL completion {float(snap['actual']):.4f}s",
                     )
                 )
@@ -204,13 +213,14 @@ def before_after(out, previous, seq, arm, output, baseline_arm="main-TT"):
                     int(snap["render_budget"]) or None if "render_budget" in snap else None
                 )
                 records = snap["records"]
-                view.upload(records[records[:, 0, 3] > 0])
+                view.upload(records, stable_slots=True)
                 rgb, _ = view.draw(camera)
                 row.append(
                     (
                         Image.fromarray((rgb * 255).astype(np.uint8)),
                         f"{label} / prefix {moment:.1f}s / own {arm[0]} pose\n"
-                        f"{SETTINGS}\nrender cap {view.renderer.render_budget or 'none'}",
+                        f"{settings_label(root, seq, name)}\n"
+                        f"render cap {view.renderer.render_budget or 'none'}",
                     )
                 )
             cells.append(row)

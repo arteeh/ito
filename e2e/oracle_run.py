@@ -26,6 +26,24 @@ from ito.reconstruction.admission import Admission
 from ito.reconstruction.ring import UpdateRing
 
 
+def resize_observation(rgb, depth, original, scaled, *, sparse=False):
+    if (original.width, original.height) == (scaled.width, scaled.height):
+        return rgb, depth
+    import cv2
+
+    size = (scaled.width, scaled.height)
+    image = cv2.resize(rgb, size, interpolation=cv2.INTER_AREA)
+    if sparse:
+        y, x = np.nonzero(np.isfinite(depth) & (depth > 0))
+        target = np.zeros(size[::-1], np.float32)
+        u = np.clip(np.round(x * scaled.width / original.width).astype(int), 0, scaled.width - 1)
+        v = np.clip(np.round(y * scaled.height / original.height).astype(int), 0, scaled.height - 1)
+        target[v, u] = depth[y, x]
+    else:
+        target = cv2.resize(depth, size, interpolation=cv2.INTER_NEAREST)
+    return image, target
+
+
 class Publication:
     def __init__(self, budget):
         self.budget = budget
@@ -143,7 +161,21 @@ def worker(args, ring, admission, ready, start, stopped, status):
         if args.precision:
             settings["precision"] = args.precision
         k = Intrinsics.model_validate_json((path / "camera.json").read_text())
+        settings["max_splats"] = args.max_splats
         camera_image = SLAMImage(k, settings["input_resolution"])
+        sw, sh = camera_image.scaled
+        model_k = (
+            k
+            if (sw, sh) == (k.width, k.height)
+            else Intrinsics(
+                width=sw,
+                height=sh,
+                fx=k.fx * sw / k.width,
+                fy=k.fy * sh / k.height,
+                cx=k.cx * sw / k.width,
+                cy=k.cy * sh / k.height,
+            )
+        )
         first = np.load(args.estimates / rows[0]["file"])
         alignment = first["pose"] @ np.linalg.inv(first["true_pose"])
         origin = settings["origin"]
@@ -208,7 +240,15 @@ def worker(args, ring, admission, ready, start, stopped, status):
                 engine.source_sequence, engine.source_captured = 1, 0
                 SLAMBackend.place(engine, cloud, pose, 0)
             else:
-                engine.add(Keyframe(0, rgb, pose, k, points, rgb, np.ones(z.shape), 0, depth=z))
+                rgb, z = resize_observation(rgb, z, k, model_k)
+                yy, xx = np.mgrid[: model_k.height, : model_k.width]
+                points = np.stack(
+                    ((xx - model_k.cx) / model_k.fx * z, -(yy - model_k.cy) / model_k.fy * z, -z),
+                    -1,
+                )
+                engine.add(
+                    Keyframe(0, rgb, pose, model_k, points, rgb, np.ones(z.shape), 0, depth=z)
+                )
                 for _ in range(16):
                     engine.step()
                 engine.records_for(engine.keys())
@@ -297,10 +337,17 @@ def worker(args, ring, admission, ready, start, stopped, status):
                                 engine.source_captured = row["captured"]
                                 SLAMBackend.place(engine, cloud, pose, now)
                             else:
-                                y, x = np.mgrid[: k.height, : k.width]
-                                z = depth
+                                rgb, z = resize_observation(
+                                    rgb, depth, k, model_k, sparse=arm == "TF"
+                                )
+                                y, x = np.mgrid[: model_k.height, : model_k.width]
                                 points = np.stack(
-                                    ((x - k.cx) / k.fx * z, -(y - k.cy) / k.fy * z, -z), -1
+                                    (
+                                        (x - model_k.cx) / model_k.fx * z,
+                                        -(y - model_k.cy) / model_k.fy * z,
+                                        -z,
+                                    ),
+                                    -1,
                                 )
                                 seed = engine._seed
                                 if args.oom_at == cursor:
@@ -317,7 +364,7 @@ def worker(args, ring, admission, ready, start, stopped, status):
                                             row["source_frame_id"],
                                             rgb,
                                             pose,
-                                            k,
+                                            model_k,
                                             points,
                                             rgb,
                                             (np.isfinite(z) & (z > 0)).astype(np.float32),
@@ -383,6 +430,7 @@ def worker(args, ring, admission, ready, start, stopped, status):
                                     observations=admitted.copy(),
                                     count=engine.count,
                                     steps=getattr(engine, "steps", 0),
+                                    training_size=[model_k.width, model_k.height],
                                     limit=engine.budget,
                                     vram_free=vram.free_bytes,
                                     oom=oom,
@@ -405,6 +453,7 @@ def worker(args, ring, admission, ready, start, stopped, status):
             json.dumps(
                 dict(
                     admitted=admitted,
+                    training_size=[model_k.width, model_k.height],
                     steps=getattr(engine, "steps", 0),
                     image_iterations=getattr(engine, "image_iterations", 0),
                     keyframes=getattr(engine, "keyframes", []),
@@ -510,6 +559,7 @@ def main():
     settings = json.loads((args.estimates / "settings.json").read_text())
     if args.precision:
         settings["precision"] = args.precision
+    settings["max_splats"] = args.max_splats
     rows = json.loads((args.estimates / "frames.json").read_text())
     zero = rows[0]["available"]
     times = np.array([r["captured"] - settings["origin"] - zero for r in sources])

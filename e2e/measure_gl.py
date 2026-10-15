@@ -45,9 +45,16 @@ class View:
         self.projection = projection(intrinsics)
         self.draw_ms, self.upload_ms = [], []
 
-    def upload(self, records):
+    def upload(self, records, *, stable_slots=False):
         from ito.render.scene import GaussianBuffer
 
+        if stable_slots:
+            # LOD representatives depend on stable slot IDs; never compact interior holes.
+            active = np.flatnonzero(records[:, 0, 3] > 0)
+            records = records[: int(active[-1]) + 1].copy() if len(active) else records[:0].copy()
+            empty = records[:, 0, 3] == 0
+            records[empty, 1, :3] = 1
+            records[empty, 2] = (1, 0, 0, 0)
         with self.context:
             began = time.perf_counter()
             self.renderer.upload(GaussianBuffer(np.ascontiguousarray(records, np.float32)))
