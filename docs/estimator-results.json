@@ -1,0 +1,3910 @@
+{
+  "issue": 41,
+  "complete": false,
+  "base": "0a125d1",
+  "estimator_commit": "563b6b0",
+  "notes": "Causal extraction at 8dc8804 (sweep at 5d79db8 before unused recoverPose scalar rename). 563b6b0 adds independent pose revisions, source time correction and carving agreement, tested by real process stream and supported point-map replays. No map alignment or truth-assisted inference.",
+  "metrics": {
+    "sweep180": [
+      {
+        "root": "/home/maarten/Projects/ito/out/oracle-40/sweep180/causal-full",
+        "frames": 103,
+        "rotation_deg": {
+          "min": 4.918157154276814e-15,
+          "median": 12.043134787169588,
+          "p95": 12.85107071295641,
+          "max": 13.023046565570091
+        },
+        "translation_m": {
+          "min": 2.7758963540648015e-17,
+          "median": 0.035874084248881145,
+          "p95": 0.03928761421161481,
+          "max": 0.04095554675580595
+        },
+        "depth_ratio": {
+          "min": 0.39451658725738525,
+          "median": 0.8482089042663574,
+          "p95": 6.921311831474249,
+          "max": 7.7759504318237305
+        },
+        "depth_absolute_m": {
+          "min": 0.005997404456138611,
+          "median": 0.41515618562698364,
+          "p95": 14.943629097938409,
+          "max": 16.987777709960938
+        },
+        "within_frame_ratio_p10_p90": [
+          0.6375563561916351,
+          0.9997474789619446
+        ],
+        "surface_hz": 6.020004810652432,
+        "surface_delay_ms": {
+          "min": 79.32961599726696,
+          "median": 103.13909199612681,
+          "p95": 523.0568972045146,
+          "max": 656.048971999553
+        }
+      },
+      {
+        "root": "/home/maarten/Projects/ito/out/estimator-41/final/causal/sweep180",
+        "frames": 118,
+        "rotation_deg": {
+          "min": 4.918157154276814e-15,
+          "median": 0.3378564669005436,
+          "p95": 1.8072193242437904,
+          "max": 2.782611615672911
+        },
+        "translation_m": {
+          "min": 2.7758963540648015e-17,
+          "median": 0.024756774252470193,
+          "p95": 0.02776192725449239,
+          "max": 0.03000222874730202
+        },
+        "depth_ratio": {
+          "min": 0.6578871011734009,
+          "median": 0.9212920069694519,
+          "p95": 1.670491564273834,
+          "max": 1.7269365787506104
+        },
+        "depth_absolute_m": {
+          "min": 0.028367310762405396,
+          "median": 0.3063012659549713,
+          "p95": 0.6882652342319487,
+          "max": 0.8915553689002991
+        },
+        "within_frame_ratio_p10_p90": [
+          0.7804201781749724,
+          1.047817063331604
+        ],
+        "surface_hz": 6.898557999386054,
+        "surface_delay_ms": {
+          "min": 81.53923599866175,
+          "median": 103.90776249641931,
+          "p95": 512.6936832005184,
+          "max": 636.8741720020807
+        },
+        "scale": {
+          "min": 1.0,
+          "median": 1.0,
+          "p95": 1.0,
+          "max": 1.0
+        },
+        "scale_observations": 0,
+        "rejected_visual": 0,
+        "delay_ms": {
+          "min": 0.0,
+          "median": 0.0,
+          "p95": 0.0,
+          "max": 0.0
+        },
+        "propagated_pose_ms": {
+          "min": 3.8438999999925727,
+          "median": 4.440999999815176,
+          "p95": 4.708695000044827,
+          "max": 5.454599999666243
+        },
+        "corrected_pose_ms": {
+          "min": 70.30029999987164,
+          "median": 81.80834999984654,
+          "p95": 467.25887499987914,
+          "max": 537.7263000000312
+        }
+      }
+    ],
+    "tour": [
+      {
+        "root": "/home/maarten/Projects/ito/out/oracle-40/tour/causal-full",
+        "frames": 508,
+        "rotation_deg": {
+          "min": 8.691400740131041e-15,
+          "median": 0.44028509599058074,
+          "p95": 1.7946401008870667,
+          "max": 4.122977951291501
+        },
+        "translation_m": {
+          "min": 3.103243451564268e-17,
+          "median": 0.0319995303266359,
+          "p95": 0.10900039752504409,
+          "max": 0.1506359875117937
+        },
+        "depth_ratio": {
+          "min": 0.21461693942546844,
+          "median": 0.8686977922916412,
+          "p95": 0.9971428036689758,
+          "max": 41.94090270996094
+        },
+        "depth_absolute_m": {
+          "min": 0.002771228551864624,
+          "median": 0.20893007516860962,
+          "p95": 0.8234741389751432,
+          "max": 1.6015653610229492
+        },
+        "within_frame_ratio_p10_p90": [
+          0.6597970306873322,
+          0.9997303009033203
+        ],
+        "surface_hz": 5.725088001528058,
+        "surface_delay_ms": {
+          "min": 80.13113799825078,
+          "median": 109.3605749993003,
+          "p95": 571.3329834979959,
+          "max": 740.6020370035549
+        }
+      },
+      {
+        "root": "/home/maarten/Projects/ito/out/estimator-41/final/causal/tour",
+        "frames": 528,
+        "rotation_deg": {
+          "min": 8.691400740131041e-15,
+          "median": 0.3440468095736715,
+          "p95": 1.7740709158129213,
+          "max": 4.43809262264918
+        },
+        "translation_m": {
+          "min": 3.103243451564268e-17,
+          "median": 0.031391932067821746,
+          "p95": 0.09652414130694081,
+          "max": 0.11375684922180115
+        },
+        "depth_ratio": {
+          "min": 0.2880316376686096,
+          "median": 0.992805540561676,
+          "p95": 1.7118532657623287,
+          "max": 20.502859115600586
+        },
+        "depth_absolute_m": {
+          "min": 0.018095850944519043,
+          "median": 0.2139928787946701,
+          "p95": 0.7320153415203094,
+          "max": 4.612110137939453
+        },
+        "within_frame_ratio_p10_p90": [
+          0.8016465485095978,
+          1.269508957862854
+        ],
+        "surface_hz": 5.924138643815466,
+        "surface_delay_ms": {
+          "min": 86.50191399829055,
+          "median": 110.50918249839015,
+          "p95": 505.9514442505588,
+          "max": 698.2935029973305
+        },
+        "scale": {
+          "min": 0.7552510174977375,
+          "median": 1.0,
+          "p95": 1.0,
+          "max": 1.0
+        },
+        "scale_observations": 6,
+        "rejected_visual": 0,
+        "delay_ms": {
+          "min": 0.0,
+          "median": 0.0,
+          "p95": 0.0,
+          "max": 0.0
+        },
+        "propagated_pose_ms": {
+          "min": 3.82270000045537,
+          "median": 4.883350000454811,
+          "p95": 5.418259999714792,
+          "max": 6.658700000116369
+        },
+        "corrected_pose_ms": {
+          "min": 72.53399999990506,
+          "median": 89.35944999984713,
+          "p95": 485.3170700005648,
+          "max": 672.9964999994991
+        }
+      }
+    ],
+    "short": [
+      {
+        "root": "/home/maarten/Projects/ito/out/estimator-41/heldout/short/baseline",
+        "frames": 147,
+        "rotation_deg": {
+          "min": 9.000281467320278e-16,
+          "median": 6.850709129390616,
+          "p95": 7.444531171419023,
+          "max": 8.078132665356627
+        },
+        "translation_m": {
+          "min": 2.7756422635651865e-17,
+          "median": 0.05296367675672108,
+          "p95": 0.06008257690033451,
+          "max": 0.06065765097266957
+        },
+        "depth_ratio": {
+          "min": 0.4205462336540222,
+          "median": 0.8420833349227905,
+          "p95": 0.9887319028377533,
+          "max": 1.0178406238555908
+        },
+        "depth_absolute_m": {
+          "min": 0.01452726125717163,
+          "median": 0.3281276226043701,
+          "p95": 1.1189904451370238,
+          "max": 1.2916111946105957
+        },
+        "within_frame_ratio_p10_p90": [
+          0.6914483070373535,
+          0.9997743248939515
+        ],
+        "surface_hz": 6.083641870248856,
+        "surface_delay_ms": {
+          "min": 83.63383400001112,
+          "median": 96.10127799965085,
+          "p95": 495.1548175001335,
+          "max": 639.1849520000505
+        }
+      },
+      {
+        "root": "/home/maarten/Projects/ito/out/estimator-41/final/causal/short",
+        "frames": 146,
+        "rotation_deg": {
+          "min": 9.000281467320278e-16,
+          "median": 0.18252369724718737,
+          "p95": 0.4985333811922694,
+          "max": 0.9450830423138483
+        },
+        "translation_m": {
+          "min": 2.7756422635651865e-17,
+          "median": 0.026510160995931162,
+          "p95": 0.03436102116114244,
+          "max": 0.03453821285363948
+        },
+        "depth_ratio": {
+          "min": 0.6700773239135742,
+          "median": 1.113034725189209,
+          "p95": 1.639909952878952,
+          "max": 1.7015445232391357
+        },
+        "depth_absolute_m": {
+          "min": 0.07908254861831665,
+          "median": 0.25817444920539856,
+          "p95": 1.2460674345493317,
+          "max": 1.394227385520935
+        },
+        "within_frame_ratio_p10_p90": [
+          0.9226917594671249,
+          1.3026789724826813
+        ],
+        "surface_hz": 6.028948323000819,
+        "surface_delay_ms": {
+          "min": 86.66374099993845,
+          "median": 101.17925399981686,
+          "p95": 452.9854900001169,
+          "max": 607.0732520001911
+        },
+        "scale": {
+          "min": 1.0,
+          "median": 1.1115392180382337,
+          "p95": 1.1115392180382337,
+          "max": 1.1115392180382337
+        },
+        "scale_observations": 2,
+        "rejected_visual": 0,
+        "delay_ms": {
+          "min": 0.0,
+          "median": 0.0,
+          "p95": 0.0,
+          "max": 0.0
+        },
+        "propagated_pose_ms": {
+          "min": 4.175200000645418,
+          "median": 4.743699999835371,
+          "p95": 4.953275000389112,
+          "max": 5.146999999851687
+        },
+        "corrected_pose_ms": {
+          "min": 70.4582999997001,
+          "median": 82.66869999988558,
+          "p95": 429.5902000001206,
+          "max": 519.9929000000338
+        }
+      }
+    ]
+  },
+  "causal": {
+    "sweep180": {
+      "settings": {
+        "precision": "full",
+        "input_resolution": 100,
+        "max_splats": 1000000,
+        "frame_admission_hz": 10,
+        "estimator": "independent motion/vision estimator, no map alignment",
+        "exposure": 0,
+        "frame_delay": 0.0,
+        "stamp_delay": 0.0,
+        "estimator_source_sha256": {
+          "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+          "metric_scale.py": "b257f45f490d70e08f6c77da9555f5814f2ba5160f8a8a23d82ce98a61b8221e",
+          "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+          "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+          "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+        },
+        "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+        "origin": 46939.853988204,
+        "estimated": 118
+      },
+      "frames_sha256": "702ca959c8eba2c3066ffdfc1c7bdcb477a095d6f90ff0dc483e0e6d2cd9ff25"
+    },
+    "tour": {
+      "settings": {
+        "precision": "full",
+        "input_resolution": 100,
+        "max_splats": 1000000,
+        "frame_admission_hz": 10,
+        "estimator": "independent motion/vision estimator, no map alignment",
+        "exposure": 0,
+        "frame_delay": 0.0,
+        "stamp_delay": 0.0,
+        "estimator_source_sha256": {
+          "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+          "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+          "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+          "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+          "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+        },
+        "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+        "origin": 47006.906425362,
+        "estimated": 528
+      },
+      "frames_sha256": "941cbf9fabc321c46ac13148817e5282e5545db88347db0d056c06c3860e6e06"
+    },
+    "short": {
+      "settings": {
+        "precision": "full",
+        "input_resolution": 100,
+        "max_splats": 1000000,
+        "frame_admission_hz": 10,
+        "estimator": "independent motion/vision estimator, no map alignment",
+        "exposure": 0,
+        "frame_delay": 0.0,
+        "stamp_delay": 0.0,
+        "estimator_source_sha256": {
+          "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+          "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+          "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+          "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+          "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+        },
+        "source_sha256": "7f683b3df799204bfe27999bb828a66f4b93be96fde5482bd36f1c89ce0fa4c8",
+        "origin": 1657.173765891,
+        "estimated": 146
+      },
+      "frames_sha256": "d98a63cd490ac001aa6db5c4b8e9ce716c38dbd4f8d63ad2757f2991c019bcbe"
+    }
+  },
+  "reprojection": {
+    "sweep180": [
+      {
+        "estimates": "/home/maarten/Projects/ito/out/oracle-40/sweep180/causal-full",
+        "attempted_features": 18174,
+        "supported_tracks": 8945,
+        "supported_fraction": 0.4921866402553098,
+        "exclusions": "KLT status, forward-backward >0.5px, out-of-image, invalid/negative depth; no reprojection-error cut",
+        "dense_depth_coverage_median": 1.0,
+        "pixel_error": {
+          "median": 0.4033229850085224,
+          "p95": 7.844526381055113,
+          "max": 360.3212586156497
+        }
+      },
+      {
+        "estimates": "/home/maarten/Projects/ito/out/estimator-41/final/causal/sweep180",
+        "attempted_features": 20805,
+        "supported_tracks": 10525,
+        "supported_fraction": 0.505888007690459,
+        "exclusions": "KLT status, forward-backward >0.5px, outside image, invalid depth; no reprojection-error cut",
+        "dense_depth_coverage_median": 1.0,
+        "pixel_error": {
+          "median": 0.6561053191269867,
+          "p95": 9.857766040012205,
+          "max": 353.43188086435674
+        }
+      }
+    ],
+    "tour": [
+      {
+        "estimates": "/home/maarten/Projects/ito/out/oracle-40/tour/causal-full",
+        "attempted_features": 88957,
+        "supported_tracks": 43369,
+        "supported_fraction": 0.4875276819137336,
+        "exclusions": "KLT status, forward-backward >0.5px, outside image, invalid depth; no reprojection-error cut",
+        "dense_depth_coverage_median": 1.0,
+        "pixel_error": {
+          "median": 1.2139994544051624,
+          "p95": 12.454001924800282,
+          "max": 446.8230530889748
+        }
+      },
+      {
+        "estimates": "/home/maarten/Projects/ito/out/estimator-41/final/causal/tour",
+        "attempted_features": 93009,
+        "supported_tracks": 45196,
+        "supported_fraction": 0.4859314689976239,
+        "exclusions": "KLT status, forward-backward >0.5px, outside image, invalid depth; no reprojection-error cut",
+        "dense_depth_coverage_median": 1.0,
+        "pixel_error": {
+          "median": 0.560876853959102,
+          "p95": 8.003493831300213,
+          "max": 544.1331611686417
+        }
+      }
+    ],
+    "short": [
+      {
+        "estimates": "/home/maarten/Projects/ito/out/estimator-41/heldout/short/baseline",
+        "attempted_features": 32231,
+        "supported_tracks": 13527,
+        "supported_fraction": 0.41968911917098445,
+        "exclusions": "KLT status, forward-backward >0.5px, outside image, invalid depth; no reprojection-error cut",
+        "dense_depth_coverage_median": 1.0,
+        "pixel_error": {
+          "median": 1.098620845868752,
+          "p95": 6.919761087103583,
+          "max": 237.25487415522085
+        }
+      },
+      {
+        "estimates": "/home/maarten/Projects/ito/out/estimator-41/final/causal/short",
+        "attempted_features": 31694,
+        "supported_tracks": 13217,
+        "supported_fraction": 0.4170189941313813,
+        "exclusions": "KLT status, forward-backward >0.5px, outside image, invalid depth; no reprojection-error cut",
+        "dense_depth_coverage_median": 1.0,
+        "pixel_error": {
+          "median": 0.8800897349378829,
+          "p95": 7.251982929070408,
+          "max": 211.54759417622856
+        }
+      }
+    ]
+  },
+  "stream": {
+    "main": {
+      "settings": {
+        "precision": "full",
+        "input_resolution": 100,
+        "max_splats": 1000000
+      },
+      "seconds": 17.0,
+      "submitted": 509,
+      "integrated": 133,
+      "pose_publications": 728,
+      "unique_pose_stamps": 64,
+      "pose_hz": 3.764705882352941,
+      "pose_hz_active": 4.364893825528336,
+      "motion_to_shared_pose_ms": {
+        "p50": 0.015600000097037992,
+        "p95": 0.02099999983329326,
+        "max": 0.06769999981770525
+      },
+      "max_surface_work_ms": 848.1859999997141,
+      "stamp_regressions": []
+    },
+    "estimator": {
+      "settings": {
+        "precision": "full",
+        "input_resolution": 100,
+        "max_splats": 1000000
+      },
+      "seconds": 17.0,
+      "submitted": 509,
+      "integrated": 137,
+      "pose_publications": 727,
+      "unique_pose_stamps": 727,
+      "pose_hz": 42.76470588235294,
+      "pose_hz_active": 49.725817000877974,
+      "motion_to_shared_pose_ms": {
+        "p50": 0.02719999974942766,
+        "p95": 0.03883999979734652,
+        "max": 0.1458000006095972
+      },
+      "max_surface_work_ms": 754.4631999999183,
+      "stamp_regressions": []
+    },
+    "receipt": {
+      "settings": {
+        "precision": "full",
+        "input_resolution": 100,
+        "max_splats": 1000000
+      },
+      "seconds": 17.0,
+      "stamp_delay_ms": 70.0,
+      "frame_delay_ms": 90.0,
+      "submitted": 507,
+      "integrated": 130,
+      "pose_publications": 729,
+      "unique_pose_stamps": 729,
+      "pose_hz": 42.88235294117647,
+      "pose_hz_active": 49.79423261307384,
+      "motion_to_shared_pose_ms": {
+        "p50": 0.02750000021478627,
+        "p95": 0.03569999989849748,
+        "max": 0.320099999953527
+      },
+      "max_surface_work_ms": 817.6728999997067,
+      "stamp_regressions": []
+    }
+  },
+  "timing": {
+    "sweep": {
+      "recording": "/home/maarten/Projects/ito/out/oracle-40/sweep180",
+      "received": 513,
+      "supported": 364,
+      "excluded": 149,
+      "exclusion": "ambiguous RGB identity (best not 20% better than runner-up), or no timestamp candidates",
+      "receipt_delay_ms": {
+        "p5": 65.86172372481087,
+        "median": 67.51276050272281,
+        "p95": 69.37569359470217,
+        "max": 70.77921250311192,
+        "jitter_mad_ms": 1.044698889954452
+      },
+      "delivered_delay_ms": {
+        "p5": 109.96993479893717,
+        "median": 113.1296845014731,
+        "p95": 115.80150695117482,
+        "max": 125.33749499561964,
+        "jitter_mad_ms": 1.859908349264151
+      }
+    },
+    "tour": {
+      "recording": "/home/maarten/Projects/ito/out/oracle-40/tour",
+      "received": 2661,
+      "supported": 1645,
+      "excluded": 1016,
+      "exclusion": "ambiguous RGB identity (best not 20% better than runner-up), or no timestamp candidates",
+      "receipt_delay_ms": {
+        "p5": 67.4219840002479,
+        "median": 69.81647249631351,
+        "p95": 73.21091740013799,
+        "max": 98.87648999574594,
+        "jitter_mad_ms": 1.7511122045179945
+      },
+      "delivered_delay_ms": {
+        "p5": 113.6999412017758,
+        "median": 117.105001998425,
+        "p95": 121.80767079844372,
+        "max": 149.00679099810077,
+        "jitter_mad_ms": 2.029749072124832
+      }
+    }
+  },
+  "controlled_receipt": [
+    {
+      "root": "/home/maarten/Projects/ito/out/estimator-41/receipt-sweep",
+      "frames": 117,
+      "rotation_deg": {
+        "min": 9.37472791721013e-15,
+        "median": 0.4748189260461083,
+        "p95": 1.1197714632364666,
+        "max": 2.0919840859996657
+      },
+      "translation_m": {
+        "min": 1.0842021724855044e-18,
+        "median": 0.0245950332129374,
+        "p95": 0.026475786782310443,
+        "max": 0.027449321086373282
+      },
+      "depth_ratio": {
+        "min": 0.7917907238006592,
+        "median": 1.0513794422149658,
+        "p95": 1.4345624446868888,
+        "max": 1.7053730487823486
+      },
+      "depth_absolute_m": {
+        "min": 0.009537890553474426,
+        "median": 0.20829898118972778,
+        "p95": 0.486544907093048,
+        "max": 0.9246687889099121
+      },
+      "within_frame_ratio_p10_p90": [
+        0.8987645268440246,
+        1.366056001186371
+      ],
+      "surface_hz": 6.846481572215841,
+      "surface_delay_ms": {
+        "min": 141.69619999938732,
+        "median": 158.86609999961365,
+        "p95": 515.8806399997039,
+        "max": 597.9532999999719
+      },
+      "scale": {
+        "min": 1.0,
+        "median": 1.0,
+        "p95": 1.0,
+        "max": 1.0
+      },
+      "scale_observations": 0,
+      "rejected_visual": 0,
+      "delay_ms": {
+        "min": 76.64112663305478,
+        "median": 77.60346040749029,
+        "p95": 90.0,
+        "max": 90.0
+      },
+      "propagated_pose_ms": {
+        "min": 4.277799999726994,
+        "median": 4.815299999791023,
+        "p95": 5.164140000488259,
+        "max": 8.709699999599252
+      },
+      "corrected_pose_ms": {
+        "min": 70.81829999970068,
+        "median": 85.05479999985255,
+        "p95": 442.5439200000248,
+        "max": 523.0482999995729
+      }
+    }
+  ],
+  "challengers": {
+    "mapanything-sweep-motion": {
+      "model": "facebook/map-anything-apache",
+      "source_revision": "3d10cf7a3016fc0f9bb13a071ee66c47b10be0d9",
+      "weights": "/home/maarten/Projects/ito/out/estimator-41/mapanything-weights",
+      "motion": true,
+      "precision": "full fp32 (no AMP)",
+      "resolution": [
+        280,
+        504
+      ],
+      "window": "four views through selected final exposure; no future views or truth inputs",
+      "seconds": 0.9772759079996831,
+      "peak_cuda_reserved": 7155482624,
+      "metrics": [
+        {
+          "source_frame_id": 253,
+          "captured": 8.474654240002565,
+          "depth_ratio": 1.6984095573425293,
+          "depth_absolute_m": 0.8867231607437134,
+          "rotation_deg": 1.1601010447122427e-14,
+          "translation_m": 1.3985787785349405e-17,
+          "valid_fraction": 1.0
+        },
+        {
+          "source_frame_id": 268,
+          "captured": 8.974669333001657,
+          "depth_ratio": 2.00711727142334,
+          "depth_absolute_m": 1.7834141254425049,
+          "rotation_deg": 0.7474845603142255,
+          "translation_m": 0.015325884034784184,
+          "valid_fraction": 1.0
+        },
+        {
+          "source_frame_id": 283,
+          "captured": 9.474772045999998,
+          "depth_ratio": 2.1407065391540527,
+          "depth_absolute_m": 1.2042691707611084,
+          "rotation_deg": 1.1184490129359645,
+          "translation_m": 0.01066069029134063,
+          "valid_fraction": 1.0
+        },
+        {
+          "source_frame_id": 298,
+          "captured": 9.974697777004621,
+          "depth_ratio": 2.048213481903076,
+          "depth_absolute_m": 1.7050074338912964,
+          "rotation_deg": 1.393057512678183,
+          "translation_m": 0.013791217096657054,
+          "valid_fraction": 1.0
+        }
+      ]
+    },
+    "mapanything-sweep-vision": {
+      "model": "facebook/map-anything-apache",
+      "source_revision": "3d10cf7a3016fc0f9bb13a071ee66c47b10be0d9",
+      "weights": "/home/maarten/Projects/ito/out/estimator-41/mapanything-weights",
+      "motion": false,
+      "precision": "full fp32 (no AMP)",
+      "resolution": [
+        280,
+        504
+      ],
+      "window": "four views through selected final exposure; no future views or truth inputs",
+      "seconds": 1.044132369000181,
+      "peak_cuda_reserved": 7155482624,
+      "metrics": [
+        {
+          "source_frame_id": 253,
+          "captured": 8.474654240002565,
+          "depth_ratio": 1.6793067455291748,
+          "depth_absolute_m": 0.8488588929176331,
+          "rotation_deg": 4.592240053308612e-14,
+          "translation_m": 3.1080126089379415e-17,
+          "valid_fraction": 1.0
+        },
+        {
+          "source_frame_id": 268,
+          "captured": 8.974669333001657,
+          "depth_ratio": 2.024789333343506,
+          "depth_absolute_m": 1.7250807285308838,
+          "rotation_deg": 178.44220443172017,
+          "translation_m": 1.3699115635930441,
+          "valid_fraction": 1.0
+        },
+        {
+          "source_frame_id": 283,
+          "captured": 9.474772045999998,
+          "depth_ratio": 2.2161436080932617,
+          "depth_absolute_m": 1.2142982482910156,
+          "rotation_deg": 177.1411497313861,
+          "translation_m": 1.2660375132438284,
+          "valid_fraction": 1.0
+        },
+        {
+          "source_frame_id": 298,
+          "captured": 9.974697777004621,
+          "depth_ratio": 2.0532894134521484,
+          "depth_absolute_m": 1.7283178567886353,
+          "rotation_deg": 177.61256207110873,
+          "translation_m": 1.3819551232271217,
+          "valid_fraction": 1.0
+        }
+      ]
+    },
+    "mapanything-tour-motion": {
+      "model": "facebook/map-anything-apache",
+      "source_revision": "3d10cf7a3016fc0f9bb13a071ee66c47b10be0d9",
+      "weights": "/home/maarten/Projects/ito/out/estimator-41/mapanything-weights",
+      "motion": true,
+      "precision": "full fp32 (no AMP)",
+      "resolution": [
+        280,
+        504
+      ],
+      "window": "four views through selected final exposure; no future views or truth inputs",
+      "seconds": 1.0347527129997616,
+      "peak_cuda_reserved": 7155482624,
+      "metrics": [
+        {
+          "source_frame_id": 1453,
+          "captured": 48.48499471999821,
+          "depth_ratio": 2.4595084190368652,
+          "depth_absolute_m": 0.7080305814743042,
+          "rotation_deg": 8.269377845899911e-14,
+          "translation_m": 1.1107649934270853e-16,
+          "valid_fraction": 1.0
+        },
+        {
+          "source_frame_id": 1468,
+          "captured": 48.984902634998434,
+          "depth_ratio": 2.530393123626709,
+          "depth_absolute_m": 0.674484133720398,
+          "rotation_deg": 0.25012408471095526,
+          "translation_m": 0.005283855663842564,
+          "valid_fraction": 1.0
+        },
+        {
+          "source_frame_id": 1483,
+          "captured": 49.48483543100156,
+          "depth_ratio": 2.454702377319336,
+          "depth_absolute_m": 0.7346464991569519,
+          "rotation_deg": 0.282536717535905,
+          "translation_m": 0.004064382015709787,
+          "valid_fraction": 1.0
+        },
+        {
+          "source_frame_id": 1498,
+          "captured": 49.98490792400116,
+          "depth_ratio": 2.437831401824951,
+          "depth_absolute_m": 0.7364891767501831,
+          "rotation_deg": 0.25538328484379796,
+          "translation_m": 0.005214792350799609,
+          "valid_fraction": 1.0
+        }
+      ]
+    }
+  },
+  "model_manifest": {
+    "_id": "68be5c00705f491f9edbe8ba",
+    "id": "facebook/map-anything-apache",
+    "private": false,
+    "pipeline_tag": "image-to-3d",
+    "tags": [
+      "safetensors",
+      "model_hub_mixin",
+      "pytorch_model_hub_mixin",
+      "computer-vision",
+      "3d-reconstruction",
+      "multi-view-stereo",
+      "depth-estimation",
+      "camera-pose",
+      "covisibility",
+      "mapanything",
+      "image-to-3d",
+      "en",
+      "license:apache-2.0",
+      "region:us"
+    ],
+    "downloads": 81048,
+    "likes": 45,
+    "modelId": "facebook/map-anything-apache",
+    "author": "facebook",
+    "sha": "00f9c245bbcb60522d1ed7f9e9d88462c6e3f38a",
+    "lastModified": "2026-02-04T17:08:09.000Z",
+    "gated": false,
+    "disabled": false,
+    "model-index": null,
+    "config": {},
+    "cardData": {
+      "tags": [
+        "model_hub_mixin",
+        "pytorch_model_hub_mixin",
+        "computer-vision",
+        "3d-reconstruction",
+        "multi-view-stereo",
+        "depth-estimation",
+        "camera-pose",
+        "covisibility",
+        "mapanything"
+      ],
+      "license": "apache-2.0",
+      "language": [
+        "en"
+      ],
+      "pipeline_tag": "image-to-3d"
+    },
+    "siblings": [
+      {
+        "rfilename": ".gitattributes"
+      },
+      {
+        "rfilename": "README.md"
+      },
+      {
+        "rfilename": "config.json"
+      },
+      {
+        "rfilename": "model.safetensors"
+      }
+    ],
+    "spaces": [
+      "Wenluo/TRIBE-V2-DEMO",
+      "Ryukijano/TRIBE-V2-DEMO",
+      "Thesilenthowler029/TRIBE-V2-DEMO",
+      "Bryan-HSLU/FP_POC"
+    ],
+    "createdAt": "2025-09-08T04:30:56.000Z",
+    "safetensors": {
+      "parameters": {
+        "F32": 1228492758
+      },
+      "total": 1228492758
+    },
+    "usedStorage": 16588457632
+  },
+  "visual": {
+    "short-baseline": {
+      "root": "/home/maarten/Projects/ito/out/estimator-41/final/visual/short-baseline",
+      "admitted": 138,
+      "admitted_sha256": "302bb23b9cc2966b0a681528fbba334d71aad2325c27443ffa0bb7ce77258760",
+      "oom": 0,
+      "display": {
+        "arm": "main-EE",
+        "settings": {
+          "precision": "full",
+          "input_resolution": 100,
+          "max_splats": 1000000,
+          "frame_admission_hz": 10,
+          "estimator": "main SLAMBackend, no map alignment",
+          "exposure": 0,
+          "frame_delay": 0,
+          "source_sha256": "7f683b3df799204bfe27999bb828a66f4b93be96fde5482bd36f1c89ce0fa4c8",
+          "origin": 1657.173765891,
+          "estimated": 147
+        },
+        "GL": "D3D12 (NVIDIA GeForce RTX 4070 Ti)",
+        "eye_size": 2160,
+        "recording": true,
+        "frames": 1552,
+        "missed": 518,
+        "longest_consecutive": 296,
+        "completion_ms": {
+          "p50": 9.414650292455917,
+          "p95": 18.475012036515167,
+          "p99": 24.14110633179917,
+          "p99.9": 42.45873204717116
+        },
+        "service_ms": {
+          "p50": 6.400705000032758,
+          "p95": 14.290255850346506,
+          "p99": 19.587740639308326,
+          "p99.9": 37.94728155399803
+        },
+        "max_ms": 76.26771722607373
+      }
+    },
+    "short-branch": {
+      "root": "/home/maarten/Projects/ito/out/estimator-41/final/visual/short-branch",
+      "admitted": 136,
+      "admitted_sha256": "11289567962bbe7334f54ddc0013bf0110de0a251a68d08e7ea79ab22963e585",
+      "oom": 0,
+      "display": {
+        "arm": "main-EE",
+        "settings": {
+          "precision": "full",
+          "input_resolution": 100,
+          "max_splats": 1000000,
+          "frame_admission_hz": 10,
+          "estimator": "independent motion/vision estimator, no map alignment",
+          "exposure": 0,
+          "frame_delay": 0.0,
+          "stamp_delay": 0.0,
+          "estimator_source_sha256": {
+            "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+            "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+            "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+            "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+            "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+          },
+          "source_sha256": "7f683b3df799204bfe27999bb828a66f4b93be96fde5482bd36f1c89ce0fa4c8",
+          "origin": 1657.173765891,
+          "estimated": 146
+        },
+        "GL": "D3D12 (NVIDIA GeForce RTX 4070 Ti)",
+        "eye_size": 2160,
+        "recording": true,
+        "frames": 1197,
+        "missed": 873,
+        "longest_consecutive": 661,
+        "completion_ms": {
+          "p50": 13.533138487218821,
+          "p95": 21.331398272741357,
+          "p99": 28.380746930233713,
+          "p99.9": 66.55755204639945
+        },
+        "service_ms": {
+          "p50": 9.485224000854942,
+          "p95": 16.134822399726545,
+          "p99": 21.290530760088576,
+          "p99.9": 63.26977886419465
+        },
+        "max_ms": 73.7406887810721
+      }
+    },
+    "short-matched-estimator": {
+      "root": "/home/maarten/Projects/ito/out/estimator-41/final/visual/short-matched-estimator",
+      "admitted": 136,
+      "admitted_sha256": "e83935def513c0196a6446e4f644cedd9b9b8021b208487169064ef881f0b35a",
+      "oom": 0,
+      "display": {
+        "arm": "main-EE",
+        "settings": {
+          "precision": "full",
+          "input_resolution": 100,
+          "max_splats": 1000000,
+          "frame_admission_hz": 10,
+          "estimator": "independent motion/vision estimator, no map alignment",
+          "exposure": 0,
+          "frame_delay": 0.0,
+          "stamp_delay": 0.0,
+          "estimator_source_sha256": {
+            "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+            "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+            "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+            "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+            "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+          },
+          "source_sha256": "7f683b3df799204bfe27999bb828a66f4b93be96fde5482bd36f1c89ce0fa4c8",
+          "origin": 1657.173765891,
+          "estimated": 146,
+          "depth_support": true,
+          "view_start": 2.25
+        },
+        "GL": "D3D12 (NVIDIA GeForce RTX 4070 Ti)",
+        "eye_size": 2160,
+        "recording": true,
+        "frames": 1167,
+        "missed": 903,
+        "longest_consecutive": 660,
+        "completion_ms": {
+          "p50": 14.151879633573117,
+          "p95": 21.746211845129448,
+          "p99": 28.371348392502107,
+          "p99.9": 73.39321745284651
+        },
+        "service_ms": {
+          "p50": 10.209121001025778,
+          "p95": 15.567094399375495,
+          "p99": 23.09389833910245,
+          "p99.9": 73.15632079671309
+        },
+        "max_ms": 82.60677714497433
+      }
+    },
+    "short-matched-main": {
+      "root": "/home/maarten/Projects/ito/out/estimator-41/final/visual/short-matched-main",
+      "admitted": 138,
+      "admitted_sha256": "0bdcaf774c7c168558a33f30baaed7f0b7fb65e2a415fa369ccad115583037a9",
+      "oom": 0,
+      "display": {
+        "arm": "main-EE",
+        "settings": {
+          "precision": "full",
+          "input_resolution": 100,
+          "max_splats": 1000000,
+          "frame_admission_hz": 10,
+          "estimator": "main SLAMBackend, no map alignment",
+          "exposure": 0,
+          "frame_delay": 0,
+          "source_sha256": "7f683b3df799204bfe27999bb828a66f4b93be96fde5482bd36f1c89ce0fa4c8",
+          "origin": 1657.173765891,
+          "estimated": 147,
+          "depth_support": false,
+          "view_start": 2.25
+        },
+        "GL": "D3D12 (NVIDIA GeForce RTX 4070 Ti)",
+        "eye_size": 2160,
+        "recording": true,
+        "frames": 1336,
+        "missed": 735,
+        "longest_consecutive": 670,
+        "completion_ms": {
+          "p50": 11.363193086253887,
+          "p95": 21.6060520560859,
+          "p99": 26.370520077762198,
+          "p99.9": 43.85405199020491
+        },
+        "service_ms": {
+          "p50": 7.476816499547567,
+          "p95": 16.66865949982821,
+          "p99": 21.54483070053177,
+          "p99.9": 41.32680057079999
+        },
+        "max_ms": 76.28180589199474
+      }
+    },
+    "short-supported": {
+      "root": "/home/maarten/Projects/ito/out/estimator-41/final/visual/short-supported",
+      "admitted": 136,
+      "admitted_sha256": "319eb9c2dfbebee8b6c71934edfad47d3e0520f197cada94b0bc0afe2e30d377",
+      "oom": 0,
+      "display": {
+        "arm": "main-EE",
+        "settings": {
+          "precision": "full",
+          "input_resolution": 100,
+          "max_splats": 1000000,
+          "frame_admission_hz": 10,
+          "estimator": "independent motion/vision estimator, no map alignment",
+          "exposure": 0,
+          "frame_delay": 0.0,
+          "stamp_delay": 0.0,
+          "estimator_source_sha256": {
+            "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+            "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+            "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+            "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+            "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+          },
+          "source_sha256": "7f683b3df799204bfe27999bb828a66f4b93be96fde5482bd36f1c89ce0fa4c8",
+          "origin": 1657.173765891,
+          "estimated": 146,
+          "depth_support": true
+        },
+        "GL": "D3D12 (NVIDIA GeForce RTX 4070 Ti)",
+        "eye_size": 2160,
+        "recording": true,
+        "frames": 1168,
+        "missed": 902,
+        "longest_consecutive": 658,
+        "completion_ms": {
+          "p50": 14.331614838283713,
+          "p95": 21.99281692801377,
+          "p99": 31.28021172290563,
+          "p99.9": 72.06595751557678
+        },
+        "service_ms": {
+          "p50": 10.63837350011454,
+          "p95": 15.666794900289455,
+          "p99": 23.425429929702627,
+          "p99.9": 68.88988418311479
+        },
+        "max_ms": 77.3304878939598
+      }
+    },
+    "sweep180-EE": {
+      "root": "/home/maarten/Projects/ito/out/estimator-41/final/visual/sweep180-EE",
+      "admitted": 118,
+      "admitted_sha256": "ef6f10c5d698d51975fd4f8fbd4d35f6b1b75293706539c66bd2833717eb4882",
+      "oom": 0,
+      "display": {
+        "arm": "EE",
+        "settings": {
+          "precision": "full",
+          "input_resolution": 100,
+          "max_splats": 1000000,
+          "frame_admission_hz": 10,
+          "estimator": "independent motion/vision estimator, no map alignment",
+          "exposure": 0,
+          "frame_delay": 0.0,
+          "stamp_delay": 0.0,
+          "estimator_source_sha256": {
+            "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+            "metric_scale.py": "b257f45f490d70e08f6c77da9555f5814f2ba5160f8a8a23d82ce98a61b8221e",
+            "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+            "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+            "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+          },
+          "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+          "origin": 46939.853988204,
+          "estimated": 118
+        },
+        "GL": "D3D12 (NVIDIA GeForce RTX 4070 Ti)",
+        "eye_size": 2160,
+        "recording": true,
+        "frames": 1022,
+        "missed": 509,
+        "longest_consecutive": 141,
+        "completion_ms": {
+          "p50": 10.353883844800293,
+          "p95": 20.03518230221742,
+          "p99": 26.281710952216567,
+          "p99.9": 51.40042425002373
+        },
+        "service_ms": {
+          "p50": 9.507157500138419,
+          "p95": 17.911794400129104,
+          "p99": 21.921189249828778,
+          "p99.9": 50.39289981417686
+        },
+        "max_ms": 101.31269911198615
+      }
+    },
+    "sweep180-ET": {
+      "root": "/home/maarten/Projects/ito/out/estimator-41/final/visual/sweep180-ET",
+      "admitted": 118,
+      "admitted_sha256": "f571e6c4db159ac0c84821d68a0b2af176bdf98a433b885c666396277704401f",
+      "oom": 0,
+      "display": {
+        "arm": "ET",
+        "settings": {
+          "precision": "full",
+          "input_resolution": 100,
+          "max_splats": 1000000,
+          "frame_admission_hz": 10,
+          "estimator": "independent motion/vision estimator, no map alignment",
+          "exposure": 0,
+          "frame_delay": 0.0,
+          "stamp_delay": 0.0,
+          "estimator_source_sha256": {
+            "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+            "metric_scale.py": "b257f45f490d70e08f6c77da9555f5814f2ba5160f8a8a23d82ce98a61b8221e",
+            "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+            "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+            "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+          },
+          "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+          "origin": 46939.853988204,
+          "estimated": 118
+        },
+        "GL": "D3D12 (NVIDIA GeForce RTX 4070 Ti)",
+        "eye_size": 2160,
+        "recording": true,
+        "frames": 1028,
+        "missed": 502,
+        "longest_consecutive": 132,
+        "completion_ms": {
+          "p50": 10.87592111593949,
+          "p95": 18.371871641306825,
+          "p99": 20.727557774275745,
+          "p99.9": 34.25687006169741
+        },
+        "service_ms": {
+          "p50": 10.067510500221033,
+          "p95": 17.259817000035582,
+          "p99": 18.781628639967497,
+          "p99.9": 33.829090764855685
+        },
+        "max_ms": 101.63290111222523
+      }
+    },
+    "sweep180-TE": {
+      "root": "/home/maarten/Projects/ito/out/estimator-41/final/visual/sweep180-TE",
+      "admitted": 118,
+      "admitted_sha256": "0a98e747ae668873c736b90bf94953879d3fce4e061231abf3f3eb87e7bf498b",
+      "oom": 0,
+      "display": {
+        "arm": "TE",
+        "settings": {
+          "precision": "full",
+          "input_resolution": 100,
+          "max_splats": 1000000,
+          "frame_admission_hz": 10,
+          "estimator": "independent motion/vision estimator, no map alignment",
+          "exposure": 0,
+          "frame_delay": 0.0,
+          "stamp_delay": 0.0,
+          "estimator_source_sha256": {
+            "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+            "metric_scale.py": "b257f45f490d70e08f6c77da9555f5814f2ba5160f8a8a23d82ce98a61b8221e",
+            "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+            "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+            "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+          },
+          "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+          "origin": 46939.853988204,
+          "estimated": 118
+        },
+        "GL": "D3D12 (NVIDIA GeForce RTX 4070 Ti)",
+        "eye_size": 2160,
+        "recording": true,
+        "frames": 1031,
+        "missed": 499,
+        "longest_consecutive": 143,
+        "completion_ms": {
+          "p50": 10.115785275502276,
+          "p95": 19.381990652391323,
+          "p99": 25.524745391339838,
+          "p99.9": 45.97014258693927
+        },
+        "service_ms": {
+          "p50": 9.217365000040445,
+          "p95": 17.82751099995039,
+          "p99": 21.135704799917225,
+          "p99.9": 44.98951905017337
+        },
+        "max_ms": 99.17304666669224
+      }
+    },
+    "sweep180-main-EE": {
+      "root": "/home/maarten/Projects/ito/out/estimator-41/final/visual/sweep180-main-EE",
+      "admitted": 118,
+      "admitted_sha256": "0d39ac706150a4729cf4b05572f362f5a44b8a2f23c8bc09abd02299b72165a6",
+      "oom": 0,
+      "display": {
+        "arm": "main-EE",
+        "settings": {
+          "precision": "full",
+          "input_resolution": 100,
+          "max_splats": 1000000,
+          "frame_admission_hz": 10,
+          "estimator": "independent motion/vision estimator, no map alignment",
+          "exposure": 0,
+          "frame_delay": 0.0,
+          "stamp_delay": 0.0,
+          "estimator_source_sha256": {
+            "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+            "metric_scale.py": "b257f45f490d70e08f6c77da9555f5814f2ba5160f8a8a23d82ce98a61b8221e",
+            "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+            "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+            "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+          },
+          "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+          "origin": 46939.853988204,
+          "estimated": 118
+        },
+        "GL": "D3D12 (NVIDIA GeForce RTX 4070 Ti)",
+        "eye_size": 2160,
+        "recording": true,
+        "frames": 956,
+        "missed": 574,
+        "longest_consecutive": 526,
+        "completion_ms": {
+          "p50": 12.62340615744506,
+          "p95": 22.658776752905396,
+          "p99": 27.12477373847834,
+          "p99.9": 44.27181244199546
+        },
+        "service_ms": {
+          "p50": 8.614883500058568,
+          "p95": 18.02642999996351,
+          "p99": 22.506700299982192,
+          "p99.9": 43.32845983500626
+        },
+        "max_ms": 100.36057436263945
+      }
+    },
+    "sweep180-supported": {
+      "root": "/home/maarten/Projects/ito/out/estimator-41/final/visual/sweep180-supported",
+      "admitted": 118,
+      "admitted_sha256": "e37de5092514355901bd0923d0620d4a1c63817a2641ed38553fc252afbf1bfa",
+      "oom": 0,
+      "display": {
+        "arm": "main-EE",
+        "settings": {
+          "precision": "full",
+          "input_resolution": 100,
+          "max_splats": 1000000,
+          "frame_admission_hz": 10,
+          "estimator": "independent motion/vision estimator, no map alignment",
+          "exposure": 0,
+          "frame_delay": 0.0,
+          "stamp_delay": 0.0,
+          "estimator_source_sha256": {
+            "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+            "metric_scale.py": "b257f45f490d70e08f6c77da9555f5814f2ba5160f8a8a23d82ce98a61b8221e",
+            "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+            "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+            "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+          },
+          "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+          "origin": 46939.853988204,
+          "estimated": 118,
+          "depth_support": true
+        },
+        "GL": "D3D12 (NVIDIA GeForce RTX 4070 Ti)",
+        "eye_size": 2160,
+        "recording": true,
+        "frames": 980,
+        "missed": 551,
+        "longest_consecutive": 491,
+        "completion_ms": {
+          "p50": 11.236520454531274,
+          "p95": 21.339085075123876,
+          "p99": 29.76689026472744,
+          "p99.9": 70.72370769292445
+        },
+        "service_ms": {
+          "p50": 7.679648000248562,
+          "p95": 14.786939999794411,
+          "p99": 16.97587979923811,
+          "p99.9": 67.19584511937832
+        },
+        "max_ms": 75.3337785590702
+      }
+    },
+    "tour-EE": {
+      "root": "/home/maarten/Projects/ito/out/estimator-41/final/visual/tour-EE",
+      "admitted": 507,
+      "admitted_sha256": "cff9b9a5a6ed9fce63fcaf26c0e29d53c14ebe11423d0d86623e95c7627deeea",
+      "oom": 0,
+      "display": {
+        "arm": "EE",
+        "settings": {
+          "precision": "full",
+          "input_resolution": 100,
+          "max_splats": 1000000,
+          "frame_admission_hz": 10,
+          "estimator": "independent motion/vision estimator, no map alignment",
+          "exposure": 0,
+          "frame_delay": 0.0,
+          "stamp_delay": 0.0,
+          "estimator_source_sha256": {
+            "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+            "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+            "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+            "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+            "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+          },
+          "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+          "origin": 47006.906425362,
+          "estimated": 528
+        },
+        "GL": "D3D12 (NVIDIA GeForce RTX 4070 Ti)",
+        "eye_size": 2160,
+        "recording": true,
+        "frames": 3042,
+        "missed": 4612,
+        "longest_consecutive": 3578,
+        "completion_ms": {
+          "p50": 18.715037087986275,
+          "p95": 45.17167989961307,
+          "p99": 55.624183536692755,
+          "p99.9": 106.80885086261262
+        },
+        "service_ms": {
+          "p50": 16.239167500316398,
+          "p95": 37.04744624951672,
+          "p99": 42.127455840191075,
+          "p99.9": 96.71738234545408
+        },
+        "max_ms": 467.54750266609335
+      }
+    },
+    "tour-ET": {
+      "root": "/home/maarten/Projects/ito/out/estimator-41/final/visual/tour-ET",
+      "admitted": 507,
+      "admitted_sha256": "d26ae202afaa535afd5c89760afc3913287321b17734822303937420be737fa0",
+      "oom": 0,
+      "display": {
+        "arm": "ET",
+        "settings": {
+          "precision": "full",
+          "input_resolution": 100,
+          "max_splats": 1000000,
+          "frame_admission_hz": 10,
+          "estimator": "independent motion/vision estimator, no map alignment",
+          "exposure": 0,
+          "frame_delay": 0.0,
+          "stamp_delay": 0.0,
+          "estimator_source_sha256": {
+            "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+            "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+            "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+            "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+            "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+          },
+          "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+          "origin": 47006.906425362,
+          "estimated": 528
+        },
+        "GL": "D3D12 (NVIDIA GeForce RTX 4070 Ti)",
+        "eye_size": 2160,
+        "recording": true,
+        "frames": 3230,
+        "missed": 4421,
+        "longest_consecutive": 3345,
+        "completion_ms": {
+          "p50": 18.769961900488852,
+          "p95": 39.673822583108624,
+          "p99": 50.02542787242419,
+          "p99.9": 93.76162450511886
+        },
+        "service_ms": {
+          "p50": 15.588356500302325,
+          "p95": 31.95737104979342,
+          "p99": 38.215905390088665,
+          "p99.9": 73.04755870281814
+        },
+        "max_ms": 342.7646720001576
+      }
+    },
+    "tour-TE": {
+      "root": "/home/maarten/Projects/ito/out/estimator-41/final/visual/tour-TE",
+      "admitted": 507,
+      "admitted_sha256": "73a5a3455677642ed8457fa642dc9e97ebfba02560814be12bc96810119aa70d",
+      "oom": 0,
+      "display": {
+        "arm": "TE",
+        "settings": {
+          "precision": "full",
+          "input_resolution": 100,
+          "max_splats": 1000000,
+          "frame_admission_hz": 10,
+          "estimator": "independent motion/vision estimator, no map alignment",
+          "exposure": 0,
+          "frame_delay": 0.0,
+          "stamp_delay": 0.0,
+          "estimator_source_sha256": {
+            "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+            "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+            "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+            "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+            "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+          },
+          "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+          "origin": 47006.906425362,
+          "estimated": 528,
+          "depth_support": false
+        },
+        "GL": "D3D12 (NVIDIA GeForce RTX 4070 Ti)",
+        "eye_size": 2160,
+        "recording": true,
+        "frames": 3007,
+        "missed": 4645,
+        "longest_consecutive": 3602,
+        "completion_ms": {
+          "p50": 18.665769043764158,
+          "p95": 46.20134762917587,
+          "p99": 55.211951368164605,
+          "p99.9": 129.94107761861736
+        },
+        "service_ms": {
+          "p50": 15.80988800014893,
+          "p95": 37.19148800009861,
+          "p99": 43.67345352055055,
+          "p99.9": 112.38940248192065
+        },
+        "max_ms": 440.35024299955694
+      }
+    },
+    "tour-main-EE": {
+      "root": "/home/maarten/Projects/ito/out/estimator-41/final/visual/tour-main-EE",
+      "admitted": 507,
+      "admitted_sha256": "8c44d6362e2fef83652461915d48a6c575b636dc6dab42f9f0752b685bf2ceca",
+      "oom": 0,
+      "display": {
+        "arm": "main-EE",
+        "settings": {
+          "precision": "full",
+          "input_resolution": 100,
+          "max_splats": 1000000,
+          "frame_admission_hz": 10,
+          "estimator": "independent motion/vision estimator, no map alignment",
+          "exposure": 0,
+          "frame_delay": 0.0,
+          "stamp_delay": 0.0,
+          "estimator_source_sha256": {
+            "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+            "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+            "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+            "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+            "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+          },
+          "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+          "origin": 47006.906425362,
+          "estimated": 528,
+          "depth_support": false
+        },
+        "GL": "D3D12 (NVIDIA GeForce RTX 4070 Ti)",
+        "eye_size": 2160,
+        "recording": true,
+        "frames": 3997,
+        "missed": 3653,
+        "longest_consecutive": 3396,
+        "completion_ms": {
+          "p50": 16.525522796655423,
+          "p95": 22.9301575847785,
+          "p99": 29.150344523986853,
+          "p99.9": 49.01535790459608
+        },
+        "service_ms": {
+          "p50": 11.30209399980231,
+          "p95": 15.761140999893541,
+          "p99": 20.782264239642245,
+          "p99.9": 28.09114583575364
+        },
+        "max_ms": 82.12847493450681
+      }
+    },
+    "tour-supported": {
+      "root": "/home/maarten/Projects/ito/out/estimator-41/final/visual/tour-supported",
+      "admitted": 507,
+      "admitted_sha256": "452aeae399eb9b7b60b3f09e5c7afaba88af3a2b37b49e52d17d09369d3900fe",
+      "oom": 0,
+      "display": {
+        "arm": "main-EE",
+        "settings": {
+          "precision": "full",
+          "input_resolution": 100,
+          "max_splats": 1000000,
+          "frame_admission_hz": 10,
+          "estimator": "independent motion/vision estimator, no map alignment",
+          "exposure": 0,
+          "frame_delay": 0.0,
+          "stamp_delay": 0.0,
+          "estimator_source_sha256": {
+            "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+            "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+            "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+            "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+            "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+          },
+          "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+          "origin": 47006.906425362,
+          "estimated": 528,
+          "depth_support": true
+        },
+        "GL": "D3D12 (NVIDIA GeForce RTX 4070 Ti)",
+        "eye_size": 2160,
+        "recording": true,
+        "frames": 4133,
+        "missed": 3518,
+        "longest_consecutive": 2717,
+        "completion_ms": {
+          "p50": 16.160264686732262,
+          "p95": 23.81626314327148,
+          "p99": 29.771814582418298,
+          "p99.9": 45.70608697003316
+        },
+        "service_ms": {
+          "p50": 10.918551000031584,
+          "p95": 16.911567400347845,
+          "p99": 19.63133215969719,
+          "p99.9": 26.184506995905505
+        },
+        "max_ms": 88.47807133588503
+      }
+    }
+  },
+  "sheets": {
+    "sweep-point-10": {
+      "source": "/home/maarten/Projects/ito/out/estimator-41/review/sweep180-supported/motion-10.jpg",
+      "sha256": "a755f0d4d3bd5f2346b5e7258bd3a0097d3cce96038978d1eed1c929793fa121",
+      "file": "motion-10.jpg",
+      "requested_branch_time": 10.0,
+      "cells": [
+        {
+          "row": 1,
+          "column": 2,
+          "label": "main",
+          "source_frame_id": 380,
+          "display": 10.00007592199836,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+            "origin": 46939.853988204,
+            "estimated": 103
+          }
+        },
+        {
+          "row": 1,
+          "column": 3,
+          "label": "estimator",
+          "source_frame_id": 380,
+          "display": 10.00008425499982,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "b257f45f490d70e08f6c77da9555f5814f2ba5160f8a8a23d82ce98a61b8221e",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+            "origin": 46939.853988204,
+            "estimated": 118,
+            "depth_support": true
+          }
+        },
+        {
+          "row": 2,
+          "column": 2,
+          "label": "main",
+          "source_frame_id": 383,
+          "display": 10.100080549003906,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+            "origin": 46939.853988204,
+            "estimated": 103
+          }
+        },
+        {
+          "row": 2,
+          "column": 3,
+          "label": "estimator",
+          "source_frame_id": 383,
+          "display": 10.111196395999286,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "b257f45f490d70e08f6c77da9555f5814f2ba5160f8a8a23d82ce98a61b8221e",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+            "origin": 46939.853988204,
+            "estimated": 118,
+            "depth_support": true
+          }
+        }
+      ]
+    },
+    "sweep-point-15": {
+      "source": "/home/maarten/Projects/ito/out/estimator-41/review/sweep180-supported/motion-15.jpg",
+      "sha256": "5f381d67a1be83279a7cac3858bd7d61bfedb87e70019a15ec622c7113202cc8",
+      "file": "motion-15.jpg",
+      "requested_branch_time": 15.0,
+      "cells": [
+        {
+          "row": 1,
+          "column": 2,
+          "label": "main",
+          "source_frame_id": 527,
+          "display": 14.90008258799935,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+            "origin": 46939.853988204,
+            "estimated": 103
+          }
+        },
+        {
+          "row": 1,
+          "column": 3,
+          "label": "estimator",
+          "source_frame_id": 527,
+          "display": 14.9000740449992,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "b257f45f490d70e08f6c77da9555f5814f2ba5160f8a8a23d82ce98a61b8221e",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+            "origin": 46939.853988204,
+            "estimated": 118,
+            "depth_support": true
+          }
+        },
+        {
+          "row": 2,
+          "column": 2,
+          "label": "main",
+          "source_frame_id": 533,
+          "display": 15.100078101997497,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+            "origin": 46939.853988204,
+            "estimated": 103
+          }
+        },
+        {
+          "row": 2,
+          "column": 3,
+          "label": "estimator",
+          "source_frame_id": 533,
+          "display": 15.111198087999583,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "b257f45f490d70e08f6c77da9555f5814f2ba5160f8a8a23d82ce98a61b8221e",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+            "origin": 46939.853988204,
+            "estimated": 118,
+            "depth_support": true
+          }
+        }
+      ]
+    },
+    "sweep-repeat-10": {
+      "source": "/home/maarten/Projects/ito/out/estimator-41/review/repeat-supported/motion-10.jpg",
+      "sha256": "769b245ed94b3f3838c5f78a2ebb96bcbb612d8c1060307ea9f063edf6fcb18e",
+      "file": "motion-10.jpg",
+      "requested_branch_time": 10.0,
+      "cells": [
+        {
+          "row": 1,
+          "column": 2,
+          "label": "main",
+          "source_frame_id": 380,
+          "display": 10.000083224000264,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+            "origin": 46939.853988204,
+            "estimated": 103
+          }
+        },
+        {
+          "row": 1,
+          "column": 3,
+          "label": "estimator",
+          "source_frame_id": 380,
+          "display": 10.000083169999925,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "b257f45f490d70e08f6c77da9555f5814f2ba5160f8a8a23d82ce98a61b8221e",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+            "origin": 46939.853988204,
+            "estimated": 118,
+            "depth_support": true
+          }
+        },
+        {
+          "row": 2,
+          "column": 2,
+          "label": "main",
+          "source_frame_id": 383,
+          "display": 10.100089124000078,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+            "origin": 46939.853988204,
+            "estimated": 103
+          }
+        },
+        {
+          "row": 2,
+          "column": 3,
+          "label": "estimator",
+          "source_frame_id": 383,
+          "display": 10.111207504000049,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "b257f45f490d70e08f6c77da9555f5814f2ba5160f8a8a23d82ce98a61b8221e",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+            "origin": 46939.853988204,
+            "estimated": 118,
+            "depth_support": true
+          }
+        }
+      ]
+    },
+    "sweep-EE-10": {
+      "source": "/home/maarten/Projects/ito/out/estimator-41/review/sweep180-EE/motion-10.jpg",
+      "sha256": "323ef85178b90a78046448b1d75a458426d65c99b5ed720bf6895f4daf4b576b",
+      "file": "motion-10.jpg",
+      "requested_branch_time": 10.0,
+      "cells": [
+        {
+          "row": 1,
+          "column": 2,
+          "label": "main-estimator",
+          "source_frame_id": 377,
+          "display": 9.900291783000284,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+            "origin": 46939.853988204,
+            "estimated": 103
+          }
+        },
+        {
+          "row": 1,
+          "column": 3,
+          "label": "branch-estimator",
+          "source_frame_id": 377,
+          "display": 9.900080342000365,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "b257f45f490d70e08f6c77da9555f5814f2ba5160f8a8a23d82ce98a61b8221e",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+            "origin": 46939.853988204,
+            "estimated": 118
+          }
+        },
+        {
+          "row": 2,
+          "column": 2,
+          "label": "main-estimator",
+          "source_frame_id": 386,
+          "display": 10.200086022996402,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+            "origin": 46939.853988204,
+            "estimated": 103
+          }
+        },
+        {
+          "row": 2,
+          "column": 3,
+          "label": "branch-estimator",
+          "source_frame_id": 386,
+          "display": 10.211189623000337,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "b257f45f490d70e08f6c77da9555f5814f2ba5160f8a8a23d82ce98a61b8221e",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+            "origin": 46939.853988204,
+            "estimated": 118
+          }
+        }
+      ]
+    },
+    "sweep-ET-10": {
+      "source": "/home/maarten/Projects/ito/out/estimator-41/review/sweep180-ET/motion-10.jpg",
+      "sha256": "799e89a1730042fc277b1d0a67985d26e7ed51ec956cacd880ac3bffd2d3fb32",
+      "file": "motion-10.jpg",
+      "requested_branch_time": 10.0,
+      "cells": [
+        {
+          "row": 1,
+          "column": 2,
+          "label": "main-estimator",
+          "source_frame_id": 377,
+          "display": 9.900074750003114,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+            "origin": 46939.853988204,
+            "estimated": 103
+          }
+        },
+        {
+          "row": 1,
+          "column": 3,
+          "label": "branch-estimator",
+          "source_frame_id": 377,
+          "display": 9.90007473300011,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "b257f45f490d70e08f6c77da9555f5814f2ba5160f8a8a23d82ce98a61b8221e",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+            "origin": 46939.853988204,
+            "estimated": 118
+          }
+        },
+        {
+          "row": 2,
+          "column": 2,
+          "label": "main-estimator",
+          "source_frame_id": 386,
+          "display": 10.200075239001308,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+            "origin": 46939.853988204,
+            "estimated": 103
+          }
+        },
+        {
+          "row": 2,
+          "column": 3,
+          "label": "branch-estimator",
+          "source_frame_id": 386,
+          "display": 10.200077756000155,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "b257f45f490d70e08f6c77da9555f5814f2ba5160f8a8a23d82ce98a61b8221e",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+            "origin": 46939.853988204,
+            "estimated": 118
+          }
+        }
+      ]
+    },
+    "sweep-TE-10": {
+      "source": "/home/maarten/Projects/ito/out/estimator-41/review/sweep180-TE/motion-10.jpg",
+      "sha256": "79a6f07d44f506b2a3ff4d78e6a2f5d4a2db605aa9533a09ebc7926b14ea3aed",
+      "file": "motion-10.jpg",
+      "requested_branch_time": 10.0,
+      "cells": [
+        {
+          "row": 1,
+          "column": 2,
+          "label": "main-estimator",
+          "source_frame_id": 380,
+          "display": 10.000074935996963,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+            "origin": 46939.853988204,
+            "estimated": 103
+          }
+        },
+        {
+          "row": 1,
+          "column": 3,
+          "label": "branch-estimator",
+          "source_frame_id": 380,
+          "display": 10.000092707000022,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "b257f45f490d70e08f6c77da9555f5814f2ba5160f8a8a23d82ce98a61b8221e",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+            "origin": 46939.853988204,
+            "estimated": 118
+          }
+        },
+        {
+          "row": 2,
+          "column": 2,
+          "label": "main-estimator",
+          "source_frame_id": 383,
+          "display": 10.100081968994346,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+            "origin": 46939.853988204,
+            "estimated": 103
+          }
+        },
+        {
+          "row": 2,
+          "column": 3,
+          "label": "branch-estimator",
+          "source_frame_id": 383,
+          "display": 10.111191811000026,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "b257f45f490d70e08f6c77da9555f5814f2ba5160f8a8a23d82ce98a61b8221e",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+            "origin": 46939.853988204,
+            "estimated": 118
+          }
+        }
+      ]
+    },
+    "tour-point-50": {
+      "source": "/home/maarten/Projects/ito/out/estimator-41/review/tour-supported/motion-50.jpg",
+      "sha256": "5d2125a903b69469491886eb7152c41c56443df4f1bf81b76f437eed56c8165f",
+      "file": "motion-50.jpg",
+      "requested_branch_time": 50.0,
+      "cells": [
+        {
+          "row": 1,
+          "column": 2,
+          "label": "main",
+          "source_frame_id": 1558,
+          "display": 50.00008399500075,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+            "origin": 47006.906425362,
+            "estimated": 508
+          }
+        },
+        {
+          "row": 1,
+          "column": 3,
+          "label": "estimator",
+          "source_frame_id": 1558,
+          "display": 50.011189328999535,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+            "origin": 47006.906425362,
+            "estimated": 528,
+            "depth_support": true
+          }
+        },
+        {
+          "row": 2,
+          "column": 2,
+          "label": "main",
+          "source_frame_id": 1561,
+          "display": 50.10008514000219,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+            "origin": 47006.906425362,
+            "estimated": 508
+          }
+        },
+        {
+          "row": 2,
+          "column": 3,
+          "label": "estimator",
+          "source_frame_id": 1561,
+          "display": 50.11119219699958,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+            "origin": 47006.906425362,
+            "estimated": 528,
+            "depth_support": true
+          }
+        }
+      ]
+    },
+    "tour-point-76": {
+      "source": "/home/maarten/Projects/ito/out/estimator-41/review/tour-supported/motion-76.jpg",
+      "sha256": "067b49fa95e2eb64b8564b05d7f59c1cf8be41f979ee5b83ff1a804055580294",
+      "file": "motion-76.jpg",
+      "requested_branch_time": 76.0,
+      "cells": [
+        {
+          "row": 1,
+          "column": 2,
+          "label": "main",
+          "source_frame_id": 2350,
+          "display": 76.4000921859988,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+            "origin": 47006.906425362,
+            "estimated": 508
+          }
+        },
+        {
+          "row": 1,
+          "column": 3,
+          "label": "estimator",
+          "source_frame_id": 2350,
+          "display": 76.42230613099946,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+            "origin": 47006.906425362,
+            "estimated": 528,
+            "depth_support": true
+          }
+        },
+        {
+          "row": 2,
+          "column": 2,
+          "label": "main",
+          "source_frame_id": 2539,
+          "display": 82.70009253099852,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+            "origin": 47006.906425362,
+            "estimated": 508
+          }
+        },
+        {
+          "row": 2,
+          "column": 3,
+          "label": "estimator",
+          "source_frame_id": 2539,
+          "display": 82.72230616099932,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+            "origin": 47006.906425362,
+            "estimated": 528,
+            "depth_support": true
+          }
+        }
+      ]
+    },
+    "tour-EE-76": {
+      "source": "/home/maarten/Projects/ito/out/estimator-41/review/tour-EE/motion-76.jpg",
+      "sha256": "7858ea43f77db40fcd9c66073920121350c46becd248378bd337cfe9aa1b2fdd",
+      "file": "motion-76.jpg",
+      "requested_branch_time": 76.0,
+      "cells": [
+        {
+          "row": 1,
+          "column": 2,
+          "label": "main-estimator",
+          "source_frame_id": 2338,
+          "display": 76.02231348200439,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+            "origin": 47006.906425362,
+            "estimated": 508
+          }
+        },
+        {
+          "row": 1,
+          "column": 3,
+          "label": "branch-estimator",
+          "source_frame_id": 2338,
+          "display": 76.03341334800007,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+            "origin": 47006.906425362,
+            "estimated": 528
+          }
+        },
+        {
+          "row": 2,
+          "column": 2,
+          "label": "main-estimator",
+          "source_frame_id": 2344,
+          "display": 76.21119973900204,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+            "origin": 47006.906425362,
+            "estimated": 508
+          }
+        },
+        {
+          "row": 2,
+          "column": 3,
+          "label": "branch-estimator",
+          "source_frame_id": 2344,
+          "display": 76.23341887799961,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+            "origin": 47006.906425362,
+            "estimated": 528
+          }
+        }
+      ]
+    },
+    "tour-ET-50": {
+      "source": "/home/maarten/Projects/ito/out/estimator-41/review/tour-ET/motion-50.jpg",
+      "sha256": "0a51755d4410f327dc7b5da3e40786f4f6a83b8b1ed3aa37ecce3684b1eb46bc",
+      "file": "motion-50.jpg",
+      "requested_branch_time": 50.0,
+      "cells": [
+        {
+          "row": 1,
+          "column": 2,
+          "label": "main-estimator",
+          "source_frame_id": 1558,
+          "display": 50.01118932400277,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+            "origin": 47006.906425362,
+            "estimated": 508
+          }
+        },
+        {
+          "row": 1,
+          "column": 3,
+          "label": "branch-estimator",
+          "source_frame_id": 1558,
+          "display": 50.02230491799946,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+            "origin": 47006.906425362,
+            "estimated": 528
+          }
+        },
+        {
+          "row": 2,
+          "column": 2,
+          "label": "main-estimator",
+          "source_frame_id": 1561,
+          "display": 50.122312291001435,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+            "origin": 47006.906425362,
+            "estimated": 508
+          }
+        },
+        {
+          "row": 2,
+          "column": 3,
+          "label": "branch-estimator",
+          "source_frame_id": 1561,
+          "display": 50.11119639899971,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+            "origin": 47006.906425362,
+            "estimated": 528
+          }
+        }
+      ]
+    },
+    "tour-TE-76": {
+      "source": "/home/maarten/Projects/ito/out/estimator-41/review/tour-TE/motion-76.jpg",
+      "sha256": "b9f4faaafcbda2efbc2debe0750a13073652ece188dbaba7cf76109b443d2b32",
+      "file": "motion-76.jpg",
+      "requested_branch_time": 76.0,
+      "cells": [
+        {
+          "row": 1,
+          "column": 2,
+          "label": "main-estimator",
+          "source_frame_id": 2338,
+          "display": 76.02230902799784,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+            "origin": 47006.906425362,
+            "estimated": 508
+          }
+        },
+        {
+          "row": 1,
+          "column": 3,
+          "label": "branch-estimator",
+          "source_frame_id": 2338,
+          "display": 76.02230426999995,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+            "origin": 47006.906425362,
+            "estimated": 528,
+            "depth_support": false
+          }
+        },
+        {
+          "row": 2,
+          "column": 2,
+          "label": "main-estimator",
+          "source_frame_id": 2353,
+          "display": 76.50008135999815,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+            "origin": 47006.906425362,
+            "estimated": 508
+          }
+        },
+        {
+          "row": 2,
+          "column": 3,
+          "label": "branch-estimator",
+          "source_frame_id": 2353,
+          "display": 76.53342518199952,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+            "origin": 47006.906425362,
+            "estimated": 528,
+            "depth_support": false
+          }
+        }
+      ]
+    },
+    "short-point-5": {
+      "source": "/home/maarten/Projects/ito/out/estimator-41/review/short-supported/motion-5.jpg",
+      "sha256": "c073c2d213d4e8ca357dd28af01691cf0a98fa4433f3b26e1c373fc9046e1d13",
+      "file": "motion-5.jpg",
+      "requested_branch_time": 5.0,
+      "cells": [
+        {
+          "row": 1,
+          "column": 2,
+          "label": "main",
+          "source_frame_id": 216,
+          "display": 5.000074649999078,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "7f683b3df799204bfe27999bb828a66f4b93be96fde5482bd36f1c89ce0fa4c8",
+            "origin": 1657.173765891,
+            "estimated": 147,
+            "depth_support": false,
+            "view_start": 2.25
+          }
+        },
+        {
+          "row": 1,
+          "column": 3,
+          "label": "estimator",
+          "source_frame_id": 216,
+          "display": 5.00008967499889,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "7f683b3df799204bfe27999bb828a66f4b93be96fde5482bd36f1c89ce0fa4c8",
+            "origin": 1657.173765891,
+            "estimated": 146,
+            "depth_support": true,
+            "view_start": 2.25
+          }
+        },
+        {
+          "row": 2,
+          "column": 2,
+          "label": "main",
+          "source_frame_id": 219,
+          "display": 5.100070657999822,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "7f683b3df799204bfe27999bb828a66f4b93be96fde5482bd36f1c89ce0fa4c8",
+            "origin": 1657.173765891,
+            "estimated": 147,
+            "depth_support": false,
+            "view_start": 2.25
+          }
+        },
+        {
+          "row": 2,
+          "column": 3,
+          "label": "estimator",
+          "source_frame_id": 219,
+          "display": 5.111196829999244,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "7f683b3df799204bfe27999bb828a66f4b93be96fde5482bd36f1c89ce0fa4c8",
+            "origin": 1657.173765891,
+            "estimated": 146,
+            "depth_support": true,
+            "view_start": 2.25
+          }
+        }
+      ]
+    },
+    "short-point-15": {
+      "source": "/home/maarten/Projects/ito/out/estimator-41/review/short-supported/motion-15.jpg",
+      "sha256": "4ceab54e46578cef3656bf251e18820526ac838a14e85bed344a90168cfe179f",
+      "file": "motion-15.jpg",
+      "requested_branch_time": 15.0,
+      "cells": [
+        {
+          "row": 1,
+          "column": 2,
+          "label": "main",
+          "source_frame_id": 516,
+          "display": 15.000081334999777,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "7f683b3df799204bfe27999bb828a66f4b93be96fde5482bd36f1c89ce0fa4c8",
+            "origin": 1657.173765891,
+            "estimated": 147,
+            "depth_support": false,
+            "view_start": 2.25
+          }
+        },
+        {
+          "row": 1,
+          "column": 3,
+          "label": "estimator",
+          "source_frame_id": 516,
+          "display": 15.000073746999988,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "7f683b3df799204bfe27999bb828a66f4b93be96fde5482bd36f1c89ce0fa4c8",
+            "origin": 1657.173765891,
+            "estimated": 146,
+            "depth_support": true,
+            "view_start": 2.25
+          }
+        },
+        {
+          "row": 2,
+          "column": 2,
+          "label": "main",
+          "source_frame_id": 519,
+          "display": 15.111196607998863,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "7f683b3df799204bfe27999bb828a66f4b93be96fde5482bd36f1c89ce0fa4c8",
+            "origin": 1657.173765891,
+            "estimated": 147,
+            "depth_support": false,
+            "view_start": 2.25
+          }
+        },
+        {
+          "row": 2,
+          "column": 3,
+          "label": "estimator",
+          "source_frame_id": 519,
+          "display": 15.111209974000303,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "7f683b3df799204bfe27999bb828a66f4b93be96fde5482bd36f1c89ce0fa4c8",
+            "origin": 1657.173765891,
+            "estimated": 146,
+            "depth_support": true,
+            "view_start": 2.25
+          }
+        }
+      ]
+    },
+    "short-point-20": {
+      "source": "/home/maarten/Projects/ito/out/estimator-41/review/short-supported/motion-20.jpg",
+      "sha256": "b6063f70f5071f7d34771c49c6051eec9792de4d37c85f76215dba033a940013",
+      "file": "motion-20.jpg",
+      "requested_branch_time": 20.0,
+      "cells": [
+        {
+          "row": 1,
+          "column": 2,
+          "label": "main",
+          "source_frame_id": 666,
+          "display": 20.011202773999685,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "7f683b3df799204bfe27999bb828a66f4b93be96fde5482bd36f1c89ce0fa4c8",
+            "origin": 1657.173765891,
+            "estimated": 147,
+            "depth_support": false,
+            "view_start": 2.25
+          }
+        },
+        {
+          "row": 1,
+          "column": 3,
+          "label": "estimator",
+          "source_frame_id": 666,
+          "display": 20.011186925999937,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "7f683b3df799204bfe27999bb828a66f4b93be96fde5482bd36f1c89ce0fa4c8",
+            "origin": 1657.173765891,
+            "estimated": 146,
+            "depth_support": true,
+            "view_start": 2.25
+          }
+        },
+        {
+          "row": 2,
+          "column": 2,
+          "label": "main",
+          "source_frame_id": 669,
+          "display": 20.100073805999273,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "7f683b3df799204bfe27999bb828a66f4b93be96fde5482bd36f1c89ce0fa4c8",
+            "origin": 1657.173765891,
+            "estimated": 147,
+            "depth_support": false,
+            "view_start": 2.25
+          }
+        },
+        {
+          "row": 2,
+          "column": 3,
+          "label": "estimator",
+          "source_frame_id": 669,
+          "display": 20.10008225099955,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "7f683b3df799204bfe27999bb828a66f4b93be96fde5482bd36f1c89ce0fa4c8",
+            "origin": 1657.173765891,
+            "estimated": 146,
+            "depth_support": true,
+            "view_start": 2.25
+          }
+        }
+      ]
+    },
+    "short-repeat-15": {
+      "source": "/home/maarten/Projects/ito/out/estimator-41/review/short-repeat/motion-15.jpg",
+      "sha256": "12fef7db687895ce1893cdb4f5c8f0cb0e23c2b9b98297923379b51e83efc398",
+      "file": "motion-15.jpg",
+      "requested_branch_time": 15.0,
+      "cells": [
+        {
+          "row": 1,
+          "column": 2,
+          "label": "main",
+          "source_frame_id": 516,
+          "display": 15.000081206000687,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "7f683b3df799204bfe27999bb828a66f4b93be96fde5482bd36f1c89ce0fa4c8",
+            "origin": 1657.173765891,
+            "estimated": 147,
+            "depth_support": false,
+            "view_start": 2.25
+          }
+        },
+        {
+          "row": 1,
+          "column": 3,
+          "label": "estimator",
+          "source_frame_id": 516,
+          "display": 15.000084556999354,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "7f683b3df799204bfe27999bb828a66f4b93be96fde5482bd36f1c89ce0fa4c8",
+            "origin": 1657.173765891,
+            "estimated": 146,
+            "depth_support": true,
+            "view_start": 2.25
+          }
+        },
+        {
+          "row": 2,
+          "column": 2,
+          "label": "main",
+          "source_frame_id": 519,
+          "display": 15.111216780000177,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "7f683b3df799204bfe27999bb828a66f4b93be96fde5482bd36f1c89ce0fa4c8",
+            "origin": 1657.173765891,
+            "estimated": 147,
+            "depth_support": false,
+            "view_start": 2.25
+          }
+        },
+        {
+          "row": 2,
+          "column": 3,
+          "label": "estimator",
+          "source_frame_id": 519,
+          "display": 15.11121921099948,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "7f683b3df799204bfe27999bb828a66f4b93be96fde5482bd36f1c89ce0fa4c8",
+            "origin": 1657.173765891,
+            "estimated": 146,
+            "depth_support": true,
+            "view_start": 2.25
+          }
+        }
+      ]
+    },
+    "short-repeat-15.3": {
+      "source": "/home/maarten/Projects/ito/out/estimator-41/review/short-repeat/motion-15.3.jpg",
+      "sha256": "fb1a9a34683ad8a225df4894ed1185de9657e9bf51f805250381a7e7f8d0ef85",
+      "file": "motion-15.3.jpg",
+      "requested_branch_time": 15.3,
+      "cells": [
+        {
+          "row": 1,
+          "column": 2,
+          "label": "main",
+          "source_frame_id": 525,
+          "display": 15.30012413500117,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "7f683b3df799204bfe27999bb828a66f4b93be96fde5482bd36f1c89ce0fa4c8",
+            "origin": 1657.173765891,
+            "estimated": 147,
+            "depth_support": false,
+            "view_start": 2.25
+          }
+        },
+        {
+          "row": 1,
+          "column": 3,
+          "label": "estimator",
+          "source_frame_id": 525,
+          "display": 15.311195914999189,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "7f683b3df799204bfe27999bb828a66f4b93be96fde5482bd36f1c89ce0fa4c8",
+            "origin": 1657.173765891,
+            "estimated": 146,
+            "depth_support": true,
+            "view_start": 2.25
+          }
+        },
+        {
+          "row": 2,
+          "column": 2,
+          "label": "main",
+          "source_frame_id": 528,
+          "display": 15.400075008001295,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "7f683b3df799204bfe27999bb828a66f4b93be96fde5482bd36f1c89ce0fa4c8",
+            "origin": 1657.173765891,
+            "estimated": 147,
+            "depth_support": false,
+            "view_start": 2.25
+          }
+        },
+        {
+          "row": 2,
+          "column": 3,
+          "label": "estimator",
+          "source_frame_id": 528,
+          "display": 15.411191843999404,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "7f683b3df799204bfe27999bb828a66f4b93be96fde5482bd36f1c89ce0fa4c8",
+            "origin": 1657.173765891,
+            "estimated": 146,
+            "depth_support": true,
+            "view_start": 2.25
+          }
+        }
+      ]
+    },
+    "short-repeat-16": {
+      "source": "/home/maarten/Projects/ito/out/estimator-41/review/short-repeat/motion-16.jpg",
+      "sha256": "f2e1dde396456cefad64b031195d43ed4a5aa2ddb988a3e8f1747272e3079645",
+      "file": "motion-16.jpg",
+      "requested_branch_time": 16.0,
+      "cells": [
+        {
+          "row": 1,
+          "column": 2,
+          "label": "main",
+          "source_frame_id": 546,
+          "display": 16.01119464200019,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "7f683b3df799204bfe27999bb828a66f4b93be96fde5482bd36f1c89ce0fa4c8",
+            "origin": 1657.173765891,
+            "estimated": 147,
+            "depth_support": false,
+            "view_start": 2.25
+          }
+        },
+        {
+          "row": 1,
+          "column": 3,
+          "label": "estimator",
+          "source_frame_id": 546,
+          "display": 16.000090887000624,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "7f683b3df799204bfe27999bb828a66f4b93be96fde5482bd36f1c89ce0fa4c8",
+            "origin": 1657.173765891,
+            "estimated": 146,
+            "depth_support": true,
+            "view_start": 2.25
+          }
+        },
+        {
+          "row": 2,
+          "column": 2,
+          "label": "main",
+          "source_frame_id": 549,
+          "display": 16.11118180000085,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "7f683b3df799204bfe27999bb828a66f4b93be96fde5482bd36f1c89ce0fa4c8",
+            "origin": 1657.173765891,
+            "estimated": 147,
+            "depth_support": false,
+            "view_start": 2.25
+          }
+        },
+        {
+          "row": 2,
+          "column": 3,
+          "label": "estimator",
+          "source_frame_id": 549,
+          "display": 16.100085185000353,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "7f683b3df799204bfe27999bb828a66f4b93be96fde5482bd36f1c89ce0fa4c8",
+            "origin": 1657.173765891,
+            "estimated": 146,
+            "depth_support": true,
+            "view_start": 2.25
+          }
+        }
+      ]
+    },
+    "tour-repeat-75.9": {
+      "source": "/home/maarten/Projects/ito/out/estimator-41/review/tour-repeat/motion-75.9.jpg",
+      "sha256": "2d4b216a28a79fff2731f4d7ea3f0c3064d77fb23e59f7fec1cc7aa641efb6fd",
+      "file": "motion-75.9.jpg",
+      "requested_branch_time": 75.9,
+      "cells": [
+        {
+          "row": 1,
+          "column": 2,
+          "label": "main",
+          "source_frame_id": 2350,
+          "display": 75.90007967900056,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+            "origin": 47006.906425362,
+            "estimated": 508,
+            "depth_support": false,
+            "view_start": 2.5
+          }
+        },
+        {
+          "row": 1,
+          "column": 3,
+          "label": "estimator",
+          "source_frame_id": 2350,
+          "display": 75.9111960750015,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+            "origin": 47006.906425362,
+            "estimated": 528,
+            "depth_support": true,
+            "view_start": 2.5
+          }
+        },
+        {
+          "row": 2,
+          "column": 2,
+          "label": "main",
+          "source_frame_id": 2353,
+          "display": 76.01119196400032,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+            "origin": 47006.906425362,
+            "estimated": 508,
+            "depth_support": false,
+            "view_start": 2.5
+          }
+        },
+        {
+          "row": 2,
+          "column": 3,
+          "label": "estimator",
+          "source_frame_id": 2353,
+          "display": 76.00009161300113,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+            "origin": 47006.906425362,
+            "estimated": 528,
+            "depth_support": true,
+            "view_start": 2.5
+          }
+        }
+      ]
+    },
+    "tour-repeat-76.3": {
+      "source": "/home/maarten/Projects/ito/out/estimator-41/review/tour-repeat/motion-76.3.jpg",
+      "sha256": "4ee8da27cef34effa58901a9bd1c3ed733e4504ed109e3cf3ed7eb9cc5ee3892",
+      "file": "motion-76.3.jpg",
+      "requested_branch_time": 76.3,
+      "cells": [
+        {
+          "row": 1,
+          "column": 2,
+          "label": "main",
+          "source_frame_id": 2362,
+          "display": 76.300085502,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+            "origin": 47006.906425362,
+            "estimated": 508,
+            "depth_support": false,
+            "view_start": 2.5
+          }
+        },
+        {
+          "row": 1,
+          "column": 3,
+          "label": "estimator",
+          "source_frame_id": 2362,
+          "display": 76.31118857399997,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+            "origin": 47006.906425362,
+            "estimated": 528,
+            "depth_support": true,
+            "view_start": 2.5
+          }
+        },
+        {
+          "row": 2,
+          "column": 2,
+          "label": "main",
+          "source_frame_id": 2365,
+          "display": 76.41119738199995,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "main SLAMBackend, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0,
+            "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+            "origin": 47006.906425362,
+            "estimated": 508,
+            "depth_support": false,
+            "view_start": 2.5
+          }
+        },
+        {
+          "row": 2,
+          "column": 3,
+          "label": "estimator",
+          "source_frame_id": 2365,
+          "display": 76.400091118001,
+          "settings": {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1000000,
+            "frame_admission_hz": 10,
+            "estimator": "independent motion/vision estimator, no map alignment",
+            "exposure": 0,
+            "frame_delay": 0.0,
+            "stamp_delay": 0.0,
+            "estimator_source_sha256": {
+              "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+              "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+              "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+              "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+              "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+            },
+            "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+            "origin": 47006.906425362,
+            "estimated": 528,
+            "depth_support": true,
+            "view_start": 2.5
+          }
+        }
+      ]
+    }
+  },
+  "current_source_sha256": {
+    "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+    "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+    "__init__.py": "56694b4db16c3fc390b6a9bd84e8a81e7024aac8a8a956e27d97d32e78360413",
+    "slam.py": "28b679150c82a2415b46de08530613eadfbdc5c7dcfe5fc5551c550443745017",
+    "fusion.py": "c8bb84be1400f992c628a0b11519acea3c27be3d380af20501a7183e42824833",
+    "depth_support.py": "71105e0ced202a248b0a3bc0b4d654c08bbd60e41021183bb6997c4446c8345f"
+  },
+  "repeat": {
+    "sweep180-main": {
+      "root": "/home/maarten/Projects/ito/out/estimator-41/repeat/sweep180-main",
+      "admitted": 103,
+      "oom": 0,
+      "display": {
+        "arm": "main-EE",
+        "settings": {
+          "precision": "full",
+          "input_resolution": 100,
+          "max_splats": 1000000,
+          "frame_admission_hz": 10,
+          "estimator": "main SLAMBackend, no map alignment",
+          "exposure": 0,
+          "frame_delay": 0,
+          "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+          "origin": 46939.853988204,
+          "estimated": 103
+        },
+        "GL": "D3D12 (NVIDIA GeForce RTX 4070 Ti)",
+        "eye_size": 2160,
+        "recording": true,
+        "frames": 1032,
+        "missed": 498,
+        "longest_consecutive": 248,
+        "completion_ms": {
+          "p50": 9.092083790164907,
+          "p95": 21.18675958472521,
+          "p99": 27.169621084440177,
+          "p99.9": 35.81380597338208
+        },
+        "service_ms": {
+          "p50": 6.099373499637295,
+          "p95": 16.34209904996169,
+          "p99": 22.08530972027799,
+          "p99.9": 34.65460070985173
+        },
+        "max_ms": 76.14480111260491
+      }
+    },
+    "sweep180-supported": {
+      "root": "/home/maarten/Projects/ito/out/estimator-41/repeat/sweep180-supported",
+      "admitted": 118,
+      "oom": 0,
+      "display": {
+        "arm": "main-EE",
+        "settings": {
+          "precision": "full",
+          "input_resolution": 100,
+          "max_splats": 1000000,
+          "frame_admission_hz": 10,
+          "estimator": "independent motion/vision estimator, no map alignment",
+          "exposure": 0,
+          "frame_delay": 0.0,
+          "stamp_delay": 0.0,
+          "estimator_source_sha256": {
+            "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+            "metric_scale.py": "b257f45f490d70e08f6c77da9555f5814f2ba5160f8a8a23d82ce98a61b8221e",
+            "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+            "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+            "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+          },
+          "source_sha256": "9a76953f0f2a7595f4ff06aeed9942b476b0a13ec5494c305c68b9d23ec2c0c6",
+          "origin": 46939.853988204,
+          "estimated": 118,
+          "depth_support": true
+        },
+        "GL": "D3D12 (NVIDIA GeForce RTX 4070 Ti)",
+        "eye_size": 2160,
+        "recording": true,
+        "frames": 969,
+        "missed": 562,
+        "longest_consecutive": 497,
+        "completion_ms": {
+          "p50": 11.228668539843056,
+          "p95": 22.280231486729456,
+          "p99": 37.06919834450643,
+          "p99.9": 77.5318052188232
+        },
+        "service_ms": {
+          "p50": 7.548175000010815,
+          "p95": 15.166170199699984,
+          "p99": 16.87709219957468,
+          "p99.9": 73.88092806359116
+        },
+        "max_ms": 77.90734889113082
+      }
+    },
+    "short-main-matched": {
+      "root": "/home/maarten/Projects/ito/out/estimator-41/repeat/short-main-matched",
+      "admitted": 138,
+      "oom": 0,
+      "display": {
+        "arm": "main-EE",
+        "settings": {
+          "precision": "full",
+          "input_resolution": 100,
+          "max_splats": 1000000,
+          "frame_admission_hz": 10,
+          "estimator": "main SLAMBackend, no map alignment",
+          "exposure": 0,
+          "frame_delay": 0,
+          "source_sha256": "7f683b3df799204bfe27999bb828a66f4b93be96fde5482bd36f1c89ce0fa4c8",
+          "origin": 1657.173765891,
+          "estimated": 147,
+          "depth_support": false,
+          "view_start": 2.25
+        },
+        "GL": "D3D12 (NVIDIA GeForce RTX 4070 Ti)",
+        "eye_size": 2160,
+        "recording": true,
+        "frames": 1481,
+        "missed": 590,
+        "longest_consecutive": 403,
+        "completion_ms": {
+          "p50": 9.808882647121209,
+          "p95": 18.797348320731544,
+          "p99": 24.158326218093862,
+          "p99.9": 36.14079308754461
+        },
+        "service_ms": {
+          "p50": 6.748966001396184,
+          "p95": 14.391677999810781,
+          "p99": 19.898485200610594,
+          "p99.9": 32.95387263948414
+        },
+        "max_ms": 76.35759711592982
+      }
+    },
+    "short-estimator-matched": {
+      "root": "/home/maarten/Projects/ito/out/estimator-41/repeat/short-estimator-matched",
+      "admitted": 136,
+      "oom": 0,
+      "display": {
+        "arm": "main-EE",
+        "settings": {
+          "precision": "full",
+          "input_resolution": 100,
+          "max_splats": 1000000,
+          "frame_admission_hz": 10,
+          "estimator": "independent motion/vision estimator, no map alignment",
+          "exposure": 0,
+          "frame_delay": 0.0,
+          "stamp_delay": 0.0,
+          "estimator_source_sha256": {
+            "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+            "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+            "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+            "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+            "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+          },
+          "source_sha256": "7f683b3df799204bfe27999bb828a66f4b93be96fde5482bd36f1c89ce0fa4c8",
+          "origin": 1657.173765891,
+          "estimated": 146,
+          "depth_support": true,
+          "view_start": 2.25
+        },
+        "GL": "D3D12 (NVIDIA GeForce RTX 4070 Ti)",
+        "eye_size": 2160,
+        "recording": true,
+        "frames": 1170,
+        "missed": 900,
+        "longest_consecutive": 417,
+        "completion_ms": {
+          "p50": 13.395063936513907,
+          "p95": 22.7103697300663,
+          "p99": 29.552700005151543,
+          "p99.9": 73.02387491906735
+        },
+        "service_ms": {
+          "p50": 9.994514501158847,
+          "p95": 16.48848529994211,
+          "p99": 23.506685950269436,
+          "p99.9": 69.45888996784961
+        },
+        "max_ms": 81.62526655905822
+      }
+    },
+    "tour-main-matched": {
+      "root": "/home/maarten/Projects/ito/out/estimator-41/repeat/tour-main-matched",
+      "admitted": 488,
+      "oom": 0,
+      "display": {
+        "arm": "main-EE",
+        "settings": {
+          "precision": "full",
+          "input_resolution": 100,
+          "max_splats": 1000000,
+          "frame_admission_hz": 10,
+          "estimator": "main SLAMBackend, no map alignment",
+          "exposure": 0,
+          "frame_delay": 0,
+          "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+          "origin": 47006.906425362,
+          "estimated": 508,
+          "depth_support": false,
+          "view_start": 2.5
+        },
+        "GL": "D3D12 (NVIDIA GeForce RTX 4070 Ti)",
+        "eye_size": 2160,
+        "recording": true,
+        "frames": 4069,
+        "missed": 3583,
+        "longest_consecutive": 2643,
+        "completion_ms": {
+          "p50": 15.624495925294468,
+          "p95": 23.726147484194367,
+          "p99": 30.201136317264215,
+          "p99.9": 39.77921148276091
+        },
+        "service_ms": {
+          "p50": 10.79782300075749,
+          "p95": 16.33011300036742,
+          "p99": 21.366061159642435,
+          "p99.9": 32.88487753649734
+        },
+        "max_ms": 87.61241077627346
+      }
+    },
+    "tour-estimator-matched": {
+      "root": "/home/maarten/Projects/ito/out/estimator-41/repeat/tour-estimator-matched",
+      "admitted": 507,
+      "oom": 0,
+      "display": {
+        "arm": "main-EE",
+        "settings": {
+          "precision": "full",
+          "input_resolution": 100,
+          "max_splats": 1000000,
+          "frame_admission_hz": 10,
+          "estimator": "independent motion/vision estimator, no map alignment",
+          "exposure": 0,
+          "frame_delay": 0.0,
+          "stamp_delay": 0.0,
+          "estimator_source_sha256": {
+            "mast3r_frontend.py": "ab7da0f4bbf9057b0e174188a2d6d2069de3847fd01e76850cb122645e38fbc6",
+            "metric_scale.py": "c5c590b6072f354cac72a64106f152eae9bf122a2e0c5ada53b747f38f4835cb",
+            "__init__.py": "9372611ea95d81fa7a4cda8525078baf1158f0cc0bfccbf054c1b42bf0fd47a3",
+            "slam.py": "6dc0bbd9ec5a8bf3f5f73ec2e6ef341f00fcd79e6f78a062a1888caa36a586e8",
+            "fusion.py": "66cae636fe31a6094aa8024d2dc20e6edad3cca4832b22289dc0c46e83d9fe12"
+          },
+          "source_sha256": "6b978f1b0ee00dc3ad49b2281cadf190dc085740d02585ae72b765c5bce05c97",
+          "origin": 47006.906425362,
+          "estimated": 528,
+          "depth_support": true,
+          "view_start": 2.5
+        },
+        "GL": "D3D12 (NVIDIA GeForce RTX 4070 Ti)",
+        "eye_size": 2160,
+        "recording": true,
+        "frames": 4046,
+        "missed": 3604,
+        "longest_consecutive": 2743,
+        "completion_ms": {
+          "p50": 16.554368071410863,
+          "p95": 23.666203012908227,
+          "p99": 29.3486617313647,
+          "p99.9": 51.41795666059965
+        },
+        "service_ms": {
+          "p50": 10.823355501088372,
+          "p95": 16.774982750121126,
+          "p99": 19.560016699051634,
+          "p99.9": 42.361770195760634
+        },
+        "max_ms": 80.24105422737193
+      }
+    }
+  },
+  "boundary_review": {
+    "short": "Broad right-edge band at +15s repeats; the first supporting source506 is still pending, finishes15.196. Later15.3s sheet fills most of this band. Remaining thin boundary difference unresolved. First-seen space is not a regression under motion-sheets.md.",
+    "tour": "Broader ceiling hole repeats at source2350. Source-truth projection diagnostics find the marked ceiling pixels (40,50),(30,80),(80,50),(180,50) outside the previous60 admitted views. First-seen space, not a confirmed regression. No truth diagnostic was supplied to inference."
+  },
+  "motion_phase_diagnostic": {
+    "sweep180": {
+      "recording": "/home/maarten/Projects/ito/out/oracle-40/sweep180",
+      "frames": 518,
+      "moving": 338,
+      "criterion": "median rotation residual on omega>0.3rad/s; diagnostic only, never supplied to estimator",
+      "zero": {
+        "delay_ms": 1.734723475976807e-14,
+        "moving_median_deg": 0.6920166597869473,
+        "all_p95_deg": 2.5818473877766377,
+        "all_median_deg": 0.2876080067729194
+      },
+      "best": {
+        "delay_ms": 7.500000000000024,
+        "moving_median_deg": 0.3133855797049856,
+        "all_p95_deg": 1.537020196726463,
+        "all_median_deg": 0.17142677694831643
+      }
+    },
+    "tour": {
+      "recording": "/home/maarten/Projects/ito/out/oracle-40/tour",
+      "frames": 2667,
+      "moving": 1036,
+      "criterion": "median rotation residual on omega>0.3rad/s; diagnostic only, never supplied to estimator",
+      "zero": {
+        "delay_ms": 1.734723475976807e-14,
+        "moving_median_deg": 0.49132227185033617,
+        "all_p95_deg": 1.6455207949613706,
+        "all_median_deg": 0.29054839320225895
+      },
+      "best": {
+        "delay_ms": 5.000000000000022,
+        "moving_median_deg": 0.24777114765140174,
+        "all_p95_deg": 1.0634006431256622,
+        "all_median_deg": 0.22142796546387727
+      }
+    }
+  }
+}
