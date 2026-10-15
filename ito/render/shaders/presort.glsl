@@ -3,6 +3,9 @@
 layout(local_size_x = 1024) in;
 layout(std430, binding = 1) readonly buffer Scene { vec4 attributes[]; };
 layout(std430, binding = 0) writeonly buffer Order { uvec2 order[]; };
+layout(std430, binding = 4) readonly buffer Selection { uint selected[]; };
+uniform bool use_selection;
+uniform uint id_bits;
 uniform uint count;
 uniform uint stride;
 uniform mat4 view;
@@ -14,9 +17,16 @@ void main() {
     uint i = gl_GlobalInvocationID.x;
     uint lane = gl_LocalInvocationID.x;
     uvec2 key = uvec2(0, 0xffffffffu);
-    if (i < count) {
-        float depth = max(0.0, -(view * vec4(attributes[i * stride].xyz, 1)).z);
-        key = uvec2(floatBitsToUint(depth), i);
+    uint id = i;
+    bool valid = i < count;
+    if (use_selection) {
+        uint entry = valid ? selected[i] : 0xffffffffu;
+        valid = entry != 0xffffffffu;
+        id = entry & ((1u << id_bits)-1u);
+    }
+    if (valid) {
+        float depth = max(0.0, -(view * vec4(attributes[id * stride].xyz, 1)).z);
+        key = uvec2(floatBitsToUint(depth), id);
     }
     tile[lane] = key;
     barrier();

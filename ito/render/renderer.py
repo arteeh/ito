@@ -13,11 +13,18 @@ from .scene import FloatArray, GaussianBuffer
 
 
 class GaussianRenderer:
-    def __init__(self, context: moderngl.Context):
+    def __init__(self, context: moderngl.Context, *, render_budget=None):
         if context.version_code < 430:
             raise RuntimeError("Ito needs OpenGL 4.3 compute shaders (Mesa llvmpipe is supported)")
         self.context = context
         shaders = files("ito.render").joinpath("shaders")
+        self.render_budget = render_budget
+        if render_budget is not None and render_budget not in (32768, 65536, 131072, 262144):
+            raise ValueError("Render budget must be a supported power of two")
+        self.selection = context.compute_shader(shaders.joinpath("select.glsl").read_text())
+        self.selected = context.buffer(reserve=((render_budget or 1024) + 4) * 4)
+        self.selected_draws = 0
+        self.lod_grid = None
         self.keys = context.compute_shader(shaders.joinpath("presort.glsl").read_text())
         self.sort_program = context.compute_shader(shaders.joinpath("sort.glsl").read_text())
         self.program = context.program(
@@ -48,7 +55,7 @@ class GaussianRenderer:
     def upload(self, scene: GaussianBuffer) -> None:
         """Consume a stable published snapshot. The producer may reuse it after return."""
         count, stride, _ = scene.records.shape
-        capacity = max(1024, 1 << max(0, count - 1).bit_length())
+        capacity = max(self.render_budget or 0, 1024, 1 << max(0, count - 1).bit_length())
         limit = self.context.info["GL_MAX_SHADER_STORAGE_BLOCK_SIZE"]
         if max(count * stride * 16, capacity * 8) > limit:
             raise ValueError(f"Scene with {count:,} Gaussians exceeds OpenGL buffer limits")
@@ -73,7 +80,7 @@ class GaussianRenderer:
 
     def _allocate_live(self, capacity, *, keep):
         """Exactly the producer's slots: it grows them on demand and gives them back."""
-        sort_capacity = max(1024, 1 << max(0, capacity - 1).bit_length())
+        sort_capacity = max(self.render_budget or 0, 1024, 1 << max(0, capacity - 1).bit_length())
         limit = self.context.info["GL_MAX_SHADER_STORAGE_BLOCK_SIZE"]
         if max(capacity * 64, sort_capacity * 8) > limit:
             raise ValueError("Splat budget exceeds OpenGL buffer limits")
@@ -167,7 +174,7 @@ class GaussianRenderer:
             update.acknowledge()
         return True
 
-    def sort(self, robot_camera: FloatArray, head: FloatArray) -> None:
+    def sort(self, robot_camera: FloatArray, head: FloatArray, projection=None) -> None:
         """Order splats back to front for this viewpoint on the GPU.
 
         Stereo draws sort once from the mid-eye pose and pass sort=False for both eyes:
@@ -178,23 +185,52 @@ class GaussianRenderer:
         view = self._view(validate_pose(robot_camera) @ validate_pose(head))
         self.scene_buffer.bind_to_storage_buffer(1)
         self.order.bind_to_storage_buffer(0)
+        self.selected.bind_to_storage_buffer(4)
+        limited = self.render_budget is not None
+        bits = max(1, (self.draw_count - 1).bit_length())
+        self.keys["id_bits"] = bits
+        self.lod_grid = None
+        if limited:
+            self.selection["id_bits"] = bits
+            if projection is None:
+                raise ValueError("Budgeted sorting needs the current eye projection")
+            cells_y = 256
+            cells_x = self.render_budget // (2 * cells_y)
+            self.lod_grid = (cells_x, cells_y)
+            self.selection["view"].write(view.T.copy())
+            self.selection["projection"].write(np.asarray(projection, np.float32).T.copy())
+            self.selection["count"] = self.draw_count
+            self.selection["stride"] = self.stride
+            self.selection["cells_x"], self.selection["cells_y"] = cells_x, cells_y
+            self.selection["phase"] = 0
+            self.selection.run(group_x=(self.render_budget + 4 + 255) // 256)
+            GL.glMemoryBarrier(GL.GL_SHADER_STORAGE_BARRIER_BIT)
+            self.selection["phase"] = 1
+            self.selection.run(group_x=(self.draw_count + 255) // 256)
+            GL.glMemoryBarrier(GL.GL_SHADER_STORAGE_BARRIER_BIT)
+            self.selection["phase"] = 2
+            self.selection.run(group_x=(self.draw_count + 255) // 256)
+            GL.glMemoryBarrier(GL.GL_SHADER_STORAGE_BARRIER_BIT)
+        self.selected_draws = self.render_budget if limited else self.draw_count
+        capacity = max(1024, 1 << max(0, self.selected_draws - 1).bit_length())
+        self.keys["use_selection"] = limited
         self.keys["view"].write(view.T.copy())
-        self.keys["count"] = self.draw_count
+        self.keys["count"] = self.selected_draws
         self.keys["stride"] = self.stride
-        self.keys.run(group_x=self.capacity // 1024)
+        self.keys.run(group_x=capacity // 1024)
         # A software GPU can block inside a barrier. ctypes releases the GIL so
         # tracking and the deadman sender keep running while the GPU catches up.
         GL.glMemoryBarrier(GL.GL_SHADER_STORAGE_BARRIER_BIT)
-        self.sort_program["capacity"] = self.capacity
+        self.sort_program["capacity"] = capacity
         stage = 2048
-        while stage <= self.capacity:
+        while stage <= capacity:
             self.sort_program["stage"] = stage
             distance = stage // 2
             while distance:
                 local = distance < 1024
                 self.sort_program["distance"] = distance
                 self.sort_program["local_merge"] = local
-                self.sort_program.run(group_x=self.capacity // 1024)
+                self.sort_program.run(group_x=capacity // 1024)
                 GL.glMemoryBarrier(GL.GL_SHADER_STORAGE_BARRIER_BIT)
                 distance = 0 if local else distance // 2
             stage *= 2
@@ -247,7 +283,7 @@ class GaussianRenderer:
         if not self.draw_count:
             return
         if sort:
-            self.sort(robot_camera, head)
+            self.sort(robot_camera, head, projection)
         view = self._view(world_from_eye)
         self.scene_buffer.bind_to_storage_buffer(1)
         self.order.bind_to_storage_buffer(0)
@@ -255,11 +291,17 @@ class GaussianRenderer:
         self.program["projection"].write(projection.T.copy())
         self.program["eye"] = tuple(world_from_eye[:3, 3])
         self.program["viewport"] = viewport[2:]
+        self.program["lod_budget"] = self.render_budget if self.lod_grid else 0
+        self.program["lod_pixels"] = (
+            tuple(0.45 * s / n for s, n in zip(viewport[2:], self.lod_grid, strict=True))
+            if self.lod_grid
+            else (0, 0)
+        )
         self.program["scene_time"] = clock.now() - self.epoch if self.fade_seconds else 0
         self.program["fade_seconds"] = self.fade_seconds
         self.program["stride"] = self.stride
         self.program["sh_degree"] = self.degree
-        self.vao.render(mode=moderngl.TRIANGLE_STRIP, vertices=4, instances=self.draw_count)
+        self.vao.render(mode=moderngl.TRIANGLE_STRIP, vertices=4, instances=self.selected_draws)
 
     def close(self) -> None:
         for fence in self.staging_fences:
@@ -273,6 +315,8 @@ class GaussianRenderer:
             self.program,
             self.sort_program,
             self.keys,
+            self.selection,
+            self.selected,
             self.scene_buffer,
             self.order,
             self.update,

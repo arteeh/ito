@@ -8,6 +8,9 @@ uniform mat4 view;
 uniform mat4 projection;
 uniform vec3 eye;
 uniform vec2 viewport;
+uniform vec2 lod_pixels;
+uniform uint lod_budget;
+layout(std430, binding = 4) readonly buffer Selection { uint selected[]; };
 layout(std430, binding = 0) readonly buffer Order { uvec2 order[]; };
 out vec2 gaussian_uv;
 flat out vec4 color_opacity;
@@ -41,6 +44,10 @@ vec3 color(uint id, vec3 direction) {
 }
 void main() {
     uint id = order[gl_InstanceID].y;
+    gaussian_uv = vec2(0);
+    color_opacity = vec4(0);
+    gl_Position = vec4(2, 2, 2, 1);
+    if (id == 0xffffffffu) return;
     vec4 p = attribute_at(id, 0u);
     if (fade_seconds > 0)
         p.w *= clamp((attribute_at(id, 1u).w - scene_time) / fade_seconds, 0.0, 1.0);
@@ -69,9 +76,15 @@ void main() {
     vec2 ndc = clamp(clip.xy / clip.w, vec2(-1.3), vec2(1.3));
     vec3 jx = (row_x - ndc.x * row_w) * (viewport.x * 0.5 / clip.w);
     vec3 jy = (row_y - ndc.y * row_w) * (viewport.y * 0.5 / clip.w);
-    float a = dot(jx, covariance * jx) + 0.3;
+    vec2 lod = lod_pixels;
+    if (lod_budget > 0u) {
+        vec2 lo = vec2(uintBitsToFloat(selected[lod_budget]),uintBitsToFloat(selected[lod_budget+1u]));
+        vec2 hi = vec2(uintBitsToFloat(selected[lod_budget+2u]),uintBitsToFloat(selected[lod_budget+3u]));
+        lod *= max(vec2(0), (2.0-lo-hi)*0.5*1.15);
+    }
+    float a = dot(jx, covariance * jx) + 0.3 + lod.x*lod.x;
     float b = dot(jx, covariance * jy);
-    float c = dot(jy, covariance * jy) + 0.3;
+    float c = dot(jy, covariance * jy) + 0.3 + lod.y*lod.y;
     float mid = 0.5*(a+c);
     float radius = length(vec2(0.5*(a-c), b));
     float major = sqrt(max(mid + radius, 0.3));
