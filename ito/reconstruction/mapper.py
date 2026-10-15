@@ -969,23 +969,6 @@ class GaussianMap:
                 .abs()
                 .mean()
             )
-        if self.has_inferred_depth:
-            # Sparse zones do not establish per-pixel normals. A weak piecewise-planar
-            # inverse-depth prior discourages a colour-bearing proxy becoming floaters.
-            inverse = pred[..., 3].clamp_min(0.05).reciprocal()
-            visible = alpha[..., 0].detach() > 0.8
-            for axis in (1, 2):
-                a, b, c = [slice(None)] * 3, [slice(None)] * 3, [slice(None)] * 3
-                a[axis], b[axis], c[axis] = slice(None, -2), slice(1, -1), slice(2, None)
-                a, b, c = tuple(a), tuple(b), tuple(c)
-                edge = torch.maximum(
-                    (target[a] - target[b]).abs().amax(-1), (target[b] - target[c]).abs().amax(-1)
-                )
-                valid = visible[a] & visible[b] & visible[c] & (edge < 0.04)
-                bend = (inverse[a] - 2 * inverse[b] + inverse[c]).abs() / inverse[
-                    b
-                ].detach().clamp_min(0.1)
-                loss = loss + 0.01 * max(width, height) * torch.where(valid, bend, 0).mean()
         for b, depth in enumerate(depths):
             if depth is not None:
                 mask = torch.isfinite(depth) & (depth > 0)
