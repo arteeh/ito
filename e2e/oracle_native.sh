@@ -3,6 +3,21 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 output="${1:-$HOME/Projects/ito/out/oracle-40}"
+.venv/bin/python - "$output" <<'VERIFY'
+import json,sys
+from pathlib import Path
+from ito.protocol import Intrinsics
+from ito.reconstruction.slam_image import SLAMImage
+out=Path(sys.argv[1])
+for seq in ("sweep180", "tour"):
+    k=Intrinsics.model_validate_json((out/seq/"source/camera.json").read_text())
+    expected=list(SLAMImage(k,100).scaled)
+    for arm in ("TT","TE","ET","EE","TF"):
+        p=out/"visual"/f"{seq}-{arm}"/"worker.json"
+        work=json.loads(p.read_text())
+        if work.get("training_size") != expected:
+            raise SystemExit(f"Re-run {seq}-{arm}: fitting grid must match main {expected}")
+VERIFY
 python=/mnt/c/Users/me/Projects/ito/builds/main/ito/runtime/python.exe
 for repeat in 1 2 3; do
     for sequence in sweep180 tour; do

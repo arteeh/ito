@@ -514,7 +514,7 @@ def main():
     import pygame
 
     from ito.desktop.record import Recorder
-    from ito.render.renderer import GaussianRenderer
+    from ito.render.renderer import LIVE_RENDER_SPLATS, GaussianRenderer
 
     context = mp.get_context("spawn")
     stopped = context.RawValue("b", False)
@@ -534,7 +534,9 @@ def main():
     pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MINOR_VERSION, 3)
     pygame.display.set_mode((640, 640), pygame.OPENGL | pygame.DOUBLEBUF)
     gl = moderngl.create_context(require=430)
-    renderer = GaussianRenderer(gl, render_budget=None if args.arm.startswith("main-") else 131072)
+    renderer = GaussianRenderer(
+        gl, render_budget=None if args.arm.startswith("main-") else LIVE_RENDER_SPLATS
+    )
     from ito.desktop.overlay import Overlay, PilotStatus
 
     overlay = Overlay(gl, args.max_splats)
@@ -781,7 +783,7 @@ def main():
             true_camera=alignment
             @ np.load(args.recording / "source" / sources[index]["file"])["camera"],
             camera_mode="own published pose; map-side correction excluded",
-            render_budget=0 if args.arm.startswith("main-") else 131072,
+            render_budget=0 if args.arm.startswith("main-") else LIVE_RENDER_SPLATS,
         )
     (args.out / "display.json").write_text(
         json.dumps(

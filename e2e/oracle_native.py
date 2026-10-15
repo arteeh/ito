@@ -61,6 +61,7 @@ def main():
     from ito.protocol import Intrinsics
     from ito.reconstruction.admission import Admission
     from ito.reconstruction.ring import SplatUpdate
+    from ito.render.renderer import LIVE_RENDER_SPLATS
 
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("recording", type=Path)
@@ -69,7 +70,7 @@ def main():
     p.add_argument("--arm", choices=("main-TT", "TT", "TF"), required=True)
     p.add_argument("--load", action="store_true")
     p.add_argument("--precision", choices=("full", "half"), default="full")
-    p.add_argument("--render-budget", type=int, default=131072)
+    p.add_argument("--render-budget", type=int, default=LIVE_RENDER_SPLATS)
     p.add_argument("--seconds", type=float, default=20)
     args = p.parse_args()
     assert os.name == "nt"

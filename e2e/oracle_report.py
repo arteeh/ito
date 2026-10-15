@@ -19,6 +19,7 @@ from measure_gl import View
 from PIL import Image, ImageDraw, ImageFont
 
 from ito.protocol import Intrinsics
+from ito.render.renderer import LIVE_RENDER_SPLATS
 
 ARMS = ("TT", "TE", "ET", "EE", "TF")
 
@@ -88,7 +89,7 @@ def motion(out, seq, arm, start, output, baseline_arm="main-TT"):
                 (
                     mapped,
                     f"{arm} / t={t:.2f}s / shown {rr['t']:.3f}s\n"
-                    f"{settings_label(out, seq, arm)}\nown published camera / cap 131,072",
+                    f"{settings_label(out, seq, arm)}\nown published camera / cap 98,304",
                 ),
             ]
         )
@@ -97,7 +98,7 @@ def motion(out, seq, arm, start, output, baseline_arm="main-TT"):
 
 def prefixes(out, seq, arm, output, baseline_arm="main-TT"):
     k = Intrinsics.model_validate_json((out / seq / "source/camera.json").read_text())
-    view = View(k, render_budget=131072)
+    view = View(k, render_budget=LIVE_RENDER_SPLATS)
     cells = []
     try:
         for t in (0.1, 0.5, 1.0, 2.0):
@@ -130,7 +131,7 @@ def prefixes(out, seq, arm, output, baseline_arm="main-TT"):
 
 def stereo(out, seq, arm, moment, output, baseline_arm="main-TT"):
     k = Intrinsics.model_validate_json((out / seq / "source/camera.json").read_text())
-    view = View(k, render_budget=131072)
+    view = View(k, render_budget=LIVE_RENDER_SPLATS)
     cells = []
     try:
         for name in (baseline_arm, arm):
@@ -165,7 +166,7 @@ def stereo(out, seq, arm, moment, output, baseline_arm="main-TT"):
 
 def interventions(out, seq, moment, output):
     k = Intrinsics.model_validate_json((out / seq / "source/camera.json").read_text())
-    view = View(k, render_budget=131072)
+    view = View(k, render_budget=LIVE_RENDER_SPLATS)
     cells = []
     try:
         for names in (("TT", "TE", "ET"), ("EE", "TF", "main-EE")):
@@ -195,7 +196,7 @@ def interventions(out, seq, moment, output):
 def before_after(out, previous, seq, arm, output, baseline_arm="main-TT"):
     """Same own camera for both saved maps, including the round-one estimated arms."""
     k = Intrinsics.model_validate_json((out / seq / "source/camera.json").read_text())
-    view = View(k, render_budget=131072)
+    view = View(k, render_budget=LIVE_RENDER_SPLATS)
     cells = []
     try:
         for moment in (0.5, 1.0):

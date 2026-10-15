@@ -11,6 +11,8 @@ from ito import clock
 from .pose import validate_pose
 from .scene import FloatArray, GaussianBuffer
 
+LIVE_RENDER_SPLATS = 98_304
+
 
 class GaussianRenderer:
     def __init__(self, context: moderngl.Context, *, render_budget=None):
@@ -19,8 +21,12 @@ class GaussianRenderer:
         self.context = context
         shaders = files("ito.render").joinpath("shaders")
         self.render_budget = render_budget
-        if render_budget is not None and render_budget not in (32768, 65536, 131072, 262144):
-            raise ValueError("Render budget must be a supported power of two")
+        if render_budget is not None and (
+            not isinstance(render_budget, int)
+            or not 32768 <= render_budget <= 262144
+            or render_budget % 32768
+        ):
+            raise ValueError("Render budget must be a multiple of 32768, between 32768 and 262144")
         self.selection = context.compute_shader(shaders.joinpath("select.glsl").read_text())
         self.selected = context.buffer(reserve=((render_budget or 1024) + 4) * 4)
         self.selected_draws = 0
@@ -55,7 +61,7 @@ class GaussianRenderer:
     def upload(self, scene: GaussianBuffer) -> None:
         """Consume a stable published snapshot. The producer may reuse it after return."""
         count, stride, _ = scene.records.shape
-        capacity = max(self.render_budget or 0, 1024, 1 << max(0, count - 1).bit_length())
+        capacity = max(1024, 1 << max(0, max(count, self.render_budget or 0) - 1).bit_length())
         limit = self.context.info["GL_MAX_SHADER_STORAGE_BLOCK_SIZE"]
         if max(count * stride * 16, capacity * 8) > limit:
             raise ValueError(f"Scene with {count:,} Gaussians exceeds OpenGL buffer limits")
@@ -80,7 +86,9 @@ class GaussianRenderer:
 
     def _allocate_live(self, capacity, *, keep):
         """Exactly the producer's slots: it grows them on demand and gives them back."""
-        sort_capacity = max(self.render_budget or 0, 1024, 1 << max(0, capacity - 1).bit_length())
+        sort_capacity = max(
+            1024, 1 << max(0, max(capacity, self.render_budget or 0) - 1).bit_length()
+        )
         limit = self.context.info["GL_MAX_SHADER_STORAGE_BLOCK_SIZE"]
         if max(capacity * 64, sort_capacity * 8) > limit:
             raise ValueError("Splat budget exceeds OpenGL buffer limits")

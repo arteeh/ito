@@ -15,6 +15,10 @@ for sequence in sweep180 tour; do
     if [[ "$sequence" == tour ]]; then duration=85; fi
     for arm in TT TF main-TT TE main-TE ET main-ET EE main-EE; do
         name="$sequence-$arm"
+        if [[ "${2:-}" == --reuse-controls && "$arm" == main-* && -f "$output/visual/$name/worker.json" && -f "$output/visual/$name/display.json" ]]; then
+            echo "Reusing completed main control: $name"
+            continue
+        fi
         echo "Round 2 visual: $name"
         bash e2e/oracle.sh e2e/oracle_run.py "$output/$sequence" --arm "$arm" \
             --out "$output/visual/$name" --seconds "$duration" --record \
