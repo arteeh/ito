@@ -303,12 +303,6 @@ class MASt3RFrontend:
                 frame.T_WC = transform
             return None
         self.bundle_scale_step = self.placed(window[-1].T_WC)[1] / self.placed(previous[-1])[1]
-        # The native image solve has a free Sim3 gauge. Keep the scale registered by
-        # the motion-prior tracker; an unconstrained window must not rescale depth.
-        for frame, transform in zip(window, previous, strict=True):
-            pose, _ = self.placed(frame.T_WC)
-            _, scale = self.placed(transform)
-            frame.T_WC = self.unplaced(pose, scale)
         reference_pose, _ = self.placed(self.frames[reference].T_WC)
         new_pose, _ = self.placed(self.frames[-1].T_WC)
         if reference_pose is None or new_pose is None:

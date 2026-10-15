@@ -12,6 +12,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+cv2.setNumThreads(2)
+
 
 def tracks(before, after, matcher):
     if matcher == "klt":
@@ -67,6 +69,28 @@ def tracks(before, after, matcher):
     return corners, target, keep, attempted
 
 
+def common_region(before, after, k):
+    """Coverage diagnostic only: truth never selects the scored feature residuals."""
+    if "true_depth" not in before or "true_depth" not in after:
+        return 0, 0
+    y, x = np.mgrid[0 : k["height"] : 8, 0 : k["width"] : 8]
+    z = before["true_depth"][y, x]
+    points = np.stack(((x - k["cx"]) / k["fx"] * z, -(y - k["cy"]) / k["fy"] * z, -z), -1).reshape(
+        -1, 3
+    )
+    transform = np.linalg.inv(after["true_pose"]) @ before["true_pose"]
+    points = points @ transform[:3, :3].T + transform[:3, 3]
+    depth = -points[:, 2]
+    u = np.rint(k["cx"] + k["fx"] * points[:, 0] / depth.clip(1e-8)).astype(int)
+    v = np.rint(k["cy"] - k["fy"] * points[:, 1] / depth.clip(1e-8)).astype(int)
+    valid = (z.ravel() > 0) & (depth > 0)
+    valid &= (u >= 0) & (v >= 0) & (u < k["width"]) & (v < k["height"])
+    u, v = u.clip(0, k["width"] - 1), v.clip(0, k["height"] - 1)
+    valid &= np.abs(depth - after["true_depth"][v, u]) < np.maximum(0.02, 0.01 * depth)
+    supported = (before["confidence"][y, x].ravel() > 0) & (after["confidence"][v, u] > 0)
+    return int(valid.sum()), int((valid & supported).sum())
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("estimates", type=Path)
@@ -80,18 +104,30 @@ def main():
     k = json.loads(args.camera.read_text())
     rows = json.loads((args.estimates / "frames.json").read_text())
     previous = None
-    errors, pairs = [], []
+    errors, supported_errors, pairs = [], [], []
     attempted = supported = 0
-    coverage = []
+    coverage, confidence_coverage = [], []
+    common = common_supported = 0
     for row in rows:
         with np.load(args.estimates / row["file"]) as archive:
             frame = {key: archive[key] for key in ("rgb", "pose", "depth")}
+            frame["confidence"] = (
+                archive["depth_confidence"]
+                if "depth_confidence" in archive
+                else np.ones_like(frame["depth"])
+            )
+            if "true_depth" in archive and "true_pose" in archive:
+                frame.update(true_depth=archive["true_depth"], true_pose=archive["true_pose"])
             if args.truth:
                 frame.update(pose=archive["true_pose"], depth=archive["true_depth"])
         rgb = cv2.cvtColor(frame["rgb"], cv2.COLOR_RGB2GRAY)
         coverage.append(float((frame["depth"] > 0).mean()))
+        confidence_coverage.append(float((frame["confidence"] > 0).mean()))
         if previous is not None:
             before, image, stamp = previous
+            region, trusted = common_region(before, frame, k)
+            common += region
+            common_supported += trusted
             found = tracks(image, rgb, args.matcher)
             if found is not None:
                 corners, target, keep, count = found
@@ -127,6 +163,11 @@ def main():
                 )
                 residual = np.linalg.norm(projected[keep] - target[keep, 0], axis=1)
                 errors.extend(residual.tolist())
+                destination = np.rint(target[:, 0]).astype(int)
+                destination = destination.clip([0, 0], [k["width"] - 1, k["height"] - 1])
+                trusted = before["confidence"][xy[:, 1], xy[:, 0]] > 0
+                trusted &= frame["confidence"][destination[:, 1], destination[:, 0]] > 0
+                supported_errors.extend(residual[trusted[keep]].tolist())
                 supported += int(keep.sum())
                 if len(residual):
                     pairs.append(
@@ -138,7 +179,7 @@ def main():
                         )
                     )
         # The arrays outlive the zip reader explicitly, rather than retaining an open file.
-        previous = ({key: frame[key] for key in ("pose", "depth")}, rgb, row["captured"])
+        previous = (frame, rgb, row["captured"])
     report = dict(
         estimates=str(args.estimates),
         geometry="sim truth (diagnostic only)" if args.truth else "estimated",
@@ -152,6 +193,21 @@ def main():
             "no reprojection-error cut"
         ),
         dense_depth_coverage_median=float(np.median(coverage)),
+        confidence_coverage_median=float(np.median(confidence_coverage)),
+        common_region_samples=common,
+        confidence_common_region_fraction=common_supported / common if common else None,
+        confidence_supported_tracks=len(supported_errors),
+        confidence_pixel_error=(
+            dict(
+                zip(
+                    ("median", "p95", "max"),
+                    np.percentile(supported_errors, [50, 95, 100]).tolist(),
+                    strict=True,
+                )
+            )
+            if supported_errors
+            else None
+        ),
         pixel_error=dict(
             zip(
                 ("median", "p95", "max"), np.percentile(errors, [50, 95, 100]).tolist(), strict=True
