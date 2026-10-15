@@ -78,7 +78,7 @@ def motion(out, seq, arm, start, output, baseline_arm="main-TT"):
                 (
                     mapped,
                     f"{arm} / t={t:.2f}s / shown {rr['t']:.3f}s\n"
-                    f"{SETTINGS}\nown published camera / production GL",
+                    f"{SETTINGS}\nown published camera / cap 131,072",
                 ),
             ]
         )
@@ -183,6 +183,42 @@ def interventions(out, seq, moment, output):
     grid(cells, output, f"{seq}: identical input prefix; pose/depth TT,TE,ET | EE,ToF,main-EE")
 
 
+def before_after(out, previous, seq, arm, output, baseline_arm="main-TT"):
+    """Same own camera for both saved maps, including the round-one estimated arms."""
+    k = Intrinsics.model_validate_json((out / seq / "source/camera.json").read_text())
+    view = View(k, render_budget=131072)
+    cells = []
+    try:
+        for moment in (0.5, 1.0):
+            current = np.load(out / "visual" / f"{seq}-{arm}" / f"snapshot-{moment:.1f}.npz")
+            camera = current["camera"]
+            row = []
+            for root, name, label in (
+                (out, baseline_arm, baseline_arm),
+                (previous, arm, f"round 1 {arm}"),
+                (out, arm, f"round 2 {arm}"),
+            ):
+                snap = np.load(root / "visual" / f"{seq}-{name}" / f"snapshot-{moment:.1f}.npz")
+                assert float(snap["actual"]) <= moment
+                view.renderer.render_budget = (
+                    int(snap["render_budget"]) or None if "render_budget" in snap else None
+                )
+                records = snap["records"]
+                view.upload(records[records[:, 0, 3] > 0])
+                rgb, _ = view.draw(camera)
+                row.append(
+                    (
+                        Image.fromarray((rgb * 255).astype(np.uint8)),
+                        f"{label} / prefix {moment:.1f}s / own {arm[0]} pose\n"
+                        f"{SETTINGS}\nrender cap {view.renderer.render_budget or 'none'}",
+                    )
+                )
+            cells.append(row)
+    finally:
+        view.close()
+    grid(cells, output, f"{seq}: matched main | round 1 | round 2; SAME own camera")
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--out", type=Path, required=True)
@@ -190,10 +226,20 @@ def main():
     p.add_argument("--sequence", choices=("sweep180", "tour"), required=True)
     p.add_argument("--arm", choices=ARMS, required=True)
     p.add_argument("--matched-controls", action="store_true")
+    p.add_argument("--previous", type=Path)
     args = p.parse_args()
     args.images.mkdir(parents=True, exist_ok=True)
     seq, arm = args.sequence, args.arm
     baseline = f"main-{arm}" if args.matched_controls and arm != "TF" else "main-TT"
+    if args.previous:
+        before_after(
+            args.out,
+            args.previous,
+            seq,
+            arm,
+            args.images / f"{seq}-{arm}-before-after.jpg",
+            baseline,
+        )
     for t in (0.9, 1.9, 10.0 if seq == "sweep180" else 50.0, 15.0 if seq == "sweep180" else 76.0):
         motion(args.out, seq, arm, t, args.images / f"{seq}-{arm}-motion-{t:.1f}.jpg", baseline)
     prefixes(args.out, seq, arm, args.images / f"{seq}-{arm}-prefix.jpg", baseline)

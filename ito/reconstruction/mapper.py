@@ -297,6 +297,7 @@ class GaussianMap:
             raise
 
     def recover(self):
+        self.pose_cache = None
         # Adam may fail between allocating its first and second moment buffers.
         for optimizer in [
             *self.optimizers.values(),
@@ -451,8 +452,12 @@ class GaussianMap:
                 yy, xx = np.mgrid[: frame.intrinsics.height, : frame.intrinsics.width]
                 sites = np.stack((xx[valid_depth], yy[valid_depth]), -1)
                 inverse = 1 / frame.depth[valid_depth]
-                dense = griddata(sites, inverse, (xx, yy), method="linear")
                 nearest = griddata(sites, inverse, (xx, yy), method="nearest")
+                dense = (
+                    griddata(sites, inverse, (xx, yy), method="linear")
+                    if np.linalg.matrix_rank(sites - sites.mean(0)) == 2
+                    else nearest
+                )
                 dense = 1 / np.clip(np.where(np.isfinite(dense), dense, nearest), 0.25, 20)
                 i = frame.intrinsics
                 seed_points = np.stack(

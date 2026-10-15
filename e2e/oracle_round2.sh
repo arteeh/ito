@@ -27,7 +27,7 @@ for sequence in sweep180 tour; do
     for arm in TT TE ET EE TF; do
         PYTHONPATH=. LP_NUM_THREADS=4 .venv/bin/python e2e/oracle_report.py \
             --out "$output" --sequence "$sequence" --arm "$arm" \
-            --matched-controls --images "$output/review" > "$output/report-$sequence-$arm.log" 2>&1
+            --matched-controls --previous "$(dirname "$output")" --images "$output/review" > "$output/report-$sequence-$arm.log" 2>&1
     done
 done
 PYTHONPATH=. .venv/bin/python e2e/oracle_audit.py "$output"
