@@ -40,6 +40,14 @@ def metadata(root, seq, arm):
 def label(meta, name, arm, age, source_time, shown):
     s = meta["settings"]
     code = s.get("code_commit", "0634bbd")[:7]
+    mode = meta.get("camera_mode", "")
+    mode = (
+        "true source"
+        if arm.removeprefix("main-")[0] == "T"
+        else "motion+vision"
+        if "motion propagated" in mode
+        else "held visual"
+    )
     return (
         f"{name} {arm} / age {age:.3f}s / GL {shown:.3f}s\n"
         f"source time {source_time:.3f}s / own {arm.removeprefix('main-')[0]} pose\n"
@@ -49,7 +57,7 @@ def label(meta, name, arm, age, source_time, shown):
     )
 
 
-def motion(roots, seq, arm, moment, target):
+def motion(roots, seq, arm, moment, target, *, rgb=False):
     current = metadata(roots[-1][0], seq, arm)
     source_zero = current["settings"]["view_start"]
     baseline = f"main-{arm}" if arm != "TF" else "main-TT"
@@ -57,6 +65,23 @@ def motion(roots, seq, arm, moment, target):
     for age in (moment, moment + 0.1):
         source_time = source_zero + age
         row = []
+        if rgb:
+            picture, capture = at(
+                roots[-1][0] / "visual" / f"{seq}-{baseline}" / "motion", "camera", age
+            )
+            s = current["settings"]
+            row.append(
+                (
+                    picture,
+                    f"RGB source / {seq} / t={age:.3f}s\n"
+                    f"source {source_time:.3f}s / frame "
+                    f"{capture.get('captured') if capture else 'none'}\n"
+                    f"{s['precision'].title()} / Input{s['input_resolution']}% / "
+                    f"Max{s['max_splats']:,}\n"
+                    f"360p30 RAW360x640 / code {s.get('code_commit', 'unknown')[:7]}\n"
+                    "true physical camera / map cap N/A",
+                )
+            )
         for root, name, override in [
             (roots[-1][0], "main placer", baseline),
             *[(r, n, arm) for r, n in roots],
@@ -118,7 +143,10 @@ def main():
         (args.out / "before", "round3 newE before"),
     ]
     if args.stage == "after":
-        roots.append((args.out / "after", "round3 after"))
+        roots = [
+            (args.out / "paired", "R2 mapper latestE"),
+            (args.out / "after", "R3 mapper latestE"),
+        ]
     for seq in [args.sequence] if args.sequence else ("sweep180", "tour"):
         for arm in ("TT", "TE", "ET", "EE", "TF"):
             for moment in (

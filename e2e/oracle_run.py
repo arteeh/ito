@@ -8,6 +8,7 @@ Recording is a separate run from timing; no image readback in timing runs.
 """
 
 import argparse
+import hashlib
 import json
 import math
 import multiprocessing as mp
@@ -619,6 +620,9 @@ def main():
     settings["code_commit"] = subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[1], text=True
     ).strip()
+    settings["estimate_schedule_sha256"] = hashlib.sha256(
+        (args.estimates / "frames.json").read_bytes()
+    ).hexdigest()
     settings["depth_support"] = args.depth_support
     if args.precision:
         settings["precision"] = args.precision

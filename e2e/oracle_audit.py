@@ -6,6 +6,7 @@ Timing and memory are diagnostics. This script makes no visual quality verdict.
 
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -23,6 +24,8 @@ def payload_hash(folder, names):
         with (folder / name).open("rb") as stream:
             while chunk := stream.read(1024 * 1024):
                 digest.update(chunk)
+            if hasattr(os, "posix_fadvise"):
+                os.posix_fadvise(stream.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
     return digest.hexdigest()
 
 
@@ -49,6 +52,14 @@ def main():
             source_sha256=settings["source_sha256"],
             schedule_sha256=hashlib.sha256((estimates / "frames.json").read_bytes()).hexdigest(),
             settings=settings,
+        )
+        motions = (
+            [
+                json.loads(s)
+                for s in (out / sequence / "received/motion.jsonl").read_text().splitlines()
+            ]
+            if (out / sequence / "received/motion.jsonl").exists()
+            else []
         )
         arms = ["TT", "TE", "ET", "EE", "TF", "main-TT", "main-EE"]
         arms.extend(
@@ -79,6 +90,11 @@ def main():
             if display.get("camera_mode") and pilot.exists():
                 frames = [json.loads(s) for s in pilot.read_text().splitlines()]
                 assert all(r["t"] >= r["render_began"] for r in frames)
+                assert all(
+                    r.get(key) is None or r[key] <= r["render_began"]
+                    for r in frames
+                    for key in ("visual_pose_available", "motion_pose_available")
+                )
                 assert all(a["t"] <= b["t"] for a, b in zip(frames, frames[1:], strict=False))
             assert all(
                 plan[r["source_frame_id"]] <= r["started"] <= r["finished"] for r in observations
@@ -102,8 +118,35 @@ def main():
                                 np.searchsorted(releases, float(snap["deadline"]), side="right")
                                 - 1,
                             )
-                            expected = np.load(estimates / rows[n]["file"])["pose"]
-                            assert np.array_equal(snap["camera"], expected)
+                            if "motion propagated" in str(snap["camera_mode"]):
+                                zero = display["settings"]["view_start"]
+                                releases = np.array([r["available"] - zero for r in rows])
+                                n = (
+                                    np.searchsorted(releases, float(snap["deadline"]), side="right")
+                                    - 1
+                                )
+                                arrival = np.array(
+                                    [r["arrival"] - settings["origin"] - zero for r in motions]
+                                )
+                                m = (
+                                    np.searchsorted(arrival, float(snap["deadline"]), side="right")
+                                    - 1
+                                )
+                                prior = (
+                                    np.eye(4)
+                                    if m < 0
+                                    else np.array(motions[m]["camera"]).reshape(4, 4)
+                                )
+                                correction = (
+                                    np.eye(4)
+                                    if n < 0
+                                    else np.load(estimates / rows[n]["file"])["pose"]
+                                    @ np.linalg.inv(rows[n]["motion_pose"])
+                                )
+                                expected = correction @ prior
+                            else:
+                                expected = np.load(estimates / rows[n]["file"])["pose"]
+                            assert np.allclose(snap["camera"], expected, atol=1e-7, rtol=1e-7)
                         else:
                             assert np.array_equal(snap["camera"], snap["true_camera"])
                     records = snap["records"]
@@ -133,7 +176,7 @@ def main():
             display = read(folder / "display.json")
             assert not display["recording"]
             result["timing"][folder.name] = display
-    for folder in sorted((out / "native").iterdir()):
+    for folder in sorted((out / "native").glob("*")):
         if (folder / "display.json").exists():
             display = read(folder / "display.json")
             assert "NVIDIA" in display["renderer"]
