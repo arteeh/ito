@@ -383,9 +383,9 @@ class Reconstruction:
         precision="full",
         input_resolution=100,
     ):
-        """tracking: for SLAM, "robot" fuses the robot's Motion with vision (it needs the
-        robot's motion_noise); "vision" is MASt3R-SLAM alone, steered by the pose prior
-        each frame carries."""
+        """tracking: "robot" accepts vision and optional named motion/IMU/range.
+        Without motion_noise, metric scale stays unobserved until range constrains it.
+        "vision" selects the older per-frame pose-prior frontend."""
         if not 1 <= max_splats <= MAX_SLOT_COUNT:
             raise ValueError(f"Max splats must be between 1 and {MAX_SLOT_COUNT:,}")
         if not all(np.isfinite(v) and v > 0 for v in (voxel_size, fade_seconds)):
@@ -612,7 +612,7 @@ class Reconstruction:
 
     def motion(self, samples):
         """The robot's camera motion on the pilot clock, (time, world-from-camera, rad/s,
-        state) oldest first. Never waits: a busy worker gets them with the next batch."""
+        uncertainty scale) oldest first. A busy worker gets them with the next batch."""
         if self.tracking_mode == "robot" and self.backend == "slam":
             self.motion_ring.put(samples)
             if len(samples) and self.output_lock.acquire(False):
