@@ -16,6 +16,16 @@ def read(path):
     return json.loads(path.read_text())
 
 
+def payload_hash(folder, names):
+    digest = hashlib.sha256()
+    for name in names:
+        digest.update(name.encode() + b"\0")
+        with (folder / name).open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
+    return digest.hexdigest()
+
+
 def main():
     out = Path(sys.argv[1])
     result = {"visual": {}, "timing": {}, "native": {}, "inputs": {}}
@@ -31,7 +41,10 @@ def main():
         assert all(r["captured"] <= r["arrival"] <= r["started"] <= r["available"] for r in rows)
         assert all(a["available"] <= b["started"] for a, b in zip(rows, rows[1:], strict=False))
         plan = {r["source_frame_id"]: r["available"] - rows[0]["available"] for r in rows}
+        source_rows = [json.loads(s) for s in (source / "frames.jsonl").read_text().splitlines()]
         result["inputs"][sequence] = dict(
+            observed_payload_sha256=payload_hash(estimates, [r["file"] for r in rows]),
+            raw_source_payload_sha256=payload_hash(source, [r["file"] for r in source_rows]),
             observations=len(rows),
             source_sha256=settings["source_sha256"],
             schedule_sha256=hashlib.sha256((estimates / "frames.json").read_bytes()).hexdigest(),
