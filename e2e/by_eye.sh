@@ -9,14 +9,15 @@
 # ROUTE       pilot script (ITO_PILOT_SCRIPT, see ito/desktop/input.py), default room-tour
 # SIM_SOURCE  the checkout whose drivers/microduck runs the sim and driver, default this one
 #
-# VIEWER=1 also opens the MuJoCo viewer; SIM_ARGS adds sim options (--camera-height 720).
+# VIEWER=1 also opens the MuJoCo viewer; SIM_ARGS adds sim options (--board zero3);
+# SIM_PREFIX is the sim install to run (setup-sim.sh PREFIX), default the shared one.
 # The Ito window pops up and is driven by the script
 # whatever has focus; nobody needs to touch it. The sim from setup-sim.sh must be installed.
 set -eu
 [ "$#" -ge 2 ] || { sed -n 2,13p "$0" >&2; exit 2; }
 here=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 build=$1 name=$2 route=${3:-$here/e2e/routes/room-tour.json} source=${4:-$here}
-prefix=$HOME/.local/share/ito-microduck
+prefix=${SIM_PREFIX:-$HOME/.local/share/ito-microduck}
 root=/mnt/c/Users/me/Projects/ito
 exe=$root/builds/$build/ito/ito.exe
 out=$root/out/by-eye/$name
@@ -24,7 +25,7 @@ out=$root/out/by-eye/$name
 rm -rf "$out"
 mkdir -p "$out"
 cp "$route" "$out/route.json"
-git -C "$source" log --oneline -1 > "$out/sim-source.txt"
+{ git -C "$source" log --oneline -1; echo "prefix $prefix"; echo "args ${SIM_ARGS:-}"; } > "$out/sim-source.txt"
 cat "$root/builds/$build.log" > "$out/build.log" 2>/dev/null || true
 
 sh "$root/stop-sim.sh" >/dev/null 2>&1 || true

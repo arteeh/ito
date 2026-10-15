@@ -8,7 +8,6 @@ import numpy as np
 from aiortc import VideoStreamTrack
 from aiortc.mediastreams import MediaStreamError
 
-from drivers.microduck import lens
 from ito import clock
 from ito.protocol import FrameMetadata, Intrinsics
 
@@ -22,18 +21,20 @@ class Camera:
         cv2.setNumThreads(1)
         geometry = info.get("intrinsics")
         if not geometry or geometry.get("source") not in {"robot", "family", "sim"}:
-            raise RuntimeError("Microduck camera needs calibrated media.video intrinsics")
+            # mediad publishes no geometry it cannot vouch for. A beta's GC2093 has no family
+            # solve (microduck 0.17.4), so a beta that has not been calibrated sends none, and
+            # every direction Ito drew from a guessed lens would be quietly wrong.
+            raise RuntimeError(
+                "the Microduck publishes no camera geometry (media.video has no intrinsics): "
+                "calibrate its camera (duckslam calib intrinsics) and write the solve to "
+                "[media.intrinsics] in its robotd.toml, then restart mediad"
+            )
         self.width, self.height = info["width"], info["height"]
         k = Intrinsics(
             width=self.width,
             height=self.height,
             **{key: geometry[key] for key in ("fx", "fy", "cx", "cy")},
         )
-        if geometry["source"] == "sim":
-            # mediad describes the twin as MuJoCo's default 45 degrees; sim_body renders the lens.
-            k = k.model_copy(
-                update={"fx": lens.focal_px(self.width), "fy": lens.focal_px(self.width)}
-            )
         self.rotation = info["rotate"]
         if self.rotation not in {0, 90, 180, 270}:
             raise ValueError("Microduck camera mount must be a quarter turn")
