@@ -178,6 +178,7 @@ class MicroduckAdapter(Adapter):
         self._motion = deque(maxlen=16)  # Samples not yet sent, oldest first.
         self._previous_motion = None  # (time, xyzw) of the last motion sample.
         self._motion_rate = Rate()
+        self._head_imu_rate = Rate()
         self._head_gyro = deque(maxlen=8)  # (source time, gyro in sensor axes)
         self._headings = deque()  # (time, body yaw) over the last two gait periods.
         # (time, world up in the trunk frame) over the last gait period, and the camera's
@@ -420,6 +421,11 @@ class MicroduckAdapter(Adapter):
         if method == "head_imu.frame":
             source, _ = self._source_clock(data.get("t_ns"), clock.now())
             self._head_gyro.append((source, tuple(data["gyro"])))
+            self._head_imu_rate.tick()
+            self._telemetry["head_imu_hz"] = self._head_imu_rate.hz()
+            for name in ("gyro", "accel"):
+                for axis, value in zip("xyz", data[name], strict=True):
+                    self._telemetry[f"head_imu_{name}_{axis}"] = value
             return
         if method != "robot.state":
             return

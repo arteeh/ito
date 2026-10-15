@@ -320,7 +320,14 @@ def simulation(
                         f"driver did not listen; see {logs / 'driver.log'}"
                     ) from None
                 time.sleep(0.2)
-        yield SimpleNamespace(body=body, children=children, code=code, port=driver_port)
+        yield SimpleNamespace(
+            body=body,
+            children=children,
+            code=code,
+            port=driver_port,
+            tof_socket=tof_socket,
+            robot_socket=robot_socket,
+        )
 
 
 def arguments(parser):
