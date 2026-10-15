@@ -607,12 +607,43 @@ def main():
     estimated_poses = [np.load(args.estimates / r["file"])["pose"] for r in rows]
     # Source images, published poses and mapping must share the requested source clock.
     releases = np.array([r["available"] - view_start for r in rows])
+    propagated = all("motion_pose" in row for row in rows)
+    motions = []
+    motion_arrivals = np.empty(0)
+    corrections = []
+    if propagated:
+        motions = [
+            json.loads(s)
+            for s in (args.recording / "received/motion.jsonl").read_text().splitlines()
+        ]
+        motion_arrivals = np.array(
+            [m["arrival"] - settings["origin"] - view_start for m in motions]
+        )
+        corrections = [
+            pose @ np.linalg.inv(row["motion_pose"])
+            for pose, row in zip(estimated_poses, rows, strict=True)
+        ]
+    camera_mode = (
+        "true source pose"
+        if args.arm.removeprefix("main-")[0] == "T"
+        else "motion propagated / delayed vision"
+        if propagated
+        else "last visual pose (main)"
+    )
+    camera_support = {}
 
     def pilot_camera(t, true_camera):
+        camera_support.clear()
         if args.arm.removeprefix("main-")[0] == "T":
             return true_camera
-        n = int(np.clip(np.searchsorted(releases, t, side="right") - 1, 0, len(rows) - 1))
-        return estimated_poses[n]
+        n = int(np.searchsorted(releases, t, side="right") - 1)
+        camera_support["visual_pose_available"] = None if n < 0 else float(releases[n])
+        if propagated:
+            m = int(np.searchsorted(motion_arrivals, t, side="right") - 1)
+            camera_support["motion_pose_available"] = None if m < 0 else float(motion_arrivals[m])
+            prior = np.eye(4) if m < 0 else np.array(motions[m]["camera"]).reshape(4, 4)
+            return prior if n < 0 else corrections[n] @ prior
+        return np.eye(4) if n < 0 else estimated_poses[n]
 
     # Prime GL paths with disposable geometry; no observation or map is retained.
     from ito.render.scene import GaussianBuffer
@@ -741,8 +772,9 @@ def main():
                     source_frame_id=sources[index]["source_frame_id"],
                     scene_age_ms=None,
                     render_began=now,
-                    camera_mode="own published pose",
+                    camera_mode=camera_mode,
                     settings=settings,
+                    **camera_support,
                 )
                 recorder.camera(frame["rgb"], index, now, true_camera)
                 next_record += 0.1
@@ -820,7 +852,7 @@ def main():
             ),
             true_camera=alignment
             @ np.load(args.recording / "source" / sources[index]["file"])["camera"],
-            camera_mode="own published pose; map-side correction excluded",
+            camera_mode=camera_mode,
             render_budget=0 if args.arm.startswith("main-") else LIVE_RENDER_SPLATS,
         )
     (args.out / "display.json").write_text(
@@ -831,7 +863,7 @@ def main():
                 GL=gl.info["GL_RENDERER"],
                 eye_size=args.eye_size,
                 recording=args.record,
-                camera_mode="own published pose; map-side correction excluded",
+                camera_mode=camera_mode,
                 optimization=not args.arm.startswith("main-") and not args.no_opt,
                 render_budget=renderer.render_budget,
                 frames=len(costs),
