@@ -194,6 +194,16 @@ def main():
             if args.stage == "after":
                 prefixes(roots[-1][0], seq, arm, image_root / f"{seq}-{arm}-prefix.jpg")
         if args.stage == "after":
+            if seq == "sweep180":
+                for arm in ("TE", "EE"):
+                    motion(
+                        roots,
+                        seq,
+                        arm,
+                        15.0,
+                        image_root / f"{seq}-{arm}-motion-15.0.jpg",
+                        rgb=True,
+                    )
             actual_main(
                 args.out,
                 seq,
