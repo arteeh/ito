@@ -72,6 +72,23 @@ SFLP equivalence. Headset, real beta, physical mounts/intrinsics and sustained 3
 remain untested. Earlier functional e2e and fork checks passed before the disk incident; their
 logs were deleted. The fresh compact evidence does not establish all #42 acceptance conditions.
 
+Second by-eye review (same sheets, 15 October 2026), no number gates:
+
+- Camera-only vs +IMU (12/50/76 s, 84 s turn): equal at 12 and 50 s. At 76 s, +IMU is worse in one
+  row (large black hole, ghost box edge). At the 84 s turn camera-only is a smeared mess and +IMU a
+  flat wall without the window: both wrong. IMU prevents the rotation blow-up but does not yet look better.
+- +IMU vs +IMU+ToF: the 50 s floor is smoother but loses plank detail; 76 s is alike, holes in both;
+  at the 84 s turn ToF recovers a wall corner but with a slanted wall and a spurious edge. Mixed.
+- Beta default vs `a7b8ea0` (point renders): about the same at 12 and 50 s; at 76 s the default has
+  more speckle on the box and wall floaters. Slightly worse, not clearly. The sensor-free wire-4
+  control is clearly worse at 76 s (ghost wall slab, duplicated shelf).
+- All Gaussian arms at 12 s show the same framing/roll offset from the source view, so it is not
+  sensor-specific.
+
+Windows release of `15ad3f1` (`release.ps1 -Branch feat/obs-42`, 7.76 GB): its runtime imports
+torch (CUDA available), cupy, mujoco, aiortc, xr, imgui_bundle and ito. The GUI was not
+launched because ItoVirtual was not running.
+
 `oracle_capture.py --record-stride 3 --no-live-record` keeps the live beta camera intact;
 `observations_suite.sh` checks C: and the total job budget before/after each replay, makes
 reports and deletes each arm's depth stacks before starting the next. Contact sheets and small
