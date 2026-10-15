@@ -98,6 +98,7 @@ class PoseGraph:
         self.td_bounds = td_bounds
         self.estimate_td = estimate_td
         self.delays = deque(maxlen=DELAY_MEMORY)  # (seconds, sigma), newest last
+        self.delay_jitter = 0.0
         self.log_scale = 0.0
         # (log metres per front-end unit, sigma), newest last; until the first is solved the
         # front end's scale is unknown, and nothing holds it near its start.
@@ -111,6 +112,7 @@ class PoseGraph:
         self.anchor: np.ndarray | None = None  # pose prior on the oldest keyframe
         self.next_id = 0
         self.solves = 0
+        self.rejected_visual = 0
         # (time, node id, pose) of every published node, oldest first; keyframes' follow
         # their window solves while they are in the window.
         self.published = deque(maxlen=PUBLISHED)
@@ -167,7 +169,25 @@ class PoseGraph:
     def add_visual(self, reference, frame, relative, sigma):
         """A front end's reference-from-frame pose (translation in its own units)."""
         if reference not in self.nodes or frame not in self.nodes or reference == frame:
-            return
+            return False
+        relative = np.asarray(relative, float)
+        sigma = np.asarray(sigma, float)
+        if (
+            relative.shape != (4, 4)
+            or sigma.shape != (6,)
+            or not (np.isfinite(relative).all() and np.isfinite(sigma).all() and (sigma > 0).all())
+        ):
+            self.rejected_visual += 1
+            return False
+        a, b = self.nodes[reference].time - self.td, self.nodes[frame].time - self.td
+        expected, covariance = self.motion.between(a, b)
+        innovation = Rotation.from_matrix(expected[:3, :3].T @ relative[:3, :3]).as_rotvec()
+        # Reject a different view before robust optimization can spread it through the
+        # window. A noisy robot widens this gate; no sim-specific trust is assumed.
+        variance = np.diag(covariance)[:3] + sigma[:3] ** 2
+        if np.sum(innovation**2 / np.maximum(variance, 1e-12)) > 16.27:
+            self.rejected_visual += 1
+            return False
         translation = np.array(relative[:3, 3], float)
         sigma = np.array(sigma, float)
         sigma[3:] = np.hypot(sigma[3:], VISUAL_SCALE * np.linalg.norm(translation))
@@ -176,6 +196,7 @@ class PoseGraph:
         )
         if self.estimate_td:
             self._observe_delay(self.visual[-1])
+        return True
 
     def add_map(self, node, pose, sigma):
         """Where a map aligner placed a node: world-from-camera, and the one-sigma rotation
@@ -205,6 +226,8 @@ class PoseGraph:
         best = int(np.argmin(error))
         if best in (0, len(delays) - 1):
             return
+        if error[best] > 3 * np.linalg.norm(visual.sigma[:3]):
+            return
         # How fast the robot's relative rotation moves with the delay, around the best one.
         turn = (robot[best - 1].inv() * robot[best + 1]).magnitude() / (2 * DELAY_STEP)
         if turn < DELAY_TURN:
@@ -218,14 +241,27 @@ class PoseGraph:
 
     def solve_delay(self):
         """The frame delay from its observations, robustly, as solve_scale the scale."""
-        if not self.estimate_td or not self.delays:
+        if not self.estimate_td or len(self.delays) < 5:
             return
         values, sigmas = np.array(self.delays).T
         delay = float(np.median(values))
         for _ in range(8):
             weights = 1 / (sigmas**2 + ((delay - values) / CAUCHY) ** 2)
             delay = float(weights @ values / weights.sum())
-        self.td = float(np.clip(delay, *self.td_bounds))
+        self.delay_jitter = float(1.4826 * np.median(np.abs(values - delay)))
+        # A new delay retimes every retained motion factor. Applying a whole fitted
+        # jump at once permanently rotates their anchored trajectory during a turn.
+        old = self.td
+        self.td = float(np.clip(old + np.clip(delay - old, -0.001, 0.001), *self.td_bounds))
+        shifts = {}
+        for node, value in self.nodes.items():
+            shift = np.linalg.inv(self.motion.at(value.time - old)) @ self.motion.at(
+                value.time - self.td
+            )
+            value.pose = value.pose @ shift
+            shifts[node] = shift
+        if self.anchor is not None and self.keyframes:
+            self.anchor = self.anchor @ shifts[self.keyframes[0]]
 
     def promote(self):
         """The current frame becomes a keyframe; the oldest leaves a full window."""

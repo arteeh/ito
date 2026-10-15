@@ -71,6 +71,19 @@ def _run(recon):
             )
         else:
             backend = RGBDBackend(recon.budget.value, recon.intrinsics, **recon.options)
+        if robot_first:
+
+            def publish_pose(pose, correction, stamp):
+                if recon.output_lock.acquire(False):
+                    try:
+                        np.frombuffer(recon.output_correction, np.float32)[:] = correction.ravel()
+                        if stamp >= recon.output_captured.value:
+                            np.frombuffer(recon.output_camera, np.float32)[:] = pose.ravel()
+                            recon.output_captured.value = stamp
+                    finally:
+                        recon.output_lock.release()
+
+            backend.pose_publisher = publish_pose
         backend.bind_admission(recon.admission)
         if backend.xp is not np:
             from .memory import VRAM
@@ -247,13 +260,14 @@ def _run(recon):
                     timeline.write(json.dumps(row) + "\n")
                 if recon.backend == "slam" and recon.output_lock.acquire(False):
                     try:
-                        np.frombuffer(recon.output_camera, np.float32)[:] = (
-                            backend.camera_pose.ravel()
-                        )
+                        if not robot_first:
+                            np.frombuffer(recon.output_camera, np.float32)[:] = (
+                                backend.camera_pose.ravel()
+                            )
+                            recon.output_captured.value = captured
                         np.frombuffer(recon.output_correction, np.float32)[:] = (
                             backend.correction.ravel() if robot_first else np.eye(4).ravel()
                         )
-                        recon.output_captured.value = captured
                         recon.tracked.value = backend.tracked
                         recon.tracking.value = not backend.lost and backend.tracked > 0
                         recon.restart_counts[:] = [backend.restarts[c] for c in RESTART_CAUSES]
@@ -558,6 +572,17 @@ class Reconstruction:
         state) oldest first. Never waits: a busy worker gets them with the next batch."""
         if self.tracking_mode == "robot" and self.backend == "slam":
             self.motion_ring.put(samples)
+            if len(samples) and self.output_lock.acquire(False):
+                try:
+                    stamp, pose, _, _ = samples[-1]
+                    if stamp > self.output_captured.value:
+                        correction = np.frombuffer(self.output_correction, np.float32).reshape(4, 4)
+                        np.frombuffer(self.output_camera, np.float32)[:] = (
+                            correction @ pose
+                        ).ravel()
+                        self.output_captured.value = stamp
+                finally:
+                    self.output_lock.release()
 
     def restarts(self):
         """SLAM's local map restarts so far by cause; None while the worker is publishing."""
