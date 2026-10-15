@@ -147,6 +147,7 @@ class DesktopWindow:
     ) -> None:
         """Poll input at 90 Hz while the display draws the latest snapshot."""
         dispatch = DisplayDispatch(self)
+        self.input.heading = lambda: state().robot_heading
         dispatch.run(
             lambda: self._draw(
                 source, state, on_input, max_frames, metrics, save_settings, dispatch

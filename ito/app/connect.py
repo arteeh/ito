@@ -38,6 +38,9 @@ class Menu:
         from .settings_screen import SettingsScreen
 
         self.window = window
+        self.theme = window.overlay.theme
+        self.theme.menu()
+        self.choice = None
         self.recent = settings.recent()
         self.address = pairing or (self.recent[0]["address"] if self.recent else "")
         self.code, self.focus = "", True
@@ -46,32 +49,46 @@ class Menu:
         self.error, self.pairing = error, pairing
         self.page = "main"
         self.pending_choice = None
-        self.layout = MenuLayout(placed)
+        self.layout = MenuLayout(placed, self.theme)
         self.settings = SettingsScreen(self.layout)
 
     def draw(self, size, *, xr_mode=False):
         self.settings.poll()
-        with self.layout.window("Settings" if self.page == "settings" else "Ito", size):
-            return self.draw_page(xr_mode=xr_mode)
+        name, alpha, leaving = self.theme.showing()
+        if name == "hud":
+            choice, self.choice = self.choice, None
+            if choice:
+                self.theme.leaving = True  # The outgoing menu is already invisible.
+            return choice
+        with self.theme.faded(alpha, leaving):
+            with self.layout.window("Settings" if name == "settings" else "Ito", size):
+                choice = self.draw_page(xr_mode=xr_mode, page=name, leaving=leaving)
+        if not leaving:
+            if choice:
+                self.choice = choice
+                self.theme.show("hud", "session")
+            elif self.page != name:
+                self.theme.show(self.page, "menu")
+        return None
 
-    def draw_page(self, *, xr_mode):
+    def draw_page(self, *, xr_mode, page, leaving):
         choice = None
         layout.clear()
-        if self.pending_choice:
+        if self.pending_choice and not leaving:
             imgui.text("Saving settings...")
             if self.settings.save_error:
                 self.pending_choice = None
                 self.page = "settings"
             elif not self.settings.writes:
                 choice, self.pending_choice = self.pending_choice, None
-        elif self.page == "settings":
+        elif page == "settings":
             if self.settings.draw(xr_mode=xr_mode):
                 self.page = "main"
         elif self.pairing:
             imgui.text(f"Pairing code for {self.pairing}")
             imgui.text_disabled("The robot's driver printed it when it was set up;")
             imgui.text_disabled("its --show-code option prints it again.")
-            if self.focus:
+            if self.focus and not leaving:
                 imgui.set_keyboard_focus_here()
                 self.focus = False
             field, action = self.layout.row(3, 1)
@@ -106,7 +123,7 @@ class Menu:
                 typed = self.address.strip()
                 choice = Choice(typed, self.xr, credential=settings.credential(typed))
             if self.recent:
-                imgui.separator_text("Recent robots")
+                self.theme.heading("Recent robots")
                 for index, entry in enumerate(self.recent):
                     if self.layout.button(
                         f"{entry['name']}  {entry['address']}##{index}", f"recent {index}"
@@ -121,7 +138,7 @@ class Menu:
                 if self.layout.button("Use desktop menu" if xr_mode else "Open menu in VR", "vr"):
                     choice = Choice(None, not xr_mode, menu=True)
         if self.error:
-            imgui.text_colored((1, 0.45, 0.4, 1), self.error)
+            imgui.text_colored(self.theme.color("error"), self.error)
         if choice and self.settings.writes:
             self.pending_choice, choice = choice, None
         return choice
@@ -145,12 +162,12 @@ def choose(window, *, xr=False, error=None, pairing=None):
             choice = menu.draw(size)
             window.context.screen.use()
             window.context.viewport = (0, 0, *size)
-            window.context.clear(0.05, 0.06, 0.07)
+            window.context.clear(*menu.theme.color("clear"))
             window.overlay.render()
             pygame.display.flip()
             if choice:
                 layout.clear()
                 return choice
-            clock.tick(30)
+            clock.tick(window.fps)
     finally:
         menu.settings.close()

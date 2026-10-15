@@ -25,6 +25,8 @@ log = logging.getLogger(__name__)
 # can give up sooner.
 HEADSET_WAIT = 90.0
 HEADSET_POLL = 0.5
+# Keep GHOST-RITE text near its original angular size, with room below the HUD for safety.
+HUD_PANEL_PIXELS = (1024, 640)
 # Each round asks every runtime once; starting a runtime can take seconds (SteamVR).
 ROUND_PAUSE = 2.0
 
@@ -160,7 +162,7 @@ class Session:
                 Swapchain(self, (v.recommended_image_rect_width, v.recommended_image_rect_height))
                 for v in views
             ]
-            self.panel = Swapchain(self, (768, 440))
+            self.panel = Swapchain(self, HUD_PANEL_PIXELS)
         except BaseException:
             self.close()
             raise

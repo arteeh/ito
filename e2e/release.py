@@ -201,14 +201,26 @@ class App:
         log(f"{self.name}: closed, exit 0")
 
 
+def control_pixels(image):
+    """Cyan control fills, including disabled ones, excluding the binding circle and text."""
+    red, green, blue = image[:, :, :3].astype(np.int16).transpose(2, 0, 1)
+    return (
+        (red <= 25) & (green > 25) & (green < 140) & (blue > 30) & (blue < 140) & (blue > red + 20)
+    )
+
+
 def menu_buttons(image):
-    """Blue button bands in the centre of the real main menu, top to bottom."""
+    """Full-width button bands in the centre of the real main menu, top to bottom."""
     width = image.shape[1]
     middle = image[:, width // 2 - 180 : width // 2 + 180]
-    blue = (middle[:, :, 2] > 90) & (middle[:, :, 2] > middle[:, :, 0] + 40)
-    rows = np.flatnonzero(blue.sum(axis=1) > 180)
+    rows = np.flatnonzero(control_pixels(middle).sum(axis=1) > 180)
     groups = np.split(rows, np.flatnonzero(np.diff(rows) > 1) + 1)
-    return [(width // 2, float((group[0] + group[-1]) / 2)) for group in groups if len(group) > 20]
+    tallest = max(map(len, groups))
+    return [
+        (width // 2, float((group[0] + group[-1]) / 2))
+        for group in groups
+        if len(group) >= tallest * 0.7
+    ]
 
 
 def simulated_robot_button(image):

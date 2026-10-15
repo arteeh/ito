@@ -217,6 +217,12 @@ class Pilot:
             self.state,
             status=PilotStatus(
                 link=link,
+                link_lagging=bool(peer)
+                and (
+                    (peer.clock.rtt is not None and peer.clock.rtt >= INPUT_FRESH)
+                    or (self.telemetry.get("pilot_input_latency_ms") or 0) >= INPUT_FRESH * 1000
+                    or (status is not None and status.reason == "input timeout")
+                ),
                 latency_ms=peer.clock.rtt * 1000 if peer and peer.clock.rtt is not None else None,
                 robot=name,
                 e_stop=status.state == "e-stopped" if status else old.e_stop,
