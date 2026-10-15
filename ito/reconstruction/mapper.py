@@ -561,13 +561,18 @@ class GaussianMap:
                 # a constant-depth curtain over an oblique floor.
                 i = frame.intrinsics
                 rays = np.stack(((xx - i.cx) / i.fx, (yy - i.cy) / i.fy), -1)
-                dense = self.smooth_depth(
-                    rays[valid_depth],
-                    inverse,
-                    kernel="thin_plate_spline",
-                    degree=1,
-                    smoothing=0.02,
-                )(rays.reshape(-1, 2)).reshape(xx.shape)
+                sites = rays[valid_depth]
+                dense = (
+                    self.smooth_depth(
+                        sites,
+                        inverse,
+                        kernel="thin_plate_spline",
+                        degree=1,
+                        smoothing=0.02,
+                    )(rays.reshape(-1, 2)).reshape(xx.shape)
+                    if np.linalg.matrix_rank(sites - sites.mean(0)) == 2
+                    else nearest
+                )
                 dense = 1 / np.clip(np.where(np.isfinite(dense), dense, nearest), 0.25, 20)
                 i = frame.intrinsics
                 seed_points = np.stack(
