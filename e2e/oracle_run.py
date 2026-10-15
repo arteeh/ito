@@ -205,7 +205,8 @@ def worker(args, ring, admission, ready, start, stopped, status):
         alignment = first["pose"] @ np.linalg.inv(first["true_pose"])
         origin = settings["origin"]
         # All arms, including truth, see the same frozen estimates' availability schedule.
-        zero = rows[0]["available"] if args.view_start is None else args.view_start
+        view_start = getattr(args, "view_start", None)
+        zero = rows[0]["available"] if view_start is None else view_start
         for row in rows:
             row["release"] = row["available"] - zero
         main = args.arm.startswith("main-")
