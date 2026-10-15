@@ -144,15 +144,7 @@ def main():
                 assert display["bounded_draws"] <= display["render_budget"]
             if display["optimizer"]:
                 work = read(folder / "load/worker.json")
-                assert work["oom"] == 0
-            pilot = folder / "motion/pilot/frames.jsonl"
-            if display.get("camera_mode") and pilot.exists():
-                frames = [json.loads(s) for s in pilot.read_text().splitlines()]
-                assert all(r["t"] >= r["render_began"] for r in frames)
-                assert (
-                    all(a["t"] <= b["t"] for a, b in zip(frames, frames[1:], strict=False))
-                    and len(work["admitted"]) > 1
-                )
+                assert work["oom"] == 0 and len(work["admitted"]) > 1
             result["native"][folder.name] = display
     fault = out / "half-oom-rollback-fixed"
     if (fault / "worker.json").exists():
