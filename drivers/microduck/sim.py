@@ -376,7 +376,7 @@ def main():
     parser.add_argument(
         "--head-imu", action="store_true", default=None, help="enable the board's head IMU"
     )
-    parser.add_argument("--imu-noise", type=float, default=0.0, help="BMI088 noise ratio")
+    parser.add_argument("--imu-noise", type=float, default=0.0, help="board-specific head IMU noise ratio")
     parser.add_argument("--tof-noise", type=float, default=1.0, help="ToF noise ratio")
     parser.add_argument("--seed", type=int, default=0, help="sensor random seed")
     parser.add_argument("--viewer", action="store_true", help="open Pollen's MuJoCo viewer")
