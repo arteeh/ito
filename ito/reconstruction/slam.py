@@ -25,6 +25,7 @@ from ito import clock
 from .fusion import UP, PoseGraph
 from .motion import MotionBuffer
 from .rgbd import RGBDBackend
+from .sensors import HeadSensors
 from .slam_vision import RESTART_CAUSES
 
 __all__ = ["RESTART_CAUSES", "SLAMBackend"]
@@ -45,6 +46,9 @@ FLOOR_SHARE = 0.1
 FLOOR_HEIGHT = 0.05
 FLOOR_LEVEL = 0.05  # log half-width of the floor's level
 FLOOR_SIGMA = 0.15  # one frame's log-scale from it, one sigma (MASt3R bends near depths)
+# A ToF's zones measure depth itself, millimetres to centimetres; what is left is MASt3R
+# bending between the zones and the rest of the frame.
+RANGE_SIGMA = 0.05
 SCALE_STEP = 0.01  # Between keyframes the front end takes a new scale past this log-change.
 
 
@@ -92,6 +96,7 @@ class SLAMBackend(RGBDBackend):
         # A keyframe needs the robot's motion back to its exposure; a minute outlasts any
         # look around the room.
         self.motion = MotionBuffer(motion_noise, seconds=60.0)
+        self.sensors = HeadSensors()
         # The frame delay is estimated online, against the robot's motion: visual turns
         # only line up with the robot's at the right delay.
         bounds = (max(0.0, frame_delay + DELAY_RANGE[0]), frame_delay + DELAY_RANGE[1])
@@ -115,6 +120,9 @@ class SLAMBackend(RGBDBackend):
         if hasattr(self.frontend, "bind_admission"):
             self.frontend.bind_admission(admission)
 
+    def add_sensors(self, imu, ranges):
+        self.sensors.add(imu, ranges)
+
     def add_motion(self, rows):
         self.motion.extend(rows)
 
@@ -136,7 +144,10 @@ class SLAMBackend(RGBDBackend):
         last = graph.latest_keyframe()
         reference_time = graph.nodes[last].time if last is not None else captured
         _, covariance = self.motion.between(reference_time - graph.td, exposure)
-        spin = float(np.linalg.norm(self.motion.angular_velocity(exposure)))
+        gyro = self.sensors.angular_velocity(exposure)
+        if gyro is None:
+            gyro = self.motion.angular_velocity(exposure)
+        spin = float(np.linalg.norm(gyro))
         if oracle is None and spin * self.exposure * self.focal > BLUR_PIXELS:
             self.blurred += 1
             graph.solve_frame()
@@ -148,15 +159,28 @@ class SLAMBackend(RGBDBackend):
             graph.add_visual(result.reference, node, result.relative, result.sigma)
             graph.solve_delay()
             self.matched += 1
-        floor = None
+        measured = None  # This frame's own metres per front-end unit, if it saw any.
         if cloud is not None:
+            # MASt3R's scale wanders from frame to frame (each tracked frame rewrites its
+            # keyframe's points): the floor, and the ToF wherever it looks, correct it every
+            # frame they see, and place that frame's points by their own measure.
             robot = self.motion.at(exposure)
-            floor = floor_scale(cloud, robot[:3, :3].T @ UP, float(robot[1, 3]))
-            if floor is not None:
-                # MASt3R's scale wanders from frame to frame (each tracked frame rewrites
-                # its keyframe's points): the floor corrects it every frame it is seen.
-                graph.add_scale(math.log(floor), FLOOR_SIGMA)
+            seen = []
+            below = floor_scale(cloud, robot[:3, :3].T @ UP, float(robot[1, 3]))
+            if below is not None:
+                seen.append((math.log(below), FLOOR_SIGMA))
+            ranged = self.sensors.range_scale(cloud, exposure, self.motion)
+            if ranged is not None:
+                seen.append((math.log(ranged), RANGE_SIGMA))
+            for value, sigma in seen:
+                graph.add_scale(value, sigma)
+            if seen:
                 graph.solve_scale()
+                weights = [sigma**-2 for _, sigma in seen]
+                measured = math.exp(
+                    sum(w * value for w, (value, _) in zip(weights, seen, strict=True))
+                    / sum(weights)
+                )
         if oracle is not None:
             graph.nodes[node].pose = np.array(oracle, dtype=np.float64)
         else:
@@ -180,9 +204,10 @@ class SLAMBackend(RGBDBackend):
         if dropped:
             self.frontend.forget(dropped)
         if cloud is not None:
-            # The frame's points are in the units the fold just replaced; its own floor,
-            # where seen, places them better than the map's few seconds of floors.
-            cloud = cloud._replace(points=cloud.points * (scale if floor is None else floor))
+            # The frame's points are in the units the fold just replaced; its own floor and
+            # ranges, where seen, place them better than the map's last few seconds of them.
+            own = scale if measured is None else measured
+            cloud = cloud._replace(points=cloud.points * own)
         pose = self._publish(node)
         if cloud is not None:
             self.place(cloud, pose, now + clock.now() - started)
@@ -202,6 +227,7 @@ class SLAMBackend(RGBDBackend):
         self.report(
             f"Robot-first tracking | {self.tracked} frames, "
             f"{self.matched / self.tracked:.0%} matched, {self.blurred} blurred, "
+            f"{self.sensors.ranged} ToF-scaled, "
             f"frame delay {graph.td * 1000:.0f} ms"
         )
         return pose

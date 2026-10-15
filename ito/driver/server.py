@@ -25,6 +25,7 @@ from ito.protocol import (
     Motion,
     Paired,
     PilotState,
+    Sensors,
     Status,
     WireMessage,
     encode,
@@ -58,6 +59,7 @@ class Driver:
         self.adapter = adapter
         adapter.frame_sink = self.publish_frame
         adapter.motion_sink = self.publish_motion
+        adapter.sensor_sink = self.publish_sensors
         self.input_timeout = input_timeout
         self.command_rate = command_rate
         self.ice_servers = ice_servers
@@ -230,6 +232,11 @@ class Driver:
         if self.adapter.description.motion_noise is None:
             raise ValueError("a robot that publishes motion must describe its motion noise")
         return self.peer.send(motion) if self.peer else False
+
+    def publish_sensors(self, sensors: Sensors) -> bool:
+        if sensors.camera not in {c.name for c in self.adapter.description.cameras}:
+            raise ValueError("sensors must be mounted on a described camera")
+        return self.peer.send(sensors) if self.peer else False
 
     async def _run(self) -> None:
         interval = min(0.01, self.input_timeout / 4, 1 / self.command_rate)
@@ -442,7 +449,7 @@ class Driver:
             return
         self._closing = True
         self._neutral("driver shutting down")
-        self.adapter.frame_sink = self.adapter.motion_sink = None
+        self.adapter.frame_sink = self.adapter.motion_sink = self.adapter.sensor_sink = None
         try:
             if self._task:
                 self._task.cancel()

@@ -15,7 +15,7 @@ from ito.desktop import DesktopState, PilotStatus
 from ito.desktop.settings import load as app_settings
 from ito.link import PairingError, connect
 from ito.link.audio import Audio
-from ito.protocol import Command, FrameMetadata, Motion, Paired, PilotState, Pose, Status
+from ito.protocol import Command, FrameMetadata, Motion, Paired, PilotState, Pose, Sensors, Status
 from ito.rates import CounterRate, Rate
 from ito.reconstruction import Reconstruction
 from ito.render import pose
@@ -348,6 +348,39 @@ class Pilot:
                 worker.motion(fresh)
         return fresh
 
+    def _sensors(self, message, peer):
+        """A camera's IMU and range readings, on the pilot clock, for reconstruction."""
+        worker = self.worker
+        if worker is None or self.failure or not self.robot_first:
+            return
+        local = peer.clock.remote_to_local
+        imu = [
+            dict(
+                sensor=unit.sensor,
+                mount=camera_matrix(unit.mount),
+                gyro_sigma=unit.gyro_sigma,
+                accel_sigma=unit.accel_sigma,
+                samples=[
+                    (local(x.time), x.angular_velocity, x.specific_force, x.orientation)
+                    for x in unit.samples
+                ],
+            )
+            for unit in message.imu
+        ]
+        ranges = [
+            dict(
+                sensor=grid.sensor,
+                time=local(grid.time),
+                mount=camera_matrix(grid.mount),
+                shape=(grid.rows, grid.cols),
+                field_of_view=grid.field_of_view,
+                distances=[math.nan if d is None else d for d in grid.distances],
+                sigma=grid.sigma,
+            )
+            for grid in message.ranges
+        ]
+        worker.sensors(imu, ranges)
+
     def _retire(self, worker):
         # Never on the link loop: a busy or wedged worker takes a while to stop or kill.
         closer = threading.Thread(target=worker.close, name="ito-reconstruction-close")
@@ -497,6 +530,8 @@ class Pilot:
                         self._submit(pair, peer)
                 elif isinstance(message, Motion):
                     self._motion(message, peer)
+                elif isinstance(message, Sensors) and message.camera == camera.name:
+                    self._sensors(message, peer)
                 elif isinstance(message, Status):
                     last_status = clock.now()
                     self.telemetry = message.telemetry

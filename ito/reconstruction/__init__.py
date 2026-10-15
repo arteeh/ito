@@ -4,6 +4,7 @@ import json
 import logging
 import multiprocessing as mp
 import os
+import queue
 import sys
 import traceback
 
@@ -123,6 +124,11 @@ def _run(recon):
             if robot_first:
                 rows, motion_cursor = recon.motion_ring.read(motion_cursor)
                 backend.add_motion(rows)
+                while True:
+                    try:
+                        backend.add_sensors(*recon.sensor_queue.get_nowait())
+                    except queue.Empty:
+                        break
             frame = None
             take = recon.sequence.value != sequence and recon.admission.available()
             if take and recon.input_lock.acquire(False):
@@ -384,6 +390,8 @@ class Reconstruction:
         self.output_camera = context.RawArray("f", 16)
         self.output_correction = context.RawArray("f", np.eye(4).ravel().tolist())
         self.motion_ring = MotionRing(context)
+        # Head IMU and ToF readings (Pilot._sensors): a few per robot tick, small.
+        self.sensor_queue = context.Queue(maxsize=256)
         self.output_captured = context.RawValue("d", 0)
         self.tracked = context.RawValue("Q", 0)
         self.integrated = context.RawValue("Q", 0)  # backend calls, including pose-only frames
@@ -559,6 +567,21 @@ class Reconstruction:
         if self.tracking_mode == "robot" and self.backend == "slam":
             self.motion_ring.put(samples)
 
+    def sensors(self, imu, ranges):
+        """The robot's camera-mounted sensor readings on the pilot clock (Pilot._sensors).
+        Never waits: with the worker behind, the oldest readings give way."""
+        if self.closed or self.tracking_mode != "robot" or self.backend != "slam":
+            return
+        for _ in range(2):
+            try:
+                self.sensor_queue.put_nowait((imu, ranges))
+                return
+            except queue.Full:
+                try:
+                    self.sensor_queue.get_nowait()
+                except queue.Empty:
+                    pass
+
     def restarts(self):
         """SLAM's local map restarts so far by cause; None while the worker is publishing."""
         if not self.output_lock.acquire(False):
@@ -654,6 +677,8 @@ class Reconstruction:
                 self.process.join(timeout=3)
                 if self.process.is_alive():
                     log.error("Reconstruction process %d did not exit", self.process.pid)
+            self.sensor_queue.cancel_join_thread()
+            self.sensor_queue.close()
             self.errors.close()
             self.notes.close()
 

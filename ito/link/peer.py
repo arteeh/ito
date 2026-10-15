@@ -38,6 +38,7 @@ from ito.protocol import (
     Pong,
     ProtocolError,
     RobotDescription,
+    Sensors,
     Status,
     WireMessage,
     decode,
@@ -84,7 +85,7 @@ LANES = {
     ),
     # The robot's own motion rides with the frames it places: a driver resends samples the
     # lane dropped while a frame was in flight, in its next batch.
-    "frames": Lane(False, None, 0, (), (FrameMetadata, Motion), bulk=True),
+    "frames": Lane(False, None, 0, (), (FrameMetadata, Motion, Sensors), bulk=True),
     "clock": Lane(False, 0, 0, (Ping, Pong), (Ping, Pong)),
     "pilot": Lane(False, 0, 0, (PilotState,), ()),
 }
@@ -313,9 +314,13 @@ class Peer:
                         raise ProtocolError("robot description may not change during a connection")
                     self.description = message
                     self.robot_received.set()
-                if isinstance(message, Motion) and self.description is None:
+                if isinstance(message, (Motion, Sensors)) and self.description is None:
                     self.dropped_messages += 1
                     return
+                if isinstance(message, Sensors) and message.camera not in {
+                    c.name for c in self.description.cameras
+                }:
+                    raise ProtocolError("sensors on an unknown camera")
                 if isinstance(message, FrameMetadata):
                     # Frames and the description travel on separate channels.
                     if self.description is None:

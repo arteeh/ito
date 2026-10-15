@@ -17,10 +17,11 @@ from ito.protocol import (
     MotionSample,
     Pose,
     RobotDescription,
+    Sensors,
 )
 from ito.rates import Rate
 
-from . import frames, gaze
+from . import frames, gaze, sensors
 from .camera import Camera, Track
 from .remote import Remote, RemoteError
 
@@ -151,7 +152,10 @@ class SourceClock:
 
 
 class MicroduckAdapter(Adapter):
-    def __init__(self, robot="ws://127.0.0.1:8443", input_timeout=0.25, head_imu=False):
+    def __init__(self, robot="ws://127.0.0.1:8443", input_timeout=0.25, head_imu=None, tof=True):
+        """head_imu: None reads the head IMU if the robot has one (every beta does), True
+        requires it, False leaves it alone. tof: read the ToF if the robot has one. Either
+        missing, Ito works from the camera and the robot's motion alone."""
         if not robot.startswith(("ws://", "wss://")):
             raise ValueError("--robot must be mediad's ws://host:8443 address")
         if not math.isfinite(input_timeout) or not 0.02 <= input_timeout <= 0.5:
@@ -159,6 +163,14 @@ class MicroduckAdapter(Adapter):
         self.remote = Remote(robot, self._notification)
         self.input_timeout = input_timeout
         self.head_imu = head_imu
+        self.tof = tof
+        self._imu_chip = None  # The head IMU streaming to us, once head_imu.stream accepted.
+        self._tof_chip = None
+        self._tof_fov = None
+        self._imu_pending = deque(maxlen=64)  # (source time, head_imu.frame) not yet sent
+        self._ranges_pending = deque(maxlen=8)  # (source time, tof.frame) not yet sent
+        self._imu_rate = Rate()
+        self._tof_rate = Rate()
         # The policy's trained forward/backward range is +-0.4 m/s and it stands still below
         # about 0.35. It has no usable sideways step (none up to its trained 0.3 m/s), so
         # sideways input steers the body into that direction instead.
@@ -226,6 +238,7 @@ class MicroduckAdapter(Adapter):
             if model.get("asset") != "alpha":
                 raise RuntimeError("Microduck driver requires the alpha head model")
             self.joint_names = model["joint_names"]
+            self._tof_fov = math.radians(model.get("tof_fov_deg") or 45.0)
             self.camera = Camera(await self.remote.call("media.video"), self._frame_metadata)
             self._description = RobotDescription(
                 name="Microduck",
@@ -255,14 +268,11 @@ class MicroduckAdapter(Adapter):
                 camera_calibration=self.camera.source, camera_timestamp="driver receive time"
             )
             await self.remote.call("robot.stop")
-            if self.head_imu:
-                try:
-                    await self.remote.call("head_imu.stream")
-                except RemoteError as exc:
-                    raise RuntimeError(
-                        f"Microduck head IMU unavailable ({exc}); enable [head_imu] in tofd "
-                        "on the robot, or run without --head-imu"
-                    ) from exc
+            if self.head_imu is not False:
+                self._imu_chip = await self._stream("head_imu.stream", required=self.head_imu)
+            if self.tof:
+                self._tof_chip = await self._stream("tof.stream")
+            self._telemetry.update(head_imu=self._imu_chip or "none", tof=self._tof_chip or "none")
             # Every tick of robotd's 50 Hz loop: robot-first tracking on the pilot PC
             # interpolates the camera's motion between them.
             await self.remote.call("robot.subscribe", {})
@@ -282,6 +292,25 @@ class MicroduckAdapter(Adapter):
         except Exception:
             await self.close()
             raise
+
+    async def _stream(self, method, required=False):
+        """Subscribe to a head sensor; the chip's name, or None if the robot has none.
+
+        The beta's head IMU is robotd's and the zero3's tofd's (where it is off unless
+        [head_imu] enables it); a sensor that is off, absent or failing says why instead of
+        streaming, and Ito carries on without it unless `required`."""
+        try:
+            answer = await self.remote.call(method)
+        except RemoteError as exc:
+            answer = {"unavailable": str(exc)}
+        chip = answer.get("sensor")
+        if chip:
+            return chip
+        reason = answer.get("unavailable") or "no sensor fitted"
+        if required:
+            raise RuntimeError(f"Microduck {method} unavailable: {reason}")
+        self._telemetry[f"{method.split('.')[0]}_unavailable"] = str(reason)[:256]
+        return None
 
     def _check(self):
         if self._error:
@@ -451,9 +480,17 @@ class MicroduckAdapter(Adapter):
         if method == "head_imu.frame":
             source, _ = self._source_clock(data.get("t_ns"), clock.now())
             self._head_gyro.append((source, tuple(data["gyro"])))
+            self._imu_pending.append((source, data))
+            self._imu_rate.tick()
+            return
+        if method == "tof.frame":
+            source, _ = self._source_clock(data.get("t_ns"), clock.now())
+            self._ranges_pending.append((source, data))
+            self._tof_rate.tick()
             return
         if method != "robot.state":
             return
+        self._publish_sensors(data.get("frames") or {})
         values = {"policy": data["policy"]}
         for name, angle in zip(self.joint_names, data["joints"], strict=True):
             if name in HEAD_LIMITS or name == "mouth":
@@ -518,6 +555,29 @@ class MicroduckAdapter(Adapter):
         self._telemetry.update(values)
         self._state_at = clock.now()
 
+    def _publish_sensors(self, mounts):
+        """Send the head sensors' readings since the last tick, mounted where this tick's
+        kinematics put them on the camera (the head moves less in 20 ms than they can tell)."""
+        camera = mounts.get("camera")
+        if not camera or not (self._imu_pending or self._ranges_pending):
+            return
+        imu, grids = (), ()
+        if self._imu_pending and mounts.get("head_imu"):
+            imu = (
+                sensors.imu(self._imu_chip, list(self._imu_pending), mounts["head_imu"], camera),
+            )
+        if self._ranges_pending and mounts.get("tof"):
+            grids = tuple(
+                sensors.ranges(self._tof_chip, when, frame, mounts["tof"], camera, self._tof_fov)
+                for when, frame in self._ranges_pending
+            )
+        if not imu and not grids:
+            return
+        if self.publish_sensors(Sensors(camera="head", imu=imu, ranges=grids)):
+            self._imu_pending.clear()
+            self._ranges_pending.clear()
+        self._telemetry.update(head_imu_hz=self._imu_rate.hz(), tof_hz=self._tof_rate.hz())
+
     def _moved(self, data, received, pose, camera):
         """Queue this tick's camera pose for the pilot, stamped when robotd read its sensors."""
         source, stamp = self._source_clock(data.get("t_ns"), received)
@@ -525,7 +585,7 @@ class MicroduckAdapter(Adapter):
         if previous is not None and source <= previous[0]:
             return
         gyro = None
-        mount = (data.get("frames") or {}).get("head_imu") if self.head_imu else None
+        mount = (data.get("frames") or {}).get("head_imu") if self._imu_chip else None
         if self._head_gyro and mount:
             when, reading = min(self._head_gyro, key=lambda g: abs(g[0] - source))
             if abs(when - source) <= HEAD_IMU_MATCH:
