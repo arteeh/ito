@@ -32,16 +32,23 @@ def thumbnail(rgb):
 
 
 class HeadCamera(Camera):
-    def __init__(self, model, name):
+    def __init__(self, model, name, width=None, height=None, mount=90):
+        """mount: the board's camera mount (body_server.CAMERA_MOUNT), which Pollen's Camera
+        renders; ITO_MICRODUCK_CAMERA_HFOV is that board's lens (lens.HFOV), which mediad
+        publishes for the twin."""
         height = int(os.environ.get("ITO_MICRODUCK_CAMERA_HEIGHT", 360))
         width = lens.width_for(height)
+        hfov = float(os.environ.get("ITO_MICRODUCK_CAMERA_HFOV", lens.ZERO3_HFOV_DEG))
         # MuJoCo renders no larger than the offscreen buffer, which the scene sizes at 640x480.
         model.vis.global_.offwidth = max(model.vis.global_.offwidth, width)
         model.vis.global_.offheight = max(model.vis.global_.offheight, height)
+        # The frame is rendered unrotated, as the sensor reads out: on a quarter-turn mount
+        # its long side is the camera's vertical, and MuJoCo's fovy is across the height.
         model.cam_fovy[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, name)] = (
-            lens.vertical_fov_deg(width, height)
+            lens.vertical_fov_deg(width, height, hfov)
         )
-        super().__init__(model, name, width, height)
+        super().__init__(model, name, width, height, mount=mount)
+        self.mount = mount
         # ITO_MICRODUCK_TRUTH names a file for one line per rendered frame: when it was taken
         # (perf_counter, the driver's clock), the camera's true pose and a thumbnail to find
         # it again among the frames the pilot received (e2e/truth.py).
@@ -63,9 +70,9 @@ class HeadCamera(Camera):
                 if self.truth:
                     camera = np.eye(4)
                     # MuJoCo's world (z up) and camera to Ito's (y up), the image upright.
-                    camera[:3, :3] = (
-                        WORLD @ world.data.cam_xmat[self.camera].reshape(3, 3) @ UPRIGHT
-                    )
+                    camera[:3, :3] = WORLD @ world.data.cam_xmat[self.camera].reshape(3, 3)
+                    if self.mount == 90:
+                        camera[:3, :3] = camera[:3, :3] @ UPRIGHT
                     camera[:3, 3] = WORLD @ world.data.cam_xpos[self.camera]
                     poses.append((time.perf_counter(), camera))
             # MuJoCo's shadow pass produces dark floor triangles at this low camera height.
@@ -104,8 +111,8 @@ class ThreadedHeadCamera(HeadCamera):
     the world; a dedicated thread renders at FPS, taking the world lock only to copy the scene.
     """
 
-    def __init__(self, model, name):
-        super().__init__(model, name)
+    def __init__(self, model, name, width=None, height=None, mount=90):
+        super().__init__(model, name, width, height, mount)
         # A GL context is current on one thread at a time: the render thread makes its own.
         self.renderer.close()
         self.renderer = None

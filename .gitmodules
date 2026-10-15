@@ -1,14 +1,16 @@
-# Upstream Pollen stack for the Microduck sim, unmodified. The gitlinks pin the
-# exact commits; drivers/microduck/setup-sim.sh reads them from here.
-# microduck: a release tag (daemon-vX.Y.Z), what ships on a duck. microduck_rl:
-# its develop branch, which has no releases. gst-plugins-rs: 0.14.5 or newer.
+# The Pollen stack for the Microduck sim. The gitlinks pin the exact commits;
+# drivers/microduck/setup-sim.sh reads them from here.
+# microduck: release tag daemon-v0.17.4 plus the beta board's simulated head IMU,
+# ToF and calibrated camera (arteeh fork, branch feat/beta-sim-0.17.4).
+# microduck_rl: its develop branch (no releases) plus the matching simulated sensors
+# and per-board camera mount (arteeh fork, same branch name). gst-plugins-rs: 0.14.5+.
 [submodule "third_party/microduck"]
 	path = third_party/microduck
-	url = https://github.com/pollen-robotics/microduck
+	url = https://github.com/arteeh/microduck
 	shallow = true
 [submodule "third_party/microduck_rl"]
 	path = third_party/microduck_rl
-	url = https://github.com/pollen-robotics/microduck_rl
+	url = https://github.com/arteeh/microduck_rl
 	shallow = true
 [submodule "third_party/gst-plugins-rs"]
 	path = third_party/gst-plugins-rs
