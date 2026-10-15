@@ -191,7 +191,7 @@ def worker(args, ring, admission, ready, start, stopped, status):
         alignment = first["pose"] @ np.linalg.inv(first["true_pose"])
         origin = settings["origin"]
         # All arms, including truth, see the same frozen estimates' availability schedule.
-        zero = rows[0]["available"]
+        zero = rows[0]["available"] if args.view_start is None else args.view_start
         for row in rows:
             row["release"] = row["available"] - zero
         main = args.arm.startswith("main-")
@@ -605,7 +605,8 @@ def main():
     first = np.load(args.estimates / rows[0]["file"])
     alignment = first["pose"] @ np.linalg.inv(first["true_pose"])
     estimated_poses = [np.load(args.estimates / r["file"])["pose"] for r in rows]
-    releases = np.array([r["available"] - zero for r in rows])
+    # Source images, published poses and mapping must share the requested source clock.
+    releases = np.array([r["available"] - view_start for r in rows])
 
     def pilot_camera(t, true_camera):
         if args.arm.removeprefix("main-")[0] == "T":
