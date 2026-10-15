@@ -135,10 +135,9 @@ class GaussianMap:
 
         if not torch.cuda.is_available():
             raise RuntimeError("Optimized Gaussian mapping needs an NVIDIA CUDA device")
-        from scipy.interpolate import RBFInterpolator, griddata
+        from scipy.interpolate import griddata
 
         self.interpolate_depth = griddata
-        self.smooth_depth = RBFInterpolator
         from gsplat import rasterization
 
         self.rasterize = rasterization
@@ -160,6 +159,7 @@ class GaussianMap:
         )
         self.max_anchors, self.max_views = anchors, views
         self.generator = np.random.default_rng(seed)
+        self.has_inferred_depth = False
         self.origin_node = None
         self.anchors = {}  # node -> dict(slot, pose_cpu); slot 0 is never a node's
         self.views = {}  # node -> View, oldest first
@@ -200,6 +200,7 @@ class GaussianMap:
             grad2d=torch.zeros(0, device="cuda"),
             count=torch.zeros(0, device="cuda"),
             filter=torch.zeros(0, device="cuda"),
+            depth_prior=torch.empty(0, device="cuda"),
             origin=torch.empty((0, 3), device="cuda"),
             normal=torch.empty((0, 3), device="cuda"),
             seed_scale=torch.empty((0, 3), device="cuda"),
@@ -343,6 +344,7 @@ class GaussianMap:
         state = self.state.copy()
         scene_scale = self.scene_scale
         origin_node = self.origin_node
+        inferred_depth = self.has_inferred_depth
         keyframes, iterations = self.keyframes[:], self.iterations.copy()
         learning_rates = {k: [g["lr"] for g in o.param_groups] for k, o in self.optimizers.items()}
         changed, urgent = self.changed.copy(), self.urgent.copy()
@@ -376,6 +378,7 @@ class GaussianMap:
             self.p = torch.nn.ParameterDict(parameters)
             self.scene_scale, self.changed, self.urgent = scene_scale, changed, urgent
             self.origin_node = origin_node
+            self.has_inferred_depth = inferred_depth
             self.keyframes, self.iterations = keyframes, iterations
             self.pose_cache = None
             self.training_ids = None
@@ -549,6 +552,7 @@ class GaussianMap:
             valid_depth = np.isfinite(frame.depth) & (frame.depth > 0)
             if frame.sparse_depth and 4 <= np.count_nonzero(valid_depth) < frame.depth.size // 20:
                 measured_depth = self.tensor(valid_depth).bool()
+                self.has_inferred_depth = True
                 # ToF supplies zones, not object boundaries. This smooth inverse-depth
                 # prior initializes colour-bearing surfaces; only measured zones enter
                 # the depth loss. RGB observations subsequently refine the geometry.
@@ -556,20 +560,8 @@ class GaussianMap:
                 sites = np.stack((xx[valid_depth], yy[valid_depth]), -1)
                 inverse = 1 / frame.depth[valid_depth]
                 nearest = self.interpolate_depth(sites, inverse, (xx, yy), method="nearest")
-                # Inverse depth is affine on a plane. Regularize noisy zones and
-                # extrapolate their slope outside the ToF FOV instead of extending
-                # a constant-depth curtain over an oblique floor.
-                i = frame.intrinsics
-                rays = np.stack(((xx - i.cx) / i.fx, (yy - i.cy) / i.fy), -1)
-                sites = rays[valid_depth]
                 dense = (
-                    self.smooth_depth(
-                        sites,
-                        inverse,
-                        kernel="thin_plate_spline",
-                        degree=1,
-                        smoothing=0.02,
-                    )(rays.reshape(-1, 2)).reshape(xx.shape)
+                    self.interpolate_depth(sites, inverse, (xx, yy), method="linear")
                     if np.linalg.matrix_rank(sites - sites.mean(0)) == 2
                     else nearest
                 )
@@ -691,6 +683,9 @@ class GaussianMap:
             values,
             dict(
                 filter=z / i.fx * FILTER,
+                depth_prior=torch.ones(n, device="cuda")
+                if measured_depth is None
+                else 0.05 * measured_depth[sv, su].float(),
                 origin=values["means"].detach().clone(),
                 normal=normal @ rotation.T,
                 seed_scale=scales.clamp_min(0.0001),
@@ -988,14 +983,20 @@ class GaussianMap:
                 ).sum() / weight.sum().clamp_min(1)
         displacement = self.p["means"][ids] - self.state["origin"][ids]
         radius = 0.005 + self.state["seed_scale"][ids].amax(-1) * 4
-        loss = loss + 0.005 * (displacement / radius[:, None]).square().mean()
+        distance_prior = (displacement / radius[:, None]).square()
+        if self.has_inferred_depth:
+            distance_prior = distance_prior * self.state["depth_prior"][ids, None]
+        loss = loss + 0.005 * distance_prior.mean()
         q = torch.nn.functional.normalize(self.p["quats"][ids], dim=-1)
         w, x, y, z = q.unbind(-1)
         normal = torch.stack(
             (2 * (x * z + w * y), 2 * (y * z - w * x), 1 - 2 * (x * x + y * y)), -1
         )
         agreement = (normal * self.state["normal"][ids]).sum(-1).square()
-        loss = loss + 0.002 * (1 - agreement).clamp_min(0).mean()
+        normal_prior = (1 - agreement).clamp_min(0)
+        if self.has_inferred_depth:
+            normal_prior = normal_prior * self.state["depth_prior"][ids]
+        loss = loss + 0.002 * normal_prior.mean()
         loss = loss + 0.01 * exposure.square().mean()
         if pose_step:
             slots = torch.tensor([v.slot for v in views], device="cuda")
