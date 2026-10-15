@@ -407,6 +407,11 @@ def main():
     )
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--seconds", type=float, default=20)
+    parser.add_argument(
+        "--view-start",
+        type=float,
+        help="Source-relative display start, independent of estimate availability (A/B views)",
+    )
     parser.add_argument("--max-splats", type=int, default=1_000_000)
     parser.add_argument("--record", action="store_true")
     parser.add_argument(
@@ -478,7 +483,9 @@ def main():
         settings["precision"] = args.precision
     rows = json.loads((args.estimates / "frames.json").read_text())
     zero = rows[0]["available"]
-    times = np.array([r["captured"] - settings["origin"] - zero for r in sources])
+    view_start = zero if args.view_start is None else args.view_start
+    settings["view_start"] = view_start
+    times = np.array([r["captured"] - settings["origin"] - view_start for r in sources])
     first = np.load(args.estimates / rows[0]["file"])
     alignment = first["pose"] @ np.linalg.inv(first["true_pose"])
     captures = []
