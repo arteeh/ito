@@ -7,6 +7,7 @@ OUT contains before/, final/{after,paired}/; run oracle_audit.py on final/after 
 import argparse
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -45,11 +46,32 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("out", type=Path)
     p.add_argument("--estimator", required=True)
+    p.add_argument("--extraction-estimator", required=True)
     p.add_argument("--images", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
     args = p.parse_args()
     final = args.out / "final"
     audit = read(final / "after/audit.json")
+    assert not subprocess.check_output(
+        [
+            "git",
+            "diff",
+            "--name-only",
+            args.extraction_estimator,
+            args.estimator,
+            "--",
+            "ito/reconstruction",
+            "e2e/oracle_estimate.py",
+        ],
+        text=True,
+    ), "Estimator inference changed; freeze fresh inputs before the final comparison"
+    main_native = {}
+    for path in sorted((final / "after/native-main9a").glob("*/display.json")):
+        row = read(path)
+        assert "NVIDIA" in row["renderer"]
+        assert not row["optimizer"] and row["render_budget"] is None
+        assert row["settings"] == dict(precision="full", input_resolution=100, max_splats=1_000_000)
+        main_native[path.parent.name] = row
     images = {}
     for path in sorted(args.images.iterdir()):
         with Image.open(path) as pic:
@@ -60,6 +82,9 @@ def main():
             )
     result = dict(
         estimator_commit=args.estimator,
+        frozen_extraction_estimator=args.extraction_estimator,
+        estimator_equivalence="No changes to reconstruction or oracle_estimate.py between "
+        "frozen extraction and latest merged estimator commits (git diff verified)",
         settings=dict(precision="full", input_resolution=100, max_splats=1_000_000),
         camera="velstand v8 / real62deg long-side / 360p30 upright360x640; fit288x512",
         render_cap=98_304,
@@ -76,6 +101,7 @@ def main():
             for name, row in audit["visual"].items()
         },
         native=audit["native"],
+        actual_main_archived_map_native=main_native,
         half_fault=audit.get("half_fault"),
         half_refinement_fault=audit.get("half_refinement_fault"),
         causal_format_audit="passed; exact payload/schedule hashes, completed prefixes, "
