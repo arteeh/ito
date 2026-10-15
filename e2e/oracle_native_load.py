@@ -55,6 +55,8 @@ def main():
     p.add_argument("--precision", choices=("full", "half"), default="full")
     args = p.parse_args()
     (args.out / "pid").write_text(str(os.getpid()))
+    args.view_start = None
+    args.depth_support = False
     args.estimates = args.recording / "causal-full"
     args.max_splats, args.oom_at = 1_000_000, -1
     ctx = mp.get_context("spawn")

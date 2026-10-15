@@ -81,6 +81,8 @@ class View:
     intrinsics: Intrinsics
     captured_at: float
     depth: object = None
+    depth_weight: object = None
+    depth_support: object = None
     steps: int = 0
     exposure: object = None  # per-view colour affine (log gain, offset), trained
     exposure_optimizer: object = None
@@ -156,6 +158,7 @@ class GaussianMap:
         )
         self.max_anchors, self.max_views = anchors, views
         self.generator = np.random.default_rng(seed)
+        self.origin_node = None
         self.anchors = {}  # node -> dict(slot, pose_cpu); slot 0 is never a node's
         self.views = {}  # node -> View, oldest first
         self.changed = set()
@@ -195,6 +198,11 @@ class GaussianMap:
             grad2d=torch.zeros(0, device="cuda"),
             count=torch.zeros(0, device="cuda"),
             filter=torch.zeros(0, device="cuda"),
+            origin=torch.empty((0, 3), device="cuda"),
+            normal=torch.empty((0, 3), device="cuda"),
+            seed_scale=torch.empty((0, 3), device="cuda"),
+            support=torch.zeros(0, device="cuda"),
+            rejected=torch.zeros(0, device="cuda"),
             seen=torch.zeros(0, device="cuda"),  # capture time of the newest view it was in
         )
 
@@ -260,6 +268,14 @@ class GaussianMap:
             self.p["quats"][mine] = quaternion_product(
                 rotations[slot : slot + 1], self.p["quats"][mine]
             )
+            self.state["origin"] = torch.where(
+                mine[:, None],
+                self.state["origin"] @ pose[:3, :3].T + pose[:3, 3],
+                self.state["origin"],
+            )
+            self.state["normal"] = torch.where(
+                mine[:, None], self.state["normal"] @ pose[:3, :3].T, self.state["normal"]
+            )
             self.p["owner"][mine] = 0
         for view in self.views.values():
             if view.slot == slot:
@@ -324,6 +340,7 @@ class GaussianMap:
         parameters = dict(self.p.items())
         state = self.state.copy()
         scene_scale = self.scene_scale
+        origin_node = self.origin_node
         keyframes, iterations = self.keyframes[:], self.iterations.copy()
         learning_rates = {k: [g["lr"] for g in o.param_groups] for k, o in self.optimizers.items()}
         changed, urgent = self.changed.copy(), self.urgent.copy()
@@ -356,6 +373,7 @@ class GaussianMap:
         except torch.cuda.OutOfMemoryError:
             self.p = torch.nn.ParameterDict(parameters)
             self.scene_scale, self.changed, self.urgent = scene_scale, changed, urgent
+            self.origin_node = origin_node
             self.keyframes, self.iterations = keyframes, iterations
             self.pose_cache = None
             self.training_ids = None
@@ -399,6 +417,8 @@ class GaussianMap:
                 self._retire_oldest_anchor()
             used = {a["slot"] for a in self.anchors.values()}
             slot = next(s for s in range(1, self.max_anchors) if s not in used)
+            if self.origin_node is None:
+                self.origin_node = frame.node
             self.anchors[frame.node] = dict(
                 slot=slot, pose_cpu=pose.copy(), captured_at=frame.captured_at
             )
@@ -414,6 +434,7 @@ class GaussianMap:
         while len(self.views) >= self.max_views:
             del self.views[next(iter(self.views))]
         exposure = torch.nn.Parameter(torch.zeros((2, 3), device="cuda"))
+        depth_weight, depth_support = self._depth_reliability(frame)
         view = View(
             slot,
             relative,
@@ -421,6 +442,8 @@ class GaussianMap:
             frame.intrinsics,
             float(frame.captured_at),
             None if frame.depth is None else self.tensor(frame.depth),
+            depth_weight=depth_weight,
+            depth_support=depth_support,
             relative_gpu=self.tensor(relative),
             calibration=self.tensor(
                 [
@@ -441,9 +464,84 @@ class GaussianMap:
             self._seed(frame, slot, pose, relative)
         self._invalidate_candidates()
 
+    def _depth_reliability(self, frame):
+        """Only independent raw observations can confirm depth, never the fitted map."""
+        if frame.depth is None:
+            return None, None
+        torch = self.torch
+        i = frame.intrinsics
+        depth = self.tensor(frame.depth)
+        confidence = self.tensor(frame.confidence).reshape(depth.shape).clamp(0, 1)
+        valid = torch.isfinite(depth) & (depth > 0) & torch.isfinite(confidence)
+        confidence = torch.where(valid, confidence, 0)
+        depth = torch.where(valid, depth, 0)
+        support = torch.zeros_like(depth)
+        covered = torch.zeros_like(valid)
+        agreement = torch.zeros_like(depth)
+        yy, xx = torch.meshgrid(
+            torch.arange(i.height, device="cuda"),
+            torch.arange(i.width, device="cuda"),
+            indexing="ij",
+        )
+        for previous in list(self.views.values())[-3:]:
+            if previous.depth is None:
+                continue
+            old = previous.depth
+            reliable = torch.isfinite(old) & (old > 0)
+            reliable &= previous.depth_weight > 0.25
+            local = torch.stack(
+                ((xx - i.cx) / i.fx * old, -(yy - i.cy) / i.fy * old, -old), -1
+            ).reshape(-1, 3)
+            transform = self.tensor(np.linalg.inv(frame.pose) @ self.view_pose(previous))
+            local = local @ transform[:3, :3].T + transform[:3, 3]
+            z = -local[:, 2]
+            u = (i.fx * local[:, 0] / z.clamp_min(0.01) + i.cx).round().long()
+            v = (i.cy - i.fy * local[:, 1] / z.clamp_min(0.01)).round().long()
+            inside = reliable.reshape(-1) & (z > 0.01)
+            inside &= (u >= 0) & (u < i.width) & (v >= 0) & (v < i.height)
+            nearest = torch.full((i.height * i.width,), torch.inf, device="cuda")
+            nearest.scatter_reduce_(0, v[inside] * i.width + u[inside], z[inside], "amin")
+            nearest = nearest.reshape(depth.shape)
+            seen = torch.isfinite(nearest)
+            difference = (nearest - depth).abs() / (0.03 + 0.06 * depth.clamp_min(0))
+            agreement = torch.maximum(agreement, torch.where(seen, (-difference.square()).exp(), 0))
+            support += seen & (difference < 1)
+            covered |= seen
+        weight = confidence * torch.where(covered, agreement, 1)
+        return weight.detach(), support.detach()
+
+    def _check_surfaces(self, frame):
+        """Two contradictory views can retire a provisional floater, not a supported wall."""
+        if not self.count or frame.depth is None:
+            return
+        torch = self.torch
+        with torch.no_grad():
+            view = self.views[frame.node]
+            i = frame.intrinsics
+            camera = self.tensor(np.linalg.inv(frame.pose))
+            means = self.world()["means"]
+            local = means @ camera[:3, :3].T + camera[:3, 3]
+            z = -local[:, 2]
+            u = (i.fx * local[:, 0] / z.clamp_min(0.01) + i.cx).round().long()
+            v = (i.cy - i.fy * local[:, 1] / z.clamp_min(0.01)).round().long()
+            inside = (z > 0.01) & (u >= 0) & (u < i.width) & (v >= 0) & (v < i.height)
+            u, v = u.clamp(0, i.width - 1), v.clamp(0, i.height - 1)
+            depth = view.depth[v, u]
+            evidence = inside & (view.depth_weight[v, u] > 0.4)
+            tolerance = 0.03 + 0.06 * depth
+            self.state["support"] = self.state["support"] + (
+                evidence & ((z - depth).abs() < tolerance)
+            )
+            contradiction = evidence & (view.depth_support[v, u] > 0) & (z < depth - tolerance)
+            self.state["rejected"] = self.state["rejected"] + contradiction
+            self._remove((self.state["rejected"] >= 2) & (self.state["support"] < 3))
+
     def _seed(self, frame, slot, pose, relative):
+        self._check_surfaces(frame)
         torch = self.torch
         seed_points, seed_confidence = frame.points, frame.confidence
+        if self.views[frame.node].depth_weight is not None:
+            seed_confidence = self.views[frame.node].depth_weight
         measured_depth = None
         if frame.depth is not None:
             valid_depth = np.isfinite(frame.depth) & (frame.depth > 0)
@@ -473,7 +571,7 @@ class GaussianMap:
         valid = (
             torch.isfinite(points).all(-1)
             & torch.isfinite(confidence.float())
-            & (confidence.float() > 0)
+            & (confidence.float() > 0.25)
             & (points[:, 2] < -0.01)
         )
         points, colors = points[valid], colors[valid] / 255
@@ -494,9 +592,15 @@ class GaussianMap:
             self._carve(pose, i, u, v, z)
         if self.count:
             with torch.no_grad():
-                _, depth, alpha, _ = self.render(pose, i)
+                explained_rgb, depth, alpha, _ = self.render(pose, i)
             # Expected depth is already normalised by alpha.
             nearer = z < SEED_NEARER * depth[v, u]
+            # A depth disagreement alone must not paint a second opaque floor
+            # over a map that already explains the observed colour.
+            nearer &= (explained_rgb[v, u] - colors).abs().mean(-1) > 0.10
+            view = self.views[frame.node]
+            if view.depth_support is not None:
+                nearer &= (view.depth_support[v, u] >= 2) & (view.depth_weight[v, u] > 0.4)
             if measured_depth is not None:
                 # Completed ToF rays are initialization priors, not new metric evidence.
                 # Noise or extrapolation must not stack opaque replacement surfaces.
@@ -531,8 +635,10 @@ class GaussianMap:
         smooth = (
             torch.isfinite(dx).all(-1)
             & torch.isfinite(dy).all(-1)
-            & (dx.norm(dim=-1) < z * 0.04)
-            & (dy.norm(dim=-1) < z * 0.04)
+            & (dx.norm(dim=-1) < z * 0.02)
+            & (dy.norm(dim=-1) < z * 0.02)
+            & (dx[:, 2].abs() < 0.01 + z * 0.01)
+            & (dy[:, 2].abs() < 0.01 + z * 0.01)
         )
         fallback_x = torch.stack((z / i.fx, torch.zeros_like(z), torch.zeros_like(z)), -1)
         fallback_y = torch.stack((torch.zeros_like(z), -z / i.fy, torch.zeros_like(z)), -1)
@@ -569,7 +675,14 @@ class GaussianMap:
         )
         self._append(
             values,
-            dict(filter=z / i.fx * FILTER, seen=torch.full((n,), frame.captured_at, device="cuda")),
+            dict(
+                filter=z / i.fx * FILTER,
+                origin=values["means"].detach().clone(),
+                normal=normal @ rotation.T,
+                seed_scale=scales.clamp_min(0.0001),
+                support=torch.ones(n, device="cuda"),
+                seen=torch.full((n,), frame.captured_at, device="cuda"),
+            ),
         )
         self.changed.add(self.key(slot))
 
@@ -699,6 +812,14 @@ class GaussianMap:
         """A bounded SE(3) correction used only by the map, never returned to tracking."""
         torch = self.torch
         delta = self.pose_delta if train else self.pose_delta.detach()
+        # The world slot and first keyframe define the map gauge; fitting must not
+        # drift the entire map away from its unchanged published camera path.
+        active = torch.ones((self.max_anchors, 1), device="cuda")
+        active[0] = 0
+        origin = self.anchors.get(self.origin_node)
+        if origin is not None:
+            active[origin["slot"]] = 0
+        delta = delta * active
         translation = 0.10 * delta[:, :3].tanh()
         angle = math.radians(5) * delta[:, 3:].tanh()
         theta = (angle.square().sum(-1, keepdim=True) + 1e-12).sqrt()
@@ -818,7 +939,15 @@ class GaussianMap:
             self.loss_dtype
         )
         with torch.autocast("cuda", dtype=self.loss_dtype, enabled=self.precision == "half"):
-            loss = (rgb - target).abs().mean()
+            reliability = torch.stack(
+                [
+                    torch.ones((height, width), device="cuda")
+                    if v.depth_weight is None
+                    else 0.2 + 0.8 * torch.where(v.depth > 0, v.depth_weight, 1)
+                    for v in views
+                ]
+            ).to(self.loss_dtype)
+            loss = ((rgb - target).abs() * reliability[..., None]).mean()
             # Local colour gradients replace the expensive offline SSIM window.
             loss = (
                 loss
@@ -836,13 +965,27 @@ class GaussianMap:
                 mask = torch.isfinite(depth) & (depth > 0)
                 measured = torch.where(mask, depth, 1)
                 difference = (pred[b, ..., 3] - measured).abs() / measured.clamp_min(0.1)
-                loss = loss + 0.05 * torch.where(mask, difference, 0).sum() / mask.sum().clamp_min(
-                    1
-                )
+                weight = views[b].depth_weight
+                # Cauchy influence decays for incompatible depth instead of dragging
+                # already supported geometry toward each new neural guess.
+                robust = 0.05 * torch.log1p((difference / 0.05).square())
+                loss = loss + 0.05 * (
+                    torch.where(mask, robust, 0) * weight
+                ).sum() / weight.sum().clamp_min(1)
+        displacement = self.p["means"][ids] - self.state["origin"][ids]
+        radius = 0.005 + self.state["seed_scale"][ids].amax(-1) * 4
+        loss = loss + 0.005 * (displacement / radius[:, None]).square().mean()
+        q = torch.nn.functional.normalize(self.p["quats"][ids], dim=-1)
+        w, x, y, z = q.unbind(-1)
+        normal = torch.stack(
+            (2 * (x * z + w * y), 2 * (y * z - w * x), 1 - 2 * (x * x + y * y)), -1
+        )
+        agreement = (normal * self.state["normal"][ids]).sum(-1).square()
+        loss = loss + 0.002 * (1 - agreement).clamp_min(0).mean()
         loss = loss + 0.01 * exposure.square().mean()
         if pose_step:
             slots = torch.tensor([v.slot for v in views], device="cuda")
-            loss = loss + 0.02 * self.pose_delta[slots].square().mean()
+            loss = loss + 0.2 * self.pose_delta[slots].square().mean()
         loss.backward()
         if self.steps % 100 == 0 and not torch.isfinite(loss):
             raise RuntimeError("non-finite Gaussian training loss")
@@ -861,6 +1004,10 @@ class GaussianMap:
         ):
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
+        with torch.no_grad():
+            # A depth-pixel disk may refine, but must not grow into a thick blob.
+            reference = self.state["seed_scale"][ids]
+            self.p["scales"][ids] = torch.minimum(self.p["scales"][ids], (reference * 2).log())
         if pose_step:
             self.pose_cache = None
         for node, view in zip(chosen, views, strict=True):

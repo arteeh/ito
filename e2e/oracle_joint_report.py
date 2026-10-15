@@ -45,7 +45,7 @@ def label(meta, name, arm, age, source_time, shown):
         f"source time {source_time:.3f}s / own {arm.removeprefix('main-')[0]} pose\n"
         f"{s['precision'].title()} / Input{s['input_resolution']}% / Max{s['max_splats']:,}\n"
         f"360p30 raw360x640 / fit288x512 / code {code}\n"
-        f"render cap {meta.get('render_budget') or 'none'}"
+        f"map {s.get('mapper_commit', code)[:7]} / cap {meta.get('render_budget') or 'none'}"
     )
 
 

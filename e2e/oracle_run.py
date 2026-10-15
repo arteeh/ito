@@ -16,7 +16,7 @@ import sys
 import time
 import traceback
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import numpy as np
 
@@ -159,6 +159,18 @@ def worker(args, ring, admission, ready, start, stopped, status):
         from oracle_sensor import tof
 
         from ito.reconstruction.mapper import GaussianMap, Keyframe
+
+        revision = getattr(args, "mapper_revision", None)
+        if revision:
+            source = subprocess.check_output(
+                ["git", "show", f"{revision}:ito/reconstruction/mapper.py"],
+                cwd=Path(__file__).resolve().parents[1],
+                text=True,
+            )
+            baseline = ModuleType("oracle_mapper_baseline")
+            sys.modules[baseline.__name__] = baseline
+            exec(compile(source, f"<mapper-{revision}>", "exec"), baseline.__dict__)
+            GaussianMap, Keyframe = baseline.GaussianMap, baseline.Keyframe
         from ito.reconstruction.memory import VRAM
         from ito.reconstruction.rgbd import RGBDBackend
         from ito.reconstruction.slam import SLAMBackend
@@ -201,7 +213,11 @@ def worker(args, ring, admission, ready, start, stopped, status):
             engine = RGBDBackend(args.max_splats, k, device="cuda")
             engine.torch = torch
         else:
-            engine = GaussianMap(args.max_splats, precision=settings["precision"])
+            engine = GaussianMap(
+                args.max_splats,
+                precision=settings["precision"],
+                anchors=getattr(args, "anchor_slots", 128),
+            )
         admission.bind_stream(cp)
         admission.memory_used = lambda: (
             torch.cuda.memory_reserved() + cp.get_default_memory_pool().total_bytes()
@@ -273,7 +289,11 @@ def worker(args, ring, admission, ready, start, stopped, status):
                 engine.depth_support = DepthSupport()
             pub = MainPublication(engine)
         else:
-            engine = GaussianMap(args.max_splats, precision=settings["precision"])
+            engine = GaussianMap(
+                args.max_splats,
+                precision=settings["precision"],
+                anchors=getattr(args, "anchor_slots", 128),
+            )
         if not main and args.oom_at == -2:
             refine = engine._refine_parameters
             failed = False
@@ -526,6 +546,8 @@ def main():
         help="Source-relative display start, independent of estimate availability (A/B views)",
     )
     parser.add_argument("--max-splats", type=int, default=1_000_000)
+    parser.add_argument("--anchor-slots", type=int, default=128)
+    parser.add_argument("--mapper-revision", help="immutable Git mapper revision for paired A/B")
     parser.add_argument("--record", action="store_true")
     parser.add_argument("--no-opt", action="store_true", help="labelled seeding-only ablation")
     parser.add_argument(
@@ -601,6 +623,8 @@ def main():
     if args.precision:
         settings["precision"] = args.precision
     settings["max_splats"] = args.max_splats
+    settings["anchor_slots"] = args.anchor_slots
+    settings["mapper_commit"] = args.mapper_revision or settings["code_commit"]
     rows = json.loads((args.estimates / "frames.json").read_text())
     zero = rows[0]["available"]
     view_start = zero if args.view_start is None else args.view_start
