@@ -197,7 +197,9 @@ def main():
                 frame_delay=args.frame_delay_ms / 1000,
                 stamp_delay=args.stamp_delay_ms / 1000,
                 source_seconds=args.seconds,
-                depth_confidence="uncalibrated [0,1] weight; 1 - 1/mean MASt3R score; zero excludes",
+                depth_confidence=(
+                    "uncalibrated [0,1] weight; 1 - 1/mean MASt3R score; zero excludes"
+                ),
                 estimator_source_sha256=estimator_source_hashes,
                 source_sha256=hashlib.sha256((source / "frames.jsonl").read_bytes()).hexdigest(),
                 origin=origin,
