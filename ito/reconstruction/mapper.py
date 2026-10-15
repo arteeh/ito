@@ -556,19 +556,18 @@ class GaussianMap:
                 sites = np.stack((xx[valid_depth], yy[valid_depth]), -1)
                 inverse = 1 / frame.depth[valid_depth]
                 nearest = self.interpolate_depth(sites, inverse, (xx, yy), method="nearest")
-                # Colour-guided regularization suppresses zone noise without claiming
-                # measured object boundaries. Original zones alone enter the depth loss.
+                # Inverse depth is affine on a plane. Regularize noisy zones and
+                # extrapolate their slope outside the ToF FOV instead of extending
+                # a constant-depth curtain over an oblique floor.
                 i = frame.intrinsics
-                features = np.concatenate(
-                    (np.stack(((xx - i.cx) / i.fx, (yy - i.cy) / i.fy), -1), frame.rgb / 128), -1
-                )
+                rays = np.stack(((xx - i.cx) / i.fx, (yy - i.cy) / i.fy), -1)
                 dense = self.smooth_depth(
-                    features[valid_depth],
+                    rays[valid_depth],
                     inverse,
-                    kernel="linear",
-                    degree=0,
-                    smoothing=0.10,
-                )(features.reshape(-1, 5)).reshape(xx.shape)
+                    kernel="thin_plate_spline",
+                    degree=1,
+                    smoothing=0.02,
+                )(rays.reshape(-1, 2)).reshape(xx.shape)
                 dense = 1 / np.clip(np.where(np.isfinite(dense), dense, nearest), 0.25, 20)
                 i = frame.intrinsics
                 seed_points = np.stack(
