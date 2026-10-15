@@ -44,6 +44,17 @@ def resize_observation(rgb, depth, original, scaled, *, sparse=False):
     return image, target
 
 
+def depth_weights(data, depth, estimated):
+    """Optional registered estimator weights; legacy/truth observations retain validity."""
+    valid = np.isfinite(depth) & (depth > 0)
+    if estimated and "depth_confidence" in data:
+        weights = data["depth_confidence"]
+        if weights.shape != depth.shape:
+            raise ValueError("Estimator depth_confidence must be registered to depth")
+        return np.where(valid, np.nan_to_num(weights, nan=0, posinf=0, neginf=0), 0).clip(0, 1)
+    return valid.astype(np.float32)
+
+
 class Publication:
     def __init__(self, budget):
         self.budget = budget
@@ -308,6 +319,8 @@ def worker(args, ring, admission, ready, start, stopped, status):
                         if arm == "TF":
                             rawrow = dict(row, captured=row["captured"], file=row["file"])
                             depth, tof_source = tof(source_rows, path, rawrow, k, origin, rng)
+                        confidence = depth_weights(data, depth, arm[1] == "E")
+                        depth = np.where(confidence > 0, depth, 0)
                         rgb = data["rgb"]
                         began = time.perf_counter()
                         try:
@@ -341,6 +354,13 @@ def worker(args, ring, admission, ready, start, stopped, status):
                                 engine.source_captured = row["captured"]
                                 SLAMBackend.place(engine, cloud, pose, now)
                             else:
+                                import cv2
+
+                                confidence = cv2.resize(
+                                    confidence,
+                                    (model_k.width, model_k.height),
+                                    interpolation=cv2.INTER_AREA,
+                                )
                                 rgb, z = resize_observation(
                                     rgb, depth, k, model_k, sparse=arm == "TF"
                                 )
@@ -371,7 +391,7 @@ def worker(args, ring, admission, ready, start, stopped, status):
                                             model_k,
                                             points,
                                             rgb,
-                                            (np.isfinite(z) & (z > 0)).astype(np.float32),
+                                            confidence,
                                             row["captured"],
                                             depth=z,
                                         )
