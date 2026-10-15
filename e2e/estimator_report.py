@@ -15,6 +15,12 @@ def report(root):
     rows = json.loads((root / "frames.json").read_text())
     ratios, absolute, spread, rotation, translation = [], [], [], [], []
     supported_absolute, supported_fraction = [], []
+    rotation_axes, pose_frames = [], []
+    node_times = {
+        row["visual_factor"]["node"]: row["captured"]
+        for row in rows
+        if row.get("visual_factor") is not None
+    }
     alignment = None
     for row in rows:
         data = np.load(root / row["file"])
@@ -26,6 +32,21 @@ def report(root):
             float(np.degrees(Rotation.from_matrix(truth[:3, :3].T @ estimated[:3, :3]).magnitude()))
         )
         translation.append(float(np.linalg.norm(estimated[:3, 3] - truth[:3, 3])))
+        rotation_axes.append(
+            np.degrees(Rotation.from_matrix(estimated[:3, :3] @ truth[:3, :3].T).as_rotvec())
+        )
+        factor = row.get("visual_factor") or {}
+        reference = node_times.get(factor.get("reference"))
+        pose_frames.append(
+            dict(
+                source_frame_id=row.get("source_frame_id"),
+                captured=row["captured"],
+                rotation_deg=rotation[-1],
+                translation_m=translation[-1],
+                visual_match=factor.get("match"),
+                reference_age=None if reference is None else row["captured"] - reference,
+            )
+        )
         z, t = data["depth"], data["true_depth"]
         valid = (z > 0) & (t > 0) & np.isfinite(z) & np.isfinite(t)
         r = z[valid] / t[valid]
@@ -57,6 +78,19 @@ def report(root):
         frames=len(rows),
         rotation_deg=stats(rotation),
         translation_m=stats(translation),
+        rotation_world_axes_p95_deg=dict(
+            zip(
+                ("x", "y", "z"),
+                np.percentile(np.abs(rotation_axes), 95, axis=0).tolist(),
+                strict=True,
+            )
+        ),
+        worst_rotation_frames=sorted(pose_frames, key=lambda r: r["rotation_deg"], reverse=True)[
+            :5
+        ],
+        worst_translation_frames=sorted(
+            pose_frames, key=lambda r: r["translation_m"], reverse=True
+        )[:5],
         depth_ratio=stats(ratios),
         depth_absolute_m=stats(absolute),
         within_frame_ratio_p10_p90=np.median(spread, axis=0).tolist(),

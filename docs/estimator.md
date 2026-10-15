@@ -127,6 +127,54 @@ The floor-assumption removal and independent publication are implemented. The co
 
 ## Round 4: DPVO on Ceres
 
+**DPVO builds, but the tracker and correction are rejected. No production estimator change ships this round; #41 remains incomplete.** The merged base is `a7b8ea0`. The build/replay drivers and exact build patch are committed; unsuccessful estimator experiments were restored. Fourteen full mapper replays finish without OOM. These results do not accept the merged mapper configuration or a live DPVO/mapper pipeline.
+
+The additional unchanged-estimator replay exposes admission sensitivity. The earlier 1.154° tour result does not repeat: fresh tour is 1.946°, with worse translation. All cohorts are retained, rather than selecting the best run. Values below are sweep / tour; translation and depth are metres. Depth error includes uncertain predictions. Truth only evaluates outputs; inference receives RGB, calibration and the generic motion prior. Evaluation uses initial rigid alignment, never fitted scale.
+
+| Cohort | Frames | Rotation p95, ° | Translation p95, m | Median depth error, m |
+|---|---|---|---|---|
+| Main 9a4e7ac (previous actual control) | 120 / 511 | 15.296 / 1.962 | 0.054 / 0.074 | 0.314 / 0.325 |
+| Starting joint frozen stream 2e852b6 | 118 / 538 | 1.617 / 1.154 | 0.028 / 0.089 | 0.311 / 0.195 |
+| Fresh unchanged estimator, round 4 | 118 / 529 | 1.808 / 1.946 | 0.028 / 0.125 | 0.307 / 0.225 |
+
+Fresh supported SIFT reprojection p95 is **4.095 / 5.944 px**, with **61.6% / 46.3%** of truth-visible common-region samples supported. Raw p95 is 11.897 / 8.314 px. Starting joint values were 8.379 / 5.607 px at 54.0% / 53.1% common-region support; the different schedules prevent calling the sweep difference a code improvement. The 2 px requirement remains unmet.
+
+Fresh frame-median depth ratios are 0.917 / 0.885; maxima are 1.72 / 42.56. Floor fitting stays removed, but learned-depth outliers and near/far disagreement remain. The steady independent metric multiplier does not make those pointmaps correct.
+
+The fresh real reconstruction-process checks publish, while motion is arriving, **49.82 / 49.62 Hz**. All 851 / 910 reads have distinct, nonregressing stamps; latest-motion-to-pose-stamp lag p95 and maximum are zero. Motion-call-to-shared-read p95 is .04475 / .03656 ms. This measures the publication boundary, excluding transport, capture, compositor and headset delay. Production remains independent of visual/depth work.
+
+The corrected DPVO trial freezes each current pose once. A new relative factor reads both endpoints from the **current** causal BA state, including retired-reference reconstruction; it does not subtract an old reference pose that BA has since refined. The preceding stale-reference failure remains recorded. The gated trial uses the existing robot-noise gate, nominal .5° visual rotation sigma and 1e6 translation sigma; published metric translation is explicitly the generic prior, not monocular DPVO translation.
+
+| DPVO Full, requested 30 Hz | Frames | Achieved tracker Hz | Raw rotation p95, ° | Gated rotation p95, ° | Call p95, ms |
+|---|---|---|---|---|---|
+| sweep180 | 205 | 12.03 | 11.342 | 6.915 | 100.8 |
+| tour | 1059 | 11.93 | 176.091 | 10.190 | 125.4 |
+
+The EE intervention applies only DPVO rotations available **before** each frozen MASt3R frame starts, carried by the generic motion prior. RGB, depth, confidence and metric translation are bit-identical to the starting joint stream. Its matched-input rotation p95 is 6.927 / 10.383°, versus 1.617 / 1.154° before. TE ignores those rotations and is an unchanged-depth/true-pose control. Independent tracker timings are **not** concurrent live throughput; no added-product-delay or native-deadline claim is made for DPVO.
+
+Full / Input 100% / Max 1,000,000, source-zero clock, v8 policies and 62° lens are used throughout. The inherited optimized mapper has a 98,304 render budget, with no fixed VRAM cap. Cells show actual source/exposure/display times, arm, settings and each recorded revision. These are monoscopic camera-FOV diagnostics, not HMD recordings.
+
+| Visual evidence | Verdict, both rows unless stated |
+|---|---|
+| DPVO vs same mapper: [sweep 10 s](estimator-img/r4-sweep180-dpvo-10.jpg), [15 s](estimator-img/r4-sweep180-dpvo-15.jpg); [tour 50 s](estimator-img/r4-tour-dpvo-50.jpg), [76 s](estimator-img/r4-tour-dpvo-76.jpg) | Sweep 15 s adds an upper-wall notch where the paired baseline is filled. Tour 76 s adds displaced foreground colour and doubled cabinet/box edges where the paired baseline wall is filled. Reject. |
+| Actual-main own-camera controls: [sweep](estimator-img/r4-sweep180-dpvo-main-15.jpg), [tour](estimator-img/r4-tour-dpvo-main-76.jpg) | Retain the actual old estimator/point backend, including its known sweep heading error. These are not fixed true-camera comparisons. |
+| Unchanged-depth TE: [sweep](estimator-img/r4-sweep180-TE-control-15.jpg), [tour](estimator-img/r4-tour-TE-control-76.jpg) | True pose leaves broken wall/floor boundaries and incomplete close detail. Tracking alone does not repair estimated geometry. |
+| Output-only depth-cache trial vs paired baseline: [sweep](estimator-img/r4-sweep180-depth-paired-15.jpg), [tour](estimator-img/r4-tour-depth-paired-76.jpg) | Tour 76 s cabinet/wall disintegrates into spots and a floor hole where baseline is filled. Reject. |
+| Same rejected trial vs actual main, [sweep EE](estimator-img/r4-sweep180-depth-main-EE-15.jpg) / [ET](estimator-img/r4-sweep180-depth-main-ET-15.jpg) / [TE](estimator-img/r4-sweep180-depth-main-TE-15.jpg); [tour EE](estimator-img/r4-tour-depth-main-EE-76.jpg) / [ET](estimator-img/r4-tour-depth-main-ET-76.jpg) / [TE](estimator-img/r4-tour-depth-main-TE-76.jpg) | ET's true-depth stripes remain bent/incomplete; the trial's admitted pose cohort is also inadequate. EE/TE do not establish stable surface geometry. |
+| Superseded [stale-reference DPVO](estimator-img/r4-tour-stale-reference-76.jpg) | Severe wall/foreground floaters, retained as a failed trial, not substituted for the corrected trial above. |
+
+The fresh tour's p95 error is predominantly yaw: world-axis x/y/z p95 is .572 / 1.936 / .505°. At 47.785 s the estimated yaw error is −1.994°, while the motion prior is −.074°; vision is adding bias there. At 85.193 s, with only .062% visual matches, translation error is .134 m versus .117 m from motion alone. The late recovery is odometry-dominated. An isolated exact-gravity/world-gauge diagnostic changes frozen-factor tour p95 only from 1.946° / .12524 m to 1.947° / .12545 m, so pinning that gauge does not resolve these errors. `estimator_report.py` now records world-axis errors and worst frame/source/reference contexts to locate these failures. These are diagnostics, not pose corrections or frontend-feedback replays.
+
+Other bounded trials also failed. Persisting the graph's nuisance visual scale, fitting sensor phase and independent SIFT rotation refinement regressed tour pose/translation. Six-view RGB/depth consensus reduced supported reprojection to 3.762 / 3.029 px only by reducing common-region support to 21.1% / 24.5%; raw error barely changed. This exclusion tradeoff is not a 2 px result.
+
+A retained keyframe-surface experiment required a confident reference, image/colour/ray agreement and decayed borrowed confidence. Feeding that geometry into tracking gave tour 2.903° / .125 m p95. Separating the surface output from tracking gave 1.695° / .213 m, plus the visible failure above. Its sweep depth median (.277 m) is not an isolated algorithm gain: only three sweep frames borrowed geometry, while extra work changed admission. Both versions are rejected; sources, counters, schedules and all results remain in the output directory.
+
+**Status:** floor fitting remains removed and motion publication remains independent. Tour rotation halving, no-worse tour translation, supported ≤2 px reprojection and consistently sharp surfaces do not hold. No new held-out DPVO sequence, Half DPVO, raw-IMU/VIO, physical timing/extrinsics/ToF or headset acceptance was tested. The owner should check shelf/door sliding through turns, floor breathing, close stereo silhouettes at actual IPD, correction comfort and sustained OpenXR/compositor deadlines. DPVO is not bundled on Windows; the existing Windows release was exercised without it. DPVO and MASt3R also export the same native `lietorch_backends` name; safe co-loading has not been established.
+
+The [round-4 manifest](estimator-round4-results.json) retains all cohorts, source/schedule hashes, causal audits, zero-OOM drives and 17 selected sheet hashes. Complete output is `~/Projects/ito/out/recon-40-41/estimator/round4/`; `NOTES.md` records rejected sources and exact commands. All 7,700 recorded camera rows pass the no-future-motion/correction audit. These recording runs include readback and do not retest native 90 Hz deadlines. No production GPU workload was added.
+
+Reproduction on this Ceres installation:
+
 DPVO now builds in the worktree's Linux `.venv`: the first successful native build reused surviving object files and completed in 115 seconds with `MAX_JOBS=3`, `NVCC_THREADS=2`, CUDA 12.4, GCC 13 and Torch 2.5.1+cu124. The job limit was 14,408,482,816 bytes; `memory.high=max`. The earlier three failures were under the old 5 GB job limit. No DPVO dependency is imported by the application or Windows release; this remains an explicit e2e challenger, not a bundled Windows tracker.
 
 Reproduction uses the official [DPVO source](https://github.com/princeton-vl/DPVO/tree/0ac95b656d1fda91c271d2a106460d19ad966fc7), pinned at `0ac95b656d1fda91c271d2a106460d19ad966fc7`, Eigen 3.4.0 under its `thirdparty/`, and the official `dpvo.pth` (SHA256 `30d02dc2b88a321cf99aad8e4ea1152a44d791b5b65bf95ad036922819c0ff12`). No viewer, retrieval or classical loop-closure extensions are needed. Existing Ceres inputs are under `~/Projects/ito/out/recon-40-41/estimator/{dpvo,dpvo-weights,cuda-dpvo}`.
@@ -158,7 +206,7 @@ flock "$HOME/Projects/ito/ceres.lock" uv pip install --python .venv/bin/python \
   --no-deps --no-build-isolation "$DPVO_ROOT"
 ```
 
-Two source/toolchain adaptations are required on this host; the committed `e2e/dpvo-build.patch` contains the exact source edits. In DPVO's `setup.py`, add `['dpvo.loop_closure']` to `find_packages()` (upstream otherwise omits an imported directory), and add `'--threads=2'` to all three `nvcc` argument lists. The Ceres glibc 2.43 headers conflict with CUDA 12.4's six declarations: in a **private copy** of the toolkit, append `noexcept` before the semicolon of the `extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__` declarations for `rsqrt`, `rsqrtf`, `sinpi`, `sinpif`, `cospi`, `cospif` in `include/crt/math_functions.h`. Ceres's shared toolkit was not edited. The private toolkit copies `bin/` and `include/`; other toolkit directories are symlinks to the original. The exact private-copy preparation is:
+The [exact build patch](../e2e/dpvo-build.patch) contains the source adaptations. In DPVO's `setup.py`, add `['dpvo.loop_closure']` to `find_packages()` (upstream otherwise omits an imported directory), and add `'--threads=2'` to all three `nvcc` argument lists. The Ceres glibc 2.43 headers conflict with CUDA 12.4's six declarations: in a **private copy** of the toolkit, append `noexcept` before the semicolon of the `extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__` declarations for `rsqrt`, `rsqrtf`, `sinpi`, `sinpif`, `cospi`, `cospif` in `include/crt/math_functions.h`. Ceres's shared toolkit was not edited. The private toolkit copies `bin/` and `include/`; other toolkit directories are symlinks to the original. The exact private-copy preparation is:
 
 ```python
 # Run with the worktree Python before the install above.
@@ -182,6 +230,6 @@ for name in ("rsqrt", "rsqrtf", "sinpi", "sinpif", "cospi", "cospif"):
 header.write_text(text)
 ```
 
- On a compatible glibc/toolkit pair that header adaptation is unnecessary. The package-manifest fix then rebuilds/reinstalls in about four seconds from the object cache.
+On a compatible glibc/toolkit pair that header adaptation is unnecessary. The package-manifest fix then rebuilds/reinstalls in about four seconds from the object cache.
 
 `e2e/estimator_dpvo.py` runs calibrated 288×512 BGR, 96 patches, a ten-frame optimization window, no loop closure and no map alignment. Full precision also disables upstream's hard-coded update autocast. Each pose is frozen when that call returns, without `terminate()` or retrospective trajectory reconstruction. Arrivals while busy are dropped. It retains raw monocular poses and a separate uncertainty-gated rotation-only correction; metric translation is explicitly the generic robot prior. Startup, skipped observations and fallback are labelled. Concurrent live tracker/mapper contention and a Windows DPVO bundle are untested; neither is implied by isolated replay throughput.
