@@ -35,3 +35,27 @@ for sequence in sweep180 tour; do
     done
 done
 PYTHONPATH=. .venv/bin/python e2e/oracle_audit.py "$output"
+# Separate native image captures, after all timing and CPU report work have finished.
+native_python=/mnt/c/Users/me/Projects/ito/builds/main/ito/runtime/python.exe
+for sequence in sweep180 tour; do
+    late=12
+    if [[ "$sequence" == tour ]]; then late=78; fi
+    for moment in 1 "$late"; do
+        for arm in main-TT TT TF; do
+            name="$sequence-$arm-$(.venv/bin/python -c 'import sys; print(f"{float(sys.argv[1]):.1f}")' "$moment")"
+            flock /mnt/c/Users/me/Projects/ito/ceres.lock "$native_python" -I \
+                "$(wslpath -w "$PWD/e2e/oracle_native.py")" \
+                "$(wslpath -w "$output/$sequence")" \
+                --out "$(wslpath -w "$output/native-views/$name")" \
+                --linux-root "$PWD" --arm "$arm" --moment "$moment" \
+                --seconds 0.1 --capture < /dev/null > "$output/native-view-$name.log" 2>&1
+        done
+        PYTHONPATH=.:e2e .venv/bin/python - "$output" "$sequence" "$moment" <<'SHEET'
+import sys
+from pathlib import Path
+from oracle_report import native_views
+out=Path(sys.argv[1]); seq=sys.argv[2]; moment=float(sys.argv[3])
+native_views(out,seq,moment,out/"review"/f"{seq}-native-{moment:.1f}.jpg")
+SHEET
+    done
+done

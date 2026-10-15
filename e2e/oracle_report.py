@@ -19,6 +19,7 @@ from measure_gl import View
 from PIL import Image, ImageDraw, ImageFont
 
 from ito.protocol import Intrinsics
+from ito.reconstruction.slam_image import SLAMImage
 from ito.render.renderer import LIVE_RENDER_SPLATS
 
 ARMS = ("TT", "TE", "ET", "EE", "TF")
@@ -32,6 +33,24 @@ def settings_label(out, seq, arm):
         f"{settings['precision'].title()} / Input {settings['input_resolution']}% / "
         f"Max {settings['max_splats']:,}"
     )
+
+
+def view_label(out, seq, arm):
+    folder = out / "visual" / f"{seq}-{arm}"
+    display = json.loads((folder / "display.json").read_text())
+    k = Intrinsics.model_validate_json((out / seq / "source/camera.json").read_text())
+    worker = (
+        json.loads((folder / "worker.json").read_text())
+        if (folder / "worker.json").exists()
+        else {}
+    )
+    size = worker.get("training_size") or (
+        SLAMImage(k, display["settings"]["input_resolution"]).scaled
+        if arm.startswith("main-")
+        else (k.width, k.height)
+    )
+    cap = display.get("render_budget") or "none"
+    return f"own {arm.removeprefix('main-')[0]} / grid {size[0]}x{size[1]} / cap {cap}"
 
 
 def rows(path):
@@ -84,12 +103,12 @@ def motion(out, seq, arm, start, output, baseline_arm="main-TT"):
                     main,
                     f"{baseline_arm} / t={t:.2f}s / shown {mr['t']:.3f}s\n"
                     f"{settings_label(out, seq, baseline_arm)}\n"
-                    "own published camera / main uncapped",
+                    f"{view_label(out, seq, baseline_arm)}",
                 ),
                 (
                     mapped,
                     f"{arm} / t={t:.2f}s / shown {rr['t']:.3f}s\n"
-                    f"{settings_label(out, seq, arm)}\nown published camera / cap 98,304",
+                    f"{settings_label(out, seq, arm)}\n{view_label(out, seq, arm)}",
                 ),
             ]
         )
@@ -113,8 +132,8 @@ def prefixes(out, seq, arm, output, baseline_arm="main-TT"):
                 view.upload(r, stable_slots=True)
                 rgb, _ = view.draw(snap["camera"])
                 label = (
-                    f"{name} / prefix {t:.1f}s\n{settings_label(out, seq, name)}\n"
-                    f"own camera / GL {float(snap['actual']):.4f}s"
+                    f"{name} / prefix {t:.1f}s / GL {float(snap['actual']):.3f}s\n"
+                    f"{settings_label(out, seq, name)}\n{view_label(out, seq, name)}"
                 )
                 row.append((Image.fromarray((rgb * 255).astype(np.uint8)), label))
             cells.append(row)
@@ -151,7 +170,7 @@ def stereo(out, seq, arm, moment, output, baseline_arm="main-TT"):
                         Image.fromarray((rgb * 255).astype(np.uint8)),
                         f"{name} / prefix {moment:.1f}s / {'LEFT' if offset < 0 else 'RIGHT'}\n"
                         f"{settings_label(out, seq, name)}\n"
-                        "64mm IPD / calibrated camera FOV / frozen map",
+                        f"{view_label(out, seq, name)}",
                     )
                 )
             cells.append(row)
@@ -160,7 +179,7 @@ def stereo(out, seq, arm, moment, output, baseline_arm="main-TT"):
     grid(
         cells,
         output,
-        f"{seq}: left | right ({baseline_arm} above, {arm} below); own cameras, no headset",
+        f"{seq}: left | right ({baseline_arm} above, {arm} below); 64mm, camera FOV, no headset",
     )
 
 
@@ -221,13 +240,44 @@ def before_after(out, previous, seq, arm, output, baseline_arm="main-TT"):
                         Image.fromarray((rgb * 255).astype(np.uint8)),
                         f"{label} / prefix {moment:.1f}s / own {arm[0]} pose\n"
                         f"{settings_label(root, seq, name)}\n"
-                        f"render cap {view.renderer.render_budget or 'none'}",
+                        f"{view_label(root, seq, name)}",
                     )
                 )
             cells.append(row)
     finally:
         view.close()
     grid(cells, output, f"{seq}: matched main | round 1 | round 2; SAME own camera")
+
+
+def native_views(out, seq, moment, output):
+    """Show native 90-degree selection, both whole eyes and explicit camera-FOV crops."""
+    for crop, suffix in ((True, "camera-crop"), (False, "whole")):
+        cells = []
+        for arm in ("main-TT", "TT", "TF"):
+            folder = out / "native-views" / f"{seq}-{arm}-{moment:.1f}"
+            info = json.loads((folder / "capture.json").read_text())
+            row = []
+            for eye in ("left", "right"):
+                picture = Image.open(folder / f"{eye}-{suffix}.png").convert("RGB")
+                if not crop:
+                    square = picture.resize((360, 360))
+                    picture = Image.new("RGB", (360, 640))
+                    picture.paste(square, (0, 140))
+                row.append(
+                    (
+                        picture,
+                        f"native {arm} / {moment:.1f}s / {eye.upper()}\n"
+                        f"{settings_label(out, seq, arm)}\n"
+                        f"90deg {'CAMERA CROP' if crop else 'WHOLE EYE'} / "
+                        f"cap {info['render_budget'] or 'none'}",
+                    )
+                )
+            cells.append(row)
+        grid(
+            cells,
+            output.with_name(output.stem + f"-{suffix}.jpg"),
+            f"{seq}: native GL / 64mm IPD / head centered / frozen causal map; main | TT | ToF",
+        )
 
 
 def main():

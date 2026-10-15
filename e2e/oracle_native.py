@@ -72,11 +72,15 @@ def main():
     p.add_argument("--precision", choices=("full", "half"), default="full")
     p.add_argument("--render-budget", type=int, default=LIVE_RENDER_SPLATS)
     p.add_argument("--seconds", type=float, default=20)
+    p.add_argument("--moment", type=float)
+    p.add_argument(
+        "--capture", action="store_true", help="capture after timing, with centered head"
+    )
     args = p.parse_args()
     assert os.name == "nt"
     args.out.mkdir(parents=True, exist_ok=True)
     sequence = args.recording.name
-    moment = 78 if sequence == "tour" else 12
+    moment = args.moment if args.moment is not None else (78 if sequence == "tour" else 12)
     snapshot_path = (
         args.recording.parent / "visual" / f"{sequence}-{args.arm}" / f"snapshot-{moment:.1f}.npz"
     )
@@ -210,6 +214,47 @@ def main():
                 remaining = due - time.perf_counter()
                 if remaining > 0:
                     time.sleep(remaining)
+        if args.capture:
+            from PIL import Image
+
+            original = Intrinsics.model_validate_json(
+                (args.recording / "source/camera.json").read_text()
+            )
+            ratio = k.fx / original.fx
+            left, top = k.cx - original.cx * ratio, k.cy - original.cy * ratio
+            box = tuple(
+                round(v)
+                for v in (left, top, left + original.width * ratio, top + original.height * ratio)
+            )
+            with view.context:
+                renderer.sort(camera, np.eye(4, dtype=np.float32), projection_matrix)
+                for side, target in ((-1, view.target), (1, other)):
+                    eye = np.eye(4, dtype=np.float32)
+                    eye[0, 3] = side * 0.032
+                    renderer.draw(
+                        camera, eye, projection_matrix, target, sort=False, clear=(0, 0, 0, 0)
+                    )
+                    pixels = target.read(components=3)
+                    picture = Image.frombytes("RGB", view.size, pixels).transpose(
+                        Image.Transpose.FLIP_TOP_BOTTOM
+                    )
+                    name = "left" if side < 0 else "right"
+                    picture.save(args.out / f"{name}-whole.png")
+                    picture.crop(box).save(args.out / f"{name}-camera-crop.png")
+            (args.out / "capture.json").write_text(
+                json.dumps(
+                    dict(
+                        prefix=moment,
+                        actual=float(snapshot["actual"]),
+                        crop_box=box,
+                        whole_fov=90,
+                        ipd_mm=64,
+                        head_translation=[0, 0, 0],
+                        render_budget=renderer.render_budget,
+                    ),
+                    indent=2,
+                )
+            )
         report = dict(
             renderer=view.device,
             snapshot_sha256=snapshot_hash,

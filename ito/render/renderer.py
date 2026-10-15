@@ -193,6 +193,10 @@ class GaussianRenderer:
         view = self._view(validate_pose(robot_camera) @ validate_pose(head))
         self.scene_buffer.bind_to_storage_buffer(1)
         self.order.bind_to_storage_buffer(0)
+        needed = ((self.render_budget or 1024) + 4) * 4
+        if self.selected.size < needed:
+            self.selected.release()
+            self.selected = self.context.buffer(reserve=needed)
         self.selected.bind_to_storage_buffer(4)
         limited = self.render_budget is not None
         bits = max(1, (self.draw_count - 1).bit_length())
@@ -221,6 +225,10 @@ class GaussianRenderer:
             GL.glMemoryBarrier(GL.GL_SHADER_STORAGE_BARRIER_BIT)
         self.selected_draws = self.render_budget if limited else self.draw_count
         capacity = max(1024, 1 << max(0, self.selected_draws - 1).bit_length())
+        if self.order.size < capacity * 8:
+            self.order.release()
+            self.order = self.context.buffer(reserve=capacity * 8)
+            self.order.bind_to_storage_buffer(0)
         self.keys["use_selection"] = limited
         self.keys["view"].write(view.T.copy())
         self.keys["count"] = self.selected_draws
