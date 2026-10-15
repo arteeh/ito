@@ -172,20 +172,51 @@ def worker(args, ring, admission, ready, start, stopped, status):
         last_publish = -1
         captured = 0
         oom = 0
-        # JIT/kernel warm-up is startup, never charged as observation time.
-        if not main:
-            rgb = first["rgb"]
-            z = first["true_depth"]
-            y, x = np.mgrid[: k.height, : k.width]
-            points = np.stack(((x - k.cx) / k.fx * z, -(y - k.cy) / k.fy * z, -z), -1)
-            frame = Keyframe(
-                0, rgb, alignment @ first["true_pose"], k, points, rgb, np.ones(z.shape), 0, depth=z
-            )
-            with admission.integration():
-                engine.add(frame)
-                # Compile gradient/no-gradient pose modes before any observation clock.
+        # Prime both backends on disposable synthetic data, before observations exist.
+        # No real RGB, depth, pose, learned parameter or optimizer state survives this.
+        yy, xx = np.mgrid[: k.height, : k.width]
+        tile = (((xx // 16 + yy // 16) % 2) * 160 + 48).astype(np.uint8)
+        rgb = np.repeat(tile[..., None], 3, -1)
+        z = np.full((k.height, k.width), 2, np.float32)
+        points = np.stack(((xx - k.cx) / k.fx * z, -(yy - k.cy) / k.fy * z, -z), -1)
+        pose = np.eye(4)
+        with admission.integration():
+            if main:
+                import cv2
+
+                sw, sh = camera_image.scaled
+                d = cv2.resize(z, (sw, sh), interpolation=cv2.INTER_NEAREST)
+                c = cv2.resize(rgb, (sw, sh), interpolation=cv2.INTER_AREA)
+                fx, fy, cx, cy = (
+                    k.fx * sw / k.width,
+                    k.fy * sh / k.height,
+                    k.cx * sw / k.width,
+                    k.cy * sh / k.height,
+                )
+                y, x = np.mgrid[:sh, :sw]
+                cloud = SimpleNamespace(
+                    points=torch.as_tensor(
+                        np.stack(((x - cx) / fx * d, -(y - cy) / fy * d, -d), -1).reshape(-1, 3),
+                        device="cuda",
+                        dtype=torch.float32,
+                    ),
+                    colors=torch.as_tensor(c.reshape(-1, 3), device="cuda"),
+                    valid=torch.ones(sw * sh, device="cuda", dtype=torch.bool),
+                    intrinsics=(fx, fy, cx, cy),
+                    shape=(sh, sw),
+                )
+                engine.source_sequence, engine.source_captured = 1, 0
+                SLAMBackend.place(engine, cloud, pose, 0)
+            else:
+                engine.add(Keyframe(0, rgb, pose, k, points, rgb, np.ones(z.shape), 0, depth=z))
                 for _ in range(16):
                     engine.step()
+                engine.records_for(engine.keys())
+        if main:
+            engine = RGBDBackend(args.max_splats, k, device="cuda")
+            engine.torch = torch
+            pub = MainPublication(engine)
+        else:
             engine = GaussianMap(args.max_splats, precision=settings["precision"])
         if not main and args.oom_at == -2:
             refine = engine._refine_parameters
@@ -493,6 +524,21 @@ def main():
         n = int(np.clip(np.searchsorted(releases, t, side="right") - 1, 0, len(rows) - 1))
         return estimated_poses[n]
 
+    # Prime GL paths with disposable geometry; no observation or map is retained.
+    from ito.render.scene import GaussianBuffer
+
+    dummy = np.zeros((2048, 4, 4), np.float32)
+    dummy[:, 0, 2] = -2
+    dummy[0, 0, 3] = 0.99
+    dummy[:, 1, :3] = 0.01
+    dummy[:, 2, 0] = 1
+    renderer.upload(GaussianBuffer(dummy))
+    identity = np.eye(4, dtype=np.float32)
+    renderer.draw(identity, identity, projection(stereo_k), target)
+    renderer.draw(identity, identity, projection(k), camera_target)
+    camera_target.read(components=3)
+    gl.finish()
+    renderer.upload(GaussianBuffer(np.empty((0, 4, 4), np.float32)))
     captures = []
     recorder = Recorder(args.out / "motion", fps=10) if args.record else None
     records = np.zeros((0, 4, 4), np.float32)
@@ -596,13 +642,16 @@ def main():
                     clear=(0, 0, 0, 0),
                 )
                 pixels = camera_target.read(components=3)
+                shown = time.perf_counter() - start.value
                 recorder.pilot(
-                    now,
+                    shown,
                     pixels,
                     (k.width, k.height),
                     arm=args.arm,
                     source_frame_id=sources[index]["source_frame_id"],
                     scene_age_ms=None,
+                    render_began=now,
+                    camera_mode="own published pose",
                     settings=settings,
                 )
                 recorder.camera(frame["rgb"], index, now, camera)

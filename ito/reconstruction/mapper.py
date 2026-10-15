@@ -132,6 +132,9 @@ class GaussianMap:
 
         if not torch.cuda.is_available():
             raise RuntimeError("Optimized Gaussian mapping needs an NVIDIA CUDA device")
+        from scipy.interpolate import griddata
+
+        self.interpolate_depth = griddata
         from gsplat import rasterization
 
         self.rasterize = rasterization
@@ -449,14 +452,12 @@ class GaussianMap:
                 # ToF supplies zones, not object boundaries. This smooth inverse-depth
                 # prior initializes colour-bearing surfaces; only measured zones enter
                 # the depth loss. RGB observations subsequently refine the geometry.
-                from scipy.interpolate import griddata
-
                 yy, xx = np.mgrid[: frame.intrinsics.height, : frame.intrinsics.width]
                 sites = np.stack((xx[valid_depth], yy[valid_depth]), -1)
                 inverse = 1 / frame.depth[valid_depth]
-                nearest = griddata(sites, inverse, (xx, yy), method="nearest")
+                nearest = self.interpolate_depth(sites, inverse, (xx, yy), method="nearest")
                 dense = (
-                    griddata(sites, inverse, (xx, yy), method="linear")
+                    self.interpolate_depth(sites, inverse, (xx, yy), method="linear")
                     if np.linalg.matrix_rank(sites - sites.mean(0)) == 2
                     else nearest
                 )
