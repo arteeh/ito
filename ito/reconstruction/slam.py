@@ -208,8 +208,6 @@ class SLAMBackend(RGBDBackend):
         world = torch.as_tensor(pose, device="cuda", dtype=torch.float32)
         points = cloud.points @ world[:3, :3].T + world[:3, 3]
         valid = cloud.valid
-        if getattr(cloud, "confidence", None) is not None:
-            valid = valid & (cloud.confidence > 0)
         fx, fy, cx, cy = cloud.intrinsics
         depth = -cloud.points[:, 2]
         # Three pixels per splat refresh in place, so a room looked around once fits in about
@@ -227,6 +225,10 @@ class SLAMBackend(RGBDBackend):
         evidence = getattr(self, "depth_support", None)
         carve_valid = valid if evidence is None else evidence.observe(cloud, pose)
         carve_valid = carve_valid & valid
+        # Keep provisional appearance in the legacy point display. Uncertain depth
+        # must not erase history; rejecting its appearance leaves large moving holes.
+        if getattr(cloud, "confidence", None) is not None:
+            carve_valid = carve_valid & (cloud.confidence > 0)
         image = torch.where(carve_valid, depth, 0).reshape(height, width)
         self.carve(
             pose.astype(np.float32),

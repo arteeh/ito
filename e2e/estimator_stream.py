@@ -5,6 +5,7 @@ Run under ceres.lock. Full / Input 100% / Max 1M, no render readback or GPU cap.
 """
 
 import argparse
+import hashlib
 import json
 import sys
 import time
@@ -40,7 +41,7 @@ def main():
     )
     k = Intrinsics.model_validate_json((args.recording / "source/camera.json").read_text())
     origin = frames[0]["captured"]
-    published, delays, regressions, work = [], [], [], []
+    published, delays, regressions, work, motion_lag = [], [], [], [], []
     admitted = 0
     with Reconstruction(
         k,
@@ -84,6 +85,7 @@ def main():
                     latest = max(latest, stamp)
                     published.append(stamp)
                     delays.append((clock.now() - began) * 1000)
+                    motion_lag.append(max(0, due[-1][0] - stamp) * 1000)
             newest = None
             while (
                 frame_index < len(frames)
@@ -108,8 +110,21 @@ def main():
             work.append(worker.work_seconds.value * 1000)
             time.sleep(0.001)
         integrated = worker.integrated.value
+    source = Path(sys.modules[Reconstruction.__module__].__file__).parent
     result = dict(
         settings=dict(precision="full", input_resolution=100, max_splats=1000000),
+        script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        estimator_source_sha256={
+            name: hashlib.sha256((source / name).read_bytes()).hexdigest()
+            for name in (
+                "__init__.py",
+                "slam.py",
+                "fusion.py",
+                "mast3r_frontend.py",
+                "metric_scale.py",
+            )
+            if (source / name).is_file()
+        },
         seconds=args.seconds,
         stamp_delay_ms=args.stamp_delay_ms,
         frame_delay_ms=args.frame_delay_ms,
@@ -121,6 +136,13 @@ def main():
         pose_hz_active=(len(set(published)) - 1) / (max(published) - min(published)),
         motion_to_shared_pose_ms=dict(
             zip(("p50", "p95", "max"), np.percentile(delays, [50, 95, 100]).tolist(), strict=True)
+        ),
+        latest_motion_to_pose_stamp_ms=dict(
+            zip(
+                ("p50", "p95", "max"),
+                np.percentile(motion_lag, [50, 95, 100]).tolist(),
+                strict=True,
+            )
         ),
         max_surface_work_ms=max(work),
         stamp_regressions=regressions,
