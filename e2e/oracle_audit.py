@@ -53,6 +53,18 @@ def main():
             schedule_sha256=hashlib.sha256((estimates / "frames.json").read_bytes()).hexdigest(),
             settings=settings,
         )
+        confidence_frames = 0
+        for row in rows:
+            with np.load(estimates / row["file"]) as frame:
+                if "depth_confidence" not in frame:
+                    continue
+                confidence = frame["depth_confidence"]
+                assert confidence.dtype == np.float32
+                assert confidence.shape == frame["depth"].shape
+                assert np.isfinite(confidence).all()
+                assert ((confidence >= 0) & (confidence <= 1)).all()
+                confidence_frames += 1
+        result["inputs"][sequence]["confidence_frames"] = confidence_frames
         motions = (
             [
                 json.loads(s)
