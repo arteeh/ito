@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from e2e.observation_recording import motion_scale, robot_description
 from ito import clock
-from ito.protocol import Intrinsics
+from ito.protocol import Intrinsics, SensorObservations
 from ito.reconstruction import Reconstruction
 
 
@@ -29,6 +29,10 @@ def main():
     parser.add_argument("--allow-stale", action="store_true")
     parser.add_argument("--stamp-delay-ms", type=float, default=0)
     parser.add_argument("--frame-delay-ms", type=float, default=0)
+    parser.add_argument(
+        "--observations", choices=("prior", "camera", "imu", "imu-tof"), default="prior"
+    )
+    parser.add_argument("--sensor-gap", type=float, nargs=2, metavar=("START", "END"))
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
 
@@ -39,13 +43,17 @@ def main():
     motions = rows(args.recording / "received/motion.jsonl")
     robot = robot_description((args.recording / "received/robot.json").read_text())
     k = Intrinsics.model_validate_json((args.recording / "source/camera.json").read_text())
+    sensor_path = args.recording / "received/sensors.jsonl"
+    sensors = rows(sensor_path) if sensor_path.exists() else []
+    sensor_index = sensor_sent = sensor_dropped = 0
+    prior = args.observations == "prior"
     origin = frames[0]["captured"]
     published, delays, regressions, work, motion_lag = [], [], [], [], []
     admitted = 0
     with Reconstruction(
         k,
         backend="slam",
-        motion_noise=robot.motion_noise,
+        motion_noise=robot.motion_noise if prior else None,
         exposure=0,
         frame_delay=args.frame_delay_ms / 1000,
     ) as worker:
@@ -73,7 +81,32 @@ def main():
                     )
                 )
                 motion_index += 1
-            if due:
+            if args.observations in {"imu", "imu-tof"}:
+                while (
+                    sensor_index < len(sensors) and sensors[sensor_index]["arrival"] + shift <= now
+                ):
+                    raw = sensors[sensor_index]
+                    sensor_index += 1
+                    if args.sensor_gap and args.sensor_gap[0] <= now - start < args.sensor_gap[1]:
+                        sensor_dropped += 1
+                        continue
+                    batch = SensorObservations.model_validate_json(json.dumps(raw["observation"]))
+                    imu = tuple(
+                        sample.model_copy(update={"time": sample.time + shift})
+                        for sample in batch.imu
+                    )
+                    ranges = (
+                        tuple(
+                            sample.model_copy(update={"time": sample.time + shift})
+                            for sample in batch.ranges
+                        )
+                        if args.observations == "imu-tof"
+                        else ()
+                    )
+                    if imu or ranges:
+                        worker.sensors(batch.model_copy(update={"imu": imu, "ranges": ranges}))
+                        sensor_sent += 1
+            if due and prior:
                 began = clock.now()
                 worker.motion(due)
                 result = worker.pose()
@@ -85,6 +118,14 @@ def main():
                     published.append(stamp)
                     delays.append((clock.now() - began) * 1000)
                     motion_lag.append(max(0, due[-1][0] - stamp) * 1000)
+            if not prior:
+                result = worker.pose()
+                if result is not None and result[0] is not None and result[3] != latest:
+                    stamp = result[3]
+                    if stamp < latest:
+                        regressions.append([latest, stamp])
+                    latest = max(latest, stamp)
+                    published.append(stamp)
             newest = None
             while (
                 frame_index < len(frames)
@@ -109,8 +150,14 @@ def main():
             work.append(worker.work_seconds.value * 1000)
             time.sleep(0.001)
         integrated = worker.integrated.value
+    if not published or not integrated:
+        raise RuntimeError("The reconstruction process produced no camera poses")
     source = Path(sys.modules[Reconstruction.__module__].__file__).parent
     result = dict(
+        observations=args.observations,
+        sensor_gap=args.sensor_gap,
+        sensor_batches_sent=sensor_sent,
+        sensor_batches_dropped=sensor_dropped,
         settings=dict(precision="full", input_resolution=100, max_splats=1000000),
         script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         estimator_source_sha256={
@@ -132,14 +179,18 @@ def main():
         pose_publications=len(published),
         unique_pose_stamps=len(set(published)),
         pose_hz=len(set(published)) / args.seconds,
-        pose_hz_active=(len(set(published)) - 1) / (max(published) - min(published)),
+        pose_hz_active=(len(set(published)) - 1) / max(max(published) - min(published), 1e-9),
         motion_to_shared_pose_ms=dict(
-            zip(("p50", "p95", "max"), np.percentile(delays, [50, 95, 100]).tolist(), strict=True)
+            zip(
+                ("p50", "p95", "max"),
+                np.percentile(delays, [50, 95, 100]).tolist() if delays else [None] * 3,
+                strict=True,
+            )
         ),
         latest_motion_to_pose_stamp_ms=dict(
             zip(
                 ("p50", "p95", "max"),
-                np.percentile(motion_lag, [50, 95, 100]).tolist(),
+                np.percentile(motion_lag, [50, 95, 100]).tolist() if motion_lag else [None] * 3,
                 strict=True,
             )
         ),
