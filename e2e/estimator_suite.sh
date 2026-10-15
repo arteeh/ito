@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Frozen causal estimates and all pose/depth intervention arms, serialized on Ceres.
 set -euo pipefail
+export TORCHINDUCTOR_COMPILE_THREADS="${TORCHINDUCTOR_COMPILE_THREADS:-1}"
 cd "$(dirname "$0")/.."
 output="${1:-$HOME/Projects/ito/out/estimator-41}"
 recordings="${ITO_ESTIMATOR_RECORDINGS:-$HOME/Projects/ito/out/oracle-40}"
 python="${ITO_ESTIMATOR_PYTHON:-/mnt/c/Users/me/Projects/ito/builds/feat-recon-40-41/ito/runtime/python.exe}"
 for sequence in sweep180 tour; do
-    duration=17
-    if [[ "$sequence" == tour ]]; then duration=85; fi
+    duration=20
+    if [[ "$sequence" == tour ]]; then duration=90; fi
     mkdir -p "$output/causal/$sequence" "$output/visual"
     if [[ "${2:-}" == --reuse-estimates && -f "$output/causal/$sequence/settings.json" ]]; then
         .venv/bin/python - "$output/causal/$sequence/settings.json" <<'VERIFY'
@@ -30,7 +31,8 @@ VERIFY
         if [[ "$arm" == main-EE ]]; then options+=(--depth-support); fi
         bash e2e/oracle.sh e2e/oracle_run.py "$recordings/$sequence" \
             --estimates "$output/causal/$sequence" --arm "$arm" \
-            --out "$output/visual/$sequence-$arm" --seconds "$duration" --record "${options[@]}" \
+            --out "$output/visual/$sequence-$arm" --seconds "$duration" --view-start 0 \
+            --record "${options[@]}" \
             > "$output/$sequence-$arm.log" 2>&1
     done
     .venv/bin/python e2e/estimator_report.py "$recordings/$sequence/causal-full" \

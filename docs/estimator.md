@@ -2,7 +2,7 @@
 
 Issue #41; Ceres RTX 4070 Ti. **This does not complete #41 and is not ready for acceptance.** The lasting sweep heading jump is gone, motion publication is independent, and floor-based scale is removed. Tour rotation has not halved, dense depth remains inconsistent, and edge stability remains limited by inconsistent depth.
 
-All comparisons use velstand v8, the real **62° long-side lens**, **360p30**, **Full / Input 100% / Max splats 1,000,000**, and no fixed GPU memory cap. Main's estimator is frozen at `0a125d1` (same estimator as `ff9993b`). Main's existing causal sweep/tour outputs were re-scored at the start; the independent short recording was captured and run through both estimators here. The mapper stays at this branch's inherited oracle configuration; no round-2 mapper changes are included.
+The following sections retain round 1; [Round 2 (joint)](#round-2-joint) records the current results. All round-1 comparisons use velstand v8, the real **62° long-side lens**, **360p30**, **Full / Input 100% / Max splats 1,000,000**, and no fixed GPU memory cap. Main's estimator is frozen at `0a125d1` (same estimator as `ff9993b`). Main's existing causal sweep/tour outputs were re-scored at the start; the independent short recording was captured and run through both estimators here. The mapper stays at this branch's inherited oracle configuration; no round-2 mapper changes are included.
 
 ## Changes
 
@@ -64,3 +64,63 @@ Exact-source RGB matching measured simulated exposure-to-receipt delay **67.51 /
 The [result manifest](estimator-results.json) preserves exact settings, input/source hashes, schedules' hashes, diagnostics, all replay results and sheet identities. Canonical extraction used `8dc8804` (sweep `5d79db8`, before a variable rename on an unexecuted path). `563b6b0` adds pose revisions, corrected source timestamps and carving agreement, validated by real-process and supported point-map runs. Artifacts, rejected trials, recordings and logs remain under `~/Projects/ito/out/estimator-41/`; no weights are committed.
 
 Still required: halve tour rotation p95, resolve dense scale/shape and cross-view consistency, verify boundaries throughout turns, validate longer sessions and calibrated physical sensor timing/extrinsics. The owner should check shelf/door sliding, floor breathing, close-object stereo at actual IPD, correction comfort during fast turns/reversals, and sustained OpenXR/compositor timing. Headset comfort is untested.
+
+## Round 2 (joint)
+
+**Still not accepted; #41 remains incomplete.** The producer is `2e852b6`, on the merged joint base `0453550`. Mapping below uses the inherited round-2 mapper `0634bbd`, with narrow replay hooks through `9ba83fc`; the other mapper agent’s new candidate is not included. All drives retain Full / Input 100% / Max 1,000,000, v8 policies and the 62° lens. No GPU memory cap.
+
+Depth now carries registered float32 `depth_confidence` in [0,1]. These are uncalibrated weights: provisional predictions receive a quarter of network confidence; accepted multi-view depth agreement promotes them; geometric contradictions or excessive depth dispersion receive zero. Only reliable depth fusion feeds back into retained pointmaps. Missing confidence remains compatible with older callers/recordings. The inherited Gaussian mapper excludes zero-weight depth and seeds; its continuous loss weighting is still mapper work. The legacy point display retains provisional appearance while zero confidence prevents destructive carving. Dropping that appearance caused large black wall regions; a labelled ablation and the [corrected default](estimator-img/joint-tour-history-fix-76.jpg), both rows, isolate and repair that regression. This does not turn provisional depth into a trusted measurement or improve the reported support fraction.
+
+The attempted post-hoc restoration of individual Sim3 scales was removed: changing those scales without compensating the pointmaps changes geometry. Native calibrated local adjustment remains. Star motion factors, additional clock fitting, removing local adjustment, pair-depth alignment and an independent feature rotation observer were evaluated and rejected after trajectory/depth regressions. None of those pose experiments ships.
+
+Whole causal streams against sim truth (sweep / tour; translation p95 and median frame-median absolute depth error in metres):
+
+| Cohort | Frames | Rotation p95, ° | Translation p95, m | Depth error, m |
+|---|---|---|---|---|
+| Current main 9a4e7ac | 120 / 511 | 15.296 / 1.962 | 0.054 / 0.074 | 0.314 / 0.325 |
+| Round 1 9aea288 | 118 / 528 | 1.807 / 1.774 | 0.028 / 0.097 | 0.306 / 0.214 |
+| Joint start (confidence export only) | 110 / 514 | 1.863 / 1.879 | 0.027 / 0.174 | 0.253 / 0.259 |
+| Joint final 2e852b6 | 118 / 538 | 1.617 / 1.154 | 0.028 / 0.089 | 0.311 / 0.195 |
+
+Admission schedules differ because real model work determines which frames arrive while busy; all schedules and source hashes are retained. These are whole-stream comparisons, not a matched-schedule ablation. All raw depth errors include uncertain network predictions. Frame-median depth ratios are .861 / .800 on fresh main versus .914 / .917 final; maxima are 1.03 / 59.38 versus 1.78 / 20.59. Thus the worst sampled sweep ratio is worse despite removing floor fitting. The independent metric multiplier stays 1 on the unobservable sweep and changes slowly to .887 on tour; no floor measurement participates. Near-wall shape/scale failures remain.
+
+| Reprojection p95, px (sweep / tour) | Main | Round 1 | Joint final |
+|---|---|---|---|
+| Original KLT | 7.567 / 7.991 | 9.858 / 8.003 | 11.035 / 9.028 |
+| Mutual SIFT + subpixel LK | 7.038 / 8.143 | 11.904 / 8.108 | 16.015 / 8.698 |
+
+Residuals above use the original 360×640 source grid. With positive confidence in both views, final SIFT p95 is **8.379 / 5.607 px**, retaining **54.0% / 53.1%** of truth-visible common-region samples. The 2 px target and preservation of common-region support are not established. SIFT truth controls are 1.050 / 1.468 px; the old KLT truth control was 5.589 px on round-1 sweep. Changing the matcher is not an estimator improvement. All bidirectional valid feature residuals are retained; truth identifies common-region coverage only and never prunes scored residuals.
+
+The real reconstruction process was replayed for 20 s per build/drive, with source hashes verified against main and the final code. Motion publication remains independent of dense surface work:
+
+| Boundary measurement, sweep / tour | Current main | Final |
+|---|---|---|
+| Distinct poses per active second | 4.990 / 4.453 | 49.705 / 49.670 |
+| Newest received motion → shared pose timestamp lag p95, ms | 901.6 / 1225.6 | 0 / 0 |
+| Motion-call → shared-pose read p95, ms | stale reads; not fresh publication | .0359 / .0347 |
+
+No timestamp regressed. Final sweep had 849 distinct stamps in 850 reads (one 20.3 ms maximum timestamp lag); tour had 911/911, maximum zero. Earlier runs without this repeat are also retained. These measurements exclude transport, render, compositor and scanout; they do not certify headset latency.
+
+Images below use one source clock, exact shared RGB exposures and each arm’s own camera. E-pose cameras replay the latest received generic motion with only already-available visual corrections; legacy main holds its visual output, and T-pose arms use truth. Availability checks cover every recorded propagated camera. Render caps are labelled (98,304 for the oracle mapper, uncapped for point placement). A raw RGB exposure can precede the displayed propagated camera. Initial missing-motion/first-seen space may be black. Sheets are camera-FOV monoscopic diagnostic renders alongside concurrent 2160²/eye, 90° stereo, not headset recordings. These image-readback runs are not timing acceptance.
+
+| Motion comparison (rows 1–2; RGB / main / branch) | By-eye result |
+|---|---|
+| Sweep EE [18 s](estimator-img/joint-sweep180-EE-18.jpg) | Clearer shelf and poster than main; melted book edges and floor seams remain. |
+| Sweep ET [18 s](estimator-img/joint-sweep180-ET-18.jpg) | True depth gives cleaner book spines; floor remains imperfect. |
+| Sweep TE [15 s](estimator-img/joint-sweep180-TE-15.jpg) | **Fails:** large white floaters intrude onto the plain wall in both rows. True pose does not repair estimated depth. |
+| Tour EE [76 s](estimator-img/joint-tour-EE-76.jpg) | **Fails:** large spiky floaters/black regions versus main’s filled wall in both rows. |
+| Tour ET [76 s](estimator-img/joint-tour-ET-76.jpg) | Clearer box stripes, but the box/wall still distort even with true depth. |
+| Tour TE [76 s](estimator-img/joint-tour-TE-76.jpg) | **Fails:** white streaks intrude onto the right wall in both rows. |
+| Production point display [76 s](estimator-img/joint-tour-point-76.jpg) | Broad black-wall regression removed; soft/broken cabinet detail still prevents a sharp-edge pass. [Ablation](estimator-img/joint-tour-ablation-76.jpg) explicitly labels ignored confidence. |
+
+These are joint representation/estimator comparisons, not an isolated mapper ablation. Floaters in already visible surfaces count as failures; first-seen black alone does not. The inherited mapper is not promoted by these results.
+
+The independent short recording from round 1 was reused, without a new capture: fresh main 145 frames versus final 144. Rotation p95 **7.445 → .708°**, translation p95 **.0596 → .0312 m**, raw depth error **.332 → .179 m** (round 1: .499°, .0344 m, .258 m). Supported SIFT remains **5.191 px**, with 67.3% common-region support. [20 s](estimator-img/joint-short-point-20.jpg), both rows: better wall/poster placement but soft/ghost surfaces remain. This checks the independent point-display path; the independent Gaussian-map arms were not rerun.
+
+[MapAnything](https://github.com/facebookresearch/map-anything) was expanded to six prior views over 8 s, selected with odometry alone (.754 m baseline, 13.6° heading range). Its full-fp32 280×504 confidence batch took 1.44 s and reserved 8.20 GB; depth errors .14–.16 m still yielded 8.76 processed-grid px reprojection p95 (8.68 px confidence-supported, 95.4% common-region support). Earlier views in this batch are retrospective outputs, not a causal pose stream. This does not justify a product replacement. **DPVO was not tested:** its CUDA/C++ build exceeded the job’s 5 GB limit even with one job and one nvcc thread. It was dropped; no runner or product dependency lands.
+
+Remaining acceptance work: consistent multi-view depth, tour rotation halved without worse translation, stable edges throughout turns and independent-sequence stereo quality. Physical exposure/readout, rolling shutter, camera/joint/IMU extrinsics, raw head IMU, ToF and the headset remain untested. The owner should check shelf/door sliding, wall floaters, floor appearance as it leaves view, close-object stereo at actual IPD, fast-turn/reversal correction comfort and sustained compositor timing. The round-1 simulated receipt-delay/jitter measurements above remain the timing evidence; no truth-fitted delay is supplied to inference.
+
+The floor-assumption removal and independent publication are implemented. The complete “Done when” conditions do **not** hold: tour rotation has not halved, tour translation is worse than freshly measured main, cross-view depth is inconsistent, and the sheets fail stable stereo geometry. No headset quality pass is claimed.
+
+`bash e2e/estimator_suite.sh FRESH_OUT` runs a new causal cohort and EE/ET/TE plus the supported point control, on source time zero, serially under `ceres.lock`. The report, reprojection, stream and sheet drivers are runnable independently. The existing native-load helper also completed a 3 s TT compatibility check (22 observations, 345 optimization steps, no OOM) with optional worker fields absent. This job reused the existing gsplat binary; no further native builds were attempted after dropping DPVO. The [joint manifest](estimator-joint-results.json) preserves all main/round-1/joint metrics, both publication passes, confidence support, source/admission hashes, rejected trials, run settings and the labelled images. Full logs/arrays and the bounded prebuilt evaluation bootstrap remain under `~/Projects/ito/out/recon-40-41/estimator/`.
