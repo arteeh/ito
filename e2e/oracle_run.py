@@ -742,7 +742,7 @@ def main():
                 eye_size=args.eye_size,
                 recording=args.record,
                 camera_mode="own published pose; map-side correction excluded",
-                optimization=not args.no_opt,
+                optimization=not args.arm.startswith("main-") and not args.no_opt,
                 render_budget=renderer.render_budget,
                 frames=len(costs),
                 missed=misses,
