@@ -221,7 +221,7 @@ def main():
                     image_root / f"{seq}-native-{late:.1f}.jpg",
                 )
             if seq == "sweep180":
-                for arm in ("TE", "EE"):
+                for arm in ("TE",):
                     motion(
                         roots,
                         seq,

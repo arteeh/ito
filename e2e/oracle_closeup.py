@@ -4,6 +4,7 @@ Software GL only; these images make no timing claim.
 """
 
 import argparse
+import json
 import os
 from pathlib import Path
 
@@ -23,9 +24,16 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("snapshot", type=Path)
     p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--camera", type=Path, help="calibrated view instead of whole 90-degree eye")
     args = p.parse_args()
     data = np.load(args.snapshot)
-    k = Intrinsics(width=900, height=900, fx=450, fy=450, cx=450, cy=450)
+    k = (
+        Intrinsics.model_validate_json(args.camera.read_text())
+        if args.camera
+        else Intrinsics(width=900, height=900, fx=450, fy=450, cx=450, cy=450)
+    )
+    meta = json.loads((args.snapshot.parent / "display.json").read_text())
+    settings = meta["settings"]
     cells = [[], []]
     for budget in (None, LIVE_RENDER_SPLATS):
         view = View(k, render_budget=budget)
@@ -36,16 +44,20 @@ def main():
                 camera[:3, 3] += camera[:3, 0] * offset
                 rgb, _ = view.draw(camera)
                 # Letterbox whole eye, preserve aspect; no hidden crop or stretch.
-                pic = Image.new("RGB", (360, 640))
-                pic.paste(
-                    Image.fromarray((rgb * 255).astype(np.uint8)).resize((360, 360)), (0, 140)
-                )
+                pic = Image.fromarray((rgb * 255).astype(np.uint8))
+                if not args.camera:
+                    square = pic.resize((360, 360))
+                    pic = Image.new("RGB", (360, 640))
+                    pic.paste(square, (0, 140))
                 cells[n].append(
                     (
                         pic,
                         f"TT / prefix {float(data['deadline']):.1f}s / head +{offset:.2f}m\n"
-                        "Full / Input100 / Max1M / 360p30 / round2 0634bbd\n"
-                        f"90deg whole eye / visible cap {budget or 'none'}",
+                        f"{settings['precision'].title()} / Input{settings['input_resolution']} / "
+                        f"Max{settings['max_splats']:,} / 360p30\n"
+                        f"code {settings['code_commit'][:7]} / GL {float(data['actual']):.3f}s\n"
+                        f"{'camera FOV' if args.camera else '90deg whole eye'} / "
+                        f"visible cap {budget or 'none'}",
                     )
                 )
         finally:
