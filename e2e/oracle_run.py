@@ -199,10 +199,6 @@ def worker(args, ring, admission, ready, start, stopped, status):
         if main:
             engine = RGBDBackend(args.max_splats, k, device="cuda")
             engine.torch = torch
-            if getattr(args, "depth_support", False):
-                from ito.reconstruction.depth_support import DepthSupport
-
-                engine.depth_support = DepthSupport()
         else:
             engine = GaussianMap(args.max_splats, precision=settings["precision"])
         admission.bind_stream(cp)
@@ -270,6 +266,10 @@ def worker(args, ring, admission, ready, start, stopped, status):
         if main:
             engine = RGBDBackend(args.max_splats, k, device="cuda")
             engine.torch = torch
+            if args.depth_support:
+                from ito.reconstruction.depth_support import DepthSupport
+
+                engine.depth_support = DepthSupport()
             pub = MainPublication(engine)
         else:
             engine = GaussianMap(args.max_splats, precision=settings["precision"])

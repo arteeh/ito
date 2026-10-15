@@ -14,6 +14,7 @@ from scipy.spatial.transform import Rotation
 def report(root):
     rows = json.loads((root / "frames.json").read_text())
     ratios, absolute, spread, rotation, translation = [], [], [], [], []
+    supported_absolute, supported_fraction = [], []
     alignment = None
     for row in rows:
         data = np.load(root / row["file"])
@@ -31,6 +32,16 @@ def report(root):
         ratios.append(float(np.median(r)))
         absolute.append(float(np.median(np.abs(z[valid] - t[valid]))))
         spread.append(np.percentile(r, [10, 90]))
+        if "depth_confidence" in data:
+            confidence = data["depth_confidence"]
+            if confidence.shape != z.shape or confidence.dtype != np.float32:
+                raise ValueError("depth_confidence must be registered float32")
+            if not np.isfinite(confidence).all() or np.any((confidence < 0) | (confidence > 1)):
+                raise ValueError("depth_confidence must be finite in [0,1]")
+            supported = valid & (confidence > 0)
+            supported_fraction.append(float(supported.sum() / max(1, valid.sum())))
+            if supported.any():
+                supported_absolute.append(float(np.median(np.abs(z[supported] - t[supported]))))
 
     def stats(values):
         return dict(
@@ -67,6 +78,11 @@ def report(root):
             ]
             if values:
                 result[name] = stats(values)
+    if supported_fraction:
+        result["confidence_positive_fraction"] = stats(supported_fraction)
+        result["confidence_depth_absolute_m"] = (
+            stats(supported_absolute) if supported_absolute else None
+        )
     return result
 
 
