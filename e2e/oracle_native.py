@@ -7,6 +7,7 @@ This isolates native renderer contention; it is not a live-map or headset accept
 """
 
 import argparse
+import hashlib
 import json
 import math
 import multiprocessing as mp
@@ -75,9 +76,12 @@ def main():
     args.out.mkdir(parents=True, exist_ok=True)
     sequence = args.recording.name
     moment = 78 if sequence == "tour" else 12
-    snapshot = np.load(
+    snapshot_path = (
         args.recording.parent / "visual" / f"{sequence}-{args.arm}" / f"snapshot-{moment:.1f}.npz"
     )
+    with snapshot_path.open("rb") as source:
+        snapshot_hash = hashlib.file_digest(source, "sha256").hexdigest()
+    snapshot = np.load(snapshot_path)
     records = snapshot["records"].copy()
     records[:, 1, 3] = 1e30
     records[:, 3, 3] = 0
@@ -207,6 +211,7 @@ def main():
                     time.sleep(remaining)
         report = dict(
             renderer=view.device,
+            snapshot_sha256=snapshot_hash,
             sequence=sequence,
             arm=args.arm,
             optimizer=args.load,
