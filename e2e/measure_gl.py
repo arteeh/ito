@@ -16,7 +16,7 @@ def projection(i, near=0.01, far=1000):
 
 
 class View:
-    def __init__(self, intrinsics):
+    def __init__(self, intrinsics, *, render_budget=None):
         import moderngl
 
         self.window = None
@@ -38,7 +38,7 @@ class View:
         from ito.render.renderer import GaussianRenderer
 
         with self.context:
-            self.renderer = GaussianRenderer(self.context)
+            self.renderer = GaussianRenderer(self.context, render_budget=render_budget)
             self.size = (intrinsics.width, intrinsics.height)
             self.target = self.context.simple_framebuffer(self.size, components=4, dtype="f4")
             self.device = self.context.info["GL_RENDERER"]

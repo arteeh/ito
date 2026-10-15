@@ -37,7 +37,11 @@ def main():
             schedule_sha256=hashlib.sha256((estimates / "frames.json").read_bytes()).hexdigest(),
             settings=settings,
         )
-        for arm in ("TT", "TE", "ET", "EE", "TF", "main-TT", "main-EE"):
+        arms = ["TT", "TE", "ET", "EE", "TF", "main-TT", "main-EE"]
+        arms.extend(
+            arm for arm in ("main-TE", "main-ET") if (out / "visual" / f"{sequence}-{arm}").exists()
+        )
+        for arm in arms:
             name = f"{sequence}-{arm}"
             folder = out / "visual" / name
             display = read(folder / "display.json")
@@ -70,6 +74,20 @@ def main():
             for path in folder.glob("snapshot-*.npz"):
                 with np.load(path) as snap:
                     assert float(snap["actual"]) <= float(snap["deadline"])
+                    if "camera_mode" in snap:
+                        if arm.removeprefix("main-")[0] == "E":
+                            releases = np.array(
+                                [r["available"] - rows[0]["available"] for r in rows]
+                            )
+                            n = max(
+                                0,
+                                np.searchsorted(releases, float(snap["deadline"]), side="right")
+                                - 1,
+                            )
+                            expected = np.load(estimates / rows[n]["file"])["pose"]
+                            assert np.array_equal(snap["camera"], expected)
+                        else:
+                            assert np.array_equal(snap["camera"], snap["true_camera"])
                     records = snap["records"]
                     assert np.isfinite(records).all()
                     live = records[:, 0, 3] > 0
@@ -84,9 +102,15 @@ def main():
                 if work["torch_peak_reserved"] is not None
                 else None,
                 final_worker_summary=final_summary,
+                optimizer_steps=work.get("steps"),
+                full_image_iterations=work.get("image_iterations"),
+                elapsed=work.get("elapsed"),
+                keyframes=work.get("keyframes"),
+                view_iterations=work.get("view_iterations"),
+                pose_delta=work.get("pose_delta"),
                 recording_display=display,
             )
-    for folder in sorted((out / "timing").iterdir()):
+    for folder in sorted((out / "timing").glob("*")):
         if (folder / "display.json").exists():
             display = read(folder / "display.json")
             assert not display["recording"]
@@ -98,6 +122,8 @@ def main():
             assert display["settings"] == dict(
                 precision="full", input_resolution=100, max_splats=1_000_000
             )
+            if display.get("render_budget"):
+                assert display["bounded_draws"] <= display["render_budget"]
             if display["optimizer"]:
                 work = read(folder / "load/worker.json")
                 assert work["oom"] == 0 and len(work["admitted"]) > 1

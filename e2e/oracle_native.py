@@ -65,8 +65,10 @@ def main():
     p.add_argument("recording", type=Path)
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--linux-root", required=True)
-    p.add_argument("--arm", choices=("main-TT", "TT"), required=True)
+    p.add_argument("--arm", choices=("main-TT", "TT", "TF"), required=True)
     p.add_argument("--load", action="store_true")
+    p.add_argument("--precision", choices=("full", "half"), default="full")
+    p.add_argument("--render-budget", type=int, default=131072)
     p.add_argument("--seconds", type=float, default=20)
     args = p.parse_args()
     assert os.name == "nt"
@@ -81,7 +83,7 @@ def main():
     records[:, 3, 3] = 0
     camera = snapshot["camera"].astype(np.float32)
     k = Intrinsics(width=2160, height=2160, fx=1080, fy=1080, cx=1080, cy=1080)
-    view = View(k)
+    view = View(k, render_budget=None if args.arm.startswith("main-") else args.render_budget)
     renderer = view.renderer
     view.target.release()
     view.target = view.context.simple_framebuffer(view.size, components=4, dtype="f1")
@@ -143,6 +145,10 @@ def main():
                     linux_out,
                     "--seconds",
                     str(args.seconds + 2),
+                    "--precision",
+                    args.precision,
+                    "--arm",
+                    args.arm,
                 ],
                 stdout=(args.out / "load.log").open("w"),
                 stderr=subprocess.STDOUT,
@@ -171,7 +177,7 @@ def main():
                         break
                 head = np.eye(4, dtype=np.float32)
                 head[0, 3] = 0.03 * math.sin(now * 2)
-                renderer.sort(camera, head)
+                renderer.sort(camera, head, projection_matrix)
                 for side, target in ((-1, view.target), (1, other)):
                     eye = head.copy()
                     eye[0, 3] += side * 0.032
@@ -206,10 +212,12 @@ def main():
             optimizer=args.load,
             scope="native frozen map, controlled uploads, online optimizer; no compositor",
             scheduling=scheduling,
-            settings=dict(precision="full", input_resolution=100, max_splats=1_000_000),
+            settings=dict(precision=args.precision, input_resolution=100, max_splats=1_000_000),
             seconds=args.seconds,
             eye_size=2160,
             occupied=count,
+            render_budget=renderer.render_budget,
+            bounded_draws=renderer.selected_draws,
             capacity=len(records),
             frames=len(costs),
             missed=misses,

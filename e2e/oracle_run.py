@@ -183,7 +183,9 @@ def worker(args, ring, admission, ready, start, stopped, status):
             )
             with admission.integration():
                 engine.add(frame)
-                engine.step()
+                # Compile gradient/no-gradient pose modes before any observation clock.
+                for _ in range(16):
+                    engine.step()
             engine = GaussianMap(args.max_splats, precision=settings["precision"])
         if not main and args.oom_at == -2:
             refine = engine._refine_parameters
@@ -372,6 +374,14 @@ def worker(args, ring, admission, ready, start, stopped, status):
             json.dumps(
                 dict(
                     admitted=admitted,
+                    steps=getattr(engine, "steps", 0),
+                    image_iterations=getattr(engine, "image_iterations", 0),
+                    keyframes=getattr(engine, "keyframes", []),
+                    view_iterations={str(n): steps for n, steps in engine.iterations.items()}
+                    if not main
+                    else {},
+                    pose_delta=engine.pose_delta.detach().cpu().tolist() if not main else [],
+                    elapsed=time.perf_counter() - epoch,
                     step_ms=step_costs,
                     add_ms=add_costs,
                     oom=oom,
@@ -399,7 +409,9 @@ def main():
     parser.add_argument("recording", type=Path)
     parser.add_argument("--estimates", type=Path)
     parser.add_argument(
-        "--arm", choices=("TT", "TE", "ET", "EE", "TF", "main-TT", "main-EE"), required=True
+        "--arm",
+        choices=("TT", "TE", "ET", "EE", "TF", "main-TT", "main-TE", "main-ET", "main-EE"),
+        required=True,
     )
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--seconds", type=float, default=20)
@@ -441,7 +453,7 @@ def main():
     pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MINOR_VERSION, 3)
     pygame.display.set_mode((640, 640), pygame.OPENGL | pygame.DOUBLEBUF)
     gl = moderngl.create_context(require=430)
-    renderer = GaussianRenderer(gl)
+    renderer = GaussianRenderer(gl, render_budget=None if args.arm.startswith("main-") else 131072)
     from ito.desktop.overlay import Overlay, PilotStatus
 
     overlay = Overlay(gl, args.max_splats)
@@ -471,6 +483,15 @@ def main():
     times = np.array([r["captured"] - settings["origin"] - zero for r in sources])
     first = np.load(args.estimates / rows[0]["file"])
     alignment = first["pose"] @ np.linalg.inv(first["true_pose"])
+    estimated_poses = [np.load(args.estimates / r["file"])["pose"] for r in rows]
+    releases = np.array([r["available"] - zero for r in rows])
+
+    def pilot_camera(t, true_camera):
+        if args.arm.removeprefix("main-")[0] == "T":
+            return true_camera
+        n = int(np.clip(np.searchsorted(releases, t, side="right") - 1, 0, len(rows) - 1))
+        return estimated_poses[n]
+
     captures = []
     recorder = Recorder(args.out / "motion", fps=10) if args.record else None
     records = np.zeros((0, 4, 4), np.float32)
@@ -537,11 +558,12 @@ def main():
             if index != previous_index:
                 frame = np.load(args.recording / "source" / sources[index]["file"])
                 previous_index = index
-            camera = alignment @ frame["camera"]
+            true_camera = alignment @ frame["camera"]
+            camera = pilot_camera(now, true_camera)
             # Moving the current head is independent of camera/reconstruction publication.
             head = np.eye(4, dtype=np.float32)
             head[0, 3] = 0.03 * math.sin(now * 2)
-            renderer.sort(camera.astype(np.float32), head)
+            renderer.sort(camera.astype(np.float32), head, projection(stereo_k))
             for eye in (-0.032, 0.032):
                 offset = head.copy()
                 offset[0, 3] += eye
@@ -652,8 +674,14 @@ def main():
             deadline=moment,
             actual=at,
             source_index=index,
-            camera=alignment
+            camera=pilot_camera(
+                moment,
+                alignment @ np.load(args.recording / "source" / sources[index]["file"])["camera"],
+            ),
+            true_camera=alignment
             @ np.load(args.recording / "source" / sources[index]["file"])["camera"],
+            camera_mode="own published pose; map-side correction excluded",
+            render_budget=0 if args.arm.startswith("main-") else 131072,
         )
     (args.out / "display.json").write_text(
         json.dumps(
@@ -663,6 +691,8 @@ def main():
                 GL=gl.info["GL_RENDERER"],
                 eye_size=args.eye_size,
                 recording=args.record,
+                camera_mode="own published pose; map-side correction excluded",
+                render_budget=renderer.render_budget,
                 frames=len(costs),
                 missed=misses,
                 longest_consecutive=longest,

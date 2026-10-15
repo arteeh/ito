@@ -51,10 +51,12 @@ def main():
     p.add_argument("recording", type=Path)
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--seconds", type=float, required=True)
+    p.add_argument("--arm", choices=("TT", "TF"), default="TT")
+    p.add_argument("--precision", choices=("full", "half"), default="full")
     args = p.parse_args()
     (args.out / "pid").write_text(str(os.getpid()))
     args.estimates = args.recording / "causal-full"
-    args.arm, args.max_splats, args.precision, args.oom_at = "TT", 1_000_000, None, -1
+    args.max_splats, args.oom_at = 1_000_000, -1
     ctx = mp.get_context("spawn")
     args.oom_warning = ctx.RawValue("d", -1)
     stop = Flag(args.out / "stop")

@@ -73,35 +73,38 @@ def motion(out, seq, arm, start, output, baseline_arm="main-TT"):
                 (
                     main,
                     f"{baseline_arm} / t={t:.2f}s / shown {mr['t']:.3f}s\n"
-                    f"{SETTINGS}\nfixed exact input prefix / production GL",
+                    f"{SETTINGS}\nown published camera / production GL",
                 ),
                 (
                     mapped,
                     f"{arm} / t={t:.2f}s / shown {rr['t']:.3f}s\n"
-                    f"{SETTINGS}\nfixed exact input prefix / production GL",
+                    f"{SETTINGS}\nown published camera / production GL",
                 ),
             ]
         )
     grid(cells, output, f"{seq} causal motion: RGB | unoptimized {baseline_arm} | optimized {arm}")
 
 
-def prefixes(out, seq, arm, output):
+def prefixes(out, seq, arm, output, baseline_arm="main-TT"):
     k = Intrinsics.model_validate_json((out / seq / "source/camera.json").read_text())
-    view = View(k)
+    view = View(k, render_budget=131072)
     cells = []
     try:
         for t in (0.1, 0.5, 1.0, 2.0):
             row = []
-            for name in ("main-TT", arm):
+            for name in (baseline_arm, arm):
                 snap = np.load(out / "visual" / f"{seq}-{name}" / f"snapshot-{t:.1f}.npz")
                 assert float(snap["actual"]) <= t
                 r = snap["records"]
                 r = r[r[:, 0, 3] > 0]
+                view.renderer.render_budget = (
+                    int(snap["render_budget"]) or None if "render_budget" in snap else None
+                )
                 view.upload(r)
                 rgb, _ = view.draw(snap["camera"])
                 label = (
                     f"{name} / prefix {t:.1f}s\n{SETTINGS}\n"
-                    f"last GL completion {float(snap['actual']):.4f}s"
+                    f"own camera / GL {float(snap['actual']):.4f}s"
                 )
                 row.append((Image.fromarray((rgb * 255).astype(np.uint8)), label))
             cells.append(row)
@@ -112,19 +115,22 @@ def prefixes(out, seq, arm, output):
         grid(
             cells[n * 2 : n * 2 + 2],
             output.with_name(output.stem + f"-{n + 1}.jpg"),
-            f"{seq} causal prefixes: main-TT | {arm} (clock starts at first input availability)",
+            f"{seq} causal prefixes: {baseline_arm} | {arm}; first-input clock",
         )
 
 
-def stereo(out, seq, arm, moment, output):
+def stereo(out, seq, arm, moment, output, baseline_arm="main-TT"):
     k = Intrinsics.model_validate_json((out / seq / "source/camera.json").read_text())
-    view = View(k)
+    view = View(k, render_budget=131072)
     cells = []
     try:
-        for name in ("main-TT", arm):
+        for name in (baseline_arm, arm):
             snap = np.load(out / "visual" / f"{seq}-{name}" / f"snapshot-{moment:.1f}.npz")
             r = snap["records"]
             r = r[r[:, 0, 3] > 0]
+            view.renderer.render_budget = (
+                int(snap["render_budget"]) or None if "render_budget" in snap else None
+            )
             view.upload(r)
             row = []
             for offset in (-0.032, 0.032):
@@ -141,12 +147,16 @@ def stereo(out, seq, arm, moment, output):
             cells.append(row)
     finally:
         view.close()
-    grid(cells, output, f"{seq}: left | right (main-TT above, {arm} below); not a headset capture")
+    grid(
+        cells,
+        output,
+        f"{seq}: left | right ({baseline_arm} above, {arm} below); own cameras, no headset",
+    )
 
 
 def interventions(out, seq, moment, output):
     k = Intrinsics.model_validate_json((out / seq / "source/camera.json").read_text())
-    view = View(k)
+    view = View(k, render_budget=131072)
     cells = []
     try:
         for names in (("TT", "TE", "ET"), ("EE", "TF", "main-EE")):
@@ -155,6 +165,9 @@ def interventions(out, seq, moment, output):
                 snap = np.load(out / "visual" / f"{seq}-{name}" / f"snapshot-{moment:.1f}.npz")
                 assert float(snap["actual"]) <= moment
                 records = snap["records"]
+                view.renderer.render_budget = (
+                    int(snap["render_budget"]) or None if "render_budget" in snap else None
+                )
                 view.upload(records[records[:, 0, 3] > 0])
                 rgb, _ = view.draw(snap["camera"])
                 row.append(
@@ -176,14 +189,21 @@ def main():
     p.add_argument("--images", type=Path, default=Path("docs/gsplat-oracle-img"))
     p.add_argument("--sequence", choices=("sweep180", "tour"), required=True)
     p.add_argument("--arm", choices=ARMS, required=True)
+    p.add_argument("--matched-controls", action="store_true")
     args = p.parse_args()
     args.images.mkdir(parents=True, exist_ok=True)
     seq, arm = args.sequence, args.arm
-    for t in (0.9, 1.9, 10.0, 15.0):
-        motion(args.out, seq, arm, t, args.images / f"{seq}-{arm}-motion-{t:.1f}.jpg")
-    prefixes(args.out, seq, arm, args.images / f"{seq}-{arm}-prefix.jpg")
+    baseline = f"main-{arm}" if args.matched_controls and arm != "TF" else "main-TT"
+    for t in (0.9, 1.9, 10.0 if seq == "sweep180" else 50.0, 15.0 if seq == "sweep180" else 76.0):
+        motion(args.out, seq, arm, t, args.images / f"{seq}-{arm}-motion-{t:.1f}.jpg", baseline)
+    prefixes(args.out, seq, arm, args.images / f"{seq}-{arm}-prefix.jpg", baseline)
     stereo(
-        args.out, seq, arm, 78.0 if seq == "tour" else 10.5, args.images / f"{seq}-{arm}-stereo.jpg"
+        args.out,
+        seq,
+        arm,
+        78.0 if seq == "tour" else 10.5,
+        args.images / f"{seq}-{arm}-stereo.jpg",
+        baseline,
     )
 
 
