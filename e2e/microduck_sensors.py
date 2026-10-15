@@ -163,11 +163,39 @@ async def run(sim, out, board):
         await peer.close()
 
 
+async def camera_only(sim, out):
+    peer = await connect(f"127.0.0.1:{sim.port}", code=sim.code, receive_audio=False)
+    try:
+        assert peer.description.motion_camera is None
+        assert peer.description.motion_noise is None
+        track = await asyncio.wait_for(peer.tracks.get(), timeout=20)
+        assert track.kind == "video"
+        frames = 0
+        began = clock.now()
+        while clock.now() - began < 8:
+            frame = await asyncio.wait_for(track.recv(), timeout=10)
+            image = frame.to_ndarray(format="rgb24")
+            assert image.std() > 10
+            assert (frame.width, frame.height) == (1920, 1080)
+            frames += 1
+            while not peer.messages.empty():
+                message = peer.messages.get_nowait()
+                assert not isinstance(message, (Motion, SensorObservations)), message
+        assert frames > 5, frames
+        report = dict(mode="camera-only", frames=frames, motion_prior=False, sensor_batches=0)
+        (out / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+        print(json.dumps(report, indent=2))
+    finally:
+        peer.send(Command(sequence=1, action="e-stop"))
+        await peer.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     arguments(parser)
     parser.add_argument("--board", choices=("beta", "zero3"), default="beta")
     parser.add_argument("--out", type=Path, default=Path("e2e/out/microduck-sensors"))
+    parser.add_argument("--camera-only", action="store_true")
     args = parser.parse_args()
     with simulation(
         args.microduck,
@@ -178,10 +206,14 @@ def main():
         host="127.0.0.1",
         driver_port=port(),
         board=args.board,
-        head_imu=True,
+        head_imu=not args.camera_only,
+        motion_prior=not args.camera_only,
+        tof=not args.camera_only,
         tof_noise=0,
     ) as sim:
-        asyncio.run(run(sim, args.out, args.board))
+        asyncio.run(
+            camera_only(sim, args.out) if args.camera_only else run(sim, args.out, args.board)
+        )
 
 
 if __name__ == "__main__":
