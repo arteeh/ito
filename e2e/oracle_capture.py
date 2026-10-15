@@ -17,7 +17,7 @@ from drivers.microduck.sim import simulation
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--sequence", choices=("sweep180", "tour"), required=True)
+    parser.add_argument("--sequence", choices=("sweep180", "tour", "short"), required=True)
     args = parser.parse_args()
     args.out = args.out.resolve() / args.sequence
     args.out.mkdir(parents=True, exist_ok=True)
@@ -33,7 +33,7 @@ def main():
             dict(
                 sim_camera="360p30 (upright 360x640)",
                 lens_long_side_degrees=62,
-                route="sweep" if args.sequence == "sweep180" else "tour",
+                route="sweep" if args.sequence == "sweep180" else args.sequence,
                 turn_rate=180 if args.sequence == "sweep180" else 45,
                 policy=json.loads((install / "policies/current/manifest.json").read_text()),
             ),
@@ -63,7 +63,7 @@ def main():
             "--out",
             str(args.out / "drive"),
             "--route",
-            "sweep" if args.sequence == "sweep180" else "tour",
+            "sweep" if args.sequence == "sweep180" else args.sequence,
             "--turn-rate",
             "180" if args.sequence == "sweep180" else "45",
             "--fps",

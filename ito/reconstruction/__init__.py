@@ -71,6 +71,26 @@ def _run(recon):
             )
         else:
             backend = RGBDBackend(recon.budget.value, recon.intrinsics, **recon.options)
+        if robot_first:
+
+            def publish_pose(pose, correction, stamp):
+                if recon.output_lock.acquire(False):
+                    try:
+                        previous = np.frombuffer(recon.output_correction, np.float32).reshape(4, 4)
+                        latest = np.frombuffer(recon.output_camera, np.float32).reshape(4, 4)
+                        if stamp >= recon.output_captured.value:
+                            latest[:] = pose
+                            recon.output_captured.value = stamp
+                        else:
+                            # A delayed visual correction moves the newest propagated
+                            # pose, never replacing it with the old exposure's pose.
+                            latest[:] = correction @ np.linalg.inv(previous) @ latest
+                        previous[:] = correction
+                        recon.pose_revision.value += 1
+                    finally:
+                        recon.output_lock.release()
+
+            backend.pose_publisher = publish_pose
         backend.bind_admission(recon.admission)
         if backend.xp is not np:
             from .memory import VRAM
@@ -247,13 +267,25 @@ def _run(recon):
                     timeline.write(json.dumps(row) + "\n")
                 if recon.backend == "slam" and recon.output_lock.acquire(False):
                     try:
-                        np.frombuffer(recon.output_camera, np.float32)[:] = (
-                            backend.camera_pose.ravel()
+                        if not robot_first:
+                            np.frombuffer(recon.output_camera, np.float32)[:] = (
+                                backend.camera_pose.ravel()
+                            )
+                            recon.output_captured.value = captured
+                        correction = np.frombuffer(recon.output_correction, np.float32).reshape(
+                            4, 4
                         )
-                        np.frombuffer(recon.output_correction, np.float32)[:] = (
-                            backend.correction.ravel() if robot_first else np.eye(4).ravel()
-                        )
-                        recon.output_captured.value = captured
+                        if robot_first:
+                            # Retry a correction if its earlier nonblocking publication was busy.
+                            if not np.array_equal(correction, backend.correction):
+                                latest = np.frombuffer(recon.output_camera, np.float32).reshape(
+                                    4, 4
+                                )
+                                latest[:] = backend.correction @ np.linalg.inv(correction) @ latest
+                                correction[:] = backend.correction
+                                recon.pose_revision.value += 1
+                        else:
+                            correction[:] = np.eye(4)
                         recon.tracked.value = backend.tracked
                         recon.tracking.value = not backend.lost and backend.tracked > 0
                         recon.restart_counts[:] = [backend.restarts[c] for c in RESTART_CAUSES]
@@ -385,6 +417,7 @@ class Reconstruction:
         self.output_correction = context.RawArray("f", np.eye(4).ravel().tolist())
         self.motion_ring = MotionRing(context)
         self.output_captured = context.RawValue("d", 0)
+        self.pose_revision = context.RawValue("Q", 0)
         self.tracked = context.RawValue("Q", 0)
         self.integrated = context.RawValue("Q", 0)  # backend calls, including pose-only frames
         self.matched = context.RawValue("Q", 0)
@@ -531,12 +564,15 @@ class Reconstruction:
             self.status_lock.release()
 
     def pose(self):
+        """Latest pose, revision, tracking-ready flag and source pose time."""
         if not self.output_lock.acquire(False):
             return None
         try:
             return (
                 np.frombuffer(self.output_camera, np.float32).reshape(4, 4).copy(),
-                self.tracked.value,
+                self.pose_revision.value
+                if self.backend == "slam" and self.tracking_mode == "robot"
+                else self.tracked.value,
                 bool(self.tracking.value),
                 self.output_captured.value,
             )
@@ -558,6 +594,18 @@ class Reconstruction:
         state) oldest first. Never waits: a busy worker gets them with the next batch."""
         if self.tracking_mode == "robot" and self.backend == "slam":
             self.motion_ring.put(samples)
+            if len(samples) and self.output_lock.acquire(False):
+                try:
+                    stamp, pose, _, _ = samples[-1]
+                    if stamp > self.output_captured.value:
+                        correction = np.frombuffer(self.output_correction, np.float32).reshape(4, 4)
+                        np.frombuffer(self.output_camera, np.float32)[:] = (
+                            correction @ pose
+                        ).ravel()
+                        self.output_captured.value = stamp
+                        self.pose_revision.value += 1
+                finally:
+                    self.output_lock.release()
 
     def restarts(self):
         """SLAM's local map restarts so far by cause; None while the worker is publishing."""

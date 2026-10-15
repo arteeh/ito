@@ -22,10 +22,9 @@ A map aligner (the Gaussian map rendered at a frame's pose and compared with its
 adds a map factor: the frame's pose in the world the map was built in, with its sigma,
 under the same Cauchy loss as a visual factor.
 
-The front end's lengths become metres through one log-scale estimated apart from the poses,
-from direct observations of it (the floor under a frame, slam.py), not from the visual
-translations: a front end seeded at the robot's prediction mostly echoes the robot's travel
-in them, in whatever units its map has.
+Metric depth calibration lives outside the pose graph (metric_scale.py). Visual
+translations are seeded by robot motion and retain a nuisance scale within each window
+solve; their uncertainty includes the frontend's shape error.
 """
 
 import math
@@ -52,8 +51,6 @@ SCALE_SIGMA = 0.2  # Log-scale prior per solve, around the last estimate.
 # between keyframes: against the robot's travel, tour replay factors spread p10-p90 over
 # 1.1-1.7x. Its sigma grows by this fraction of its length.
 VISUAL_SCALE = 0.3
-# Scale observations kept: about two seconds of frames, as the front end's own scale drifts.
-SCALE_MEMORY = 20
 # Frame-delay observations kept, and the camera's turn between a visual rotation's two
 # frames, per second of delay, below which one says too little to keep.
 DELAY_MEMORY = 60
@@ -98,11 +95,8 @@ class PoseGraph:
         self.td_bounds = td_bounds
         self.estimate_td = estimate_td
         self.delays = deque(maxlen=DELAY_MEMORY)  # (seconds, sigma), newest last
+        self.delay_jitter = 0.0
         self.log_scale = 0.0
-        # (log metres per front-end unit, sigma), newest last; until the first is solved the
-        # front end's scale is unknown, and nothing holds it near its start.
-        self.scales = deque(maxlen=SCALE_MEMORY)
-        self.scale_known = False
         self.nodes: dict[int, Node] = {}
         self.keyframes: list[int] = []  # oldest first
         self.current: int | None = None
@@ -111,6 +105,7 @@ class PoseGraph:
         self.anchor: np.ndarray | None = None  # pose prior on the oldest keyframe
         self.next_id = 0
         self.solves = 0
+        self.rejected_visual = 0
         # (time, node id, pose) of every published node, oldest first; keyframes' follow
         # their window solves while they are in the window.
         self.published = deque(maxlen=PUBLISHED)
@@ -125,22 +120,6 @@ class PoseGraph:
 
     def latest_keyframe(self):
         return self.keyframes[-1] if self.keyframes else None
-
-    def fold_scale(self):
-        """Hand the scale estimate to the front end: returns the factor its lengths take,
-        and restates the factors and observations already held in the new units."""
-        factor = math.exp(self.log_scale)
-        for v in self.visual:
-            v.translation = v.translation * factor
-        self.scales = deque(
-            ((value - self.log_scale, sigma) for value, sigma in self.scales), SCALE_MEMORY
-        )
-        self.log_scale = 0.0
-        return factor
-
-    def add_scale(self, log_scale, sigma):
-        """An observation of the front end's scale: log metres per front-end unit."""
-        self.scales.append((float(log_scale), float(sigma)))
 
     def predict(self, t):
         """World-from-camera for a frame stamped t: the newest node moved on by the robot."""
@@ -167,7 +146,25 @@ class PoseGraph:
     def add_visual(self, reference, frame, relative, sigma):
         """A front end's reference-from-frame pose (translation in its own units)."""
         if reference not in self.nodes or frame not in self.nodes or reference == frame:
-            return
+            return False
+        relative = np.asarray(relative, float)
+        sigma = np.asarray(sigma, float)
+        if (
+            relative.shape != (4, 4)
+            or sigma.shape != (6,)
+            or not (np.isfinite(relative).all() and np.isfinite(sigma).all() and (sigma > 0).all())
+        ):
+            self.rejected_visual += 1
+            return False
+        a, b = self.nodes[reference].time - self.td, self.nodes[frame].time - self.td
+        expected, covariance = self.motion.between(a, b)
+        innovation = Rotation.from_matrix(expected[:3, :3].T @ relative[:3, :3]).as_rotvec()
+        # Reject a different view before robust optimization can spread it through the
+        # window. A noisy robot widens this gate; no sim-specific trust is assumed.
+        variance = np.diag(covariance)[:3] + sigma[:3] ** 2
+        if np.sum(innovation**2 / np.maximum(variance, 1e-12)) > 16.27:
+            self.rejected_visual += 1
+            return False
         translation = np.array(relative[:3, 3], float)
         sigma = np.array(sigma, float)
         sigma[3:] = np.hypot(sigma[3:], VISUAL_SCALE * np.linalg.norm(translation))
@@ -176,6 +173,7 @@ class PoseGraph:
         )
         if self.estimate_td:
             self._observe_delay(self.visual[-1])
+        return True
 
     def add_map(self, node, pose, sigma):
         """Where a map aligner placed a node: world-from-camera, and the one-sigma rotation
@@ -205,6 +203,8 @@ class PoseGraph:
         best = int(np.argmin(error))
         if best in (0, len(delays) - 1):
             return
+        if error[best] > 3 * np.linalg.norm(visual.sigma[:3]):
+            return
         # How fast the robot's relative rotation moves with the delay, around the best one.
         turn = (robot[best - 1].inv() * robot[best + 1]).magnitude() / (2 * DELAY_STEP)
         if turn < DELAY_TURN:
@@ -217,15 +217,28 @@ class PoseGraph:
         self.delays.append((delay, float(visual.sigma[0]) / turn))
 
     def solve_delay(self):
-        """The frame delay from its observations, robustly, as solve_scale the scale."""
-        if not self.estimate_td or not self.delays:
+        """Robust delay from independent observations, retiming all retained poses together."""
+        if not self.estimate_td or len(self.delays) < 5:
             return
         values, sigmas = np.array(self.delays).T
         delay = float(np.median(values))
         for _ in range(8):
             weights = 1 / (sigmas**2 + ((delay - values) / CAUCHY) ** 2)
             delay = float(weights @ values / weights.sum())
-        self.td = float(np.clip(delay, *self.td_bounds))
+        self.delay_jitter = float(1.4826 * np.median(np.abs(values - delay)))
+        # A new delay retimes every retained motion factor. Applying a whole fitted
+        # jump at once permanently rotates their anchored trajectory during a turn.
+        old = self.td
+        self.td = float(np.clip(old + np.clip(delay - old, -0.001, 0.001), *self.td_bounds))
+        shifts = {}
+        for node, value in self.nodes.items():
+            shift = np.linalg.inv(self.motion.at(value.time - old)) @ self.motion.at(
+                value.time - self.td
+            )
+            value.pose = value.pose @ shift
+            shifts[node] = shift
+        if self.anchor is not None and self.keyframes:
+            self.anchor = self.anchor @ shifts[self.keyframes[0]]
 
     def promote(self):
         """The current frame becomes a keyframe; the oldest leaves a full window."""
@@ -321,20 +334,6 @@ class PoseGraph:
             self._refresh_published()
         return {k: self.nodes[k].pose for k in self.keyframes}
 
-    def solve_scale(self):
-        """The scale from its direct observations, each a little apart from the last."""
-        if not self.scales:
-            return
-        values, sigmas = np.array(self.scales).T
-        prior = 1 / SCALE_SIGMA**2 if self.scale_known else 0.0
-        scale = float(np.median(values)) if not self.scale_known else self.log_scale
-        # One unknown: iteratively reweighted least squares under the Cauchy loss.
-        for _ in range(8):
-            weights = 1 / (sigmas**2 + ((scale - values) / CAUCHY) ** 2)
-            scale = (weights @ values + prior * self.log_scale) / (weights.sum() + prior)
-        self.log_scale = float(scale)
-        self.scale_known = True
-
     def _solve(self, free, frame_only):
         window = self.keyframes + ([self.current] if self.current is not None else [])
         visual = [v for v in self.visual if v.reference in self.nodes and v.frame in self.nodes]
@@ -356,8 +355,8 @@ class PoseGraph:
         start_r = Rotation.from_matrix(np.array([start[n][:3, :3] for n in order]))
         start_p = np.array([start[n][:3, 3] for n in order])
         times = np.array([self.nodes[n].time for n in order])
-        # The visual translations' units float a little per solve, around the scale from the
-        # floor: they need not match it exactly, and are not handed to the front end.
+        # Visual translations may differ from odometry because the frontend bends
+        # depth. This nuisance scale is local to the solve, never a depth calibration.
         estimate_scale = not frame_only and bool(self.visual)
         size = 6 * len(free) + int(estimate_scale)
         td, scale0 = self.td, self.log_scale
