@@ -654,7 +654,7 @@ def main():
                     camera_mode="own published pose",
                     settings=settings,
                 )
-                recorder.camera(frame["rgb"], index, now, camera)
+                recorder.camera(frame["rgb"], index, now, true_camera)
                 next_record += 0.1
             if 0 <= time.perf_counter() - args.oom_warning.value < 10:
                 warning_frames += 1
