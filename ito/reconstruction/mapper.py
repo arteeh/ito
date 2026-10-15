@@ -48,7 +48,8 @@ FILTER = 0.0  # Mip-Splatting 3D filter, in pixels of the closest training view
 @dataclass(frozen=True)
 class Keyframe:
     """A tracked frame for the map. points: metric camera-local, registered to colors and
-    confidence (zero excludes); empty for a view that only trains. anchor: the keyframe
+    geometric confidence; registered depth also permits provisional colour seeds.
+    Empty points only trains. anchor: the keyframe
     node this view is held relative to (its own node for a keyframe)."""
 
     node: int
@@ -126,6 +127,9 @@ def transform_gaussians(means, scales, quats, opacity, owner, poses, rotations, 
 
 
 class GaussianMap:
+    # Unknown neural depth may initialize colour in uncovered space. It is never
+    # independent geometric evidence for depth loss, replacement or pruning.
+    provisional_appearance = True
     LEARNING_RATES = dict(means=0.00016, scales=0.005, quats=0.001, opacities=0.05, sh0=0.0025)
 
     def __init__(
@@ -547,6 +551,11 @@ class GaussianMap:
         seed_points, seed_confidence = frame.points, frame.confidence
         if self.views[frame.node].depth_weight is not None:
             seed_confidence = self.views[frame.node].depth_weight
+            if frame.depth is not None and not frame.sparse_depth:
+                provisional = self.tensor(frame.confidence).reshape(seed_confidence.shape) <= 0.25
+                seed_confidence = self.torch.where(
+                    provisional, seed_confidence.clamp_min(0.3), seed_confidence
+                )
         measured_depth = None
         if frame.depth is not None:
             valid_depth = np.isfinite(frame.depth) & (frame.depth > 0)

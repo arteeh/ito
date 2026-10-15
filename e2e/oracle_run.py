@@ -346,7 +346,7 @@ def worker(args, ring, admission, ready, start, stopped, status):
                             depth,
                             arm[1] == "E" and not getattr(args, "ignore_depth_confidence", False),
                         )
-                        if not main:
+                        if not main and not getattr(engine, "provisional_appearance", False):
                             depth = np.where(confidence > 0, depth, 0)
                         rgb = data["rgb"]
                         began = time.perf_counter()
