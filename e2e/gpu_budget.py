@@ -20,6 +20,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from measure_gl import View
+from observation_recording import robot_description
 
 
 def fingerprint():
@@ -55,14 +56,14 @@ def load_worker(args, ready, start, stop, admission):
     from PIL import Image
     from slam_replay import motion_rows
 
-    from ito.protocol import Intrinsics, RobotDescription
+    from ito.protocol import Intrinsics
     from ito.reconstruction import mast3r_runtime
     from ito.reconstruction.slam import SLAMBackend
 
     mast3r_runtime.MODELS = args.work / "pp/models"
     recording = args.work / f"rf-run/out/{args.sequence}/rec"
     intrinsics = Intrinsics.model_validate_json((recording / "camera.json").read_text())
-    robot = RobotDescription.model_validate_json((recording / "robot.json").read_text())
+    robot = robot_description((recording / "robot.json").read_text())
     rows = [json.loads(s) for s in (recording / "frames.jsonl").read_text().splitlines()]
     motion = [json.loads(s) for s in (recording / "motion.jsonl").read_text().splitlines()]
     samples = motion_rows(motion)

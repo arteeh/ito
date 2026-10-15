@@ -25,6 +25,7 @@ from ito.protocol import (
     Motion,
     Paired,
     PilotState,
+    SensorObservations,
     Status,
     WireMessage,
     encode,
@@ -58,6 +59,7 @@ class Driver:
         self.adapter = adapter
         adapter.frame_sink = self.publish_frame
         adapter.motion_sink = self.publish_motion
+        adapter.sensor_sink = self.publish_sensors
         self.input_timeout = input_timeout
         self.command_rate = command_rate
         self.ice_servers = ice_servers
@@ -219,6 +221,8 @@ class Driver:
         )
         if camera is None:
             raise ValueError("unknown camera")
+        if metadata.calibration != camera.calibration:
+            raise ValueError("frame calibration does not match camera")
         if metadata.depth and (
             metadata.depth.width != camera.intrinsics.width
             or metadata.depth.height != camera.intrinsics.height
@@ -227,9 +231,16 @@ class Driver:
         return self.peer.send(metadata) if self.peer else False
 
     def publish_motion(self, motion: Motion) -> bool:
+        if motion.camera != self.adapter.description.motion_camera:
+            raise ValueError("motion must name the described motion camera")
         if self.adapter.description.motion_noise is None:
             raise ValueError("a robot that publishes motion must describe its motion noise")
         return self.peer.send(motion) if self.peer else False
+
+    def publish_sensors(self, observations: SensorObservations) -> bool:
+        if observations.camera not in {c.name for c in self.adapter.description.cameras}:
+            raise ValueError("unknown sensor observation camera")
+        return self.peer.send(observations) if self.peer else False
 
     async def _run(self) -> None:
         interval = min(0.01, self.input_timeout / 4, 1 / self.command_rate)
@@ -442,7 +453,7 @@ class Driver:
             return
         self._closing = True
         self._neutral("driver shutting down")
-        self.adapter.frame_sink = self.adapter.motion_sink = None
+        self.adapter.frame_sink = self.adapter.motion_sink = self.adapter.sensor_sink = None
         try:
             if self._task:
                 self._task.cancel()

@@ -11,6 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from drivers.microduck import lens
 from drivers.microduck.sim import simulation
 
 
@@ -18,6 +19,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--sequence", choices=("sweep180", "tour", "short"), required=True)
+    parser.add_argument("--board", choices=("beta", "zero3"), default="beta")
+    parser.add_argument("--beta-camera-hfov", type=float, default=lens.BETA_CAMERA_HFOV_DEG)
+    parser.add_argument("--head-imu", action="store_true")
+    parser.add_argument("--imu-noise", type=float, default=0)
+    parser.add_argument("--tof-noise", type=float, default=1)
     args = parser.parse_args()
     args.out = args.out.resolve() / args.sequence
     args.out.mkdir(parents=True, exist_ok=True)
@@ -31,8 +37,13 @@ def main():
     (args.out / "capture.json").write_text(
         json.dumps(
             dict(
-                sim_camera="360p30 (upright 360x640)",
-                lens_long_side_degrees=62,
+                sim_camera="GC2093 1920x1080/30 upright"
+                if args.board == "beta"
+                else "IMX219 360p30 rotated",
+                board=args.board,
+                lens_long_side_degrees=args.beta_camera_hfov
+                if args.board == "beta"
+                else lens.HFOV_DEG,
                 route="sweep" if args.sequence == "sweep180" else args.sequence,
                 turn_rate=180 if args.sequence == "sweep180" else 45,
                 policy=json.loads((install / "policies/current/manifest.json").read_text()),
@@ -47,8 +58,13 @@ def main():
         logs=args.out / "sim-logs",
         pairing_file=args.out / "pairing-code",
         viewer=True,
+        board=args.board,
+        beta_camera_hfov=args.beta_camera_hfov,
         gl="glfw",
         rgbd_record=args.out / "source",
+        head_imu=args.head_imu,
+        imu_noise=args.imu_noise,
+        tof_noise=args.tof_noise,
     ) as sim:
         command = [
             sys.executable,

@@ -12,11 +12,15 @@ from ito.driver.walking import Walker
 from ito.protocol import Camera as CameraDescription
 from ito.protocol import (
     DegreeOfFreedom,
+    ImuSample,
     Motion,
     MotionNoise,
     MotionSample,
     Pose,
+    RangeSample,
+    RangeZone,
     RobotDescription,
+    SensorObservations,
 )
 from ito.rates import Rate
 
@@ -149,7 +153,14 @@ class SourceClock:
 
 
 class MicroduckAdapter(Adapter):
-    def __init__(self, robot="ws://127.0.0.1:8443", input_timeout=0.25, head_imu=False):
+    def __init__(
+        self,
+        robot="ws://127.0.0.1:8443",
+        input_timeout=0.25,
+        head_imu=False,
+        tof=True,
+        motion_prior=True,
+    ):
         if not robot.startswith(("ws://", "wss://")):
             raise ValueError("--robot must be mediad's ws://host:8443 address")
         if not math.isfinite(input_timeout) or not 0.02 <= input_timeout <= 0.5:
@@ -157,6 +168,11 @@ class MicroduckAdapter(Adapter):
         self.remote = Remote(robot, self._notification)
         self.input_timeout = input_timeout
         self.head_imu = head_imu
+        self.tof = tof
+        self.motion_prior = motion_prior
+        self._sensor_imu = deque(maxlen=64)
+        self._sensor_ranges = deque(maxlen=4)
+        self._mounts = None
         # The policy's trained forward/backward range is +-0.4 m/s and it stands still below
         # about 0.35. It has no usable sideways step (none up to its trained 0.3 m/s), so
         # sideways input steers the body into that direction instead.
@@ -221,7 +237,8 @@ class MicroduckAdapter(Adapter):
             self.camera = Camera(await self.remote.call("media.video"), self._frame_metadata)
             self._description = RobotDescription(
                 name="Microduck",
-                motion_noise=MOTION_NOISE,
+                motion_noise=MOTION_NOISE if self.motion_prior else None,
+                motion_camera="head" if self.motion_prior else None,
                 cameras=(
                     CameraDescription(
                         name="head",
@@ -255,6 +272,9 @@ class MicroduckAdapter(Adapter):
                         f"Microduck head IMU unavailable ({exc}); enable [head_imu] in tofd "
                         "on the robot, or run without --head-imu"
                     ) from exc
+            if self.tof:
+                # A duck without a fitted sensor accepts the stream with no samples.
+                await self.remote.call("tof.stream")
             # Every tick of robotd's 50 Hz loop: robot-first tracking on the pilot PC
             # interpolates the camera's motion between them.
             await self.remote.call("robot.subscribe", {})
@@ -420,6 +440,7 @@ class MicroduckAdapter(Adapter):
     def _notification(self, method, data):
         if method == "head_imu.frame":
             source, _ = self._source_clock(data.get("t_ns"), clock.now())
+            self._sensor_imu.append((source, data))
             self._head_gyro.append((source, tuple(data["gyro"])))
             self._head_imu_rate.tick()
             self._telemetry["head_imu_hz"] = self._head_imu_rate.hz()
@@ -427,8 +448,14 @@ class MicroduckAdapter(Adapter):
                 for axis, value in zip("xyz", data[name], strict=True):
                     self._telemetry[f"head_imu_{name}_{axis}"] = value
             return
+        if method == "tof.frame":
+            source, _ = self._source_clock(data.get("t_ns"), clock.now())
+            self._sensor_ranges.append((source, data))
+            return
         if method != "robot.state":
             return
+        self._mounts = data.get("frames") or {}
+        self._publish_sensors()
         values = {"policy": data["policy"]}
         for name, angle in zip(self.joint_names, data["joints"], strict=True):
             if name in HEAD_LIMITS or name == "mouth":
@@ -480,7 +507,8 @@ class MicroduckAdapter(Adapter):
             if now >= self._pose_due:
                 self._pose_due = max(self._pose_due + METADATA_POSE_INTERVAL, now - 0.05)
                 self._poses.append((now, *pose, values["base_yaw"]))
-            self._moved(data, now, pose, camera)
+            if self.motion_prior:
+                self._moved(data, now, pose, camera)
             for name, angle in zip(("yaw", "pitch", "roll"), frames.angles(pose[1]), strict=True):
                 values[f"camera_{name}"] = angle
             if self._measured_at is not None:
@@ -492,6 +520,83 @@ class MicroduckAdapter(Adapter):
             self._measured_at = now
         self._telemetry.update(values)
         self._state_at = clock.now()
+
+    def _publish_sensors(self):
+        camera = self._mounts.get("camera")
+        if not camera:
+            return
+        imu = []
+        sensor = self._mounts.get("head_imu")
+        if sensor:
+            mount = frames.sensor_in_camera(sensor, camera)
+            for source, raw in self._sensor_imu:
+                q = frames.normalized(frames.multiply(frames.TO_ITO, raw["quat"]))
+                imu.append(
+                    ImuSample(
+                        sensor="head_imu",
+                        time=source,
+                        mount=mount,
+                        angular_velocity=tuple(raw["gyro"]),
+                        specific_force=tuple(raw["accel"]),
+                        orientation=(*q[1:], q[0]),
+                        temperature_c=raw["temp_c"],
+                        # Includes the BMI088's uncalibrated offset, not only white noise.
+                        gyro_sigma=0.02,
+                        accel_sigma=0.25,
+                        time_sigma=0.002 if self._source_clock.shared else 0.02,
+                    )
+                )
+        ranges = []
+        sensor = self._mounts.get("tof")
+        if sensor:
+            mount = frames.sensor_in_camera(sensor, camera)
+            for source, raw in self._sensor_ranges:
+                rows, cols = raw["rows"], raw["cols"]
+                if rows <= 0 or cols <= 0 or rows * cols != len(raw["distance_mm"]):
+                    raise ValueError("Microduck ToF dimensions do not match its zones")
+                angle = math.radians(45)
+                zones = []
+                for i, (mm, status) in enumerate(
+                    zip(raw["distance_mm"], raw["status"], strict=True)
+                ):
+                    elevation = angle * (0.5 - ((i // cols) + 0.5) / rows)
+                    azimuth = angle * (0.5 - ((i % cols) + 0.5) / cols)
+                    valid = status in {5, 9} and mm > 0
+                    zones.append(
+                        RangeZone(
+                            direction=(
+                                math.cos(elevation) * math.cos(azimuth),
+                                math.cos(elevation) * math.sin(azimuth),
+                                math.sin(elevation),
+                            ),
+                            angular_size=(angle / cols, angle / rows),
+                            distance=mm / 1000 if valid else None,
+                            quality="valid"
+                            if valid
+                            else "no-return"
+                            if status == 255
+                            else "invalid",
+                            sigma=0.003 + 0.02 * max(mm / 1000, 0) / 4,
+                        )
+                    )
+                ranges.append(
+                    RangeSample(
+                        sensor="tof",
+                        time=source,
+                        mount=mount,
+                        time_sigma=0.005 if self._source_clock.shared else 0.02,
+                        zones=tuple(zones),
+                    )
+                )
+        if not imu and not ranges:
+            return
+        if self.publish_sensors(
+            SensorObservations(camera="head", imu=tuple(imu), ranges=tuple(ranges))
+        ):
+            if imu:
+                self._sensor_imu.clear()
+            if ranges:
+                self._sensor_ranges.clear()
 
     def _moved(self, data, received, pose, camera):
         """Queue this tick's camera pose for the pilot, stamped when robotd read its sensors."""
@@ -518,10 +623,10 @@ class MicroduckAdapter(Adapter):
                 time=source,
                 camera_pose=Pose(position=pose[0], orientation=pose[1]),
                 angular_velocity=gyro,
-                state=motion_state(data),
+                uncertainty_scale=10.0 if motion_state(data) in {"held", "fallen"} else 1.0,
             )
         )
-        if self.publish_motion(Motion(samples=tuple(self._motion))):
+        if self.publish_motion(Motion(camera="head", samples=tuple(self._motion))):
             self._motion.clear()
         self._motion_rate.tick()
         self._telemetry.update(
@@ -537,10 +642,14 @@ class MicroduckAdapter(Adapter):
         trunk orientation: the heading SLAM cannot see on a plain wall, and the roll and pitch
         that level its map.
         """
-        if not self._poses:
-            return {}
+        if not self._poses or not self.motion_prior:
+            return dict(exposure=self._exposure())
         position, orientation, body_yaw = frames.at(self._poses, clock.now() - FRAME_DELAY)
-        return dict(camera_pose=Pose(position=position, orientation=orientation), body_yaw=body_yaw)
+        return dict(
+            camera_pose=Pose(position=position, orientation=orientation),
+            body_yaw=body_yaw,
+            exposure=self._exposure(),
+        )
 
     def telemetry(self):
         self._check()

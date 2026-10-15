@@ -130,3 +130,14 @@ def at(history, when):
         normalized(tuple(a + (b - a) * f for a, b in zip(q0, q1, strict=True))),
         math.remainder(yaw0 + math.remainder(yaw1 - yaw0, math.tau) * f, math.tau),
     )
+
+
+def sensor_in_camera(sensor, camera):
+    """Named sensor-to-camera calibration from robotd's two trunk-relative mounts."""
+    from ito.protocol import Pose
+
+    inverse = conjugate(normalized(camera["quat"]))
+    q = normalized(multiply(CAMERA_TO_ITO, multiply(inverse, normalized(sensor["quat"]))))
+    position = tuple(a - b for a, b in zip(sensor["pos"], camera["pos"], strict=True))
+    position = rotate(multiply(CAMERA_TO_ITO, inverse), position)
+    return Pose(position=position, orientation=(*q[1:], q[0]))

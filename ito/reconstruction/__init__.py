@@ -4,6 +4,7 @@ import json
 import logging
 import multiprocessing as mp
 import os
+import queue
 import sys
 import traceback
 
@@ -143,6 +144,11 @@ def _run(recon):
             if robot_first:
                 rows, motion_cursor = recon.motion_ring.read(motion_cursor)
                 backend.add_motion(rows)
+                while True:
+                    try:
+                        backend.add_sensors(recon.sensor_queue.get_nowait())
+                    except queue.Empty:
+                        break
             frame = None
             take = recon.sequence.value != sequence and recon.admission.available()
             if take and recon.input_lock.acquire(False):
@@ -393,7 +399,7 @@ class Reconstruction:
         AppSettings(precision=precision, input_resolution=input_resolution)
         self.precision, self.input_resolution = precision, input_resolution
         self.backend = backend
-        self.tracking_mode = tracking if motion_noise is not None else "vision"
+        self.tracking_mode = tracking
         self.motion_noise = motion_noise
         self.frame_delay = frame_delay
         self.exposure = exposure
@@ -416,6 +422,7 @@ class Reconstruction:
         self.output_camera = context.RawArray("f", 16)
         self.output_correction = context.RawArray("f", np.eye(4).ravel().tolist())
         self.motion_ring = MotionRing(context)
+        self.sensor_queue = context.Queue(maxsize=128)
         self.output_captured = context.RawValue("d", 0)
         self.pose_revision = context.RawValue("Q", 0)
         self.tracked = context.RawValue("Q", 0)
@@ -589,6 +596,20 @@ class Reconstruction:
         finally:
             self.output_lock.release()
 
+    def sensors(self, observations):
+        """Source-timed optional measurements; a busy worker never blocks the link."""
+        if self.closed or self.backend != "slam" or self.tracking_mode != "robot":
+            return
+        try:
+            self.sensor_queue.put_nowait(observations)
+        except queue.Full:
+            # Keep latency bounded; a gap remains visible in source timestamps.
+            try:
+                self.sensor_queue.get_nowait()
+                self.sensor_queue.put_nowait(observations)
+            except (queue.Empty, queue.Full):
+                pass
+
     def motion(self, samples):
         """The robot's camera motion on the pilot clock, (time, world-from-camera, rad/s,
         state) oldest first. Never waits: a busy worker gets them with the next batch."""
@@ -702,6 +723,8 @@ class Reconstruction:
                 self.process.join(timeout=3)
                 if self.process.is_alive():
                     log.error("Reconstruction process %d did not exit", self.process.pid)
+            self.sensor_queue.cancel_join_thread()
+            self.sensor_queue.close()
             self.errors.close()
             self.notes.close()
 

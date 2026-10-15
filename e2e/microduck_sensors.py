@@ -18,7 +18,7 @@ from pathlib import Path
 from drivers.microduck.sim import arguments, port, simulation
 from ito import clock
 from ito.link.signaling import connect
-from ito.protocol import Command, Motion, PilotState, Pose, Status
+from ito.protocol import Command, Motion, PilotState, Pose, SensorObservations, Status
 
 
 async def collect(path, method, frames):
@@ -39,12 +39,12 @@ async def collect(path, method, frames):
         await write.wait_closed()
 
 
-async def run(sim, out):
-    imu, depth, states, motion, status = [], [], [], [], []
+async def run(sim, out, board):
+    imu, depth, states, motion, status, observations = [], [], [], [], [], []
     tasks = [
         asyncio.create_task(collect(path, method, rows))
         for path, method, rows in (
-            (sim.tof_socket, "head_imu.stream", imu),
+            (sim.robot_socket if board == "beta" else sim.tof_socket, "head_imu.stream", imu),
             (sim.tof_socket, "tof.stream", depth),
             (sim.robot_socket, "robot.subscribe", states),
         )
@@ -57,6 +57,8 @@ async def run(sim, out):
                 message = await peer.messages.get()
                 if isinstance(message, Motion):
                     motion.extend(message.samples)
+                if isinstance(message, SensorObservations):
+                    observations.append(message)
                 if isinstance(message, Status):
                     status.append(message)
 
@@ -82,11 +84,12 @@ async def run(sim, out):
         assert states and all(r[1].get("frames", {}).get("head_imu") for r in states)
         steady = [f for t, f in imu if start + 1 < t < start + 3]
         turned = [f for t, f in imu if t > start + 5]
-        assert len(steady) > 150, len(steady)
+        expected_hz = 60 if board == "beta" else 100
+        assert len(steady) > expected_hz * 1.3, len(steady)
         force = statistics.median(math.sqrt(sum(v * v for v in f["accel"])) for f in steady)
         assert 8 < force < 12, force
         dt = [(b["t_ns"] - a["t_ns"]) / 1e9 for a, b in zip(steady, steady[1:], strict=False)]
-        assert abs(statistics.median(dt) - 0.01) < 0.0001, dt[:20]
+        assert abs(statistics.median(dt) - 1 / expected_hz) < 0.0001, dt[:20]
         spin = max(math.sqrt(sum(v * v for v in f["gyro"])) for f in turned)
         assert spin > 0.3, spin
         assert depth and all((f["rows"], f["cols"]) == (8, 8) for _, f in depth)
@@ -98,7 +101,16 @@ async def run(sim, out):
         ]
         assert valid and max(valid) > 500, valid[:20]
         assert motion and any(s.telemetry.get("motion_gyro") == "head IMU" for s in status)
+        assert any(s.imu for s in observations), "Ito received no raw IMU observations"
+        assert any(s.ranges for s in observations), "Ito received no ToF observations"
+        camera = peer.description.cameras[0]
+        if board == "beta":
+            assert (camera.intrinsics.width, camera.intrinsics.height) == (1920, 1080)
         report = dict(
+            board=board,
+            camera=camera.model_dump(),
+            raw_imu_received=sum(len(s.imu) for s in observations),
+            ranges_received=sum(len(s.ranges) for s in observations),
             imu_frames=len(imu),
             steady_hz=1 / statistics.median(dt),
             steady_specific_force_ms2=force,
@@ -127,6 +139,7 @@ async def run(sim, out):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     arguments(parser)
+    parser.add_argument("--board", choices=("beta", "zero3"), default="beta")
     parser.add_argument("--out", type=Path, default=Path("e2e/out/microduck-sensors"))
     args = parser.parse_args()
     with simulation(
@@ -137,10 +150,11 @@ def main():
         pairing_file=args.out / "pairing-code",
         host="127.0.0.1",
         driver_port=port(),
+        board=args.board,
         head_imu=True,
         tof_noise=0,
     ) as sim:
-        asyncio.run(run(sim, args.out))
+        asyncio.run(run(sim, args.out, args.board))
 
 
 if __name__ == "__main__":

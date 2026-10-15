@@ -32,6 +32,8 @@ def main():
     parser.add_argument("--rl", type=Path, required=True)
     parser.add_argument("--driver-python", type=Path, required=True)
     parser.add_argument("--out", type=Path, default=Path("e2e/out/microduck-lens"))
+    parser.add_argument("--board", choices=("zero3", "beta"), default="zero3")
+    parser.add_argument("--beta-camera-hfov", type=float)
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("MUJOCO_GL", "osmesa")
@@ -47,7 +49,14 @@ def main():
 
     source = args.rl.resolve() / "src/mjlab_microduck/robot/microduck"
     failures = []
-    for height in sorted(lens.RESOLUTIONS):
+    hfov_setting = (
+        args.beta_camera_hfov or lens.BETA_CAMERA_HFOV_DEG
+        if args.board == "beta"
+        else lens.HFOV_DEG
+    )
+    os.environ["ITO_MICRODUCK_BOARD"] = args.board
+    os.environ["ITO_MICRODUCK_CAMERA_HFOV"] = str(hfov_setting)
+    for height in [1080] if args.board == "beta" else sorted(lens.RESOLUTIONS):
         os.environ["ITO_MICRODUCK_CAMERA_HEIGHT"] = str(height)
         width = lens.width_for(height)
         with tempfile.TemporaryDirectory(dir=args.out, prefix="scene-") as temporary:
@@ -99,11 +108,11 @@ def main():
             assert rgb.shape[:2] == (height, width), rgb.shape
 
             # The driver's view of the twin: mediad's Intrinsics::sim, a 45 degree vertical field.
-            nominal = height / 2 / math.tan(math.radians(22.5))
+            nominal = width / 2 / math.tan(math.radians(hfov_setting / 2))
             info = {
                 "width": width,
                 "height": height,
-                "rotate": 90,
+                "rotate": 0 if args.board == "beta" else 90,
                 "intrinsics": {
                     "source": "sim",
                     "fx": nominal,
@@ -157,13 +166,13 @@ def main():
             )
             if seen < 5:
                 failures.append(f"{height}p only {seen} markers visible")
-            if abs(hfov - lens.HFOV_DEG) > 0.1:
+            if abs(hfov - hfov_setting) > 0.1:
                 failures.append(f"{height}p driver hfov {hfov:.2f}")
-            if worst > max(2.0, height / 180):
+            if worst > 2.0:
                 failures.append(f"{height}p markers off by {worst:.1f} px")
     if failures:
         raise SystemExit("FAIL: " + "; ".join(failures))
-    print("PASS: markers at 62 degrees across the frame land where the driver's intrinsics say")
+    print("PASS: rendered markers reproject within 2px using the delivered intrinsics")
 
 
 if __name__ == "__main__":

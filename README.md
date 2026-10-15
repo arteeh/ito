@@ -112,6 +112,14 @@ Virtual Microduck on Ubuntu: `drivers/microduck/setup-sim.sh /path/to/prefix`, t
 It builds Pollen's stack at the `third_party/` submodule pins (microduck at a release tag, microduck_rl's develop) and runs this checkout's driver.
 On Windows, use the prefix `~/.local/share/ito-microduck` in the default WSL distro; `drivers/microduck/microduck-sim.cmd` and `ito-microduck.cmd` launch it from there.
 From built checkouts: `uv run --extra microduck python -m drivers.microduck.sim --microduck /path/to/microduck --rl /path/to/microduck_rl --policies /path/to/policies/current [--viewer] [--camera-height 360|720|1080]` (head camera size; the lens is the real 62 degrees at all of them).
+
+The sim defaults to beta: GC2093 1920×1080/30, robotd's 60 Hz head IMU and 8×8 ToF.
+`--beta-camera-hfov DEGREES` configures the simulated lens; upstream has not published the real
+GC2093 intrinsics. `--board zero3` selects the secondary board. `--imu-noise RATIO`,
+`--tof-noise RATIO` and `--seed N` control repeatable sensor noise. To compare optional inputs,
+use `--no-motion-prior`, `--no-head-imu` and `--no-tof` independently. The beta IMU position is
+nominal pending face-board CAD. [Observation units, mounts and clocks](docs/observations.md).
+
 Enter the printed address and pairing code in Ito; Ctrl+C or closing the viewer stops the complete robot.
 `--truth FILE` writes each head-camera frame's true pose, and `--blur N` averages N back-to-back renders per frame (motion blur); `e2e/slam_drive.py --record` and `e2e/slam_replay.py --pose L1..L5 --truth FILE` score tracking against them.
 

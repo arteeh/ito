@@ -9,6 +9,9 @@ that same 45 degrees for it.
 import math
 
 HFOV_DEG = 62.0
+# GC2093 lens intrinsics are unpublished. This is the one configurable sim
+# assumption, not a physical calibration: --beta-camera-hfov overrides it.
+BETA_CAMERA_HFOV_DEG = 70.0
 # Frame heights the simulator can render, with mediad's name for each quality.
 RESOLUTIONS = {360: "360p30", 720: "720p30", 1080: "1080p30"}
 

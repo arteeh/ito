@@ -17,6 +17,9 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
+from observation_recording import motion_scale, robot_description
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("recording", type=Path)
@@ -37,18 +40,14 @@ def main():
     from PIL import Image
     from scipy.spatial.transform import Rotation
 
-    from ito.protocol import RobotDescription
     from ito.reconstruction.motion import MotionBuffer
-    from ito.reconstruction.ring import MOTION_STATES
 
     def rows(path):
         return [json.loads(s) for s in path.read_text().splitlines()]
 
     sources = rows(args.recording / "source/frames.jsonl")
     motions = rows(args.recording / "received/motion.jsonl")
-    robot = RobotDescription.model_validate_json(
-        (args.recording / "received/robot.json").read_text()
-    )
+    robot = robot_description((args.recording / "received/robot.json").read_text())
     k = json.loads((args.recording / "source/camera.json").read_text())
     K = np.array([[k["fx"], 0, k["cx"]], [0, k["fy"], k["cy"]], [0, 0, 1.0]], np.float32)
     origin = sources[0]["captured"]
@@ -62,7 +61,7 @@ def main():
     motion.extend(
         np.array(
             [
-                [r["local"], *r["camera"], *r["angular_velocity"], MOTION_STATES.index(r["state"])]
+                [r["local"], *r["camera"], *r["angular_velocity"], motion_scale(r)]
                 for r in motions
                 if r["arrival"] <= available
             ]

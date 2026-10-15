@@ -17,6 +17,9 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
+from observation_recording import motion_scale, robot_description
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("recording", type=Path)
@@ -27,13 +30,17 @@ def main():
     parser.add_argument("--stamp-delay-ms", type=float, default=0)
     parser.add_argument("--frame-delay-ms", type=float, default=0)
     parser.add_argument("--seconds", type=float, help="Bound a diagnostic by source exposure time")
+    parser.add_argument(
+        "--observations",
+        choices=("prior", "camera", "imu", "imu-tof", "prior-imu-tof"),
+        default="prior",
+    )
     args = parser.parse_args()
     import cv2
     import torch
 
-    from ito.protocol import Intrinsics, RobotDescription
+    from ito.protocol import Intrinsics, SensorObservations
     from ito.reconstruction import mast3r_runtime
-    from ito.reconstruction.ring import MOTION_STATES
     from ito.reconstruction.slam import SLAMBackend
 
     mast3r_runtime.MODELS = args.models
@@ -44,6 +51,9 @@ def main():
         if path.name
         in {
             "slam.py",
+            "sensors.py",
+            "motion.py",
+            "ring.py",
             "fusion.py",
             "mast3r_frontend.py",
             "metric_scale.py",
@@ -59,17 +69,12 @@ def main():
     motions = [
         json.loads(s) for s in (args.recording / "received/motion.jsonl").read_text().splitlines()
     ]
-    robot = RobotDescription.model_validate_json(
-        (args.recording / "received/robot.json").read_text()
-    )
+    robot = robot_description((args.recording / "received/robot.json").read_text())
     k = Intrinsics.model_validate_json((source / "camera.json").read_text())
     origin = rows[0]["captured"]
     motion_arrival = np.array([r["arrival"] for r in motions])
     motion_samples = np.array(
-        [
-            [r["local"], *r["camera"], *r["angular_velocity"], MOTION_STATES.index(r["state"])]
-            for r in motions
-        ]
+        [[r["local"], *r["camera"], *r["angular_velocity"], motion_scale(r)] for r in motions]
     )
 
     class Extract(SLAMBackend):
@@ -80,13 +85,20 @@ def main():
         1_000_000,
         k,
         report=print,
-        motion_noise=robot.motion_noise,
+        motion_noise=robot.motion_noise if args.observations.startswith("prior") else None,
         # Exact sim exposure times, on the same WSL clock as robot Motion.
         frame_delay=args.frame_delay_ms / 1000,
         exposure=0,
         precision=args.precision,
         input_resolution=args.input_resolution,
     )
+    sensor_path = args.recording / "received/sensors.jsonl"
+    sensor_rows = (
+        [json.loads(line) for line in sensor_path.read_text().splitlines()]
+        if sensor_path.exists()
+        else []
+    )
+    sensor_cursor = 0
     backend.cloud = None
     vision = None
     track = backend.frontend.track
@@ -121,21 +133,37 @@ def main():
             break
         stamped = captured + args.stamp_delay_ms / 1000
         # 10 Hz fixed RGB admission. Motion arrives on its recorded independent clock.
-        if captured < next_capture or captured < motions[0]["local"]:
+        prior = args.observations.startswith("prior")
+        if captured < next_capture or (prior and captured < motions[0]["local"]):
             continue
         # Wait causally for a motion sample covering the exact exposure.
         after = np.searchsorted([m["local"] for m in motions], captured)
-        if after >= len(motions):
+        if prior and after >= len(motions):
             break
         arrival = max(
-            row["available"] - origin, motions[after]["arrival"] - origin, stamped - origin
+            row["available"] - origin,
+            motions[after]["arrival"] - origin if prior else 0,
+            stamped - origin,
         )
         if arrival < available:
             continue
         next_capture = captured + 0.099
         started = arrival
         end = np.searchsorted(motion_arrival, origin + started, side="right")
-        backend.add_motion(motion_samples[cursor:end])
+        if prior:
+            backend.add_motion(motion_samples[cursor:end])
+        while (
+            sensor_cursor < len(sensor_rows)
+            and sensor_rows[sensor_cursor]["arrival"] <= origin + started
+        ):
+            observation = SensorObservations.model_validate_json(
+                json.dumps(sensor_rows[sensor_cursor]["observation"])
+            )
+            sensor_cursor += 1
+            imu = observation.imu if "imu" in args.observations else ()
+            ranges = observation.ranges if "tof" in args.observations else ()
+            if imu or ranges:
+                backend.add_sensors(observation.model_copy(update={"imu": imu, "ranges": ranges}))
         cursor = end
         frame = np.load(source / row["file"])
         backend.cloud = None
@@ -191,6 +219,8 @@ def main():
                 delay_jitter=backend.graph.delay_jitter,
                 scale=math.exp(backend.depth_estimator.log_scale),
                 scale_observations=backend.depth_estimator.accepted,
+                range_updates=backend.sensors.range_updates,
+                imu_samples=len(backend.sensors.imu),
                 scale_known=backend.depth_estimator.known,
                 reused_depth_pixels=getattr(backend.frontend, "fused_pixels", 0),
                 refined_depth_pixels=getattr(backend.frontend, "fused_pixels", 0),
@@ -209,6 +239,7 @@ def main():
     (args.out / "settings.json").write_text(
         json.dumps(
             dict(
+                observation_arm=args.observations,
                 precision=args.precision,
                 input_resolution=args.input_resolution,
                 max_splats=1_000_000,

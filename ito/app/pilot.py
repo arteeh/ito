@@ -15,7 +15,16 @@ from ito.desktop import DesktopState, PilotStatus
 from ito.desktop.settings import load as app_settings
 from ito.link import PairingError, connect
 from ito.link.audio import Audio
-from ito.protocol import Command, FrameMetadata, Motion, Paired, PilotState, Pose, Status
+from ito.protocol import (
+    Command,
+    FrameMetadata,
+    Motion,
+    Paired,
+    PilotState,
+    Pose,
+    SensorObservations,
+    Status,
+)
 from ito.rates import CounterRate, Rate
 from ito.reconstruction import Reconstruction
 from ito.render import pose
@@ -337,7 +346,12 @@ class Pilot:
             self.motion_time = local
             self.motion_rate.tick()
             fresh.append(
-                (local, camera_matrix(sample.camera_pose), sample.angular_velocity, sample.state)
+                (
+                    local,
+                    camera_matrix(sample.camera_pose),
+                    sample.angular_velocity,
+                    sample.uncertainty_scale,
+                )
             )
         if fresh and self.robot_first:
             # The eye follows the robot's newest camera pose at its own 50 Hz; the renderer
@@ -347,6 +361,23 @@ class Pilot:
             if worker is not None and not self.failure:
                 worker.motion(fresh)
         return fresh
+
+    def _sensors(self, message, peer):
+        worker = self.worker
+        if worker is None or self.failure:
+            return
+
+        def local(sample):
+            return sample.model_copy(update={"time": peer.clock.remote_to_local(sample.time)})
+
+        worker.sensors(
+            message.model_copy(
+                update={
+                    "imu": tuple(local(s) for s in message.imu),
+                    "ranges": tuple(local(s) for s in message.ranges),
+                }
+            )
+        )
 
     def _retire(self, worker):
         # Never on the link loop: a busy or wedged worker takes a while to stop or kill.
@@ -451,7 +482,9 @@ class Pilot:
                     input_resolution=self.settings.input_resolution,
                     backend=self.backend,
                     tracking=self.settings.tracking,
-                    motion_noise=description.motion_noise,
+                    motion_noise=description.motion_noise
+                    if description.motion_camera == camera.name
+                    else None,
                     frame_delay=camera.capture_delay,
                     exposure=camera.exposure,
                 )
@@ -495,8 +528,10 @@ class Pilot:
                 if isinstance(message, FrameMetadata) and message.camera == camera.name:
                     for pair in joined.described(message):
                         self._submit(pair, peer)
-                elif isinstance(message, Motion):
+                elif isinstance(message, Motion) and message.camera == camera.name:
                     self._motion(message, peer)
+                elif isinstance(message, SensorObservations) and message.camera == camera.name:
+                    self._sensors(message, peer)
                 elif isinstance(message, Status):
                     last_status = clock.now()
                     self.telemetry = message.telemetry

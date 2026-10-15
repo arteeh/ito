@@ -66,15 +66,28 @@ def simulation(
     driver_port=8081,
     viewer=False,
     gl=None,
-    camera_height=360,
+    camera_height=None,
+    board="beta",
+    beta_camera_hfov=lens.BETA_CAMERA_HFOV_DEG,
     truth=None,
     rgbd_record=None,
     blur=1,
-    head_imu=False,
+    head_imu=None,
+    tof=True,
+    motion_prior=True,
     imu_noise=0.0,
     tof_noise=1.0,
     seed=0,
 ):
+    if board not in {"zero3", "beta"}:
+        raise ValueError("sim board must be zero3 or beta")
+    camera_height = camera_height or (1080 if board == "beta" else 360)
+    if board == "beta" and camera_height != 1080:
+        raise ValueError("beta GC2093 mode is 1920x1080 at 30 Hz")
+    if not 1 < beta_camera_hfov < 179:
+        raise ValueError("beta camera horizontal FOV must be between 1 and 179 degrees")
+    head_imu = board == "beta" if head_imu is None else head_imu
+    hfov = beta_camera_hfov if board == "beta" else lens.HFOV_DEG
     upstream, rl, policies_dir = (p.resolve() for p in (upstream, rl, policies_dir))
     logs.mkdir(parents=True, exist_ok=True)
     binaries = upstream / "target/debug"
@@ -85,6 +98,8 @@ def simulation(
         "OPENBLAS_NUM_THREADS": "1",
         "OMP_NUM_THREADS": "1",
         "ITO_MICRODUCK_CAMERA_HEIGHT": str(camera_height),
+        "ITO_MICRODUCK_BOARD": board,
+        "ITO_MICRODUCK_CAMERA_HFOV": str(hfov),
         "ITO_MICRODUCK_CAMERA_FPS": "30",
     }
     if truth is not None:
@@ -136,7 +151,10 @@ def simulation(
         robot_socket = state / "robot.sock"
         tof_socket = state / "tof.sock"
         media_config = state / "media.toml"
-        media_config.write_text(f'[media]\nquality = "{lens.RESOLUTIONS[camera_height]}"\n')
+        media_config.write_text(
+            f'[board]\nversion = "{board}"\n'
+            f'[media]\nquality = "{lens.RESOLUTIONS[camera_height]}"\n'
+        )
         # Match robotd's shipped default: velstand walks and also stands still at zero command.
         policies = {
             "walk": "velstand",
@@ -147,7 +165,7 @@ def simulation(
             "roulade": "roulade",
         }
         params = state / "robotd.toml"
-        lines = ["[policy]", "enabled = true"]
+        lines = ["[board]", f'version = "{board}"', "[policy]", "enabled = true"]
         for name, filename in policies.items():
             path = policies_dir / f"{filename}.onnx"
             if not path.is_file():
@@ -193,6 +211,8 @@ def simulation(
                 camera_port,
                 "--scene",
                 scene_path,
+                "--board",
+                board,
                 "--imu-noise",
                 str(imu_noise),
                 "--tof-noise",
@@ -273,6 +293,8 @@ def simulation(
                 state / "media.sock",
                 "--config",
                 media_config,
+                "--sim-camera-hfov",
+                str(hfov),
                 "--sim-camera",
                 f"127.0.0.1:{camera_port}",
             ],
@@ -304,6 +326,8 @@ def simulation(
                 "--robot",
                 f"ws://127.0.0.1:{media_port}",
                 *(["--head-imu"] if head_imu else []),
+                *([] if tof else ["--no-tof"]),
+                *([] if motion_prior else ["--no-motion-prior"]),
             ],
             # The driver tells Ito whether its frames are sharp (Camera.exposure).
             os.environ | {"ITO_MICRODUCK_BLUR": str(blur)},
@@ -339,7 +363,19 @@ def arguments(parser):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     arguments(parser)
-    parser.add_argument("--head-imu", action="store_true", help="enable the zero3 HAT BMI088")
+    parser.add_argument("--board", choices=("beta", "zero3"), default="beta")
+    parser.add_argument(
+        "--beta-camera-hfov",
+        type=float,
+        default=lens.BETA_CAMERA_HFOV_DEG,
+        help="sim GC2093 horizontal FOV; placeholder pending upstream intrinsics",
+    )
+    parser.add_argument("--no-head-imu", dest="head_imu", action="store_false", default=None)
+    parser.add_argument("--no-tof", action="store_true")
+    parser.add_argument("--no-motion-prior", action="store_true")
+    parser.add_argument(
+        "--head-imu", action="store_true", default=None, help="enable the board's head IMU"
+    )
     parser.add_argument("--imu-noise", type=float, default=0.0, help="BMI088 noise ratio")
     parser.add_argument("--tof-noise", type=float, default=1.0, help="ToF noise ratio")
     parser.add_argument("--seed", type=int, default=0, help="sensor random seed")
@@ -349,7 +385,7 @@ def main():
         "--camera-height",
         type=int,
         choices=sorted(lens.RESOLUTIONS),
-        default=360,
+        default=None,
         help="head camera frame height in pixels (16:9); larger costs render time",
     )
     parser.add_argument(
@@ -391,10 +427,14 @@ def main():
             viewer=args.viewer,
             gl=args.gl,
             camera_height=args.camera_height,
+            board=args.board,
+            beta_camera_hfov=args.beta_camera_hfov,
             truth=args.truth,
             rgbd_record=args.rgbd_record,
             blur=args.blur,
             head_imu=args.head_imu,
+            tof=not args.no_tof,
+            motion_prior=not args.no_motion_prior,
             imu_noise=args.imu_noise,
             tof_noise=args.tof_noise,
             seed=args.seed,

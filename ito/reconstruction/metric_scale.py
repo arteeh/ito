@@ -19,6 +19,20 @@ class MetricScale:
         self.reference = None
         self.accepted = 0
 
+    def observe(self, log_scale):
+        """A registered range view contributes one robust metric-gauge observation."""
+        consensus = float(np.median(self.observations)) if self.observations else log_scale
+        if self.known and abs(log_scale - consensus) >= 0.4:
+            return
+        self.observations.append(log_scale)
+        target = float(np.median(self.observations))
+        if (
+            len(self.observations) >= 3
+            and np.median(np.abs(np.array(self.observations) - target)) < 0.1
+        ):
+            self.known = True
+            self.accepted += 1
+
     def apply(self, rgb, cloud, motion, exposure):
         import cv2
 

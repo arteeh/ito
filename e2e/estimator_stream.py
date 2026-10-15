@@ -15,8 +15,10 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from observation_recording import motion_scale, robot_description
+
 from ito import clock
-from ito.protocol import Intrinsics, RobotDescription
+from ito.protocol import Intrinsics
 from ito.reconstruction import Reconstruction
 
 
@@ -36,9 +38,7 @@ def main():
 
     frames = rows(args.recording / "source/frames.jsonl")
     motions = rows(args.recording / "received/motion.jsonl")
-    robot = RobotDescription.model_validate_json(
-        (args.recording / "received/robot.json").read_text()
-    )
+    robot = robot_description((args.recording / "received/robot.json").read_text())
     k = Intrinsics.model_validate_json((args.recording / "source/camera.json").read_text())
     origin = frames[0]["captured"]
     published, delays, regressions, work, motion_lag = [], [], [], [], []
@@ -70,7 +70,7 @@ def main():
                         sample["local"] + shift,
                         np.array(sample["camera"]).reshape(4, 4),
                         sample["angular_velocity"],
-                        sample["state"],
+                        motion_scale(sample),
                     )
                 )
                 motion_index += 1

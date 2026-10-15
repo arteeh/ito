@@ -25,6 +25,7 @@ from .fusion import PoseGraph
 from .metric_scale import MetricScale
 from .motion import MotionBuffer
 from .rgbd import RGBDBackend
+from .sensors import Sensors
 from .slam_vision import RESTART_CAUSES
 
 __all__ = ["RESTART_CAUSES", "SLAMBackend"]
@@ -82,7 +83,8 @@ class SLAMBackend(RGBDBackend):
         self.oracle = oracle
         # A keyframe needs the robot's motion back to its exposure; a minute outlasts any
         # look around the room.
-        self.motion = MotionBuffer(motion_noise, seconds=60.0)
+        self.sensors = Sensors()
+        self.motion = MotionBuffer(motion_noise, seconds=60.0, sensors=self.sensors)
         # The frame delay is estimated online, against the robot's motion: visual turns
         # only line up with the robot's at the right delay.
         bounds = (max(0.0, frame_delay + DELAY_RANGE[0]), frame_delay + DELAY_RANGE[1])
@@ -114,6 +116,9 @@ class SLAMBackend(RGBDBackend):
         if hasattr(self.frontend, "bind_admission"):
             self.frontend.bind_admission(admission)
 
+    def add_sensors(self, observations):
+        self.sensors.extend(observations)
+
     def add_motion(self, rows):
         self.motion.extend(rows)
 
@@ -128,7 +133,9 @@ class SLAMBackend(RGBDBackend):
             self.waiting = True
             return
         self.waiting = False
-        self.frontend.forget(graph.expire(self.motion.times[0]))
+        self.frontend.forget(
+            graph.expire(self.motion.times[0] if len(self.motion.times) else exposure - 60)
+        )
         node = graph.add_frame(captured)
         oracle = None if self.oracle is None else self.oracle(captured)
         predicted = graph.pose(node) if oracle is None else oracle
@@ -145,7 +152,15 @@ class SLAMBackend(RGBDBackend):
         result = self.frontend.track(rgb, node, predicted, np.sqrt(np.diag(covariance)))
         cloud = result.cloud
         if result.relative is not None:
-            if graph.add_visual(result.reference, node, result.relative, result.sigma):
+            relative, sigma = result.relative, result.sigma
+            if self.motion.noise is None and self.depth_estimator.known:
+                # Without metric odometry, range scale belongs to visual translation
+                # as well as the pointmap; keep both in the same evolving gauge.
+                gain = math.exp(self.depth_estimator.log_scale)
+                relative, sigma = relative.copy(), sigma.copy()
+                relative[:3, 3] *= gain
+                sigma[3:] *= gain
+            if graph.add_visual(result.reference, node, relative, sigma):
                 graph.solve_delay()
                 self.matched += 1
         if oracle is not None:
@@ -171,6 +186,9 @@ class SLAMBackend(RGBDBackend):
         if cloud is not None:
             if hasattr(self.frontend, "refine"):
                 cloud = self.frontend.refine(cloud, pose, result.reference)
+            observed = self.sensors.range_scale(cloud, exposure, self.motion)
+            if observed is not None:
+                self.depth_estimator.observe(observed)
             cloud = self.depth_estimator.apply(rgb, cloud, self.motion, exposure)
             self.place(cloud, pose, now + clock.now() - started)
 

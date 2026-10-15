@@ -34,14 +34,20 @@ def thumbnail(rgb):
 
 class HeadCamera(Camera):
     def __init__(self, model, name):
-        height = int(os.environ.get("ITO_MICRODUCK_CAMERA_HEIGHT", 360))
+        self.beta = os.environ.get("ITO_MICRODUCK_BOARD", "zero3") == "beta"
+        height = int(os.environ.get("ITO_MICRODUCK_CAMERA_HEIGHT", 1080 if self.beta else 360))
         width = lens.width_for(height)
         # MuJoCo renders no larger than the offscreen buffer, which the scene sizes at 640x480.
         model.vis.global_.offwidth = max(model.vis.global_.offwidth, width)
         model.vis.global_.offheight = max(model.vis.global_.offheight, height)
-        model.cam_fovy[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, name)] = (
-            lens.vertical_fov_deg(width, height)
+        hfov = float(os.environ.get("ITO_MICRODUCK_CAMERA_HFOV", lens.HFOV_DEG))
+        camera_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, name)
+        model.cam_fovy[camera_id] = np.degrees(
+            2 * np.arctan(height / width * np.tan(np.radians(hfov / 2)))
         )
+        if self.beta:
+            q = model.cam_quat[camera_id].copy()
+            mujoco.mju_mulQuat(model.cam_quat[camera_id], q, np.array([2**-0.5, 0, 0, 2**-0.5]))
         super().__init__(model, name, width, height)
         # ITO_MICRODUCK_TRUTH names a file for one line per rendered frame: when it was taken
         # (perf_counter, the driver's clock), the camera's true pose and a thumbnail to find
@@ -59,16 +65,16 @@ class HeadCamera(Camera):
             if self.blur != 1:
                 raise ValueError("Exact RGB-D recording requires instantaneous sim exposure")
             self.rgbd.mkdir(parents=True, exist_ok=False)
-            focal = lens.focal_px(width)
+            focal = width / 2 / np.tan(np.radians(hfov / 2))
             (self.rgbd / "camera.json").write_text(
                 json.dumps(
                     dict(
-                        width=height,
-                        height=width,
+                        width=width if self.beta else height,
+                        height=height if self.beta else width,
                         fx=focal,
                         fy=focal,
-                        cx=height / 2 - 1,
-                        cy=width / 2,
+                        cx=width / 2 if self.beta else height / 2 - 1,
+                        cy=height / 2 if self.beta else width / 2,
                     )
                 )
             )
@@ -87,7 +93,9 @@ class HeadCamera(Camera):
                     camera = np.eye(4)
                     # MuJoCo's world (z up) and camera to Ito's (y up), the image upright.
                     camera[:3, :3] = (
-                        WORLD @ world.data.cam_xmat[self.camera].reshape(3, 3) @ UPRIGHT
+                        WORLD
+                        @ world.data.cam_xmat[self.camera].reshape(3, 3)
+                        @ (np.eye(3) if self.beta else UPRIGHT)
                     )
                     camera[:3, 3] = WORLD @ world.data.cam_xpos[self.camera]
                     poses.append((time.perf_counter(), camera))
@@ -105,8 +113,8 @@ class HeadCamera(Camera):
             name = f"{self.source_frame_id:06d}.npz"
             np.savez(
                 self.rgbd / name,
-                rgb=np.rot90(rgb, -1).copy(),
-                depth=np.rot90(depth, -1).copy(),
+                rgb=rgb.copy() if self.beta else np.rot90(rgb, -1).copy(),
+                depth=depth.copy() if self.beta else np.rot90(depth, -1).copy(),
                 camera=camera,
             )
             self.rgbd_index.write(

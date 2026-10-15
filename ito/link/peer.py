@@ -38,6 +38,7 @@ from ito.protocol import (
     Pong,
     ProtocolError,
     RobotDescription,
+    SensorObservations,
     Status,
     WireMessage,
     decode,
@@ -84,7 +85,7 @@ LANES = {
     ),
     # The robot's own motion rides with the frames it places: a driver resends samples the
     # lane dropped while a frame was in flight, in its next batch.
-    "frames": Lane(False, None, 0, (), (FrameMetadata, Motion), bulk=True),
+    "frames": Lane(False, None, 0, (), (FrameMetadata, Motion, SensorObservations), bulk=True),
     "clock": Lane(False, 0, 0, (Ping, Pong), (Ping, Pong)),
     "pilot": Lane(False, 0, 0, (PilotState,), ()),
 }
@@ -313,9 +314,17 @@ class Peer:
                         raise ProtocolError("robot description may not change during a connection")
                     self.description = message
                     self.robot_received.set()
-                if isinstance(message, Motion) and self.description is None:
+                if isinstance(message, (Motion, SensorObservations)) and self.description is None:
                     self.dropped_messages += 1
                     return
+                if isinstance(message, (Motion, SensorObservations)):
+                    if message.camera not in {c.name for c in self.description.cameras}:
+                        raise ProtocolError("unknown observation camera")
+                    if (
+                        isinstance(message, Motion)
+                        and message.camera != self.description.motion_camera
+                    ):
+                        raise ProtocolError("motion does not name its declared camera")
                 if isinstance(message, FrameMetadata):
                     # Frames and the description travel on separate channels.
                     if self.description is None:
@@ -325,6 +334,8 @@ class Peer:
                     if message.camera not in cameras:
                         raise ProtocolError("unknown camera")
                     camera = cameras[message.camera]
+                    if message.calibration != camera.calibration:
+                        raise ProtocolError("unknown frame calibration")
                     if message.depth and (
                         message.depth.width != camera.intrinsics.width
                         or message.depth.height != camera.intrinsics.height

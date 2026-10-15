@@ -18,6 +18,9 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
+from observation_recording import robot_description
+
+
 def digest(path):
     with Path(path).open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
@@ -40,7 +43,7 @@ def main():
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--budget", type=int, default=1_048_576)
     args = parser.parse_args()
-    from ito.protocol import Intrinsics, RobotDescription
+    from ito.protocol import Intrinsics
     from ito.reconstruction import mast3r_runtime
 
     mast3r_runtime.MODELS = args.models
@@ -53,7 +56,7 @@ def main():
     samples = motion_rows(motion)
     # Old files recorded sample time but not arrival: disclose the assumption in the plan.
     arrivals = np.array([m.get("arrival", m["local"]) for m in motion])
-    robot = RobotDescription.model_validate_json((args.recording / "robot.json").read_text())
+    robot = robot_description((args.recording / "robot.json").read_text())
     intrinsics = Intrinsics.model_validate_json((args.recording / "camera.json").read_text())
     plan = json.loads(args.schedule.read_text())
     if digest(args.recording / "frames.jsonl") != plan["frames_sha256"]:

@@ -16,6 +16,12 @@ def main():
         action="store_true",
         help="turn the camera by the head IMU's gyro (enable [head_imu] in tofd first)",
     )
+    parser.add_argument("--no-tof", action="store_true", help="disable optional range observations")
+    parser.add_argument(
+        "--no-motion-prior",
+        action="store_true",
+        help="use camera and optional head sensors without contact odometry",
+    )
     driver_arguments(parser)
     # Microduck's console owns port 8080. robotd runs its control loop at 50 Hz, but the
     # adapter sends only the newest input, so passing every pilot sample on keeps the one each
@@ -26,7 +32,13 @@ def main():
     args.audio_source, args.audio_sink = None, "none"
     args.adapter = "drivers.microduck.adapter:MicroduckAdapter"
     args.adapter_args = json.dumps(
-        {"robot": args.robot, "input_timeout": args.input_timeout, "head_imu": args.head_imu}
+        {
+            "robot": args.robot,
+            "input_timeout": args.input_timeout,
+            "head_imu": args.head_imu,
+            "tof": not args.no_tof,
+            "motion_prior": not args.no_motion_prior,
+        }
     )
     logging.basicConfig(level=logging.INFO)
     try:

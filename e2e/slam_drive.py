@@ -341,7 +341,7 @@ def main():
             arrived = clock.now()
             fresh = received_motion(self, message, peer)
             remote = {peer.clock.remote_to_local(m.time): m.time for m in message.samples}
-            for local, camera, spin, state in fresh:
+            for local, camera, spin, uncertainty in fresh:
                 motion_file.write(
                     json.dumps(
                         dict(
@@ -350,7 +350,7 @@ def main():
                             local=local,
                             camera=np.asarray(camera).ravel().tolist(),
                             angular_velocity=list(spin),
-                            state=state,
+                            uncertainty_scale=uncertainty,
                             clock=self.telemetry.get("motion_clock"),
                         )
                     )
@@ -359,6 +359,26 @@ def main():
             return fresh
 
         Pilot._motion = recording_motion
+
+        sensor_file = (args.record / "sensors.jsonl").open("w", buffering=1)
+        received_sensors = Pilot._sensors
+
+        def recording_sensors(self, message, peer):
+            def local(sample):
+                return sample.model_copy(update={"time": peer.clock.remote_to_local(sample.time)})
+
+            observation = message.model_copy(
+                update={
+                    "imu": tuple(local(s) for s in message.imu),
+                    "ranges": tuple(local(s) for s in message.ranges),
+                }
+            )
+            sensor_file.write(
+                json.dumps(dict(arrival=clock.now(), observation=observation.model_dump())) + "\n"
+            )
+            return received_sensors(self, message, peer)
+
+        Pilot._sensors = recording_sensors
 
         def writer():
             (args.record / "camera.json").unlink(missing_ok=True)

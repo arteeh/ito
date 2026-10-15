@@ -45,6 +45,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+from observation_recording import motion_scale, robot_description
 from PIL import Image
 
 from ito.app.pilot import TRACKING_LOST
@@ -99,13 +100,9 @@ RUNGS = {"L1": "truth", "L2": "receive", "L3": "source", "L4": "fused", "L5": "v
 
 def motion_rows(motion):
     """Recorded Motion samples as the worker's ring hands them over, on the pilot clock."""
-    from ito.reconstruction.ring import MOTION_STATES
 
     return np.array(
-        [
-            [m["local"], *m["camera"], *m["angular_velocity"], MOTION_STATES.index(m["state"])]
-            for m in motion
-        ]
+        [[m["local"], *m["camera"], *m["angular_velocity"], motion_scale(m)] for m in motion]
     )
 
 
@@ -188,7 +185,7 @@ def main():
         else []
     )
     robot = (
-        RobotDescription.model_validate_json((args.recording / "robot.json").read_text())
+        robot_description((args.recording / "robot.json").read_text())
         if (args.recording / "robot.json").exists()
         else None
     )

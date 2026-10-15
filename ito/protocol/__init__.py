@@ -1,4 +1,4 @@
-"""Wire v3: metres, xyzw rotations, and local monotonic seconds for timestamps."""
+"""Wire v4: metres, xyzw rotations, and local monotonic seconds for timestamps."""
 
 import base64
 import zlib
@@ -15,7 +15,7 @@ from pydantic import (
     model_validator,
 )
 
-VERSION = 3
+VERSION = 4
 MAX_MESSAGE_BYTES = 1_500_000
 Number = Annotated[float, Field(allow_inf_nan=False)]
 Time = Annotated[Number, Field(ge=0)]
@@ -59,6 +59,7 @@ class Intrinsics(Model):
 class Camera(Model):
     name: Name
     track_id: Name
+    calibration: Name = "pinhole"
     intrinsics: Intrinsics
     extrinsics: Pose = Field(default_factory=Pose, description="Camera-to-robot transform")
     capture_delay: Number = Field(
@@ -92,7 +93,7 @@ class DegreeOfFreedom(Model):
 
 
 class Message(Model):
-    version: Literal[3] = VERSION
+    version: Literal[4] = VERSION
 
     @model_validator(mode="after")
     def wire_version(self, info: ValidationInfo) -> Self:
@@ -114,7 +115,8 @@ class MotionNoise(Model):
     Between two samples dt seconds apart that moved the camera d metres, the relative rotation
     is off by about hypot(rotation_deg, rotation_deg_per_s * dt) and the relative translation by
     translation_m + translation_fraction * d. Pitch and roll against gravity are off by at most
-    gravity_deg at any time. A robot that is held or has fallen knows far less (MotionSample).
+    gravity_deg at any time. The driver scales uncertainty when its own estimate is less
+    reliable (MotionSample).
     A sample's pose may hold at a time up to about time_s from its stamp, against the
     exposures of the camera's frames (sensor read-out, a control loop's tick): a camera turning
     at w is then off by a further w * time_s at either end.
@@ -135,8 +137,11 @@ class RobotDescription(Message):
     capabilities: tuple[Name, ...] = Field(default=(), max_length=64)
     degrees_of_freedom: tuple[DegreeOfFreedom, ...] = Field(default=(), max_length=256)
     motion_noise: MotionNoise | None = Field(
-        default=None, description="Set by a robot that streams Motion for its first camera"
+        default=None,
+        description="Uncertainty model for the camera explicitly named by motion_camera",
     )
+
+    motion_camera: Name | None = None
 
     @model_validator(mode="after")
     def unique_names(self) -> Self:
@@ -148,6 +153,10 @@ class RobotDescription(Message):
         ):
             if len(set(names)) != len(names):
                 raise ValueError("robot identifiers must be unique")
+        if (self.motion_noise is None) != (self.motion_camera is None):
+            raise ValueError("motion_camera and motion_noise must be supplied together")
+        if self.motion_camera and self.motion_camera not in {c.name for c in self.cameras}:
+            raise ValueError("motion_camera must name a described camera")
         return self
 
 
@@ -188,6 +197,9 @@ class FrameMetadata(Message):
     camera: Name
     sequence: Sequence
     capture_time: Time
+    calibration: Name = "pinhole"
+    exposure: Number | None = Field(default=None, ge=0, le=1)
+    time_sigma: Number = Field(default=0, ge=0, le=1)
     video_pts: Sequence | None = Field(
         default=None,
         description="Video presentation timestamp in 90 kHz ticks, zero at the track's first frame",
@@ -206,26 +218,113 @@ class MotionSample(Model):
     time: Time = Field(description="Driver clock at the sample's source, not its arrival")
     camera_pose: Pose = Field(
         description=(
-            "First camera's camera-to-world; world is the robot's odometry at startup, its y the"
-            " height above the floor the robot stands on (it gives reconstruction metric scale)"
+            "Named camera-to-world in a startup-anchored frame; +Y is up, with an arbitrary "
+            "origin. Position never implies a floor or an observed metric scale."
         )
     )
     angular_velocity: tuple[Number, Number, Number] = Field(
         description="Camera frame, rad/s; a gyro where the robot has one"
     )
-    state: Literal["standing", "walking", "turning", "held", "fallen"]
+    uncertainty_scale: Number = Field(
+        default=1, ge=1, le=1000, description="Driver inflation of the motion model for this sample"
+    )
 
 
 class Motion(Message):
     """The robot's own camera motion, batched: every sample once, oldest first."""
 
     type: Literal["motion"] = "motion"
+    camera: Name
     samples: tuple[MotionSample, ...] = Field(min_length=1, max_length=16)
 
     @model_validator(mode="after")
     def ordered(self) -> Self:
         if any(b.time <= a.time for a, b in zip(self.samples, self.samples[1:], strict=False)):
             raise ValueError("motion samples must be in time order")
+        return self
+
+
+class ImuSample(Model):
+    """Right-handed chip axes, rad/s and m/s² specific force (rest reads +g).
+
+    mount maps chip vectors/positions into the named Ito camera (+X right, +Y up,
+    -Z forward). orientation maps chip axes into a +Y-up fusion world; yaw is
+    arbitrary and never an odometry heading. All times are driver monotonic seconds.
+    """
+
+    sensor: Name
+    time: Time
+    mount: Pose
+    angular_velocity: tuple[Number, Number, Number]
+    specific_force: tuple[Number, Number, Number]
+    orientation: tuple[Number, Number, Number, Number] | None = None
+    temperature_c: Number | None = None
+    gyro_sigma: Number = Field(gt=0, description="One-sigma angular-rate uncertainty, rad/s")
+    accel_sigma: Number = Field(gt=0, description="One-sigma specific-force uncertainty, m/s²")
+    time_sigma: Number = Field(ge=0, le=1)
+
+    @model_validator(mode="after")
+    def rotation(self) -> Self:
+        if self.orientation is not None and abs(sum(v * v for v in self.orientation) - 1) > 0.01:
+            raise ValueError("IMU orientation must be a unit quaternion")
+        return self
+
+
+class RangeZone(Model):
+    """Slant range along a unit ray, with the zone's full angular width/height in radians.
+
+    A zone is a footprint, never a dense-depth pixel. No-return and invalid readings
+    constrain no surface; distance is absent in both cases.
+    """
+
+    direction: tuple[Number, Number, Number]
+    angular_size: tuple[Number, Number] = Field(description="Full width and height, radians")
+    distance: Number | None = Field(default=None, gt=0, le=10000)
+    quality: Literal["valid", "no-return", "invalid"]
+    sigma: Number = Field(gt=0, description="Range uncertainty in metres")
+
+    @model_validator(mode="after")
+    def geometry(self) -> Self:
+        if abs(sum(v * v for v in self.direction) - 1) > 0.001:
+            raise ValueError("range direction must be a unit vector")
+        if any(not 0 < angle <= 3.141592653589793 for angle in self.angular_size):
+            raise ValueError("range angular footprint must be in (0, pi]")
+        if (self.distance is not None) != (self.quality == "valid"):
+            raise ValueError("only a valid zone carries a distance")
+        return self
+
+
+class RangeSample(Model):
+    sensor: Name
+    time: Time
+    mount: Pose = Field(description="Sensor-to-named-camera mount in metres and Ito axes")
+    time_sigma: Number = Field(ge=0, le=1)
+    exposure: Number | None = Field(default=None, ge=0, le=1)
+    zones: tuple[RangeZone, ...] = Field(min_length=1, max_length=1024)
+
+
+class SensorObservations(Message):
+    """Optional head sensors belonging to one explicitly named camera.
+
+    An empty tuple means unavailable. It never means zero motion, zero acceleration,
+    or a measured range of zero. The newest bounded history survives a busy link.
+    """
+
+    type: Literal["sensors"] = "sensors"
+    camera: Name
+    imu: tuple[ImuSample, ...] = Field(default=(), max_length=64)
+    ranges: tuple[RangeSample, ...] = Field(default=(), max_length=4)
+
+    @model_validator(mode="after")
+    def ordered(self) -> Self:
+        if not self.imu and not self.ranges:
+            raise ValueError("sensor observations require at least one sample")
+        for samples in (self.imu, self.ranges):
+            last = {}
+            for sample in samples:
+                if sample.time <= last.get(sample.sensor, -1):
+                    raise ValueError("sensor samples must be in source-time order")
+                last[sample.sensor] = sample.time
         return self
 
 
@@ -307,6 +406,7 @@ WireMessage = Annotated[
     RobotDescription
     | FrameMetadata
     | Motion
+    | SensorObservations
     | PilotState
     | Command
     | Credential

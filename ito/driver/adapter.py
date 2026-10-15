@@ -3,7 +3,7 @@ from collections.abc import Callable, Sequence
 
 from aiortc import MediaStreamTrack
 
-from ito.protocol import FrameMetadata, Motion, PilotState, RobotDescription
+from ito.protocol import FrameMetadata, Motion, PilotState, RobotDescription, SensorObservations
 
 
 class Adapter(ABC):
@@ -18,6 +18,7 @@ class Adapter(ABC):
 
     frame_sink: Callable[[FrameMetadata], bool] | None = None
     motion_sink: Callable[[Motion], bool] | None = None
+    sensor_sink: Callable[[SensorObservations], bool] | None = None
 
     def publish_frame(self, metadata: FrameMetadata) -> bool:
         return self.frame_sink(metadata) if self.frame_sink else False
@@ -25,6 +26,9 @@ class Adapter(ABC):
     def publish_motion(self, motion: Motion) -> bool:
         """False when nothing was sent: the caller keeps the samples for its next batch."""
         return self.motion_sink(motion) if self.motion_sink else False
+
+    def publish_sensors(self, observations: SensorObservations) -> bool:
+        return self.sensor_sink(observations) if self.sensor_sink else False
 
     @property
     @abstractmethod

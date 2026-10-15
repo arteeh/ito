@@ -150,8 +150,7 @@ class UpdateRing:
 
 
 # The robot's motion samples cross to the worker as rows of time, a 4x4 world-from-camera
-# pose, camera-frame angular velocity and a state index.
-MOTION_STATES = ("standing", "walking", "turning", "held", "fallen")
+# pose, camera-frame angular velocity and a driver-supplied uncertainty scale.
 MOTION_CAPACITY = 512  # 10 s at robotd's 50 Hz
 MOTION_FIELDS = 1 + 16 + 3 + 1
 
@@ -171,7 +170,7 @@ class MotionRing:
         self.pending = []
 
     def put(self, samples):
-        """samples: (time, 4x4 world-from-camera, angular velocity, state name), oldest first."""
+        """Rows: time, world-from-camera, angular velocity, uncertainty scale; oldest first."""
         self.pending.extend(samples)
         del self.pending[: -self.capacity]
         if not self.pending or not self.lock.acquire(False):
@@ -179,12 +178,12 @@ class MotionRing:
         try:
             data = np.frombuffer(self.data).reshape(self.capacity, MOTION_FIELDS)
             written = self.written.value
-            for time, pose, spin, state in self.pending:
+            for time, pose, spin, uncertainty in self.pending:
                 row = data[written % self.capacity]
                 row[0] = time
                 row[1:17] = np.asarray(pose, dtype=np.float64).ravel()
                 row[17:20] = spin
-                row[20] = MOTION_STATES.index(state)
+                row[20] = uncertainty
                 written += 1
             self.written.value = written
             self.pending.clear()
