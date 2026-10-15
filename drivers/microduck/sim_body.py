@@ -68,6 +68,9 @@ class HeadCamera(Camera):
         recording = os.environ.get("ITO_MICRODUCK_RGBD_RECORD")
         self.rgbd = Path(recording) if recording else None
         self.source_frame_id = 0
+        self.record_stride = int(os.environ.get("ITO_MICRODUCK_RECORD_STRIDE", "1"))
+        if self.record_stride < 1 or width % self.record_stride or height % self.record_stride:
+            raise ValueError("record stride must divide the sensor dimensions")
         if self.rgbd:
             if self.blur != 1:
                 raise ValueError("Exact RGB-D recording requires instantaneous sim exposure")
@@ -76,12 +79,12 @@ class HeadCamera(Camera):
             (self.rgbd / "camera.json").write_text(
                 json.dumps(
                     dict(
-                        width=width if self.beta else height,
-                        height=height if self.beta else width,
-                        fx=focal,
-                        fy=focal,
-                        cx=width / 2 if self.beta else height / 2 - 1,
-                        cy=height / 2 if self.beta else width / 2,
+                        width=(width if self.beta else height) // self.record_stride,
+                        height=(height if self.beta else width) // self.record_stride,
+                        fx=focal / self.record_stride,
+                        fy=focal / self.record_stride,
+                        cx=(width / 2 if self.beta else height / 2 - 1) / self.record_stride,
+                        cy=(height / 2 if self.beta else width / 2) / self.record_stride,
                     )
                 )
             )
@@ -118,10 +121,14 @@ class HeadCamera(Camera):
             self.renderer.disable_depth_rendering()
             taken, camera = poses[0]
             name = f"{self.source_frame_id:06d}.npz"
-            np.savez(
+            # Subsample evaluation records only. The live camera remains full resolution;
+            # source calibration above changes with the exact sampled pixel lattice.
+            image = rgb if self.beta else np.rot90(rgb, -1)
+            axial = depth if self.beta else np.rot90(depth, -1)
+            np.savez_compressed(
                 self.rgbd / name,
-                rgb=rgb.copy() if self.beta else np.rot90(rgb, -1).copy(),
-                depth=depth.copy() if self.beta else np.rot90(depth, -1).copy(),
+                rgb=image[:: self.record_stride, :: self.record_stride].copy(),
+                depth=axial[:: self.record_stride, :: self.record_stride].copy(),
                 camera=camera,
             )
             self.rgbd_index.write(

@@ -566,6 +566,9 @@ def main():
     parser.add_argument("--mapper-revision", help="immutable Git mapper revision for paired A/B")
     parser.add_argument("--record", action="store_true")
     parser.add_argument(
+        "--no-snapshots", action="store_true", help="keep JPEG motion evidence only"
+    )
+    parser.add_argument(
         "--ignore-depth-confidence",
         action="store_true",
         help="labelled diagnostic: retain all provisional depth, ignoring estimator weights",
@@ -725,6 +728,8 @@ def main():
     # Cold prefixes and fixed motion events are selected from source, before mapper results.
     events = [0, 5, 10, 15] if args.seconds <= 25 else [0, 12, 50, 76]
     snapshots = [a + b for a in events for b in (0.1, 0.5, 1, 2) if a + b < args.seconds]
+    if args.no_snapshots:
+        snapshots = []
     saved = set()
     try:
         while not ready.wait(0.1):
@@ -760,7 +765,7 @@ def main():
                         else:
                             captures.append((moment, prior_completion, reference, prior_records))
                     saved.add(moment)
-            if recorder:
+            if recorder and snapshots:
                 prior_records = records.copy()
                 prior_completion = last_completion
             began = time.perf_counter()

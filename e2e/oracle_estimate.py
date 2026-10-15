@@ -195,7 +195,7 @@ def main():
                 confidence, (k.width, k.height), interpolation=cv2.INTER_NEAREST
             ).astype(np.float32)
         name = row["file"]
-        np.savez(
+        np.savez_compressed(
             args.out / name,
             depth=depth.astype(np.float32),
             pose=backend.camera_pose,
@@ -249,7 +249,7 @@ def main():
                 frame_delay=args.frame_delay_ms / 1000,
                 stamp_delay=args.stamp_delay_ms / 1000,
                 source_seconds=args.seconds,
-                common_start=motions[0]["local"]-origin,
+                common_start=motions[0]["local"] - origin,
                 depth_confidence=getattr(
                     backend.frontend, "depth_confidence_kind", "network weight"
                 ),

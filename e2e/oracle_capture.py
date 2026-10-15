@@ -24,6 +24,15 @@ def main():
     parser.add_argument("--head-imu", action="store_true")
     parser.add_argument("--imu-noise", type=float, default=0)
     parser.add_argument("--tof-noise", type=float, default=1)
+    parser.add_argument(
+        "--record-stride",
+        type=int,
+        default=1,
+        help="subsample saved evaluation pixels; live camera is unchanged",
+    )
+    parser.add_argument(
+        "--no-live-record", action="store_true", help="retain source and observation records only"
+    )
     args = parser.parse_args()
     args.out = args.out.resolve() / args.sequence
     args.out.mkdir(parents=True, exist_ok=True)
@@ -34,6 +43,9 @@ def main():
         "ITO_RECORD": str(args.out / "live"),
         "XDG_CONFIG_HOME": str(args.out / "config"),
     }
+    os.environ["ITO_MICRODUCK_RECORD_STRIDE"] = str(args.record_stride)
+    if args.no_live_record:
+        env.pop("ITO_RECORD", None)
     (args.out / "capture.json").write_text(
         json.dumps(
             dict(
@@ -41,6 +53,10 @@ def main():
                 if args.board == "beta"
                 else "IMX219 360p30 rotated",
                 board=args.board,
+                evaluation_pixel_stride=args.record_stride,
+                imu_noise=args.imu_noise,
+                tof_noise=args.tof_noise,
+                seed=0,
                 lens_long_side_degrees=args.beta_camera_hfov
                 if args.board == "beta"
                 else lens.HFOV_DEG,
