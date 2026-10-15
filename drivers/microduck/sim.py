@@ -70,6 +70,10 @@ def simulation(
     truth=None,
     rgbd_record=None,
     blur=1,
+    head_imu=False,
+    imu_noise=0.0,
+    tof_noise=1.0,
+    seed=0,
 ):
     upstream, rl, policies_dir = (p.resolve() for p in (upstream, rl, policies_dir))
     logs.mkdir(parents=True, exist_ok=True)
@@ -130,6 +134,7 @@ def simulation(
         )
         code = pairing.read(pairing_file)
         robot_socket = state / "robot.sock"
+        tof_socket = state / "tof.sock"
         media_config = state / "media.toml"
         media_config.write_text(f'[media]\nquality = "{lens.RESOLUTIONS[camera_height]}"\n')
         # Match robotd's shipped default: velstand walks and also stands still at zero command.
@@ -148,6 +153,7 @@ def simulation(
             if not path.is_file():
                 raise FileNotFoundError(path)
             lines.append(f"{name} = {json.dumps(str(path))}")
+        lines.extend(["[head_imu]", f"enabled = {str(head_imu).lower()}"])
         params.write_text("\n".join(lines) + "\n")
         # Software shadows must not slow physics below the policy's 50 Hz control clock.
         source_scene = rl / "src/mjlab_microduck/robot/microduck/scene.xml"
@@ -187,6 +193,12 @@ def simulation(
                 camera_port,
                 "--scene",
                 scene_path,
+                "--imu-noise",
+                str(imu_noise),
+                "--tof-noise",
+                str(tof_noise),
+                "--seed",
+                str(seed),
             ],
             sim_env,
         )
@@ -203,9 +215,9 @@ def simulation(
                     raise RuntimeError(f"body did not listen; see {logs / 'body.log'}") from None
                 time.sleep(0.2)
         body = stack.enter_context(body_socket.makefile("rw"))
-        body.write('{"op":"hello","protocol":1,"joints":15}\n')
+        body.write('{"op":"hello","protocol":2,"joints":15}\n')
         body.flush()
-        if json.loads(body.readline())["protocol"] != 1:
+        if json.loads(body.readline())["protocol"] != 2:
             raise RuntimeError("incompatible Pollen body protocol")
         launch(
             "robot",
@@ -231,6 +243,18 @@ def simulation(
                 raise RuntimeError(f"robot enable failed: {result.stderr.decode()}")
             time.sleep(0.2)
         launch(
+            "tof",
+            [
+                binaries / "tofd",
+                "--sim",
+                f"127.0.0.1:{body_port}",
+                "--socket",
+                tof_socket,
+                "--config",
+                params,
+            ],
+        )
+        launch(
             "media",
             [
                 binaries / "mediad",
@@ -244,7 +268,7 @@ def simulation(
                 "--robot-socket",
                 robot_socket,
                 "--tof-socket",
-                state / "absent-tof.sock",
+                tof_socket,
                 "--frame-socket",
                 state / "media.sock",
                 "--config",
@@ -279,6 +303,7 @@ def simulation(
                 pairing_file,
                 "--robot",
                 f"ws://127.0.0.1:{media_port}",
+                *(["--head-imu"] if head_imu else []),
             ],
             # The driver tells Ito whether its frames are sharp (Camera.exposure).
             os.environ | {"ITO_MICRODUCK_BLUR": str(blur)},
@@ -307,6 +332,10 @@ def arguments(parser):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     arguments(parser)
+    parser.add_argument("--head-imu", action="store_true", help="enable the zero3 HAT BMI088")
+    parser.add_argument("--imu-noise", type=float, default=0.0, help="BMI088 noise ratio")
+    parser.add_argument("--tof-noise", type=float, default=1.0, help="ToF noise ratio")
+    parser.add_argument("--seed", type=int, default=0, help="sensor random seed")
     parser.add_argument("--viewer", action="store_true", help="open Pollen's MuJoCo viewer")
     parser.add_argument("--gl", choices=("osmesa", "egl", "glfw"))
     parser.add_argument(
@@ -358,6 +387,10 @@ def main():
             truth=args.truth,
             rgbd_record=args.rgbd_record,
             blur=args.blur,
+            head_imu=args.head_imu,
+            imu_noise=args.imu_noise,
+            tof_noise=args.tof_noise,
+            seed=args.seed,
         ) as sim:
             addresses = [args.host]
             if args.host == "0.0.0.0":

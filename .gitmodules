@@ -1,14 +1,14 @@
-# Upstream Pollen stack for the Microduck sim, unmodified. The gitlinks pin the
+# Pollen stack for the Microduck sim; arteeh sensor forks until upstreamed. Gitlinks pin the
 # exact commits; drivers/microduck/setup-sim.sh reads them from here.
-# microduck: a release tag (daemon-vX.Y.Z), what ships on a duck. microduck_rl:
-# its develop branch, which has no releases. gst-plugins-rs: 0.14.5 or newer.
+# microduck: fork based on daemon-v0.17.3; microduck_rl: fork based on develop.
+# Both add head sensors to the sim. gst-plugins-rs: upstream 0.14.5 or newer.
 [submodule "third_party/microduck"]
 	path = third_party/microduck
-	url = https://github.com/pollen-robotics/microduck
+	url = https://github.com/arteeh/microduck
 	shallow = true
 [submodule "third_party/microduck_rl"]
 	path = third_party/microduck_rl
-	url = https://github.com/pollen-robotics/microduck_rl
+	url = https://github.com/arteeh/microduck_rl
 	shallow = true
 [submodule "third_party/gst-plugins-rs"]
 	path = third_party/gst-plugins-rs

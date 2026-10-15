@@ -43,7 +43,7 @@ checkout() {
         echo "Unexpected revision in $dest" >&2; exit 1;
     }
 }
-# Pins are the third_party/ submodule gitlinks (upstream, unmodified).
+# Pins are the third_party/ submodule gitlinks (owner sensor forks until upstreamed).
 pinned() {
     url=$(git -C "$source" config -f .gitmodules "submodule.third_party/$1.url")
     revision=$(git -C "$source" rev-parse "HEAD:third_party/$1")
@@ -71,7 +71,7 @@ uv venv --python 3.12 --allow-existing "$prefix/ito-venv"
 uv pip install --python "$prefix/ito-venv/bin/python" --no-cache \
     --reinstall-package ito-driver-microduck "$source/drivers/microduck"
 nice -n 15 cargo +1.95.0 build --manifest-path "$prefix/microduck/Cargo.toml" \
-    --locked -p robotd -p robotctl -p mediad -j 2
+    --locked -p robotd -p robotctl -p mediad -p tof -j 2
 nice -n 15 cargo +1.95.0 build --manifest-path "$prefix/gst-plugins-rs/Cargo.toml" \
     --locked -p gst-plugin-webrtc -j 2
 sh "$prefix/microduck/scripts/seed-policies.sh" "$prefix/policies"
