@@ -115,6 +115,22 @@ def main():
             loss_dtype=work["loss_dtype"],
             observations_after_recovery=len(work["admitted"]) - 3,
         )
+    fault = out / "half-oom-refine"
+    if (fault / "worker.json").exists():
+        work = read(fault / "worker.json")
+        assert work["precision"] == "half" and work["loss_dtype"] == "torch.bfloat16"
+        assert work["oom"] == 1
+        log = [json.loads(s) for s in (fault / "mapping.jsonl").read_text().splitlines()]
+        recovered = [r for r in log if r["event"] == "publication" and r["oom"] == 1]
+        assert len(recovered) > 1 and recovered[-1]["steps"] > recovered[0]["steps"]
+        assert len(recovered[-1]["observations"]) > len(recovered[0]["observations"])
+        result["half_refinement_fault"] = dict(
+            oom=work["oom"],
+            loss_dtype=work["loss_dtype"],
+            steps_after_recovery=recovered[-1]["steps"] - recovered[0]["steps"],
+            observations_after_recovery=len(recovered[-1]["observations"])
+            - len(recovered[0]["observations"]),
+        )
     (out / "audit.json").write_text(json.dumps(result, indent=2))
     print("Causal input, snapshot, record-format and fault audits passed")
 

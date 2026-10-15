@@ -8,6 +8,7 @@ Derived from fix/gsplat-mapper; the experiment uses production GL's classic rast
 """
 
 import math
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 
 import numpy as np
@@ -254,8 +255,43 @@ class GaussianMap:
         return self.slot_poses[slot]
 
     def resize(self, budget):
-        self.budget = int(budget)
-        self._enforce_budget(self.budget)
+        with self.structure():
+            self.budget = int(budget)
+            self._enforce_budget(self.budget)
+
+    @contextmanager
+    def structure(self):
+        parameters, state, budget = dict(self.p.items()), self.state.copy(), self.budget
+        saved = {}
+        for key, optimizer in self.optimizers.items():
+            states = optimizer.state.copy()
+            states.update({p: values.copy() for p, values in states.items()})
+            saved[key] = (states, [g["params"][:] for g in optimizer.param_groups])
+        try:
+            yield
+        except self.torch.cuda.OutOfMemoryError:
+            self.p = self.torch.nn.ParameterDict(parameters)
+            self.state, self.budget = state, budget
+            for key, (states, groups) in saved.items():
+                optimizer = self.optimizers[key]
+                optimizer.state = states
+                for group, values in zip(optimizer.param_groups, groups, strict=True):
+                    group["params"] = values
+            raise
+
+    def recover(self):
+        # Adam may fail between allocating its first and second moment buffers.
+        for optimizer in [
+            *self.optimizers.values(),
+            *(v.exposure_optimizer for v in self.views.values()),
+        ]:
+            for parameter, state in list(optimizer.state.items()):
+                if any(
+                    k not in state or state[k].shape != parameter.shape
+                    for k in ("exp_avg", "exp_avg_sq")
+                ):
+                    del optimizer.state[parameter]
+            optimizer.zero_grad(set_to_none=True)
 
     def view_pose(self, view):
         return self.anchor_pose(view.slot) @ view.relative
@@ -578,6 +614,10 @@ class GaussianMap:
         self.state["seen"][seen] = self.state["seen"][seen].clamp_min(captured_at)
 
     def _refine(self):
+        with self.structure():
+            self._refine_parameters()
+
+    def _refine_parameters(self):
         torch = self.torch
         with torch.no_grad():
             if EVICT == "stale" and self.count > self.budget * (1 - RESERVE / 2):

@@ -185,6 +185,18 @@ def worker(args, ring, admission, ready, start, stopped, status):
                 engine.add(frame)
                 engine.step()
             engine = GaussianMap(args.max_splats, precision=settings["precision"])
+        if not main and args.oom_at == -2:
+            refine = engine._refine_parameters
+            failed = False
+
+            def fail_refine():
+                nonlocal failed
+                refine()
+                if not failed:
+                    failed = True
+                    torch.empty(1 << 60, device="cuda", dtype=torch.uint8)
+
+            engine._refine_parameters = fail_refine
         cp.cuda.get_current_stream().synchronize()
         ready.set()
         while not start.value and not stopped.value:
@@ -198,154 +210,162 @@ def worker(args, ring, admission, ready, start, stopped, status):
                 engine.expire(now, ring.last_acknowledged())
                 if len(engine.keys) > engine.budget:
                     engine.compact()
-            with admission.integration():
-                fit = vram.check(
-                    len(engine.keys) if main else engine.count,
-                    not main or len(engine.keys) <= engine.budget,
-                )
-                limit = args.max_splats if fit is None else min(args.max_splats, fit)
-                if limit != engine.budget:
-                    engine.resize(limit, now) if main else engine.resize(limit)
-                if vram.pressure and not main and len(engine.views) > 2:
-                    del engine.views[next(iter(engine.views))]
-                # Fixed observations are retained, not substituted with an arm's faster frames.
-                if cursor < len(rows) and rows[cursor]["release"] <= now:
-                    row = rows[cursor]
-                    data = np.load(args.estimates / row["file"])
-                    pose = alignment @ data["true_pose"] if arm[0] == "T" else data["pose"]
-                    depth = data["true_depth"] if arm[1] == "T" else data["depth"]
-                    tof_source = None
-                    if arm == "TF":
-                        rawrow = dict(row, captured=row["captured"], file=row["file"])
-                        depth, tof_source = tof(source_rows, path, rawrow, k, origin, rng)
-                    rgb = data["rgb"]
-                    began = time.perf_counter()
-                    try:
-                        if args.oom_at == cursor and main:
-                            # WDDM can overcommit more than dedicated VRAM. Request beyond
-                            # the addressable device allocation, without changing any cap.
-                            torch.empty(1 << 60, device="cuda", dtype=torch.uint8)
-                            raise AssertionError("CUDA allocator did not reject the fault")
-                        if main:
-                            import cv2
+            try:
+                with admission.integration():
+                    fit = vram.check(
+                        len(engine.keys) if main else engine.count,
+                        not main or len(engine.keys) <= engine.budget,
+                    )
+                    limit = args.max_splats if fit is None else min(args.max_splats, fit)
+                    if limit != engine.budget:
+                        engine.resize(limit, now) if main else engine.resize(limit)
+                    if vram.pressure and not main and len(engine.views) > 2:
+                        del engine.views[next(iter(engine.views))]
+                    # Fixed observations are retained, not substituted with an arm's faster frames.
+                    if cursor < len(rows) and rows[cursor]["release"] <= now:
+                        row = rows[cursor]
+                        data = np.load(args.estimates / row["file"])
+                        pose = alignment @ data["true_pose"] if arm[0] == "T" else data["pose"]
+                        depth = data["true_depth"] if arm[1] == "T" else data["depth"]
+                        tof_source = None
+                        if arm == "TF":
+                            rawrow = dict(row, captured=row["captured"], file=row["file"])
+                            depth, tof_source = tof(source_rows, path, rawrow, k, origin, rng)
+                        rgb = data["rgb"]
+                        began = time.perf_counter()
+                        try:
+                            if args.oom_at == cursor and main:
+                                # WDDM can overcommit more than dedicated VRAM. Request beyond
+                                # the addressable device allocation, without changing any cap.
+                                torch.empty(1 << 60, device="cuda", dtype=torch.uint8)
+                                raise AssertionError("CUDA allocator did not reject the fault")
+                            if main:
+                                import cv2
 
-                            sw, sh = camera_image.scaled
-                            d = cv2.resize(depth, (sw, sh), interpolation=cv2.INTER_NEAREST)
-                            c = cv2.resize(rgb, (sw, sh), interpolation=cv2.INTER_AREA)
-                            fx, fy = k.fx * sw / k.width, k.fy * sh / k.height
-                            cx, cy = k.cx * sw / k.width, k.cy * sh / k.height
-                            y, x = np.mgrid[:sh, :sw]
-                            points = np.stack(((x - cx) / fx * d, -(y - cy) / fy * d, -d), -1)
-                            cloud = SimpleNamespace(
-                                points=torch.as_tensor(
-                                    points.reshape(-1, 3), device="cuda", dtype=torch.float32
-                                ),
-                                colors=torch.as_tensor(c.reshape(-1, 3), device="cuda"),
-                                valid=torch.as_tensor(
-                                    (np.isfinite(d) & (d > 0)).ravel(), device="cuda"
-                                ),
-                                intrinsics=(fx, fy, cx, cy),
-                                shape=(sh, sw),
-                            )
-                            engine.source_sequence = row["source_frame_id"] + 1
-                            engine.source_captured = row["captured"]
-                            SLAMBackend.place(engine, cloud, pose, now)
-                        else:
-                            y, x = np.mgrid[: k.height, : k.width]
-                            z = depth
-                            points = np.stack(
-                                ((x - k.cx) / k.fx * z, -(y - k.cy) / k.fy * z, -z), -1
-                            )
-                            seed = engine._seed
-                            if args.oom_at == cursor:
-
-                                def fail_after_seed(*values, seed=seed):
-                                    seed(*values)
-                                    torch.empty(1 << 60, device="cuda", dtype=torch.uint8)
-                                    raise AssertionError("CUDA allocator accepted the fault")
-
-                                engine._seed = fail_after_seed
-                            try:
-                                engine.add(
-                                    Keyframe(
-                                        row["source_frame_id"],
-                                        rgb,
-                                        pose,
-                                        k,
-                                        points,
-                                        rgb,
-                                        (np.isfinite(z) & (z > 0)).astype(np.float32),
-                                        row["captured"],
-                                        depth=z,
-                                    )
+                                sw, sh = camera_image.scaled
+                                d = cv2.resize(depth, (sw, sh), interpolation=cv2.INTER_NEAREST)
+                                c = cv2.resize(rgb, (sw, sh), interpolation=cv2.INTER_AREA)
+                                fx, fy = k.fx * sw / k.width, k.fy * sh / k.height
+                                cx, cy = k.cx * sw / k.width, k.cy * sh / k.height
+                                y, x = np.mgrid[:sh, :sw]
+                                points = np.stack(((x - cx) / fx * d, -(y - cy) / fy * d, -d), -1)
+                                cloud = SimpleNamespace(
+                                    points=torch.as_tensor(
+                                        points.reshape(-1, 3), device="cuda", dtype=torch.float32
+                                    ),
+                                    colors=torch.as_tensor(c.reshape(-1, 3), device="cuda"),
+                                    valid=torch.as_tensor(
+                                        (np.isfinite(d) & (d > 0)).ravel(), device="cuda"
+                                    ),
+                                    intrinsics=(fx, fy, cx, cy),
+                                    shape=(sh, sw),
                                 )
-                            finally:
-                                engine._seed = seed
-                        captured = row["captured"]
-                        admitted.append(row["source_frame_id"])
-                    except torch.cuda.OutOfMemoryError:
-                        args.oom_warning.value = time.perf_counter()
-                        oom += 1
-                        torch.cuda.empty_cache()
-                        # Precision never changes: the incoming observation is dropped.
-                        if not main:
-                            engine.views.pop(row["source_frame_id"], None)
-                        print(
-                            "Reconstruction is degraded: mapper dropped a frame (CUDA OOM)",
-                            flush=True,
-                        )
-                    add_costs.append((time.perf_counter() - began) * 1000)
-                    log.write(
-                        json.dumps(
-                            dict(
-                                event="observation",
-                                source_frame_id=row["source_frame_id"],
-                                released=row["release"],
-                                started=now,
-                                finished=time.perf_counter() - epoch,
-                                captured=row["captured"],
-                                tof_source=tof_source,
-                                oom=oom,
+                                engine.source_sequence = row["source_frame_id"] + 1
+                                engine.source_captured = row["captured"]
+                                SLAMBackend.place(engine, cloud, pose, now)
+                            else:
+                                y, x = np.mgrid[: k.height, : k.width]
+                                z = depth
+                                points = np.stack(
+                                    ((x - k.cx) / k.fx * z, -(y - k.cy) / k.fy * z, -z), -1
+                                )
+                                seed = engine._seed
+                                if args.oom_at == cursor:
+
+                                    def fail_after_seed(*values, seed=seed):
+                                        seed(*values)
+                                        torch.empty(1 << 60, device="cuda", dtype=torch.uint8)
+                                        raise AssertionError("CUDA allocator accepted the fault")
+
+                                    engine._seed = fail_after_seed
+                                try:
+                                    engine.add(
+                                        Keyframe(
+                                            row["source_frame_id"],
+                                            rgb,
+                                            pose,
+                                            k,
+                                            points,
+                                            rgb,
+                                            (np.isfinite(z) & (z > 0)).astype(np.float32),
+                                            row["captured"],
+                                            depth=z,
+                                        )
+                                    )
+                                finally:
+                                    engine._seed = seed
+                            captured = row["captured"]
+                            admitted.append(row["source_frame_id"])
+                        except torch.cuda.OutOfMemoryError:
+                            args.oom_warning.value = time.perf_counter()
+                            oom += 1
+                            torch.cuda.empty_cache()
+                            # Precision never changes: the incoming observation is dropped.
+                            if not main:
+                                engine.views.pop(row["source_frame_id"], None)
+                            print(
+                                "Reconstruction is degraded: mapper dropped a frame (CUDA OOM)",
+                                flush=True,
                             )
+                        add_costs.append((time.perf_counter() - began) * 1000)
+                        log.write(
+                            json.dumps(
+                                dict(
+                                    event="observation",
+                                    source_frame_id=row["source_frame_id"],
+                                    released=row["release"],
+                                    started=now,
+                                    finished=time.perf_counter() - epoch,
+                                    captured=row["captured"],
+                                    tof_source=tof_source,
+                                    oom=oom,
+                                )
+                            )
+                            + "\n"
                         )
-                        + "\n"
-                    )
-                    cursor += 1
-                if not main:
-                    began = time.perf_counter()
-                    try:
-                        engine.step()
-                    except torch.cuda.OutOfMemoryError:
-                        args.oom_warning.value = time.perf_counter()
-                        oom += 1
-                        for optimizer in engine.optimizers.values():
-                            optimizer.zero_grad(set_to_none=True)
-                        torch.cuda.empty_cache()
-                        print(
-                            "Reconstruction is degraded: training frame dropped (CUDA OOM)",
-                            flush=True,
-                        )
-                    step_costs.append((time.perf_counter() - began) * 1000)
-                if now - last_publish >= 0.1 and admitted:
+                        cursor += 1
                     if not main:
-                        pub.update(engine.records_for(engine.keys()))
-                    last_publish = now
-                    log.write(
-                        json.dumps(
-                            dict(
-                                event="publication",
-                                at=time.perf_counter() - epoch,
-                                observations=admitted.copy(),
-                                count=engine.count,
-                                steps=getattr(engine, "steps", 0),
-                                limit=engine.budget,
-                                vram_free=vram.free_bytes,
-                                oom=oom,
+                        began = time.perf_counter()
+                        try:
+                            engine.step()
+                        except torch.cuda.OutOfMemoryError:
+                            args.oom_warning.value = time.perf_counter()
+                            oom += 1
+                            engine.recover()
+                            torch.cuda.empty_cache()
+                            print(
+                                "Reconstruction is degraded: training frame dropped (CUDA OOM)",
+                                flush=True,
                             )
+                        step_costs.append((time.perf_counter() - began) * 1000)
+                    if now - last_publish >= 0.1 and admitted:
+                        if not main:
+                            pub.update(engine.records_for(engine.keys()))
+                        last_publish = now
+                        log.write(
+                            json.dumps(
+                                dict(
+                                    event="publication",
+                                    at=time.perf_counter() - epoch,
+                                    observations=admitted.copy(),
+                                    count=engine.count,
+                                    steps=getattr(engine, "steps", 0),
+                                    limit=engine.budget,
+                                    vram_free=vram.free_bytes,
+                                    oom=oom,
+                                )
+                            )
+                            + "\n"
                         )
-                        + "\n"
-                    )
-                pub.flush(ring, captured)
+                    pub.flush(ring, captured)
+            except torch.cuda.OutOfMemoryError:
+                oom += 1
+                args.oom_warning.value = time.perf_counter()
+                if not main:
+                    engine.recover()
+                torch.cuda.empty_cache()
+                print("Reconstruction is degraded: GPU update dropped (CUDA OOM)", flush=True)
+                time.sleep(0.005)
             if main or not admitted:
                 time.sleep(0.001)
         (args.out / "worker.json").write_text(
@@ -386,7 +406,12 @@ def main():
     parser.add_argument("--max-splats", type=int, default=1_000_000)
     parser.add_argument("--record", action="store_true")
     parser.add_argument("--precision", choices=("full", "half"))
-    parser.add_argument("--oom-at", type=int, default=-1, help="inject a real allocator OOM")
+    parser.add_argument(
+        "--oom-at",
+        type=int,
+        default=-1,
+        help="real allocator OOM after observation N seeds; -2 after first refinement; -1 disables",
+    )
     parser.add_argument("--eye-size", type=int, default=2160)
     args = parser.parse_args()
     args.recording, args.out = args.recording.resolve(), args.out.resolve()
