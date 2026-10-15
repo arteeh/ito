@@ -40,7 +40,12 @@ class HeadCamera(Camera):
         # MuJoCo renders no larger than the offscreen buffer, which the scene sizes at 640x480.
         model.vis.global_.offwidth = max(model.vis.global_.offwidth, width)
         model.vis.global_.offheight = max(model.vis.global_.offheight, height)
-        hfov = float(os.environ.get("ITO_MICRODUCK_CAMERA_HFOV", lens.HFOV_DEG))
+        hfov = float(
+            os.environ.get(
+                "ITO_MICRODUCK_CAMERA_HFOV",
+                lens.BETA_CAMERA_HFOV_DEG if self.beta else lens.HFOV_DEG,
+            )
+        )
         camera_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, name)
         model.cam_fovy[camera_id] = np.degrees(
             2 * np.arctan(height / width * np.tan(np.radians(hfov / 2)))
