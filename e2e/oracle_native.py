@@ -73,6 +73,7 @@ def main():
     p.add_argument("--render-budget", type=int, default=LIVE_RENDER_SPLATS)
     p.add_argument("--seconds", type=float, default=20)
     p.add_argument("--moment", type=float)
+    p.add_argument("--camera", type=Path, help="resolved source calibration for Windows captures")
     p.add_argument(
         "--capture", action="store_true", help="capture after timing, with centered head"
     )
@@ -218,7 +219,7 @@ def main():
             from PIL import Image
 
             original = Intrinsics.model_validate_json(
-                (args.recording / "source/camera.json").read_text()
+                (args.camera or args.recording / "source/camera.json").read_text()
             )
             ratio = k.fx / original.fx
             left, top = k.cx - original.cx * ratio, k.cy - original.cy * ratio

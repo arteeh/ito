@@ -48,6 +48,7 @@ for sequence in sweep180 tour; do
                 "$(wslpath -w "$output/$sequence")" \
                 --out "$(wslpath -w "$output/native-views/$name")" \
                 --linux-root "$PWD" --arm "$arm" --moment "$moment" \
+                --camera "$(wslpath -w "$(realpath "$output/$sequence/source/camera.json")")" \
                 --seconds 0.1 --capture < /dev/null > "$output/native-view-$name.log" 2>&1
         done
         PYTHONPATH=.:e2e .venv/bin/python - "$output" "$sequence" "$moment" <<'SHEET'
