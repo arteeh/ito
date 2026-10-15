@@ -15,8 +15,8 @@ for sequence in sweep180 tour; do
     if [[ "$sequence" == tour ]]; then duration=85; fi
     for arm in TT TF main-TT TE main-TE ET main-ET EE main-EE; do
         name="$sequence-$arm"
-        if [[ "${2:-}" == --reuse-controls && "$arm" == main-* && -f "$output/visual/$name/worker.json" && -f "$output/visual/$name/display.json" ]]; then
-            echo "Reusing completed main control: $name"
+        if { [[ "${2:-}" == --reuse-controls && "$arm" == main-* ]] || [[ "${2:-}" == --reuse-visuals ]]; } && [[ -f "$output/visual/$name/worker.json" && -f "$output/visual/$name/display.json" ]]; then
+            echo "Reusing completed visual: $name"
             continue
         fi
         echo "Round 2 visual: $name"
