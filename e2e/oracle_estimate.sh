@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 output="${1:-$HOME/Projects/ito/out/oracle-40}"
-release=/mnt/c/Users/me/Projects/ito/builds/main/ito
+release=/mnt/c/Users/me/Projects/ito/builds/feat-recon-40-41/ito
 for sequence in sweep180 tour; do
     flock /mnt/c/Users/me/Projects/ito/ceres.lock "$release/runtime/python.exe" -I \
         "$(wslpath -w "$PWD/e2e/oracle_estimate.py")" "$(wslpath -w "$output/$sequence")" \

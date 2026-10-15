@@ -18,7 +18,7 @@ for seq in ("sweep180", "tour"):
         if work.get("training_size") != expected:
             raise SystemExit(f"Re-run {seq}-{arm}: fitting grid must match main {expected}")
 VERIFY
-python=/mnt/c/Users/me/Projects/ito/builds/main/ito/runtime/python.exe
+python=/mnt/c/Users/me/Projects/ito/builds/feat-recon-40-41/ito/runtime/python.exe
 for repeat in 1 2 3; do
     for sequence in sweep180 tour; do
         for mode in main-TT TT-frozen TT TF-frozen TF; do

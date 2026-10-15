@@ -11,6 +11,7 @@ import argparse
 import json
 import math
 import multiprocessing as mp
+import subprocess
 import sys
 import time
 import traceback
@@ -573,6 +574,9 @@ def main():
         json.loads(s) for s in (args.recording / "source/frames.jsonl").read_text().splitlines()
     ]
     settings = json.loads((args.estimates / "settings.json").read_text())
+    settings["code_commit"] = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[1], text=True
+    ).strip()
     settings["depth_support"] = args.depth_support
     if args.precision:
         settings["precision"] = args.precision

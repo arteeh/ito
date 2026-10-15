@@ -36,7 +36,7 @@ for sequence in sweep180 tour; do
 done
 PYTHONPATH=. .venv/bin/python e2e/oracle_audit.py "$output"
 # Separate native image captures, after all timing and CPU report work have finished.
-native_python=/mnt/c/Users/me/Projects/ito/builds/main/ito/runtime/python.exe
+native_python=/mnt/c/Users/me/Projects/ito/builds/feat-recon-40-41/ito/runtime/python.exe
 for sequence in sweep180 tour; do
     late=12
     if [[ "$sequence" == tour ]]; then late=78; fi
