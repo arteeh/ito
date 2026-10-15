@@ -26,6 +26,7 @@ def main():
     parser.add_argument("--input-resolution", type=int, default=100)
     parser.add_argument("--stamp-delay-ms", type=float, default=0)
     parser.add_argument("--frame-delay-ms", type=float, default=0)
+    parser.add_argument("--seconds", type=float, help="Bound a diagnostic by source exposure time")
     args = parser.parse_args()
     import cv2
     import torch
@@ -48,6 +49,7 @@ def main():
             "metric_scale.py",
             "depth_support.py",
             "__init__.py",
+            "tracking.py",
         }
     }
     torch.set_num_threads(2)
@@ -86,6 +88,23 @@ def main():
         input_resolution=args.input_resolution,
     )
     backend.cloud = None
+    vision = None
+    track = backend.frontend.track
+
+    def record_vision(*args, **kwargs):
+        nonlocal vision
+        result = track(*args, **kwargs)
+        vision = dict(
+            node=args[1],
+            reference=result.reference,
+            relative=None if result.relative is None else result.relative.tolist(),
+            sigma=None if result.relative is None else result.sigma.tolist(),
+            keyframe=bool(result.keyframe),
+            match=float(result.match),
+        )
+        return result
+
+    backend.frontend.track = record_vision
     publications = []
 
     def published(pose, correction, stamp):
@@ -98,6 +117,8 @@ def main():
     manifest = []
     for row in rows:
         captured = row["captured"]
+        if args.seconds is not None and captured - origin > args.seconds:
+            break
         stamped = captured + args.stamp_delay_ms / 1000
         # 10 Hz fixed RGB admission. Motion arrives on its recorded independent clock.
         if captured < next_capture or captured < motions[0]["local"]:
@@ -118,6 +139,7 @@ def main():
         cursor = end
         frame = np.load(source / row["file"])
         backend.cloud = None
+        vision = None
         publications = []
         torch.cuda.synchronize()
         began = time.perf_counter()
@@ -137,6 +159,13 @@ def main():
         sw, sh = image.scaled
         z = z[image.top : image.top + sh, image.left : image.left + sw]
         depth = cv2.resize(z, (k.width, k.height), interpolation=cv2.INTER_NEAREST)
+        extra = {}
+        if getattr(cloud, "confidence", None) is not None:
+            confidence = cloud.confidence.reshape(h, w).cpu().numpy()
+            confidence = confidence[image.top : image.top + sh, image.left : image.left + sw]
+            extra["depth_confidence"] = cv2.resize(
+                confidence, (k.width, k.height), interpolation=cv2.INTER_NEAREST
+            ).astype(np.float32)
         name = row["file"]
         np.savez(
             args.out / name,
@@ -145,6 +174,7 @@ def main():
             rgb=frame["rgb"],
             true_depth=frame["depth"],
             true_pose=frame["camera"],
+            **extra,
         )
         manifest.append(
             dict(
@@ -164,7 +194,10 @@ def main():
                 scale_known=backend.depth_estimator.known,
                 reused_depth_pixels=getattr(backend.frontend, "fused_pixels", 0),
                 refined_depth_pixels=getattr(backend.frontend, "fused_pixels", 0),
+                frontend_scale=getattr(backend.frontend, "output_scale", 1),
+                unconstrained_bundle_scale_step=getattr(backend.frontend, "bundle_scale_step", 1),
                 graph_pose=backend.camera_pose.tolist(),
+                visual_factor=vision,
                 motion_pose=backend.motion.at(stamped - backend.graph.td).tolist(),
                 pose_publications=publications,
             )
@@ -184,6 +217,10 @@ def main():
                 exposure=0,
                 frame_delay=args.frame_delay_ms / 1000,
                 stamp_delay=args.stamp_delay_ms / 1000,
+                source_seconds=args.seconds,
+                depth_confidence=getattr(
+                    backend.frontend, "depth_confidence_kind", "network weight"
+                ),
                 estimator_source_sha256=estimator_source_hashes,
                 source_sha256=hashlib.sha256((source / "frames.jsonl").read_bytes()).hexdigest(),
                 origin=origin,

@@ -27,6 +27,7 @@ def main():
     parser.add_argument("--branch", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--labels", default="main,estimator")
+    parser.add_argument("--commits", default="unspecified,unspecified")
     parser.add_argument("--at", type=float, nargs="+", required=True)
     args = parser.parse_args()
     before, after = index(args.main), index(args.branch)
@@ -40,6 +41,11 @@ def main():
     args.out.mkdir(parents=True, exist_ok=True)
     font = ImageFont.truetype("DejaVuSans.ttf", 12)
     labels = args.labels.split(",")
+    commits = args.commits.split(",")
+    displays = [
+        json.loads((root / "display.json").read_text()) for root in (args.main, args.branch)
+    ]
+    width, image_height, row_height = 336, 597, 705
     metadata = []
     for moment in args.at:
         candidates = sorted(common, key=lambda i: abs(after[i]["t"] - moment))
@@ -50,7 +56,7 @@ def main():
         second = min(
             later, key=lambda i: abs(source[i]["captured"] - source[first]["captured"] - 0.1)
         )
-        sheet = Image.new("RGB", (3 * 360, 2 * 710 + 32), (24, 24, 24))
+        sheet = Image.new("RGB", (3 * width, 2 * row_height + 32), (24, 24, 24))
         draw = ImageDraw.Draw(sheet)
         draw.text(
             (5, 5),
@@ -71,17 +77,26 @@ def main():
                     ),
                 )
             ]
-            for root, entries, label in (
-                (args.main, before, labels[0]),
-                (args.branch, after, labels[1]),
+            for root, entries, label, commit, display in (
+                (args.main, before, labels[0], commits[0], displays[0]),
+                (args.branch, after, labels[1], commits[1], displays[1]),
             ):
                 entry = entries[i]
                 settings = entry["settings"]
+                camera_mode = entry.get("camera_mode", "legacy camera: see report")
+                if camera_mode == "own published pose":
+                    camera_mode = (
+                        "true source pose"
+                        if entry["arm"].removeprefix("main-")[0] == "T"
+                        else "last visual pose (legacy replay)"
+                    )
                 caption = (
                     f"{label} / {entry['arm']} / source {i}\n"
-                    f"displayed +{entry['t']:.3f}s (own replay clock)\n"
+                    f"display +{entry['t']:.3f}s / exposure +{stamp:.3f}s\n"
                     f"{settings['precision']} / Input {settings['input_resolution']}% / "
-                    f"Max {settings['max_splats']:,}"
+                    f"Max {settings['max_splats']:,}\n"
+                    f"{camera_mode}\n"
+                    f"code {commit} / render cap {display.get('render_budget', 'legacy')}"
                 )
                 values.append(
                     (Image.open(root / "motion/pilot" / entry["file"]).convert("RGB"), caption)
@@ -94,13 +109,20 @@ def main():
                         source_frame_id=i,
                         display=entry["t"],
                         settings=settings,
+                        code=commit,
+                        camera_mode=camera_mode,
+                        render_budget=display.get("render_budget"),
                     )
                 )
             for column, (image, caption) in enumerate(values):
-                y = 32 + row * 710
-                sheet.paste(image, (column * 360, y))
+                y = 32 + row * row_height
+                sheet.paste(image.resize((width, image_height)), (column * width, y))
                 draw.multiline_text(
-                    (column * 360 + 5, y + 643), caption, font=font, fill="white", spacing=3
+                    (column * width + 5, y + image_height + 3),
+                    caption,
+                    font=font,
+                    fill="white",
+                    spacing=3,
                 )
         name = f"motion-{moment:g}.jpg"
         sheet.save(args.out / name, quality=92)

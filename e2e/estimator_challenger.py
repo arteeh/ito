@@ -25,6 +25,9 @@ def main():
     parser.add_argument("--at", type=float, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--motion", action="store_true")
+    parser.add_argument("--views", type=int, default=4)
+    parser.add_argument("--window", type=float, default=1.5)
+    parser.add_argument("--multiview-confidence", action="store_true")
     args = parser.parse_args()
     sys.path.insert(0, str(args.source))
     import torch
@@ -52,7 +55,7 @@ def main():
     times = np.array([r["captured"] - origin for r in sources])
     selected = [
         sources[max(0, int(np.searchsorted(times, t, side="right") - 1))]
-        for t in np.linspace(args.at - 1.5, args.at, 4)
+        for t in np.linspace(max(0, args.at - args.window), args.at, args.views)
     ]
     available = max(r["available"] for r in selected)
     motion = MotionBuffer(robot.motion_noise, seconds=120)
@@ -90,10 +93,11 @@ def main():
             apply_mask=False,
             mask_edges=False,
             apply_confidence_mask=False,
+            use_multiview_confidence=args.multiview_confidence,
         )
     torch.cuda.synchronize()
     elapsed = time.perf_counter() - began
-    metrics = []
+    metrics, manifest = [], []
     alignment = None
     for i, (row, prediction) in enumerate(zip(selected, predictions, strict=True)):
         data = np.load(args.recording / "source" / row["file"])
@@ -124,7 +128,41 @@ def main():
                 valid_fraction=float(valid.mean()),
             )
         )
-        np.savez(args.out / f"{i}.npz", depth=z, pose=pose, rgb=np.asarray(views[i]["img"]))
+        rgb = (
+            (prediction["img_no_norm"].squeeze(0).cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
+        )
+        confidence = prediction["conf"].squeeze().cpu().numpy()
+        weights = (
+            {"depth_confidence": np.nan_to_num(confidence).clip(0, 1).astype(np.float32)}
+            if args.multiview_confidence
+            else {}
+        )
+        np.savez(
+            args.out / f"{i}.npz",
+            depth=z,
+            pose=pose,
+            rgb=rgb,
+            true_depth=truth_depth,
+            true_pose=data["camera"],
+            model_confidence=confidence.astype(np.float32),
+            **weights,
+        )
+        manifest.append(dict(file=f"{i}.npz", captured=row["captured"] - origin))
+        if i == 0:
+            calibration = processed[i]["intrinsics"].squeeze().cpu().numpy()
+            (args.out / "camera.json").write_text(
+                json.dumps(
+                    dict(
+                        width=z.shape[1],
+                        height=z.shape[0],
+                        fx=float(calibration[0, 0]),
+                        fy=float(calibration[1, 1]),
+                        cx=float(calibration[0, 2]),
+                        cy=float(calibration[1, 2]),
+                    ),
+                    indent=2,
+                )
+            )
     result = dict(
         model="facebook/map-anything-apache",
         source_revision=subprocess.check_output(
@@ -132,14 +170,19 @@ def main():
         ).strip(),
         weights=str(args.weights),
         motion=args.motion,
+        multiview_confidence=args.multiview_confidence,
         precision="full fp32 (no AMP)",
         resolution=[280, 504],
-        window="four views through selected final exposure; no future views or truth inputs",
+        window=(
+            f"{args.views} views over {args.window:g}s through selected final exposure; "
+            "no future views or truth inputs"
+        ),
         seconds=elapsed,
         peak_cuda_reserved=torch.cuda.max_memory_reserved(),
         metrics=metrics,
     )
     (args.out / "report.json").write_text(json.dumps(result, indent=2))
+    (args.out / "frames.json").write_text(json.dumps(manifest, indent=2))
     print(json.dumps(result, indent=2), flush=True)
 
 
