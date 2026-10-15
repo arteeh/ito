@@ -31,7 +31,8 @@ def settings_label(out, seq, arm):
     ]
     return (
         f"{settings['precision'].title()} / Input {settings['input_resolution']}% / "
-        f"Max {settings['max_splats']:,}"
+        f"Max {settings['max_splats']:,}\n"
+        f"code {settings.get('code_commit', '0634bbd')[:7]} / 360p30 raw360x640"
     )
 
 
@@ -70,12 +71,12 @@ def grid(cells, path, title):
     columns = len(cells[0])
     w, h = 360, 640
     font = ImageFont.truetype("DejaVuSans.ttf", 13)
-    picture = Image.new("RGB", (columns * w, len(cells) * (h + 58) + 28), (24, 24, 24))
+    picture = Image.new("RGB", (columns * w, len(cells) * (h + 76) + 28), (24, 24, 24))
     draw = ImageDraw.Draw(picture)
     draw.text((5, 5), title, font=font, fill="white")
     for row, values in enumerate(cells):
         for col, (image, label) in enumerate(values):
-            top = 28 + row * (h + 58)
+            top = 28 + row * (h + 76)
             picture.paste(image.resize((w, h)), (col * w, top))
             draw.multiline_text(
                 (col * w + 5, top + h + 3), label, font=font, fill="white", spacing=3

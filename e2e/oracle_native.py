@@ -67,7 +67,9 @@ def main():
     p.add_argument("recording", type=Path)
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--linux-root", required=True)
-    p.add_argument("--arm", choices=("main-TT", "TT", "TF"), required=True)
+    p.add_argument(
+        "--arm", choices=("main-TT", "main-EE", "TT", "TE", "ET", "EE", "TF"), required=True
+    )
     p.add_argument("--load", action="store_true")
     p.add_argument("--precision", choices=("full", "half"), default="full")
     p.add_argument("--render-budget", type=int, default=LIVE_RENDER_SPLATS)
@@ -258,11 +260,14 @@ def main():
             )
         report = dict(
             renderer=view.device,
+            code_commit=json.loads((snapshot_path.parent / "display.json").read_text())[
+                "settings"
+            ].get("code_commit"),
             snapshot_sha256=snapshot_hash,
             sequence=sequence,
             arm=args.arm,
             optimizer=args.load,
-            scope="native frozen map, controlled uploads, online optimizer; no compositor",
+            scope="native frozen map, controlled uploads; optional online optimizer, no compositor",
             scheduling=scheduling,
             settings=dict(precision=args.precision, input_resolution=100, max_splats=1_000_000),
             seconds=args.seconds,

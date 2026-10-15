@@ -21,12 +21,12 @@ VERIFY
 python=/mnt/c/Users/me/Projects/ito/builds/feat-recon-40-41/ito/runtime/python.exe
 for repeat in 1 2 3; do
     for sequence in sweep180 tour; do
-        for mode in main-TT TT-frozen TT TF-frozen TF; do
+        for mode in main-TT main-EE TT TE ET EE TF; do
             name="$sequence-$mode-$repeat"
             arm="$mode"
             if [[ "$mode" == *-frozen ]]; then arm="${mode%-frozen}"; fi
             load=()
-            if [[ "$mode" == TT || "$mode" == TF ]]; then load=(--load); fi
+            if [[ "$mode" != main-* ]]; then load=(--load); fi
             echo "Native GPU countercheck: $name"
             flock /mnt/c/Users/me/Projects/ito/ceres.lock "$python" -I \
                 "$(wslpath -w "$PWD/e2e/oracle_native.py")" \
