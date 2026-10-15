@@ -104,6 +104,36 @@ def motion(roots, seq, arm, moment, target, *, rgb=False):
     )
 
 
+def actual_main(out, seq, moment, target):
+    old = Path.home() / "Projects/ito/out/oracle-40/round2"
+    current = metadata(out / "after", seq, "EE")
+    zero = current["settings"]["view_start"]
+    cells = []
+    for age in (moment, moment + 0.1):
+        source_time = zero + age
+        row = []
+        for root, arm, name in (
+            (old, "main-EE", "main9a oldE"),
+            (out / "after", "main-EE", "main placer newE"),
+            (out / "after", "EE", "R3 mapper newE"),
+        ):
+            meta = metadata(root, seq, arm)
+            start = meta["settings"].get("view_start")
+            if start is None:
+                start = json.loads((root / "visual" / f"{seq}-{arm}" / "worker.json").read_text())[
+                    "zero"
+                ]
+            t = source_time - start
+            pic, r = at(root / "visual" / f"{seq}-{arm}" / "motion", "pilot", t)
+            row.append((pic, label(meta, name, arm, t, source_time, r["t"])))
+        cells.append(row)
+    sheet(
+        cells,
+        target,
+        f"{seq}: actual main9a old estimator | same-input main placer | R3; each own camera",
+    )
+
+
 def prefixes(root, seq, arm, target):
     meta = metadata(root, seq, arm)
     zero = meta["settings"]["view_start"]
@@ -156,6 +186,13 @@ def main():
                 motion(roots, seq, arm, moment, image_root / f"{seq}-{arm}-motion-{moment:.1f}.jpg")
             if args.stage == "after":
                 prefixes(roots[-1][0], seq, arm, image_root / f"{seq}-{arm}-prefix.jpg")
+        if args.stage == "after":
+            actual_main(
+                args.out,
+                seq,
+                10.0 if seq == "sweep180" else 50.0,
+                image_root / f"{seq}-actual-main-EE.jpg",
+            )
 
 
 if __name__ == "__main__":
