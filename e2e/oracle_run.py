@@ -404,6 +404,9 @@ def worker(args, ring, admission, ready, start, stopped, status):
                                         raise AssertionError("CUDA allocator accepted the fault")
 
                                     engine._seed = fail_after_seed
+                                depth_options = dict(depth=z)
+                                if "sparse_depth" in Keyframe.__dataclass_fields__:
+                                    depth_options["sparse_depth"] = arm == "TF"
                                 try:
                                     engine.add(
                                         Keyframe(
@@ -415,7 +418,7 @@ def worker(args, ring, admission, ready, start, stopped, status):
                                             rgb,
                                             confidence,
                                             row["captured"],
-                                            depth=z,
+                                            **depth_options,
                                         )
                                     )
                                 finally:

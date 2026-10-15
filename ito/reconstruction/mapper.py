@@ -61,6 +61,7 @@ class Keyframe:
     captured_at: float
     depth: np.ndarray | None = None  # optional registered axial metres (driver depth)
     anchor: int | None = None
+    sparse_depth: bool = False  # sensor zones; zero-confidence dense pixels stay excluded
 
     def __post_init__(self):
         i = self.intrinsics
@@ -546,7 +547,7 @@ class GaussianMap:
         measured_depth = None
         if frame.depth is not None:
             valid_depth = np.isfinite(frame.depth) & (frame.depth > 0)
-            if 4 <= np.count_nonzero(valid_depth) < frame.depth.size // 20:
+            if frame.sparse_depth and 4 <= np.count_nonzero(valid_depth) < frame.depth.size // 20:
                 measured_depth = self.tensor(valid_depth).bool()
                 # ToF supplies zones, not object boundaries. This smooth inverse-depth
                 # prior initializes colour-bearing surfaces; only measured zones enter
