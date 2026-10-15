@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 import numpy as np
-from oracle_report import View, at
+from oracle_report import View, at, native_views
 from PIL import Image, ImageDraw, ImageFont
 
 from ito.protocol import Intrinsics
@@ -160,6 +160,24 @@ def prefixes(root, seq, arm, target):
     sheet(cells, target, f"{seq} {arm}: causal 100ms | 500ms / 1s | 2s; last completed map")
 
 
+def warning(root, target):
+    folder = root / "half-oom-rollback-fixed"
+    if not (folder / "oom-warning.png").exists():
+        return
+    picture = Image.open(folder / "oom-warning.png").convert("RGB")
+    meta = json.loads((folder / "display.json").read_text())
+    result = Image.new("RGB", (picture.width, picture.height + 50), (24, 24, 24))
+    result.paste(picture, (0, 0))
+    ImageDraw.Draw(result).multiline_text(
+        (5, picture.height + 3),
+        "tour TT / real seed-allocation OOM / Half stays bf16 / continued mapping\n"
+        f"Half / Input100% / Max1,000,000 / 360p30 / code {meta['settings']['code_commit'][:7]}",
+        font=ImageFont.truetype("DejaVuSans.ttf", 12),
+        fill="white",
+    )
+    result.save(target)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--out", type=Path, required=True)
@@ -194,6 +212,14 @@ def main():
             if args.stage == "after":
                 prefixes(roots[-1][0], seq, arm, image_root / f"{seq}-{arm}-prefix.jpg")
         if args.stage == "after":
+            late = 78.0 if seq == "tour" else 12.0
+            if (args.out / "after/native-views" / f"{seq}-TT-{late:.1f}").exists():
+                native_views(
+                    args.out / "after",
+                    seq,
+                    late,
+                    image_root / f"{seq}-native-{late:.1f}.jpg",
+                )
             if seq == "sweep180":
                 for arm in ("TE", "EE"):
                     motion(
@@ -210,6 +236,8 @@ def main():
                 10.0 if seq == "sweep180" else 50.0,
                 image_root / f"{seq}-actual-main-EE.jpg",
             )
+    if args.stage == "after":
+        warning(args.out / "after", image_root / "half-oom-warning.png")
 
 
 if __name__ == "__main__":
