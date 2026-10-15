@@ -9,7 +9,8 @@
 # ROUTE       pilot script (ITO_PILOT_SCRIPT, see ito/desktop/input.py), default room-tour
 # SIM_SOURCE  the checkout whose drivers/microduck runs the sim and driver, default this one
 #
-# VIEWER=1 also opens the MuJoCo viewer. The Ito window pops up and is driven by the script
+# VIEWER=1 also opens the MuJoCo viewer; SIM_ARGS adds sim options (--camera-height 720).
+# The Ito window pops up and is driven by the script
 # whatever has focus; nobody needs to touch it. The sim from setup-sim.sh must be installed.
 set -eu
 [ "$#" -ge 2 ] || { sed -n 2,13p "$0" >&2; exit 2; }
@@ -30,7 +31,7 @@ sh "$root/stop-sim.sh" >/dev/null 2>&1 || true
 PYTHONPATH=$source GST_PLUGIN_PATH=$prefix/gst-plugins-rs/target/debug \
     "$prefix/ito-venv/bin/python" -m drivers.microduck.sim \
     --microduck "$prefix/microduck" --rl "$prefix/microduck_rl" \
-    --policies "$prefix/policies/current" ${VIEWER:+--viewer} > "$out/sim.log" 2>&1 &
+    --policies "$prefix/policies/current" ${VIEWER:+--viewer} ${SIM_ARGS:-} > "$out/sim.log" 2>&1 &
 sim=$!
 trap 'sh "$root/stop-sim.sh" >/dev/null 2>&1 || true' EXIT
 i=0
@@ -44,7 +45,7 @@ done
 ip=$(hostname -I | cut -d' ' -f1)
 code=$(cat "$HOME/.config/ito/microduck-sim-code")
 wout=$(wslpath -w "$out")
-echo "recording $build into $wout"
+printf 'recording %s into %s\n' "$build" "$wout"
 (cd "$root/builds/$build/ito" && cmd.exe /c "set ITO_RECORD=$wout\\rec&& set ITO_PILOT_SCRIPT=$wout\\route.json&& ito.exe $ip:8081 --code $code --capture-dir $wout\\captures" \
     > "$out/ito.log" 2>&1) || echo "ito exit $?" >> "$out/ito.log"
 sh "$root/stop-sim.sh" >/dev/null 2>&1 || true

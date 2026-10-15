@@ -28,6 +28,15 @@ not "operator", not "user" when the pilot is meant.
 - Quality is judged by eye, never by a threshold (no dB, PSNR, LPIPS or coverage bars). The
   reviewer records a live session, makes the frame grid and looks at it; numbers only point
   at where to look.
+- **The test is running the software.** Build the branch for Windows (`release.ps1 -Branch`),
+  then record a multi-minute scripted session of that build against the virtual Microduck
+  (`e2e/by_eye.sh BUILD NAME`; routes in `e2e/routes/`, ITO_PILOT_SCRIPT) and the same route
+  on main's build, and compare the frame grids by eye. Number benchmarks and offline replays
+  are never the verdict.
+- **Never change the shared sim install** (`~/.local/share/ito-microduck`: its checkouts, its
+  build and the `microduck-sim` launcher) from a branch: it is what every build is tested
+  against, and setup-sim.sh is re-run only from main. Try a branch's sim code with
+  `e2e/by_eye.sh`'s SIM_SOURCE; sim changes to the Pollen stack land on main first.
 - Small, coherent commits with descriptive messages. Never commit secrets or model weights.
 - Priorities, in order: pilot comfort, low pilot→robot→pilot latency, long-term maintainability.
   Hot paths (frame decode, Gaussian upload, sort, draw) stay on the GPU and out of Python loops;
