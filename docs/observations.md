@@ -32,8 +32,9 @@ never become invented dense depth pixels. The estimator registers their footprin
 mixed-depth patches and stale observations, and uses robust agreement to constrain metric scale.
 
 Missing sensors mean absent tuples/streams, never zero-valued measurements. Raw inertial samples
-provide orientation/turn prediction; they do not imply observed translation or full visual-inertial
-odometry. Camera-only tracking retains an unobserved metric gauge. The live wire rejects v3;
+provide orientation/turn prediction by integrating gyro with near-rest gravity correction; the
+estimator does not trust chip-fusion startup tilt. Gaps hold orientation and resume at the next
+sample. This does not imply observed translation or full visual-inertial odometry. Camera-only tracking retains an unobserved metric gauge. The live wire rejects v3;
 `e2e/observation_recording.py` explicitly migrates archived v3 descriptions and gait uncertainty.
 
 The beta simulation defaults to GC2093 1920×1080/30, an LSM6DSV16X game-rotation approximation

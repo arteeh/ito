@@ -245,10 +245,10 @@ class Motion(Message):
 
 
 class ImuSample(Model):
-    """Right-handed chip axes, rad/s and m/s² specific force (rest reads +g).
+    """Right-handed sensor axes, rad/s and m/s² specific force (rest reads +g).
 
-    mount maps chip vectors/positions into the named Ito camera (+X right, +Y up,
-    -Z forward). orientation maps chip axes into a +Y-up fusion world; yaw is
+    mount maps sensor vectors/positions into the named Ito camera (+X right, +Y up,
+    -Z forward). orientation maps reported sensor axes into a +Y-up fusion world; yaw is
     arbitrary and never an odometry heading. All times are driver monotonic seconds.
     """
 

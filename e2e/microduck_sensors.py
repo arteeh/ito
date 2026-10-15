@@ -15,6 +15,8 @@ import math
 import statistics
 from pathlib import Path
 
+from scipy.spatial.transform import Rotation
+
 from drivers.microduck.sim import arguments, port, simulation
 from ito import clock
 from ito.link.signaling import connect
@@ -104,6 +106,29 @@ async def run(sim, out, board):
         assert any(s.imu for s in observations), "Ito received no raw IMU observations"
         assert any(s.ranges for s in observations), "Ito received no ToF observations"
         camera = peer.description.cameras[0]
+        observed_steady = [
+            sample
+            for batch in observations
+            for sample in batch.imu
+            if start + 1 < sample.time < start + 3
+        ]
+        assert observed_steady, "No source-timed steady IMU samples reached Ito"
+        camera_force = [
+            Rotation.from_quat(sample.mount.orientation).apply(sample.specific_force)
+            for sample in observed_steady
+        ]
+        up_force = statistics.median(force[1] for force in camera_force)
+        assert up_force > 8, camera_force[:4]
+        # FIFO delivery must retain its source stamps rather than stamping all four at wake.
+        arrivals = [t for t, _ in imu if start + 1 < t < start + 3]
+        burst_sizes = []
+        for arrival in arrivals:
+            if burst_sizes and arrival - burst_sizes[-1][0] < 0.01:
+                burst_sizes[-1][1] += 1
+            else:
+                burst_sizes.append([arrival, 1])
+        if board == "beta":
+            assert 3 <= statistics.median(size for _, size in burst_sizes) <= 5, burst_sizes
         if board == "beta":
             assert (camera.intrinsics.width, camera.intrinsics.height) == (1920, 1080)
         report = dict(
@@ -114,6 +139,8 @@ async def run(sim, out, board):
             imu_frames=len(imu),
             steady_hz=1 / statistics.median(dt),
             steady_specific_force_ms2=force,
+            camera_up_force_ms2=up_force,
+            median_burst_samples=statistics.median(size for _, size in burst_sizes),
             max_turn_gyro_rads=spin,
             tof_frames=len(depth),
             tof_range_mm=[min(valid), max(valid)],
