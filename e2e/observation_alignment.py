@@ -31,7 +31,7 @@ def main():
     origin = frames[0]["captured"]
     alignment = None
     rotations, times, range_errors, sample_periods = [], [], [], []
-    for a, b in zip(sensors.imu, list(sensors.imu)[1:]):
+    for a, b in zip(sensors.imu, list(sensors.imu)[1:], strict=False):
         sample_periods.append(b[0] - a[0])
     for row in frames:
         stamp = row["captured"]
@@ -85,7 +85,10 @@ def main():
         raw_inertial_rotation_deg=stats(rotations),
         range_center_axial_error_m=stats(range_errors),
         range_comparisons=len(range_errors),
-        evaluation="Source truth only for this diagnostic; first-pose rigid alignment; no scale fit; range centers exclude depth edges. Numbers locate visual review, not quality gates.",
+        evaluation=(
+            "Source truth only for this diagnostic; first-pose rigid alignment; no scale fit; "
+            "range centers exclude depth edges. Numbers locate review, not quality gates."
+        ),
     )
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(report, indent=2) + "\n")
