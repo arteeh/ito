@@ -20,6 +20,7 @@ import numpy as np
 
 from ito import clock
 
+from .depth_support import DepthSupport
 from .fusion import PoseGraph
 from .metric_scale import MetricScale
 from .motion import MotionBuffer
@@ -92,6 +93,7 @@ class SLAMBackend(RGBDBackend):
             estimate_td=exposure != 0 or frame_delay > 0,
         )
         self.depth_estimator = MetricScale(intrinsics)
+        self.depth_support = DepthSupport()
         self.focal = float(intrinsics.fx)
         self.exposure = EXPOSURE if exposure is None else float(exposure)
         self.camera_pose = np.eye(4, dtype=np.float32)
@@ -195,7 +197,9 @@ class SLAMBackend(RGBDBackend):
     def _emit(self, node):
         if self.pose_publisher is not None:
             self.pose_publisher(
-                self.graph.pose(node), self.graph.correction(node), self.graph.nodes[node].time
+                self.graph.pose(node),
+                self.graph.correction(node),
+                self.graph.nodes[node].time - self.graph.td,
             )
 
     def place(self, cloud, pose, when):
@@ -218,7 +222,9 @@ class SLAMBackend(RGBDBackend):
             self.xp.from_dlpack(footprint[valid].contiguous()),
         )
         height, width = cloud.shape
-        image = torch.where(valid, depth, 0).reshape(height, width)
+        evidence = getattr(self, "depth_support", None)
+        carve_valid = valid if evidence is None else evidence.observe(cloud, pose)
+        image = torch.where(carve_valid, depth, 0).reshape(height, width)
         self.carve(
             pose.astype(np.float32),
             fx,

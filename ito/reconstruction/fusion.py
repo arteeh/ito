@@ -22,10 +22,9 @@ A map aligner (the Gaussian map rendered at a frame's pose and compared with its
 adds a map factor: the frame's pose in the world the map was built in, with its sigma,
 under the same Cauchy loss as a visual factor.
 
-The front end's lengths become metres through one log-scale estimated apart from the poses,
-from direct observations of it (the floor under a frame, slam.py), not from the visual
-translations: a front end seeded at the robot's prediction mostly echoes the robot's travel
-in them, in whatever units its map has.
+Metric depth calibration lives outside the pose graph (metric_scale.py). Visual
+translations are seeded by robot motion and retain a nuisance scale within each window
+solve; their uncertainty includes the frontend's shape error.
 """
 
 import math
@@ -52,8 +51,6 @@ SCALE_SIGMA = 0.2  # Log-scale prior per solve, around the last estimate.
 # between keyframes: against the robot's travel, tour replay factors spread p10-p90 over
 # 1.1-1.7x. Its sigma grows by this fraction of its length.
 VISUAL_SCALE = 0.3
-# Scale observations kept: about two seconds of frames, as the front end's own scale drifts.
-SCALE_MEMORY = 20
 # Frame-delay observations kept, and the camera's turn between a visual rotation's two
 # frames, per second of delay, below which one says too little to keep.
 DELAY_MEMORY = 60
@@ -100,10 +97,6 @@ class PoseGraph:
         self.delays = deque(maxlen=DELAY_MEMORY)  # (seconds, sigma), newest last
         self.delay_jitter = 0.0
         self.log_scale = 0.0
-        # (log metres per front-end unit, sigma), newest last; until the first is solved the
-        # front end's scale is unknown, and nothing holds it near its start.
-        self.scales = deque(maxlen=SCALE_MEMORY)
-        self.scale_known = False
         self.nodes: dict[int, Node] = {}
         self.keyframes: list[int] = []  # oldest first
         self.current: int | None = None
@@ -127,22 +120,6 @@ class PoseGraph:
 
     def latest_keyframe(self):
         return self.keyframes[-1] if self.keyframes else None
-
-    def fold_scale(self):
-        """Hand the scale estimate to the front end: returns the factor its lengths take,
-        and restates the factors and observations already held in the new units."""
-        factor = math.exp(self.log_scale)
-        for v in self.visual:
-            v.translation = v.translation * factor
-        self.scales = deque(
-            ((value - self.log_scale, sigma) for value, sigma in self.scales), SCALE_MEMORY
-        )
-        self.log_scale = 0.0
-        return factor
-
-    def add_scale(self, log_scale, sigma):
-        """An observation of the front end's scale: log metres per front-end unit."""
-        self.scales.append((float(log_scale), float(sigma)))
 
     def predict(self, t):
         """World-from-camera for a frame stamped t: the newest node moved on by the robot."""
@@ -240,7 +217,7 @@ class PoseGraph:
         self.delays.append((delay, float(visual.sigma[0]) / turn))
 
     def solve_delay(self):
-        """The frame delay from its observations, robustly, as solve_scale the scale."""
+        """Robust delay from independent observations, retiming all retained poses together."""
         if not self.estimate_td or len(self.delays) < 5:
             return
         values, sigmas = np.array(self.delays).T
@@ -357,20 +334,6 @@ class PoseGraph:
             self._refresh_published()
         return {k: self.nodes[k].pose for k in self.keyframes}
 
-    def solve_scale(self):
-        """The scale from its direct observations, each a little apart from the last."""
-        if not self.scales:
-            return
-        values, sigmas = np.array(self.scales).T
-        prior = 1 / SCALE_SIGMA**2 if self.scale_known else 0.0
-        scale = float(np.median(values)) if not self.scale_known else self.log_scale
-        # One unknown: iteratively reweighted least squares under the Cauchy loss.
-        for _ in range(8):
-            weights = 1 / (sigmas**2 + ((scale - values) / CAUCHY) ** 2)
-            scale = (weights @ values + prior * self.log_scale) / (weights.sum() + prior)
-        self.log_scale = float(scale)
-        self.scale_known = True
-
     def _solve(self, free, frame_only):
         window = self.keyframes + ([self.current] if self.current is not None else [])
         visual = [v for v in self.visual if v.reference in self.nodes and v.frame in self.nodes]
@@ -392,8 +355,8 @@ class PoseGraph:
         start_r = Rotation.from_matrix(np.array([start[n][:3, :3] for n in order]))
         start_p = np.array([start[n][:3, 3] for n in order])
         times = np.array([self.nodes[n].time for n in order])
-        # The visual translations' units float a little per solve, around the scale from the
-        # floor: they need not match it exactly, and are not handed to the front end.
+        # Visual translations may differ from odometry because the frontend bends
+        # depth. This nuisance scale is local to the solve, never a depth calibration.
         estimate_scale = not frame_only and bool(self.visual)
         size = 6 * len(free) + int(estimate_scale)
         td, scale0 = self.td, self.log_scale

@@ -156,6 +156,10 @@ def worker(args, ring, admission, ready, start, stopped, status):
         if main:
             engine = RGBDBackend(args.max_splats, k, device="cuda")
             engine.torch = torch
+            if getattr(args, "depth_support", False):
+                from ito.reconstruction.depth_support import DepthSupport
+
+                engine.depth_support = DepthSupport()
         else:
             engine = GaussianMap(args.max_splats, precision=settings["precision"])
         admission.bind_stream(cp)
@@ -405,6 +409,11 @@ def main():
     parser.add_argument("--seconds", type=float, default=20)
     parser.add_argument("--max-splats", type=int, default=1_000_000)
     parser.add_argument("--record", action="store_true")
+    parser.add_argument(
+        "--depth-support",
+        action="store_true",
+        help="Use cross-view depth agreement before point-map carving",
+    )
     parser.add_argument("--precision", choices=("full", "half"))
     parser.add_argument(
         "--oom-at",
@@ -464,6 +473,7 @@ def main():
         json.loads(s) for s in (args.recording / "source/frames.jsonl").read_text().splitlines()
     ]
     settings = json.loads((args.estimates / "settings.json").read_text())
+    settings["depth_support"] = args.depth_support
     if args.precision:
         settings["precision"] = args.precision
     rows = json.loads((args.estimates / "frames.json").read_text())
