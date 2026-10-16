@@ -30,7 +30,8 @@ class Registration:
                 return
         for view in reversed(views):
             if view.node in poses:
-                self.map_from_estimator = view.pose @ np.linalg.inv(poses[view.node])
+                mapped = view.pose if view.estimated_map_pose is None else view.estimated_map_pose
+                self.map_from_estimator = mapped @ np.linalg.inv(poses[view.node])
                 break
 
     def align(self, image, depth, estimated, intrinsics, views):
@@ -60,7 +61,7 @@ class Registration:
                 xy = corners[:, 0]
                 x, y = np.rint(xy).astype(int).T
                 d = view.depth[y, x]
-                keep = d > 0
+                keep = np.isfinite(d) & (d > 0)
                 xy, d = xy[keep], d[keep]
                 vx, vy, vcx, vcy = view.intrinsics
                 local = np.column_stack(((xy[:, 0] - vcx) / vx * d, -(xy[:, 1] - vcy) / vy * d, -d))
@@ -135,7 +136,7 @@ class Registration:
             x, y = x[inside], y[inside]
             observed = depth[y, x]
             expected = (points[idx][inside] @ camera[:3, :3].T + camera[:3, 3])[:, 2]
-            valid = (observed > 0) & (expected > 0)
+            valid = np.isfinite(observed) & np.isfinite(expected) & (observed > 0) & (expected > 0)
             scale = float(np.median(expected[valid] / observed[valid])) if valid.any() else 1.0
             scale = np.clip(scale, 0.8, 1.25)
             if valid.sum() >= 40:
