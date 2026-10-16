@@ -141,9 +141,14 @@ class GaussianBackend(GaussianSlots):
         surface[pixels[winners]] = live[winners]
         surface = surface.reshape(height, width)
         if len(winners):
+            radius = np.zeros(height * width, np.float32)
+            radius[pixels[winners]] = np.clip(
+                1.5 * fx * self.records[live[winners], 1, :2].min(-1) / z[winners], 1.5, 3
+            )
+            radius = radius.reshape(height, width)
             distance, nearest = distance_transform_edt(surface < 0, return_indices=True)
             surface = surface[tuple(nearest)]
-            surface[distance > 1.5] = -1
+            surface[distance > radius[tuple(nearest)]] = -1
         return surface, live, z, u, v
 
     def observe(
@@ -297,14 +302,14 @@ class GaussianBackend(GaussianSlots):
         centers = self.records[surface[covered], 0, :3] - camera[:3, 3]
         mapped_depth[covered] = -(centers @ camera[:3, 2])
         missing = valid & ((surface < 0) | (depth < 0.8 * mapped_depth))
-        # A two-pixel lattice has a calibrated footprint; colour edges keep one-pixel
+        # A three-pixel lattice has a calibrated footprint; colour edges keep one-pixel
         # samples. Surface tangents follow depth instead of making camera-facing discs.
         edge = np.zeros(depth.shape, bool)
         color = image.astype(np.float32) / 255
         edge[:, 1:] |= np.max(np.abs(color[:, 1:] - color[:, :-1]), -1) > 0.08
         edge[1:] |= np.max(np.abs(color[1:] - color[:-1]), -1) > 0.08
         yy, xx = np.mgrid[:height, :width]
-        seeds = np.flatnonzero(missing & (edge | ((xx % 2 == 0) & (yy % 2 == 0))))
+        seeds = np.flatnonzero(missing & (edge | ((xx % 3 == 0) & (yy % 3 == 0))))
         needed = self.count + len(seeds)
         if len(self.keys) < min(needed, self.budget):
             self.grow(min(self.budget, max(needed, 2 * len(self.keys))))
@@ -354,7 +359,7 @@ class GaussianBackend(GaussianSlots):
             degenerate = np.abs(np.linalg.det(basis)) < 0.5
             basis[degenerate] = camera[:3, :3]
             quat = Rotation.from_matrix(basis).as_quat()[:, [3, 0, 1, 2]]
-            spacing = np.where(edge[y, x], 0.7, 1.4)
+            spacing = np.where(edge[y, x], 0.7, 1.8)
             scales = np.stack(
                 (
                     np.linalg.norm(dx, axis=1) * spacing,

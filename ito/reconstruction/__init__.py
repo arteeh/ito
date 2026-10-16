@@ -5,6 +5,7 @@ import os
 import queue
 import sys
 import traceback
+from pathlib import Path
 
 import numpy as np
 
@@ -88,7 +89,10 @@ def _run(recon):
         sequence = 0
         # ITO_TIMELINE names a file for one line per frame the worker took: what became of it.
         timeline = os.environ.get("ITO_TIMELINE")
-        timeline = open(timeline, "a", buffering=1) if timeline else None
+        # Windows append handles from separate processes can interleave writes.
+        timeline = (
+            open(Path(timeline).with_suffix(".map.jsonl"), "a", buffering=1) if timeline else None
+        )
         cursor = 0
         motion_cursor = 0
         revision = 0

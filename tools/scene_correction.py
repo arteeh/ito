@@ -28,7 +28,7 @@ def corrected(self, *args, captured, **kwargs):
         import torch
 
         self.manual_oom_done = True
-        with Path(os.environ["ITO_TIMELINE"]).open("a") as out:
+        with Path(os.environ["ITO_TIMELINE"]).with_suffix(".events.jsonl").open("a") as out:
             out.write(
                 json.dumps(
                     dict(event="manual_cuda_oom", captured=captured, precision=self.precision)
@@ -63,7 +63,7 @@ def corrected(self, *args, captured, **kwargs):
             transform=change.tolist(),
             local_refits=self.refits,
         )
-        with Path(os.environ["ITO_TIMELINE"]).open("a") as out:
+        with Path(os.environ["ITO_TIMELINE"]).with_suffix(".events.jsonl").open("a") as out:
             out.write(json.dumps(event) + "\n")
         print(f"Manual estimator correction at capture {captured:.6f}", flush=True)
     return integrate(self, *args, captured=captured, **kwargs)
