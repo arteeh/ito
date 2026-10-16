@@ -49,7 +49,7 @@ class Registration:
                 vx, vy, vcx, vcy = view.intrinsics
                 local = np.column_stack(((xy[:, 0] - vcx) / vx * d, -(xy[:, 1] - vcy) / vy * d, -d))
                 world = local @ view.pose[:3, :3].T + view.pose[:3, 3]
-                view.features = source, xy.astype(np.float32), world
+                view.features = source, np.ascontiguousarray(xy, dtype=np.float32), world
             source, xy, world = view.features
             if len(xy) < 40:
                 continue
@@ -61,7 +61,7 @@ class Registration:
                 source,
                 gray,
                 xy[:, None],
-                projected.astype(np.float32)[:, None],
+                np.ascontiguousarray(projected[:, None], dtype=np.float32),
                 winSize=(21, 21),
                 maxLevel=3,
                 flags=cv.OPTFLOW_USE_INITIAL_FLOW,
