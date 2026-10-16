@@ -5,7 +5,7 @@ import numpy as np
 
 from ito import clock
 
-from .rgbd import RGBDBackend
+from .gaussian import GaussianBackend
 
 HEADING_TOLERANCE = math.radians(12)
 HEADING_SETTLED = math.radians(2)
@@ -38,7 +38,7 @@ class Keyframes(list):
             self[int(index)].T_WC = transform
 
 
-class VisionSLAMBackend(RGBDBackend):
+class VisionSLAMBackend(GaussianBackend):
     def bind_admission(self, admission):
         from .admission import bind_model, bind_native
 
@@ -74,7 +74,7 @@ class VisionSLAMBackend(RGBDBackend):
             weights, report, precision=precision, precision_report=precision_report
         )
         options["device"] = "cuda"
-        super().__init__(capacity, intrinsics, **options)
+        super().__init__(capacity, intrinsics, precision=precision, **options)
         self.report = report
         self.lietorch = lietorch
         self.frames = Keyframes()
@@ -298,26 +298,19 @@ class VisionSLAMBackend(RGBDBackend):
             points = points @ world[:3, :3].T + world[:3, 3]
             valid = torch.isfinite(points).all(dim=1) & (local[:, 2] > 0)
             colors = (frame.uimg.to("cuda").reshape(-1, 3) * 255).to(torch.uint8)
-            pixels = 3 * max(1, (400_000 / self.budget) ** 0.5)
-            footprint = local[:, 2] * float(scale) * pixels / self.K[0, 0]
-            when = now + clock.now() - started
-            self.integrate_points(
-                self.xp.from_dlpack(points[valid].contiguous()),
-                self.xp.from_dlpack(colors[valid].contiguous()),
-                when,
-                self.xp.from_dlpack(footprint[valid].contiguous()),
-            )
             height, width = frame.img.shape[-2:]
-            depth = torch.where(valid, local[:, 2] * float(scale), 0).reshape(height, width)
             fx, fy, cx, cy = (float(self.K[i, j]) for i, j in ((0, 0), (1, 1), (0, 2), (1, 2)))
-            self.carve(
-                self.camera_pose,
-                fx,
-                fy,
-                cx,
-                cy,
-                self.xp.from_dlpack(depth.float().contiguous()),
-                when,
+            camera = self.camera_pose
+            camera_points = (
+                points - torch.as_tensor(camera[:3, 3], device="cuda")
+            ) @ torch.as_tensor(camera[:3, :3], device="cuda")
+            self.observe(
+                camera_points.detach().float().cpu().numpy().reshape(height, width, 3),
+                colors.cpu().numpy().reshape(height, width, 3),
+                valid.cpu().numpy(),
+                camera,
+                (fx, fy, cx, cy),
+                now + clock.now() - started,
             )
             self.tracked += 1
             if restarted:

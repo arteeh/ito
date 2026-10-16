@@ -5,8 +5,8 @@ import numpy as np
 from ito import clock
 
 from .fusion import UP, PoseGraph
+from .gaussian import GaussianBackend
 from .motion import MotionBuffer
-from .rgbd import RGBDBackend
 from .sensors import HeadSensors
 from .slam_vision import RESTART_CAUSES
 
@@ -27,7 +27,7 @@ RANGE_SIGMA = 0.05
 SCALE_STEP = 0.01
 
 
-class SLAMBackend(RGBDBackend):
+class SLAMBackend(GaussianBackend):
     """frame_delay: the driver's estimate of how long before its capture_time a frame was
     exposed; exposure: how long the sensor integrates one, None if the driver cannot say.
     aligner: a tracking.MapAligner, the map's say in every tracked frame's pose."""
@@ -59,7 +59,7 @@ class SLAMBackend(RGBDBackend):
                 precision_report=precision_report,
             )
         options["device"] = "cuda"
-        super().__init__(capacity, intrinsics, **options)
+        super().__init__(capacity, intrinsics, precision=precision, **options)
         self.report = report
         self.frontend = frontend
         self.aligner = aligner
@@ -189,30 +189,15 @@ class SLAMBackend(RGBDBackend):
         return pose
 
     def place(self, cloud, pose, when):
-        torch = _torch()
-        world = torch.as_tensor(pose, device="cuda", dtype=torch.float32)
-        points = cloud.points @ world[:3, :3].T + world[:3, 3]
-        valid = cloud.valid
-        fx, fy, cx, cy = cloud.intrinsics
-        depth = -cloud.points[:, 2]
-        pixels = 3 * max(1, (400_000 / self.budget) ** 0.5)
-        footprint = depth * pixels / fx
-        self.integrate_points(
-            self.xp.from_dlpack(points[valid].contiguous()),
-            self.xp.from_dlpack(cloud.colors[valid].contiguous()),
-            when,
-            self.xp.from_dlpack(footprint[valid].contiguous()),
-        )
         height, width = cloud.shape
-        image = torch.where(valid, depth, 0).reshape(height, width)
-        self.carve(
-            pose.astype(np.float32),
-            fx,
-            fy,
-            cx,
-            cy,
-            self.xp.from_dlpack(image.float().contiguous()),
+        self.observe(
+            cloud.points.detach().float().cpu().numpy().reshape(height, width, 3),
+            cloud.colors.detach().cpu().numpy().reshape(height, width, 3),
+            cloud.valid.detach().cpu().numpy(),
+            pose,
+            cloud.intrinsics,
             when,
+            node=self.graph.current,
         )
 
 

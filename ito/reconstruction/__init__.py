@@ -14,7 +14,7 @@ from ito.render.gpu import MAX_SLOT_COUNT
 from ito.render.pose import validate_pose
 
 from .admission import GPU_STAGES, Admission
-from .rgbd import RGBDBackend
+from .gaussian import GaussianBackend
 from .ring import MotionRing, SplatUpdate, UpdateRing
 from .slam_vision import RESTART_CAUSES
 
@@ -68,7 +68,9 @@ def _run(recon):
                 **recon.options,
             )
         else:
-            backend = RGBDBackend(recon.budget.value, recon.intrinsics, **recon.options)
+            backend = GaussianBackend(
+                recon.budget.value, recon.intrinsics, precision=recon.precision, **recon.options
+            )
         backend.bind_admission(recon.admission)
         if backend.xp is not np:
             from .memory import VRAM

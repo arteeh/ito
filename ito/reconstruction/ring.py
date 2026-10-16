@@ -23,6 +23,12 @@ class SplatUpdate:
     fade_seconds: float
     acknowledge: Callable[[], None] | None = None
     observations: tuple[tuple[int, float], ...] = ()
+    observed_at: np.ndarray | None = None
+    coordinate_frame: str = "odometry"
+    # Records are baked into the persistent root anchor before entering the ring.
+    anchors: tuple = (
+        (0, (1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0)),
+    )
 
 
 class UpdateRing:
@@ -143,6 +149,7 @@ class UpdateRing:
                 self.fade_seconds,
                 lambda: self.acknowledge(int(revision)),
                 observations,
+                captures.copy(),
             )
         finally:
             self.locks[slot].release()

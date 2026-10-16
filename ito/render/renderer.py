@@ -42,6 +42,7 @@ class GaussianRenderer:
         self.live = None
         self.stride = 4
         self.degree = 0
+        self.revision = -1
 
     def upload(self, scene: GaussianBuffer) -> None:
         count, stride, _ = scene.records.shape
@@ -98,6 +99,12 @@ class GaussianRenderer:
         self.capacity = max(1024, 1 << max(0, self.draw_count - 1).bit_length())
 
     def apply(self, update) -> bool:
+        if update.epoch < self.epoch or (
+            update.epoch == self.epoch and update.revision <= self.revision
+        ):
+            if update.acknowledge is not None:
+                update.acknowledge()
+            return True
         n = len(update.indices)
         if n > 4096:
             raise ValueError("Splat updates are limited to 4096 records per packet")
@@ -123,6 +130,7 @@ class GaussianRenderer:
         self.count = update.count
         self.stride, self.degree = 4, 0
         self.epoch, self.fade_seconds = update.epoch, update.fade_seconds
+        self.revision = update.revision
         if not n:
             if update.acknowledge is not None:
                 update.acknowledge()
