@@ -166,7 +166,9 @@ def main():
         print(f"recording {args.build} into {windows(out)}", flush=True)
         command = (
             f"set ITO_RECORD={windows(rec)}&& set ITO_PILOT_SCRIPT={windows(out / 'script.json')}"
-            f"&& ito.exe {ip}:8081 --code {code} --capture-dir {windows(out / 'captures')}"
+            # The build's own Python rather than ito.exe, whose log never reaches a pipe.
+            f"&& runtime\\python.exe -I -X utf8 -m ito.app {ip}:8081 --code {code}"
+            f" --capture-dir {windows(out / 'captures')}"
         )
         with (out / "ito.log").open("w") as log:
             result = subprocess.run(
