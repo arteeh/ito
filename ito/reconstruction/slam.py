@@ -204,11 +204,9 @@ class SLAMBackend(GaussianBackend):
         mapped, scale = self.registration.align(
             image, -points[..., 2], pose, cloud.intrinsics, self.views
         )
-        self.registration.remember(node, pose, mapped, self.graph.nodes)
-        self.camera_pose = mapped.astype(np.float32)
-        self.correction = (
-            self.registration.map_from_estimator @ self.graph.correction(node)
-        ).astype(np.float32)
+        self.registration.remember(
+            node, pose, self.registration.map_from_estimator @ pose, self.graph.nodes
+        )
         self.observe(
             points * scale,
             image,

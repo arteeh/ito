@@ -165,8 +165,11 @@ class GaussianBackend(GaussianSlots):
                     color_error[agreement],
                 )
             )
-            self.contradictions[supported] = 0
-            contradicted = live[(observed > z + 3 * tolerance) & (observed > 0)]
+            self.contradictions[live[depth_agreement]] = 0
+            contradicted = live[
+                (observed > z + tolerance * np.where(self.support[live] >= 20, 2, 1))
+                & (observed > 0)
+            ]
             self.contradictions[contradicted] = np.minimum(
                 self.contradictions[contradicted].astype(int) + 1, 255
             )
@@ -194,7 +197,8 @@ class GaussianBackend(GaussianSlots):
             # Fuse only the frontmost matched surface. A bounded radial correction
             # refines depth without sliding a sample across the current image. Colour
             # updates fit the observed radiance; occluded background keeps its evidence.
-            visible = (peers == live) & depth_agreement & ~self.retiring[live]
+            visible = (peers == live) & (observed > 0) & ~self.retiring[live]
+            visible &= np.abs(observed - z) <= 3 * tolerance
             selected = np.flatnonzero(visible)
             if len(selected) > 4096:
                 sample = selected[(np.arange(1024) + self.fusion_cursor) % len(selected)]
@@ -306,7 +310,7 @@ class GaussianBackend(GaussianSlots):
                 (
                     np.linalg.norm(dx, axis=1) * spacing,
                     np.abs((dy * tangent).sum(-1)) * spacing,
-                    d / fx * 0.15,
+                    d / fx * 0.4,
                 ),
                 -1,
             )

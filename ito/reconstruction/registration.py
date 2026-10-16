@@ -124,7 +124,7 @@ class Registration:
             pose = np.linalg.inv(camera) @ AXES
             change = np.linalg.inv(predicted) @ pose
             angle = np.arccos(np.clip((np.trace(change[:3, :3]) - 1) / 2, -1, 1))
-            if angle > np.radians(5) or np.linalg.norm(change[:3, 3]) > 0.15:
+            if angle > np.radians(1) or np.linalg.norm(change[:3, 3]) > 0.02:
                 continue
             x, y = np.rint(matched).astype(int).T
             inside = (x >= 0) & (x < depth.shape[1]) & (y >= 0) & (y < depth.shape[0])
@@ -134,7 +134,6 @@ class Registration:
             valid = (observed > 0) & (expected > 0)
             scale = float(np.median(expected[valid] / observed[valid])) if valid.any() else 1.0
             scale = np.clip(scale, 0.8, 1.25)
-            self.map_from_estimator = pose @ np.linalg.inv(estimated)
             self.accepted += 1
             return pose, scale
         return predicted, 1.0
