@@ -24,6 +24,7 @@ SLOT_FIELDS = {
     "contribution": (np.float32, 0, ()),
     "contradictions": (np.uint8, 0, ()),
     "redundancy": (np.uint8, 0, ()),
+    "photo_contradictions": (np.uint8, 0, ()),
     "owners": (np.int64, -1, ()),
 }
 

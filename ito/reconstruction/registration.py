@@ -14,6 +14,7 @@ class Registration:
         self.map_from_estimator = np.eye(4)
         self.accepted = 0
         self.frames = {}
+        self.matched = False
 
     def remember(self, node, estimated, mapped, live_nodes):
         self.frames = {key: value for key, value in self.frames.items() if key in live_nodes}
@@ -34,6 +35,7 @@ class Registration:
                 break
 
     def align(self, image, depth, estimated, intrinsics, views):
+        self.matched = False
         cv = self.cv
         predicted = self.map_from_estimator @ estimated
         if not views:
@@ -140,5 +142,6 @@ class Registration:
             scale = float(np.median(expected[valid] / observed[valid])) if valid.any() else 1.0
             scale = np.clip(scale, 0.8, 1.25)
             self.accepted += 1
+            self.matched = True
             return pose, scale
         return predicted, 1.0

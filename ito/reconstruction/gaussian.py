@@ -146,7 +146,19 @@ class GaussianBackend(GaussianSlots):
             surface[distance > 1.5] = -1
         return surface, live, z, u, v
 
-    def observe(self, points, image, valid, camera, intrinsics, now, *, node=None, confidence=None):
+    def observe(
+        self,
+        points,
+        image,
+        valid,
+        camera,
+        intrinsics,
+        now,
+        *,
+        node=None,
+        confidence=None,
+        registered=True,
+    ):
         points = np.asarray(points, np.float32)
         height, width = image.shape[:2]
         points = points.reshape(height, width, 3)
@@ -184,6 +196,22 @@ class GaussianBackend(GaussianSlots):
                 self.contradictions[contradicted].astype(int) + 1, 255
             )
             gone = contradicted[self.contradictions[contradicted] >= 4]
+            if registered:
+                exposed = depth_agreement & (peers == live)
+                visible_ids = live[exposed]
+                self.uncertainty[visible_ids] = (
+                    0.9 * self.uncertainty[visible_ids] + 0.1 * color_error[exposed]
+                )
+                wrong = live[exposed & (color_error > 0.25)]
+                self.photo_contradictions[wrong] = np.minimum(
+                    self.photo_contradictions[wrong].astype(int) + 1, 255
+                )
+                self.photo_contradictions[live[exposed & (color_error < 0.15)]] = 0
+                rejected = live[
+                    self.photo_contradictions[live] >= np.where(self.support[live] >= 20, 8, 4)
+                ]
+                self.contribution[rejected] = 0
+                gone = np.union1d(gone, rejected)
             self.captures[gone] = self.source_captured
             self.retire(gone)
             winners, counts = np.unique(surface[surface >= 0], return_counts=True)
@@ -353,6 +381,7 @@ class GaussianBackend(GaussianSlots):
             self.contribution[slots] = 1
             self.contradictions[slots] = 0
             self.redundancy[slots] = 0
+            self.photo_contradictions[slots] = 0
             self.seen[slots] = now
             self.captures[slots] = self.source_captured
             self.sequences[slots] = self.source_sequence
