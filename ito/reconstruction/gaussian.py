@@ -199,13 +199,11 @@ class GaussianBackend(GaussianSlots):
             # updates fit the observed radiance; occluded background keeps its evidence.
             visible = (peers == live) & (observed > 0) & ~self.retiring[live]
             visible &= np.abs(observed - z) <= 3 * tolerance
+            visible &= color_error < 0.15
             selected = np.flatnonzero(visible)
             if len(selected) > 4096:
-                sample = selected[(np.arange(1024) + self.fusion_cursor) % len(selected)]
-                self.fusion_cursor += len(sample)
-                remaining = np.setdiff1d(selected, sample, assume_unique=True)
-                worst = remaining[np.argpartition(color_error[remaining], -3072)[-3072:]]
-                selected = np.concatenate((sample, worst))
+                selected = selected[(np.arange(4096) + self.fusion_cursor) % len(selected)]
+                self.fusion_cursor += len(selected)
             matched = live[selected]
             if len(matched):
                 fx, fy, cx, cy = intrinsics

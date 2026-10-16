@@ -47,7 +47,7 @@ class Registration:
             if cosine > 0.9 and distance < 0.5 and view.depth.shape == depth.shape:
                 candidates.append((1 - cosine + distance * 0.1, view))
         candidates.sort(key=lambda item: item[0])
-        for _, view in candidates[:2]:
+        for _, view in candidates[:4]:
             if view.features is None:
                 source = cv.cvtColor(view.image, cv.COLOR_RGB2GRAY)
                 corners = cv.goodFeaturesToTrack(source, 600, 0.01, 6)
@@ -124,7 +124,7 @@ class Registration:
             pose = np.linalg.inv(camera) @ AXES
             change = np.linalg.inv(predicted) @ pose
             angle = np.arccos(np.clip((np.trace(change[:3, :3]) - 1) / 2, -1, 1))
-            if angle > np.radians(1) or np.linalg.norm(change[:3, 3]) > 0.02:
+            if angle > np.radians(8) or np.linalg.norm(change[:3, 3]) > 0.15:
                 continue
             x, y = np.rint(matched).astype(int).T
             inside = (x >= 0) & (x < depth.shape[1]) & (y >= 0) & (y < depth.shape[0])
