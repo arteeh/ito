@@ -40,9 +40,11 @@ class GaussianRenderer:
         self.capacity = 0
         self.slot_capacity = 0
         self.live = None
+        self.observed_at = None
         self.stride = 4
         self.degree = 0
         self.revision = -1
+        self.coordinate_frame = None
 
     def upload(self, scene: GaussianBuffer) -> None:
         count, stride, _ = scene.records.shape
@@ -82,14 +84,17 @@ class GaussianRenderer:
             scene.release()
             raise
         live = np.zeros(capacity, dtype=bool)
+        observed_at = np.zeros(capacity, dtype=np.float64)
         if self.scene_buffer is not None:
             if keep:
                 kept = min(capacity, self.slot_capacity)
                 self.context.copy_buffer(scene, self.scene_buffer, size=kept * 64)
                 live[:kept] = self.live[:kept]
+                observed_at[:kept] = self.observed_at[:kept]
             self.scene_buffer.release()
             self.order.release()
         self.scene_buffer, self.order, self.live = scene, order, live
+        self.observed_at = observed_at
         self.slot_capacity = capacity
         if not keep:
             self.draw_count = 0
@@ -105,6 +110,11 @@ class GaussianRenderer:
             if update.acknowledge is not None:
                 update.acknowledge()
             return True
+        if update.epoch == self.epoch and self.coordinate_frame not in (
+            None,
+            update.coordinate_frame,
+        ):
+            raise ValueError("A coordinate frame change requires a new complete scene")
         n = len(update.indices)
         if n > 4096:
             raise ValueError("Splat updates are limited to 4096 records per packet")
@@ -125,17 +135,22 @@ class GaussianRenderer:
         elif not self.fade_seconds or new_scene:
             self.scene_buffer.clear()
             self.live.fill(False)
+            self.observed_at.fill(0)
             self.draw_count = 0
             self.capacity = 1024
         self.count = update.count
         self.stride, self.degree = 4, 0
         self.epoch, self.fade_seconds = update.epoch, update.fade_seconds
         self.revision = update.revision
+        self.coordinate_frame = update.coordinate_frame
         if not n:
             if update.acknowledge is not None:
                 update.acknowledge()
             return True
         self.live[update.indices] = update.records[:, 0, 3] > 0
+        self.observed_at[update.indices] = (
+            update.observed_at if update.observed_at is not None else update.captured_at
+        )
         self.draw_count = max(self.draw_count, int(update.indices.max()) + 1)
         if not self.live[self.draw_count - 1]:
             occupied = np.flatnonzero(self.live[: self.draw_count])

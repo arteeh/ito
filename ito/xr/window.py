@@ -293,6 +293,12 @@ class XRWindow(DesktopWindow):
                         if not self.renderer.apply(update):
                             pending = update
                             break
+                        if (update.epoch, update.revision) != (
+                            self.renderer.epoch,
+                            self.renderer.revision,
+                        ):
+                            pending = None
+                            continue
                     elif update.revision != revision:
                         self.renderer.upload(update.gaussians)
                     if isinstance(update, SplatUpdate):

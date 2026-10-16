@@ -219,6 +219,12 @@ class DesktopWindow:
                     if not self.renderer.apply(frame):
                         pending = frame
                         break
+                    if (frame.epoch, frame.revision) != (
+                        self.renderer.epoch,
+                        self.renderer.revision,
+                    ):
+                        pending = None
+                        continue
                 elif frame.revision != revision:
                     self.renderer.upload(frame.gaussians)
                 if isinstance(frame, SplatUpdate):

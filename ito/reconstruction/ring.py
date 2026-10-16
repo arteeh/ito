@@ -24,7 +24,7 @@ class SplatUpdate:
     acknowledge: Callable[[], None] | None = None
     observations: tuple[tuple[int, float], ...] = ()
     observed_at: np.ndarray | None = None
-    coordinate_frame: str = "odometry"
+    coordinate_frame: str = "world"
     # Records are baked into the persistent root anchor before entering the ring.
     anchors: tuple = (
         (0, (1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0)),
@@ -32,9 +32,19 @@ class SplatUpdate:
 
 
 class UpdateRing:
-    def __init__(self, context, epoch: float, fade_seconds: float, *, slots=4, batch=4096):
+    def __init__(
+        self,
+        context,
+        epoch: float,
+        fade_seconds: float,
+        *,
+        slots=4,
+        batch=4096,
+        coordinate_frame="world",
+    ):
         self.slots, self.batch = slots, batch
         self.epoch, self.fade_seconds = epoch, fade_seconds
+        self.coordinate_frame = coordinate_frame
         self.data = context.RawArray("f", slots * batch * 16)
         self.indices = context.RawArray("I", slots * batch)
         self.sequences = context.RawArray("Q", slots * batch)
@@ -150,6 +160,7 @@ class UpdateRing:
                 lambda: self.acknowledge(int(revision)),
                 observations,
                 captures.copy(),
+                self.coordinate_frame,
             )
         finally:
             self.locks[slot].release()

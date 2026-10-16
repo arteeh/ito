@@ -310,6 +310,25 @@ def _run(recon):
                     backend.captures[indices],
                 ):
                     break
+                if timeline:
+                    ages = backend.captures[indices]
+                    timeline.write(
+                        json.dumps(
+                            dict(
+                                event="scene_revision",
+                                worker_epoch=recon.epoch,
+                                revision=revision,
+                                coordinate_frame=recon.ring.coordinate_frame,
+                                anchor=0,
+                                published=clock.now(),
+                                slots=len(indices),
+                                oldest_observation=float(ages.min()) if len(ages) else None,
+                                newest_observation=float(ages.max()) if len(ages) else None,
+                                local_fit=backend.pending_fit is not None,
+                            )
+                        )
+                        + "\n"
+                    )
                 published_slots = len(backend.keys)
                 published_capture = packet_capture
                 retiring = indices[backend.retiring[indices]]
@@ -448,7 +467,12 @@ class Reconstruction:
             if self.tracking_mode == "robot"
             else "Starting MASt3R-SLAM"
         )
-        self.ring = UpdateRing(context, self.epoch, fade_seconds, slots=16)
+        frame = (
+            "driver_world"
+            if backend == "rgbd"
+            else ("odometry" if self.tracking_mode == "robot" else "vision_world")
+        )
+        self.ring = UpdateRing(context, self.epoch, fade_seconds, slots=16, coordinate_frame=frame)
         pixels = intrinsics.width * intrinsics.height
         self.rgb = context.RawArray("B", pixels * 3)
         self.depth = context.RawArray("f", pixels)
