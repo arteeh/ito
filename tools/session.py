@@ -17,6 +17,8 @@ import json
 import os
 import re
 import shutil
+import signal
+import socket
 import subprocess
 import sys
 import time
@@ -34,8 +36,10 @@ def windows(path: Path) -> str:
     ).stdout.strip()
 
 
-def stop_sim():
-    subprocess.run(["sh", str(ROOT / "stop-sim.sh")], capture_output=True)
+def stop_sim(sim):
+    if sim.poll() is None:
+        sim.send_signal(signal.SIGINT)
+    sim.wait(timeout=30)
 
 
 def encode(stream: Path, video: Path, fps: int = 30) -> int:
@@ -129,8 +133,7 @@ def main():
     if not exe.exists():
         sys.exit(f"no build at {exe}")
     out = ROOT / "out" / "sessions" / args.name
-    shutil.rmtree(out, ignore_errors=True)
-    out.mkdir(parents=True)
+    out.mkdir(parents=True, exist_ok=False)
     shutil.copy(args.script, out / "script.json")
     source = subprocess.run(
         ["git", "-C", str(args.sim_source), "log", "--oneline", "-1"],
@@ -142,7 +145,14 @@ def main():
         f"sim args {args.sim_args}\n"
     )
 
-    stop_sim()
+    with socket.socket() as probe:
+        try:
+            probe.bind(("0.0.0.0", 8081))
+        except OSError:
+            sys.exit("port 8081 is in use; leaving the existing simulator alone")
+    settings = Path("/mnt/c/Users/me/AppData/Roaming/ito/settings.json")
+    if settings.exists():
+        shutil.copy(settings, out / "settings.json")
     prefix = args.sim_prefix
     sim_log = (out / "sim.log").open("w")
     sim = subprocess.Popen(
@@ -156,12 +166,17 @@ def main():
             str(prefix / "microduck_rl"),
             "--policies",
             str(prefix / "policies/current"),
+            "--logs",
+            str(out / "sim-logs"),
+            "--pairing-file",
+            str(out / "pairing-code"),
             *(["--viewer"] if args.viewer else []),
             *args.sim_args.split(),
         ],
         cwd=args.sim_source,
         stdout=sim_log,
         stderr=subprocess.STDOUT,
+        start_new_session=True,
         env=os.environ
         | {
             "PYTHONPATH": str(args.sim_source),
@@ -175,7 +190,7 @@ def main():
                 sys.exit("sim did not start:\n" + (out / "sim.log").read_text()[-2000:])
             time.sleep(0.5)
         ip = subprocess.run(["hostname", "-I"], capture_output=True, text=True).stdout.split()[0]
-        code = (Path.home() / ".config/ito/microduck-sim-code").read_text().strip()
+        code = (out / "pairing-code").read_text().strip()
         rec = out / "rec"
         print(f"recording {args.build} into {windows(out)}", flush=True)
         command = (
@@ -191,11 +206,8 @@ def main():
         if result.returncode:
             print(f"ito exited {result.returncode}", flush=True)
     finally:
-        stop_sim()
-        sim.wait(timeout=30)
-        shutil.copytree(
-            Path.home() / ".local/state/ito/microduck-sim", out / "sim-logs", dirs_exist_ok=True
-        )
+        stop_sim(sim)
+        (out / "pairing-code").unlink(missing_ok=True)
 
     for name in ("screen", "camera"):
         if (rec / name / "frames.jsonl").exists():
