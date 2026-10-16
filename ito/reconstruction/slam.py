@@ -128,7 +128,6 @@ class SLAMBackend(GaussianBackend):
             graph.add_visual(result.reference, node, result.relative, result.sigma)
             graph.solve_delay()
             self.matched += 1
-        measured = None
         if cloud is not None:
             robot = self.motion.at(exposure)
             seen = []
@@ -142,11 +141,6 @@ class SLAMBackend(GaussianBackend):
                 graph.add_scale(value, sigma)
             if seen:
                 graph.solve_scale()
-                weights = [sigma**-2 for _, sigma in seen]
-                measured = math.exp(
-                    sum(w * value for w, (value, _) in zip(weights, seen, strict=True))
-                    / sum(weights)
-                )
         graph.solve_frame()
         if self.aligner is not None:
             found = self.aligner.align(rgb, graph.pose(node), self.intrinsics)
@@ -161,11 +155,11 @@ class SLAMBackend(GaussianBackend):
         if poses or abs(graph.log_scale) > SCALE_STEP:
             scale = graph.fold_scale()
             self.frontend.correct(poses, scale)
+        self.revise(poses)
         if dropped:
             self.frontend.forget(dropped)
         if cloud is not None:
-            own = scale if measured is None else measured
-            cloud = cloud._replace(points=cloud.points * own)
+            cloud = cloud._replace(points=cloud.points * scale)
         pose = self._publish(node)
         if cloud is not None:
             self.place(cloud, pose, now + clock.now() - started)

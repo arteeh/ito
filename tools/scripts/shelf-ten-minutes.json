@@ -1,0 +1,348 @@
+[
+  {
+    "for": 20,
+    "note": "connect and settle; identical settings for both builds"
+  },
+  {
+    "for": 2,
+    "do": "resume",
+    "note": "resume"
+  },
+  {
+    "for": 12,
+    "note": "first bookshelf; stationary view"
+  },
+  {
+    "for": 2,
+    "turn": -40,
+    "note": "pass 1: look left 80 degrees"
+  },
+  {
+    "for": 8,
+    "note": "pass 1: hold left; admit new surfaces"
+  },
+  {
+    "for": 4,
+    "turn": 40,
+    "note": "pass 1: look right 160 degrees"
+  },
+  {
+    "for": 8,
+    "note": "pass 1: hold right"
+  },
+  {
+    "for": 2,
+    "turn": -40,
+    "note": "pass 1: return to first bookshelf"
+  },
+  {
+    "for": 18,
+    "note": "pass 1: stationary bookshelf revisit; watch edges and world motion"
+  },
+  {
+    "for": 2,
+    "turn": -40,
+    "note": "pass 2: look left 80 degrees"
+  },
+  {
+    "for": 8,
+    "note": "pass 2: hold left; admit new surfaces"
+  },
+  {
+    "for": 4,
+    "turn": 40,
+    "note": "pass 2: look right 160 degrees"
+  },
+  {
+    "for": 8,
+    "note": "pass 2: hold right"
+  },
+  {
+    "for": 2,
+    "turn": -40,
+    "note": "pass 2: return to first bookshelf"
+  },
+  {
+    "for": 18,
+    "note": "pass 2: stationary bookshelf revisit; watch edges and world motion"
+  },
+  {
+    "for": 2,
+    "turn": -40,
+    "note": "pass 3: look left 80 degrees"
+  },
+  {
+    "for": 8,
+    "note": "pass 3: hold left; admit new surfaces"
+  },
+  {
+    "for": 4,
+    "turn": 40,
+    "note": "pass 3: look right 160 degrees"
+  },
+  {
+    "for": 8,
+    "note": "pass 3: hold right"
+  },
+  {
+    "for": 2,
+    "turn": -40,
+    "note": "pass 3: return to first bookshelf"
+  },
+  {
+    "for": 18,
+    "note": "pass 3: stationary bookshelf revisit; watch edges and world motion"
+  },
+  {
+    "for": 2,
+    "turn": -40,
+    "note": "pass 4: look left 80 degrees"
+  },
+  {
+    "for": 8,
+    "note": "pass 4: hold left; admit new surfaces"
+  },
+  {
+    "for": 4,
+    "turn": 40,
+    "note": "pass 4: look right 160 degrees"
+  },
+  {
+    "for": 8,
+    "note": "pass 4: hold right"
+  },
+  {
+    "for": 2,
+    "turn": -40,
+    "note": "pass 4: return to first bookshelf"
+  },
+  {
+    "for": 18,
+    "note": "pass 4: stationary bookshelf revisit; watch edges and world motion"
+  },
+  {
+    "for": 2,
+    "turn": -40,
+    "note": "pass 5: look left 80 degrees"
+  },
+  {
+    "for": 8,
+    "note": "pass 5: hold left; admit new surfaces"
+  },
+  {
+    "for": 4,
+    "turn": 40,
+    "note": "pass 5: look right 160 degrees"
+  },
+  {
+    "for": 8,
+    "note": "pass 5: hold right"
+  },
+  {
+    "for": 2,
+    "turn": -40,
+    "note": "pass 5: return to first bookshelf"
+  },
+  {
+    "for": 18,
+    "note": "pass 5: stationary bookshelf revisit; watch edges and world motion"
+  },
+  {
+    "for": 2,
+    "turn": -40,
+    "note": "pass 6: look left 80 degrees"
+  },
+  {
+    "for": 8,
+    "note": "pass 6: hold left; admit new surfaces"
+  },
+  {
+    "for": 4,
+    "turn": 40,
+    "note": "pass 6: look right 160 degrees"
+  },
+  {
+    "for": 8,
+    "note": "pass 6: hold right"
+  },
+  {
+    "for": 2,
+    "turn": -40,
+    "note": "pass 6: return to first bookshelf"
+  },
+  {
+    "for": 18,
+    "note": "pass 6: stationary bookshelf revisit; watch edges and world motion"
+  },
+  {
+    "for": 2,
+    "turn": -40,
+    "note": "pass 7: look left 80 degrees"
+  },
+  {
+    "for": 8,
+    "note": "pass 7: hold left; admit new surfaces"
+  },
+  {
+    "for": 4,
+    "turn": 40,
+    "note": "pass 7: look right 160 degrees"
+  },
+  {
+    "for": 8,
+    "note": "pass 7: hold right"
+  },
+  {
+    "for": 2,
+    "turn": -40,
+    "note": "pass 7: return to first bookshelf"
+  },
+  {
+    "for": 18,
+    "note": "pass 7: stationary bookshelf revisit; watch edges and world motion"
+  },
+  {
+    "for": 2,
+    "turn": -40,
+    "note": "pass 8: look left 80 degrees"
+  },
+  {
+    "for": 8,
+    "note": "pass 8: hold left; admit new surfaces"
+  },
+  {
+    "for": 4,
+    "turn": 40,
+    "note": "pass 8: look right 160 degrees"
+  },
+  {
+    "for": 8,
+    "note": "pass 8: hold right"
+  },
+  {
+    "for": 2,
+    "turn": -40,
+    "note": "pass 8: return to first bookshelf"
+  },
+  {
+    "for": 18,
+    "note": "pass 8: stationary bookshelf revisit; watch edges and world motion"
+  },
+  {
+    "for": 2,
+    "turn": -40,
+    "note": "pass 9: look left 80 degrees"
+  },
+  {
+    "for": 8,
+    "note": "pass 9: hold left; admit new surfaces"
+  },
+  {
+    "for": 4,
+    "turn": 40,
+    "note": "pass 9: look right 160 degrees"
+  },
+  {
+    "for": 8,
+    "note": "pass 9: hold right"
+  },
+  {
+    "for": 2,
+    "turn": -40,
+    "note": "pass 9: return to first bookshelf"
+  },
+  {
+    "for": 18,
+    "note": "pass 9: stationary bookshelf revisit; watch edges and world motion"
+  },
+  {
+    "for": 2,
+    "turn": -40,
+    "note": "pass 10: look left 80 degrees"
+  },
+  {
+    "for": 8,
+    "note": "pass 10: hold left; admit new surfaces"
+  },
+  {
+    "for": 4,
+    "turn": 40,
+    "note": "pass 10: look right 160 degrees"
+  },
+  {
+    "for": 8,
+    "note": "pass 10: hold right"
+  },
+  {
+    "for": 2,
+    "turn": -40,
+    "note": "pass 10: return to first bookshelf"
+  },
+  {
+    "for": 18,
+    "note": "pass 10: stationary bookshelf revisit; watch edges and world motion"
+  },
+  {
+    "for": 2,
+    "turn": -40,
+    "note": "pass 11: look left 80 degrees"
+  },
+  {
+    "for": 8,
+    "note": "pass 11: hold left; admit new surfaces"
+  },
+  {
+    "for": 4,
+    "turn": 40,
+    "note": "pass 11: look right 160 degrees"
+  },
+  {
+    "for": 8,
+    "note": "pass 11: hold right"
+  },
+  {
+    "for": 2,
+    "turn": -40,
+    "note": "pass 11: return to first bookshelf"
+  },
+  {
+    "for": 18,
+    "note": "pass 11: stationary bookshelf revisit; watch edges and world motion"
+  },
+  {
+    "for": 2,
+    "turn": -40,
+    "note": "pass 12: look left 80 degrees"
+  },
+  {
+    "for": 8,
+    "note": "pass 12: hold left; admit new surfaces"
+  },
+  {
+    "for": 4,
+    "turn": 40,
+    "note": "pass 12: look right 160 degrees"
+  },
+  {
+    "for": 8,
+    "note": "pass 12: hold right"
+  },
+  {
+    "for": 2,
+    "turn": -40,
+    "note": "pass 12: return to first bookshelf"
+  },
+  {
+    "for": 18,
+    "note": "pass 12: stationary bookshelf revisit; watch edges and world motion"
+  },
+  {
+    "for": 60,
+    "note": "final stationary bookshelf; no input"
+  },
+  {
+    "for": 2,
+    "do": "stop",
+    "note": "stop and finish"
+  }
+]

@@ -42,15 +42,11 @@ class AnchorGlide:
         return glided
 
 
-# Fusion's corrections reach the pilot no faster than this while their view moves, and not
-# at all while it is still: below what people notice of a world turning or sliding under
-# them (Steinicke et al., redirected-walking detection thresholds, IEEE TVCG 2010).
+# Fusion's corrections are held while the pilot is still and eased during motion.
 CORRECTION_TURN = np.radians(2.0)  # rad/s
 CORRECTION_SLIDE = 0.05  # m/s
 MOVING_TURN = np.radians(5.0)  # rad/s
 MOVING_SLIDE = 0.02  # m/s
-LARGEST_TURN = np.radians(30.0)
-LARGEST_SLIDE = 1.0
 
 
 def _angle(rotation):
@@ -92,9 +88,7 @@ class CorrectionEase:
         self.correction = correction
         head_rotation = None if head is None else np.asarray(head, np.float64)[:3, :3]
         drawn = eye + self.slide
-        if _angle(self.turn) > LARGEST_TURN or np.linalg.norm(self.slide) > LARGEST_SLIDE:
-            self.turn, self.slide = np.eye(3), np.zeros(3)
-        elif self.previous is not None and now > self.previous[0]:
+        if self.previous is not None and now > self.previous[0]:
             dt = now - self.previous[0]
             turned = 0.0
             if head_rotation is not None and self.previous[1] is not None:

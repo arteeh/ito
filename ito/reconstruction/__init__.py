@@ -115,7 +115,7 @@ def _run(recon):
                 recon.splat_limit.value = limit
                 if retired:
                     recon.notes.send(
-                        f"Splat limit {limit:,}: the {retired:,} least recently seen fade out"
+                        f"Splat limit {limit:,}: {retired:,} low-contribution or unseen splats fade out"
                     )
             if len(backend.keys) > backend.budget and backend.compact():
                 recon.notes.send(f"Splat slots shrunk to {len(backend.keys):,}")
@@ -226,6 +226,11 @@ def _run(recon):
                         else "skipped",
                         splats=int(backend.count),
                         splats_delta=int(backend.count) - before[2],
+                        map_anchors=len(backend.anchors),
+                        retained_views=len(backend.views),
+                        local_refits=backend.refits,
+                        fit_steps=sum(v.steps for v in backend.views),
+                        estimator_keyframes=len(backend.graph.keyframes) if robot_first else None,
                         recalls=getattr(backend, "recalls", None),
                         matched=getattr(backend, "matched", None),
                         backend_calls=recon.integrated.value,

@@ -144,6 +144,12 @@ def main():
         f"build {args.build}\nsim source {source}\nsim prefix {args.sim_prefix}\n"
         f"sim args {args.sim_args}\n"
     )
+    build_log = ROOT / "builds" / f"{args.build}.log"
+    if build_log.exists():
+        commit = re.search(r"^commit .+$", build_log.read_text("utf-8-sig", errors="replace"), re.M)
+        if commit:
+            with (out / "about.txt").open("a") as about:
+                about.write(commit[0].strip() + "\n")
 
     with socket.socket() as probe:
         try:

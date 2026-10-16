@@ -1,8 +1,9 @@
 """VRAM: no fixed shares between Torch, CuPy and splats.
 
 Torch/CuPy cached blocks are MASt3R's working set and count as Ito's own reserve; they are
-released only when the device is nearly full. Only then are splat slots given up, the
-longest-unseen first. Spilling into shared system memory would stall everything."""
+released only when the device is nearly full. Only then are splat slots given up; the map
+chooses redundant/unsupported surfaces before useful old ones. Spilling into shared
+system memory would stall everything."""
 
 from ito import clock
 from ito.render.gpu import GPU

@@ -39,6 +39,27 @@ class GaussianBackend(GaussianSlots):
         self.fit_cursor = 0
         self.next_key = 0
         self.fitter = None
+        self.refits = 0
+
+    def revise(self, poses):
+        changed = False
+        for view in self.views:
+            pose = poses.get(view.node)
+            if pose is None:
+                continue
+            delta = np.linalg.inv(view.pose) @ pose
+            angle = np.arccos(np.clip((np.trace(delta[:3, :3]) - 1) / 2, -1, 1))
+            if angle < 1e-5 and np.linalg.norm(delta[:3, 3]) < 1e-5:
+                continue
+            # Estimator corrections change the fitting cameras, never published
+            # anchor transforms. A large correction restarts the affected local fit.
+            view.pose = pose.copy()
+            if angle * view.intrinsics[0] > 2 or np.linalg.norm(delta[:3, 3]) > 0.01:
+                view.steps = 0
+                self.refits += 1
+            changed = True
+        if changed:
+            self.recover()
 
     def fit(self):
         if self.xp is np or not self.views:
@@ -123,10 +144,16 @@ class GaussianBackend(GaussianSlots):
                 self.contradictions[contradicted].astype(int) + 1, 255
             )
             gone = contradicted[self.contradictions[contradicted] >= 4]
+            self.captures[gone] = self.source_captured
             self.retire(gone)
             winners, counts = np.unique(surface[surface >= 0], return_counts=True)
             self.contribution[live] = 0
             self.contribution[winners] = counts
+            # Same-pixel, same-depth duplicates provide no additional coverage. Do
+            # not confuse an occluded background with a redundant visible surface.
+            duplicate = agreement & (self.contribution[live] == 0)
+            redundant = live[duplicate]
+            self.retire(redundant)
             surface[np.isin(surface, gone)] = -1
         covered = surface >= 0
         mapped_depth = np.zeros_like(depth)

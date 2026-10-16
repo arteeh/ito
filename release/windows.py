@@ -8,6 +8,7 @@ THIRD_PARTY_NOTICES.txt. No freezer: the release runs exactly what runs from sou
 
 import argparse
 import email.parser
+import hashlib
 import json
 import os
 import re
@@ -69,9 +70,22 @@ def launcher(stage, work):
     )  # fmt: skip
 
 
-def gaussian_native(stage, work):
+def gaussian_native(stage, work, *, in_child=False):
+    if not in_child:
+        # Windows cannot remove a DLL while its importing process still owns it.
+        run(
+            sys.executable,
+            "-c",
+            "import sys; from pathlib import Path; from release.windows import gaussian_native; "
+            "gaussian_native(Path(sys.argv[1]), Path(sys.argv[2]), in_child=True)",
+            stage,
+            work,
+            cwd=ROOT,
+        )
+        return
     import importlib.util
 
+    import torch
     from torch.utils.cpp_extension import load
 
     source = Path(importlib.util.find_spec("gsplat").origin).parent / "cuda"
@@ -79,6 +93,20 @@ def gaussian_native(stage, work):
     build.mkdir()
     os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "7.5;8.0;8.6;8.9;9.0+PTX")
     os.environ.setdefault("MAX_JOBS", "4")
+    signature = hashlib.sha256()
+    signature.update(
+        f"{torch.__version__}/{torch.version.cuda}/{os.environ['TORCH_CUDA_ARCH_LIST']}".encode()
+    )
+    for path in sorted(source.rglob("*")):
+        if path.is_file() and path.suffix in (".cu", ".cpp", ".h", ".hpp", ".cuh"):
+            signature.update(path.read_bytes())
+    cache = stage.parent.with_name(stage.parent.name + "-native")
+    cache.mkdir(exist_ok=True)
+    binary = cache / (signature.hexdigest() + ".pyd")
+    target = stage / "runtime/Lib/site-packages/gsplat/csrc.pyd"
+    if binary.exists():
+        shutil.copy2(binary, target)
+        return
     module = load(
         name="csrc",
         sources=[str(p) for p in sorted((source / "csrc").glob("*.cu"))]
@@ -90,9 +118,8 @@ def gaussian_native(stage, work):
         build_directory=str(build),
         verbose=True,
     )
-    shutil.copy2(
-        module.__file__, stage / "runtime/Lib/site-packages/gsplat" / Path(module.__file__).name
-    )
+    shutil.copy2(module.__file__, target)
+    shutil.copy2(module.__file__, binary)
 
 
 def models(stage, source):
