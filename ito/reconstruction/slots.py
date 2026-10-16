@@ -23,6 +23,7 @@ SLOT_FIELDS = {
     "uncertainty": (np.float32, 1, ()),
     "contribution": (np.float32, 0, ()),
     "contradictions": (np.uint8, 0, ()),
+    "redundancy": (np.uint8, 0, ()),
     "owners": (np.int64, -1, ()),
 }
 

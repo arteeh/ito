@@ -133,9 +133,9 @@ class GaussianBackend(GaussianSlots):
         inside = (z > 0.01) & (u >= 0) & (u < width) & (v >= 0) & (v < height)
         live, z, u, v = live[inside], z[inside], u[inside], v[inside]
         pixels = v * width + u
-        order = np.lexsort((z, pixels))
-        _, first = np.unique(pixels[order], return_index=True)
-        winners = order[first]
+        nearest_depth = np.full(height * width, np.inf, z.dtype)
+        np.minimum.at(nearest_depth, pixels, z)
+        winners = np.flatnonzero(z == nearest_depth[pixels])
         surface = np.full(height * width, -1, np.int64)
         surface[pixels[winners]] = live[winners]
         surface = surface.reshape(height, width)
@@ -159,6 +159,8 @@ class GaussianBackend(GaussianSlots):
             tolerance = np.maximum(0.05 * z, 2 * self.records[live, 1, :3].max(-1))
             depth_agreement = (observed > 0) & (np.abs(observed - z) <= tolerance)
             agreement = depth_agreement.copy()
+            peers = surface[v, u]
+            agreement &= peers == live
             color_error = np.abs(
                 self.records[live, 3, :3] * C0 + 0.5 - image[v, u].astype(np.float32) / 255
             ).max(-1)
@@ -189,17 +191,30 @@ class GaussianBackend(GaussianSlots):
             self.contribution[winners] = np.maximum(self.contribution[winners], counts)
             # Contributions guide pressure pruning. Two centers sharing a pixel are
             # not proof of redundancy: their Gaussian footprints can cover different edges.
-            peers = surface[v, u]
             own, peer = self.records[live], self.records[peers]
+            peer_local = (peer[:, 0, :3] - camera[:3, 3]) @ camera[:3, :3]
+            peer_z = np.maximum(-peer_local[:, 2], 0.01)
+            own_local = (own[:, 0, :3] - camera[:3, 3]) @ camera[:3, :3]
+            fx, fy, _, _ = intrinsics
+            separation = own_local[:, :2] / z[:, None] - peer_local[:, :2] / peer_z[:, None]
+            separation *= [fx, fy]
             redundant = (peers != live) & (peers >= 0)
-            redundant &= np.linalg.norm(own[:, 0, :3] - peer[:, 0, :3], axis=1) < (
-                0.35 * own[:, 1, :3].min(-1)
-            )
+            redundant &= np.linalg.norm(separation, axis=1) < 0.5
+            redundant &= (np.abs(z - peer_z) < 0.05 * z) & depth_agreement
             redundant &= np.abs(own[:, 3, :3] - peer[:, 3, :3]).max(-1) * C0 < 0.02
-            redundant &= np.abs((own[:, 2] * peer[:, 2]).sum(-1)) > 0.999
-            redundant &= (peer[:, 1, :3] >= 0.9 * own[:, 1, :3]).all(-1)
-            self.contribution[live[redundant]] = 0
-            self.retire(live[redundant])
+            redundant &= (peer[:, 0, 3] > 0.9) & (own[:, 0, 3] > 0.9)
+            redundant &= (
+                peer[:, 1, :2] / peer_z[:, None] >= 0.95 * own[:, 1, :2] / z[:, None]
+            ).all(-1)
+            duplicates = live[redundant]
+            self.redundancy[duplicates] = np.minimum(
+                self.redundancy[duplicates].astype(int) + 1, 255
+            )
+            self.redundancy[live[peers == live]] = 0
+            duplicates = live[self.redundancy[live] >= 4]
+            self.contribution[duplicates] = 0
+            self.captures[duplicates] = self.source_captured
+            self.retire(duplicates)
             surface[np.isin(surface, gone)] = -1
             # Fuse only the frontmost matched surface. A bounded radial correction
             # refines depth without sliding a sample across the current image. Colour
@@ -336,6 +351,7 @@ class GaussianBackend(GaussianSlots):
             )
             self.contribution[slots] = 1
             self.contradictions[slots] = 0
+            self.redundancy[slots] = 0
             self.seen[slots] = now
             self.captures[slots] = self.source_captured
             self.sequences[slots] = self.source_sequence
