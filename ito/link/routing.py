@@ -1,5 +1,3 @@
-"""Use the OS route to a direct robot, not an unrelated VPN interface."""
-
 import asyncio
 import ipaddress
 import socket
@@ -14,7 +12,6 @@ async def direct_interface(pc, address: str) -> None:
     for family, kind, protocol, _, endpoint in resolved:
         try:
             with socket.socket(family, kind, protocol) as sock:
-                # UDP connect selects a route; it transmits no packet.
                 sock.connect(endpoint)
                 local = sock.getsockname()[0]
             break

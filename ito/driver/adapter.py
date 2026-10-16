@@ -26,11 +26,9 @@ class Adapter(ABC):
         return self.frame_sink(metadata) if self.frame_sink else False
 
     def publish_motion(self, motion: Motion) -> bool:
-        """False when nothing was sent: the caller keeps the samples for its next batch."""
         return self.motion_sink(motion) if self.motion_sink else False
 
     def publish_sensors(self, sensors: Sensors) -> bool:
-        """False when nothing was sent: the caller keeps the samples for its next batch."""
         return self.sensor_sink(sensors) if self.sensor_sink else False
 
     @property

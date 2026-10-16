@@ -1,11 +1,3 @@
-"""The flat camera feed on a panel held straight ahead of the pilot.
-
-Without a 3D scene there is nothing to look around in: a panel left in the world drifts out
-of view when the pilot turns, and one steered by the camera's own motion shakes. The panel
-moves with the pilot's head instead, at a fixed distance, as wide as the camera sees when that
-fits the view. In a headset both eyes see the same panel from their own positions.
-"""
-
 import math
 
 import moderngl
@@ -14,8 +6,8 @@ import numpy as np
 from ito import clock
 
 DISTANCE = 2.0  # Metres ahead of the pilot's head.
-FILL = 0.9  # Largest share of the view the panel may cover.
-DEFAULT_FOV = math.radians(60)  # Horizontal angle when the camera's is unknown.
+FILL = 0.9
+DEFAULT_FOV = math.radians(60)
 
 
 class VideoPanel:
@@ -48,16 +40,13 @@ class VideoPanel:
 
     @staticmethod
     def half_size(projection, aspect, fov=None):
-        """Panel half extent at DISTANCE: the camera's own angle, shrunk to fit the view."""
         width = DISTANCE * math.tan((fov or DEFAULT_FOV) / 2)
-        # An off-axis (headset) frustum is narrower on one side; fit the narrower side.
         fit_x = DISTANCE * (1 - abs(float(projection[0, 2]))) / float(projection[0, 0])
         fit_y = DISTANCE * (1 - abs(float(projection[1, 2]))) / float(projection[1, 1])
         width = min(width, FILL * fit_x, FILL * fit_y * aspect)
         return width, width / aspect
 
     def draw(self, rgb, stamp, eye, projection, target, viewport, *, center=None, fov=None):
-        """Draw for one eye; center is the head pose between the eyes (the eye on a desktop)."""
         target.use()
         self.context.viewport = viewport
         target.clear(0.015, 0.02, 0.03, 1)

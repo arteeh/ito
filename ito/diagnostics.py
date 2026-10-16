@@ -1,5 +1,3 @@
-"""Opt-in, bounded operational events. Never attach general loggers or input payloads."""
-
 import hashlib
 import json
 import logging
@@ -66,8 +64,6 @@ class Diagnostics:
             self.last.clear()
 
     def event(self, event, *, interval=0, **fields):
-        # Enabling may open a file and hash source code. Input and display threads
-        # must not wait for that work, even when a pilot toggles logging mid-drive.
         if not self.enabled:
             return
         with self.lock:
@@ -92,7 +88,6 @@ class Diagnostics:
                 self.dropped += 1
 
     def _write_failed(self, record):
-        # Disk-full/permission errors must not flood stderr or interrupt piloting.
         with self.lock:
             self.enabled = False
             self.error = "Diagnostic log unavailable; check disk space and permissions"
@@ -119,8 +114,6 @@ class Diagnostics:
         with self.lock:
             self.enabled = False
             if self.thread:
-                # Shutdown never waits for queue space on a stalled disk. Producers
-                # share this lock, so freeing one slot guarantees the sentinel fits.
                 try:
                     self.jobs.put_nowait(None)
                 except queue.Full:
@@ -145,7 +138,6 @@ def current():
 
 
 def event(name, **fields):
-    # Disabled hot paths do not allocate a logger, open files or hash the build.
     if _current is not None:
         _current.event(name, **fields)
 

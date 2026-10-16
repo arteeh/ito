@@ -1,11 +1,3 @@
-"""Run Pollen's real body, policy daemon, ToF daemon and WebRTC camera as one virtual Microduck.
-
-The default board is the beta (Seeed RK3566, the production design): an upright GC2093 at 720p30,
-the LSM6DSV16X head IMU read by robotd and the VL53L8CX read by tofd, each simulated from MuJoCo's
-physics by the microduck and microduck_rl forks pinned in third_party/. `--board zero3` is the
-Radxa prototype: IMX219 a quarter turn off, VL53L5CX, BMI088 read by tofd when asked for.
-"""
-
 import argparse
 import contextlib
 import json
@@ -42,7 +34,6 @@ def process(logs, name, command, env=None):
         try:
             yield child
         finally:
-            # Kill the whole owned group, including any grandchildren, on every exit path.
             for sig in (signal.SIGTERM, signal.SIGKILL):
                 try:
                     os.killpg(child.pid, sig)
@@ -83,11 +74,6 @@ def simulation(
     tof_noise=1.0,
     seed=0,
 ):
-    """board: "beta" or "zero3". hfov: the twin's lens, degrees across the long side (the
-    board's, lens.HFOV). calibrated: the beta stands in for a robot carrying its own
-    [media.intrinsics], the only geometry a real beta publishes; False publishes none, as an
-    uncalibrated beta does. head_imu: read the head IMU (default: the board's, on for beta).
-    imu_noise/tof_noise: datasheet noise ratios (0 exact); seed makes it repeatable."""
     if board not in lens.MOUNT:
         raise ValueError(f"unknown Microduck board {board!r}")
     camera_height = camera_height or lens.DEFAULT_HEIGHT[board]
@@ -163,9 +149,6 @@ def simulation(
         if board == "beta":
             sim_hfov = []
             if calibrated:
-                # As `duckslam calib export-toml` writes it: at the sensor's 1080p mode,
-                # unrotated; mediad scales it to the delivered rung. A rendered pinhole has
-                # no distortion and its principal point is the centre.
                 focal = lens.focal_px(1920, hfov)
                 media += [
                     "[media.intrinsics]",
@@ -177,7 +160,6 @@ def simulation(
                     "cy = 540.0",
                 ]
         media_config.write_text("\n".join(media) + "\n")
-        # Match robotd's shipped default: velstand walks and also stands still at zero command.
         policies = {
             "walk": "velstand",
             "sitstand": "alpha_sitstand",
@@ -195,12 +177,10 @@ def simulation(
             lines.append(f"{name} = {json.dumps(str(path))}")
         lines += ["[head_imu]", f"enabled = {str(head_imu).lower()}"]
         params.write_text("\n".join(lines) + "\n")
-        # Software shadows must not slow physics below the policy's 50 Hz control clock.
         source_scene = rl / "src/mjlab_microduck/robot/microduck/scene.xml"
         for asset in source_scene.parent.iterdir():
             if asset.name not in {"scene.xml", "robot_groundcontact.xml"}:
                 (state / asset.name).symlink_to(asset, target_is_directory=asset.is_dir())
-        # Hide CAD surfaces from the head camera; keep every inertial, collision and actuator.
         robot_model = ET.parse(source_scene.parent / "robot_groundcontact.xml")
         for geom in robot_model.findall(".//worldbody//geom"):
             geom.set("group", "2" if geom.get("class") == "visual" else "3")
@@ -288,8 +268,6 @@ def simulation(
             if time.monotonic() >= deadline:
                 raise RuntimeError(f"robot enable failed: {result.stderr.decode()}")
             time.sleep(0.2)
-        # The ToF (and the zero3's head IMU) belong to tofd, as on a duck: VL53L8CX on a beta,
-        # VL53L5CX on a zero3, both ray-cast by the body.
         launch(
             "tof",
             [
@@ -327,7 +305,6 @@ def simulation(
             ],
             media_env,
         )
-        # Wait for mediad before the driver's deliberately bounded connection attempt.
         deadline = time.monotonic() + 20
         while True:
             try:
@@ -353,8 +330,6 @@ def simulation(
                 "--robot",
                 f"ws://127.0.0.1:{media_port}",
             ],
-            # The driver tells Ito whether its frames are sharp (Camera.exposure): a render is
-            # an instant; --blur averages renders made back to back.
             os.environ
             | {"ITO_MICRODUCK_BLUR": str(blur)}
             | ({"ITO_MICRODUCK_EXPOSURE": "0"} if blur == 1 else {}),
@@ -387,10 +362,8 @@ GEAR_PLAY = math.radians(1.0)  # each way
 
 
 def gear_play(robot):
-    """Add upstream's backlash joint, unactuated, after each head servo's joint."""
     defaults = robot.getroot().find("default")
     play = ET.SubElement(ET.SubElement(defaults, "default", {"class": "backlash"}), "joint")
-    # add_backlash.py's: a nearly rigid tooth contact at either end of the play.
     play.attrib.update(
         damping="0.01",
         frictionloss="0",
@@ -512,7 +485,6 @@ def main():
                 flush=True,
             )
             while True:
-                # Closing the viewer also stops the complete robot.
                 if args.viewer and sim.children[0][1].poll() == 0:
                     break
                 check(sim.children, args.logs)

@@ -23,9 +23,6 @@ def main():
     )
     parser.add_argument("--no-tof", action="store_true", help="leave the head ToF alone")
     driver_arguments(parser)
-    # Microduck's console owns port 8080. robotd runs its control loop at 50 Hz, but the
-    # adapter sends only the newest input, so passing every pilot sample on keeps the one each
-    # tick reads fresh.
     parser.set_defaults(port=8081)
     args = parser.parse_args()
     args.prog = parser.prog

@@ -36,7 +36,6 @@ def main():
     parser.add_argument("--turn-speed", type=float, default=1.2, help="maximum yaw speed in rad/s")
     parser.add_argument("--viewer-state", help=argparse.SUPPRESS)
     driver_arguments(parser)
-    # A simulated room has nothing to hear; tone:440 is there for testing the audio path.
     arguments(parser, source="none")
     args = parser.parse_args()
     args.prog = parser.prog

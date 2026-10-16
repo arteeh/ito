@@ -14,7 +14,6 @@ from ito.link.pairing import display
 
 
 def driver_arguments(parser) -> None:
-    """Network, safety and pairing options every ito-driver-<robot> shares."""
     parser.add_argument("--host", default="0.0.0.0", help="address to listen on (default: all)")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--input-timeout", type=float, default=0.25)
@@ -40,7 +39,6 @@ def shown(path) -> str:
 
 
 def pairing_command(args) -> bool:
-    """Handle --show-code/--rotate-code; True when the program should exit."""
     if args.rotate_code:
         code = pairing.rotate(args.pairing_file)
         print(f"New pairing code: {display(code)}", flush=True)

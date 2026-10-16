@@ -1,5 +1,3 @@
-"""Robot comfort preferences and remembered pairing credentials."""
-
 import hashlib
 import json
 import logging
@@ -17,7 +15,6 @@ RECENT = 6
 
 class Settings(AppSettings, Model):
     reconstruction: Literal["auto", "rgbd", "slam", "video"] = "auto"
-    # SLAM tracking: the robot's own camera motion fused with vision, or vision alone (A/B).
     tracking: Literal["robot", "vision"] = "robot"
     fov: float = Field(default=70, ge=30, le=120)
     sensitivity: float = Field(default=0.0025, ge=0.0001, le=0.02)
@@ -74,7 +71,6 @@ def _credential(value):
 
 
 def recent():
-    """Most recent first: [{"address": ..., "name": ..., "credential": Credential or None}]."""
     try:
         entries = json.loads(recent_path().read_text())
         return [
@@ -98,7 +94,6 @@ def canonical(address):
 
 
 def credential(address):
-    """The secret the robot at address gave this pilot when it paired."""
     return next(
         (e["credential"] for e in recent() if canonical(e["address"]) == canonical(address)),
         None,
@@ -111,7 +106,6 @@ def remember(address, name, credential):
 
 
 def forget_credential(address):
-    """A refused credential is replaced by pairing again instead of being retried."""
     entries = recent()
     if any(canonical(e["address"]) == canonical(address) and e["credential"] for e in entries):
         try:
@@ -155,7 +149,6 @@ def runtime_path():
 
 
 def xr_runtime():
-    """The OpenXR runtime manifest the pilot last flew with, or None."""
     try:
         return str(json.loads(runtime_path().read_text())["manifest"])
     except (OSError, ValueError, KeyError, TypeError):

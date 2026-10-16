@@ -1,12 +1,3 @@
-"""The head's IMU and ToF, as Ito's Sensors message: mounted on the camera, source-timed.
-
-robotd states every head sensor's pose in the trunk (`robot.state` frames, from the same head
-forward kinematics as the camera's), so the sensor-to-camera mount follows the head's joints
-and needs no calibration of its own. The beta's LSM6DSV16X is read by robotd, the zero3's
-BMI088 by tofd; the ToF (VL53L8CX on a beta, VL53L5CX on a zero3) by tofd. Each arrives with
-its own read time (t_ns), which SourceClock puts on the driver's clock.
-"""
-
 import math
 
 from ito.protocol import Imu, ImuSample, Pose, RangeGrid
@@ -21,8 +12,6 @@ IMU_NOISE = {
     "BMI088": (math.radians(1.0), 0.020 * 9.81 + 0.05),
 }
 UNKNOWN_IMU = (math.radians(2.0), 0.5)
-# VL53L5CX/L8CX ranging noise as tofd's simulator models the datasheets: a few millimetres up
-# close, about two centimetres at 4 m.
 RANGE_SIGMA = (0.003, 0.005)
 # ST's status codes for a usable range: 5 valid, 9 valid with a large pulse (tof/src/lib.rs).
 VALID = {5, 9}
@@ -34,8 +23,6 @@ OPENCV_TO_ITO = (0.0, 1.0, 0.0, 0.0)
 
 
 def mount(sensor, camera, axes=(1.0, 0.0, 0.0, 0.0)):
-    """Sensor-to-camera Pose (Ito camera axes) from robotd's two trunk poses (pos, scalar-first
-    quat); `axes` turns the sensor's frame into the one its readings are stated in."""
     to_camera = frames.multiply(
         frames.conjugate(OPENCV_TO_ITO), frames.conjugate(frames.normalized(camera["quat"]))
     )
@@ -47,7 +34,6 @@ def mount(sensor, camera, axes=(1.0, 0.0, 0.0, 0.0)):
 
 
 def imu(chip, samples, sensor, camera):
-    """Imu for head_imu.frame samples [(driver time, frame)] in the sensor's axes."""
     gyro_sigma, accel_sigma = IMU_NOISE.get(chip, UNKNOWN_IMU)
     readings = []
     for when, data in samples:
@@ -75,7 +61,6 @@ def imu(chip, samples, sensor, camera):
 
 
 def ranges(chip, when, data, sensor, camera, fov):
-    """RangeGrid for one tof.frame; fov is robot.model's tof_fov_deg, in radians."""
     rows, cols = data["rows"], data["cols"]
     distances = data["distance_mm"]
     if rows * cols != len(distances) or len(data["status"]) != len(distances):

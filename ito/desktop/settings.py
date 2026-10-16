@@ -1,5 +1,3 @@
-"""App-wide choices shared by desktop and headset menus."""
-
 import logging
 import os
 import tempfile

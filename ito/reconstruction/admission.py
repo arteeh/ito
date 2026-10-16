@@ -1,10 +1,3 @@
-"""Bound queued CUDA work, not display gaps. Only reconstruction waits.
-
-Torch, CuPy and the shipped native kernels share a nonblocking, normal-priority
-stream. Completed display frames feed a short cooldown when rendering runs late;
-stream priority is a scheduling hint, never a reservation or kernel preemption.
-"""
-
 import time
 from collections import deque
 from contextlib import contextmanager
@@ -29,8 +22,6 @@ GPU_STAGES = (
 
 
 class Wake:
-    """One pending notification, including when a receiver dies while waiting."""
-
     def __init__(self, context):
         self.semaphore = context.BoundedSemaphore(1)
         self.semaphore.acquire(False)
@@ -67,12 +58,9 @@ class Admission:
         self.stream = self.torch_stream = None
 
     def completed(self, began, period):
-        """After both eyes and UI complete on GL; no render-side lock or CUDA wait."""
         now = clock.now()
         self.enabled.value = True
         if now - began > period:
-            # Even persistent lateness must leave a launch window each frame;
-            # renewing a pause longer than the period would starve CUDA forever.
             self.cooldown = min(period * MAX_BACKOFF_FRAME_SHARE, max(0.002, self.cooldown * 2))
             self.recovered_at = now + 0.25
             self.overruns.value += 1
@@ -97,7 +85,6 @@ class Admission:
         return False
 
     def bind_stream(self, xp):
-        """Startup transfers finish once before changing streams; never during display."""
         import sys
 
         xp.cuda.get_current_stream().synchronize()
@@ -156,7 +143,6 @@ class Admission:
 
     @contextmanager
     def integration(self):
-        """One stream for an integration; fence only at its CPU publication boundary."""
         from contextlib import nullcontext
 
         if self.stream is None:
@@ -180,13 +166,11 @@ class Admission:
 
 
 def event_done(event):
-    """Torch CUDA events expose query(); CuPy events expose the done property."""
     query = getattr(event, "query", None)
     return query() if query is not None else event.done
 
 
 def bind_model(model, admission):
-    """Neural blocks bound launch-ahead; events are collected without per-block waits."""
     import torch
 
     blocks = [
@@ -230,7 +214,6 @@ def bind_model(model, admission):
 
 
 def bind_native(admission):
-    """Keep short matching kernels and exact query outputs, without fencing each tile."""
     import mast3r_slam_backends as native
     import torch
 
@@ -274,8 +257,6 @@ def bind_native(admission):
             return outputs
 
         setattr(native, name, bounded)
-    # Solvers already read normal equations and convergence back to CPU. Keep
-    # their original iteration loop; measure the scope without another fence.
     for name in ("gauss_newton_points", "gauss_newton_rays", "gauss_newton_calib"):
         original = getattr(native, name)
 

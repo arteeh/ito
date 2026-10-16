@@ -1,5 +1,3 @@
-"""A furnished room around Pollen's unchanged robot, contact floor and pose keyframes."""
-
 import math
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -7,7 +5,6 @@ from pathlib import Path
 import numpy as np
 
 ASSETS = Path(__file__).with_name("assets")
-# Contact primitives move to a group that neither the viewer nor the head camera draws.
 CONTACT_GROUP = "3"
 
 
@@ -15,7 +12,6 @@ def furnish(source: Path) -> ET.ElementTree:
     scene = ET.parse(source)
     room = ET.parse(ASSETS / "room.xml")
     asset = scene.find("asset")
-    # The upstream sky and checker material describe the outdoor training plane.
     for element in list(asset):
         if element.tag == "texture" and element.get("type") == "skybox":
             asset.remove(element)
@@ -31,7 +27,6 @@ def furnish(source: Path) -> ET.ElementTree:
                     if attribute.startswith("file"):
                         element.set(attribute, str((ASSETS / filename).resolve()))
             target.append(element)
-    # A non-uniform texture (the framed print) spans each face once instead of tiling by size.
     stretched = {m.get("name") for m in asset.iter("material") if m.get("texuniform") == "false"}
     for body in scene.getroot().iter("body"):
         if body.get("name", "").startswith("room_"):
@@ -111,7 +106,7 @@ def _draw_as_meshes(body: ET.Element, asset: ET.Element, stretched: set) -> None
         )
         body.insert(list(body).index(geom) + 1, drawn)
         if geom.get("contype") == "0" and geom.get("conaffinity") == "0":
-            body.remove(geom)  # Decoration: the primitive has no contact left to provide.
+            body.remove(geom)
         else:
             geom.set("group", CONTACT_GROUP)
 
@@ -134,7 +129,6 @@ def _box(x, y, z, stretch=False):
 
 
 def _lathe(profile, segments=24):
-    """Revolve (radius, z) points about z, with UVs in metres like MuJoCo's uniform textures."""
     vertices, uv = [], []
     for radius, z in profile:
         for i in range(segments + 1):
@@ -150,7 +144,6 @@ def _lathe(profile, segments=24):
 
 
 def _outward(vertices, uv, faces):
-    """Drop degenerate triangles and wind the rest counter-clockwise seen from outside."""
     a, b, c = (vertices[faces[:, i]] for i in range(3))
     normal = np.cross(b - a, c - a)
     keep = np.linalg.norm(normal, axis=1) > 1e-12

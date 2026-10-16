@@ -1,20 +1,10 @@
-"""Build dist/ito: copy the folder anywhere, run ito.exe. Developer-only.
-
-From a VS 2022 x64 developer shell with CUDA 12.4 (the toolchain ito.build needs):
+"""Build dist/ito (developer-only), from a VS 2022 x64 shell with CUDA 12.4:
 
     uv run --python 3.12 --extra slam python release/windows.py [--models DIR]
 
-Packaging is a relocatable python-build-standalone runtime (the one uv manages) with the
-locked dependencies installed into it, started by a small native ito.exe. Freezers such as
-PyInstaller have to rediscover what torch, CuPy, imgui-bundle, aiortc, MuJoCo and pyopenxr
-load at runtime, and MASt3R-SLAM imports its own sources from models\\ at run time; a
-plain interpreter with ordinary site-packages runs exactly what was tested from source.
-
-    ito\\ito.exe       release/ito.c: runs runtime\\pythonw.exe -I -m ito.app
-    ito\\runtime\\      CPython 3.12 + site-packages
-    ito\\models\\       MASt3R weights, licences, sources and CUDA kernels (ito.build)
-    ito\\THIRD_PARTY_NOTICES.txt   every bundled package's licence texts, gathered at build
-"""
+A relocatable CPython with the locked dependencies installed, started by release/ito.c's
+ito.exe (runtime\\pythonw.exe -I -m ito.app), plus models\\ from ito.build and
+THIRD_PARTY_NOTICES.txt. No freezer: the release runs exactly what runs from source."""
 
 import argparse
 import email.parser
@@ -38,7 +28,6 @@ def run(*command, **options):
 
 
 def runtime(stage, work):
-    """Copy the uv-managed interpreter this script runs on, then install the lockfile into it."""
     managed = Path(subprocess.check_output(["uv", "python", "dir"], text=True).strip())
     base = Path(sys.base_prefix)
     if base.parent.resolve() != managed.resolve() or sys.version_info[:2] != (3, 12):
@@ -64,8 +53,6 @@ def runtime(stage, work):
             "uv", "pip", "install", "--python", python, "--target", site,
             "--link-mode", "copy", "--compile-bytecode", *requirement,
         )  # fmt: skip
-    # Console scripts with absolute paths; libraries and headers for compiling against
-    # torch (the kernels in models\ are prebuilt); Android OpenXR loaders and layers.
     unused = [site / "bin", site / "torch/include", *site.rglob("*.lib")]
     for path in unused + list(site.glob("xr/**/android*")):
         shutil.rmtree(path) if path.is_dir() else path.unlink(missing_ok=True)
@@ -95,7 +82,6 @@ def models(stage, source):
     for name, size in manifest["files"].items():
         if (target / name).stat().st_size != size:
             raise SystemExit(f"Damaged model file: {target / name}")
-    # SLAM only runs on GPUs the kernels were compiled for (or can JIT from PTX).
     for name in manifest["native"].values():
         found = []
         for kind in ("elf", "ptx"):
@@ -112,12 +98,6 @@ LICENCE_FILE = re.compile(
 
 
 def notices(site, models, runtime, output):
-    """Write the licence texts of everything the release ships, from what ships with it.
-
-    Each installed distribution contributes its metadata licence and every licence file
-    in its dist-info; native libraries vendored into a wheel are listed from its .libs
-    folder and SBOMs. Then the Python runtime's and models\\' licence files, verbatim.
-    """
     sections = []
     for info in sorted(site.glob("*.dist-info"), key=lambda p: p.name.lower()):
         meta = email.parser.Parser().parsestr(
@@ -152,7 +132,6 @@ def notices(site, models, runtime, output):
         if vendored:
             lines.append("Bundled native libraries: " + ", ".join(sorted(vendored)))
         files = [p for p in sorted(info.rglob("*")) if p.is_file() and _licence_text(p, info)]
-        # Some wheels keep their licence inside the package instead (pygame-ce's LGPL.txt).
         files = files or [p for p in _installed(info, site) if LICENCE_FILE.match(p.name)]
         for path in files:
             lines += ["", f"--- {path.relative_to(site).as_posix()} ---", _read(path)]
@@ -205,7 +184,6 @@ def _read(path):
 
 
 def check(stage):
-    """The built app must import everything from its own folder, ignoring this shell."""
     env = {k: v for k, v in os.environ.items() if not k.startswith(("PYTHON", "VIRTUAL_ENV"))}
     run(
         stage / "runtime/python.exe", "-I", "-c",

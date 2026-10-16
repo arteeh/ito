@@ -1,5 +1,3 @@
-"""One theme and one ImGui clock for desktop windows and headset panels."""
-
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -55,7 +53,6 @@ class Theme:
             self.start_leave = False
             self.switched = self.t
             self.art.screen(self.kind, "session", self.t)
-        # Bake the known UI sizes on entry/scale changes, never during a session draw.
         scale = imgui.get_style().font_scale_main * imgui.get_style().font_scale_dpi
         if self.prepared != (size, scale):
             self.prepared = (size, scale)
@@ -75,7 +72,7 @@ class Theme:
 
     def menu(self):
         intro = self.kind != "menu"
-        self.prepared = None  # Reacquire baked glyphs after a session may have evicted them.
+        self.prepared = None
         self.name = self.previous = None
         self.leaving = False
         self.start_leave = False

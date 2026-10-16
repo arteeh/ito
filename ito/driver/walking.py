@@ -1,19 +1,9 @@
-"""Look is startup-relative; robot commands are body-relative, with bounded yaw speed.
-
-Standing still, the body turns only when the pilot looks past the head's pan range, and only
-far enough for the head to reach the view direction.
-"""
-
 import math
 from dataclasses import dataclass, replace
 
 from ito.protocol import PilotState
 
-# Gaze must pass the pan limit by this much before a standing body turns, so a pilot
-# glancing at the boundary does not make the body twitch.
 ENGAGE = math.radians(2)
-# A turning body reverses only when the other way round is this much shorter, so gaze
-# held directly behind the robot cannot make it rock back and forth.
 REVERSE = math.radians(20)
 
 
@@ -22,7 +12,7 @@ class Walking:
     forward: float
     left: float
     turn: float
-    pan: float  # Within the head's pan range.
+    pan: float
     tilt: float
     # The pilot's head roll, left ear down positive; a head without a roll joint ignores it.
     roll: float = 0.0
@@ -45,11 +35,6 @@ class Walker:
         self.following = 0  # +1 left, -1 right, while the body turns toward the gaze.
 
     def _excess(self, pan: float, direction: int) -> float:
-        """Gaze beyond the pan limit on one side; negative while the head can reach it.
-
-        Measured up to the long way round past the back: gaze swept behind the robot keeps
-        the body turning the same way.
-        """
         limit = self.high if direction > 0 else self.low
         span = self.high - self.low
         return (direction * (pan - limit) + span) % (2 * math.pi) - span
@@ -78,15 +63,12 @@ class Walker:
         vx, vy = forward * c + right * s, forward * s - right * c
         error = pan
         if self.lateral_speed == 0:
-            # Wheels, or a gait with no usable sideways step: steer into the requested travel
-            # direction, allowing reverse, and suppress translation until it is reachable.
             direction = -1 if forward < 0 else 1
             error = math.atan2(direction * vy, direction * vx)
             vx = direction * math.hypot(vx, vy) * max(0, math.cos(error)) ** 4
             vy = 0.0
             scale = self.speed
         else:
-            # Scale both components together so asymmetric gait limits preserve direction.
             scale = min(self.speed, self.lateral_speed / max(abs(vy), 1e-9))
         return Walking(vx * scale, vy * scale, self._turn(error), self._reach(pan), pitch, roll)
 
@@ -102,7 +84,6 @@ class Walker:
             limit = self.high if self.following > 0 else self.low
             turn = self._turn(self.following * excess[self.following])
             return Walking(0, 0, turn, limit, pitch)
-        # Reached, or overshot by body inertia: never turn back toward the range.
         self.following = 0
         return Walking(0, 0, 0, self._reach(pan), pitch)
 

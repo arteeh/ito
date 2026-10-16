@@ -1,5 +1,3 @@
-"""OpenXR lifetime and swapchain ownership; SDL owns the current OpenGL context."""
-
 import ctypes as ct
 import logging
 import math
@@ -19,21 +17,15 @@ from ito.app import settings
 from . import runtimes
 
 log = logging.getLogger(__name__)
-# A runtime reports a headset that is not connected yet (SteamVR before Steam Link or the
-# cable brings one, a headset asleep) as unavailable, and the spec says to ask again. Ito
-# asks every installed runtime in turn; the pilot gets this long to connect the headset, and
-# can give up sooner.
 HEADSET_WAIT = 90.0
 HEADSET_POLL = 0.5
-# Keep GHOST-RITE text near its original angular size, with room below the HUD for safety.
 HUD_PANEL_PIXELS = (1024, 640)
-# Each round asks every runtime once; starting a runtime can take seconds (SteamVR).
 ROUND_PAUSE = 2.0
 
 
 class SDLContext:
     def make_current(self):
-        pass  # DisplayDispatch binds the SDL context on the rendering thread.
+        pass
 
 
 class Swapchain:
@@ -57,7 +49,6 @@ class Swapchain:
         self.images = xr.enumerate_swapchain_images(self.handle, xr.SwapchainImageOpenGLKHR)
         self.targets = []
         for image in self.images:
-            # External wrappers never delete the runtime-owned color images.
             texture = owner.context.external_texture(image.image, size, 4, 0, "f1")
             owner.resources.callback(texture.release)
             target = owner.context.framebuffer(color_attachments=[texture])
@@ -91,8 +82,6 @@ def runtime_name(instance):
 
 class Session:
     def __init__(self, context: moderngl.Context, reference, waiting=None):
-        """waiting(runtime, seconds): called while no headset is connected yet, about every
-        HEADSET_POLL seconds; it returns False when the pilot stops waiting."""
         self.context = context
         self.reference_mode = reference
         self.resources = ExitStack()
@@ -168,7 +157,6 @@ class Session:
             raise
 
     def _headset(self, waiting):
-        """The first runtime that has a headset: its instance and system, kept by the caller."""
         candidates = runtimes.installed() or [runtimes.Runtime("OpenXR", None)]
         names = " or ".join(c.name for c in candidates)
         started = clock.now()
@@ -182,7 +170,6 @@ class Session:
                         settings.remember_xr_runtime(candidate.manifest)
                     return found
             if len(problems) == len(candidates):
-                # Every runtime failed outright, so waiting cannot help.
                 raise RuntimeError(
                     "No OpenXR runtime could start: "
                     + "; ".join(f"{name}: {why}" for name, why in problems.items())
@@ -207,9 +194,6 @@ class Session:
                     break
 
     def _ask(self, candidate, problems):
-        """(instance, system) when this runtime has a headset; otherwise None, with the
-        runtime unloaded again so the next one can load."""
-        # The loader reads this whenever it loads a runtime, and unloads it with the instance.
         if candidate.manifest:
             os.environ["XR_RUNTIME_JSON"] = candidate.manifest
         instance = None
@@ -221,7 +205,6 @@ class Session:
             if "XR_HTCX_vive_tracker_interaction" in available:
                 extensions.append("XR_HTCX_vive_tracker_interaction")
             opengl = "XR_KHR_opengl_enable" in available
-            # Created even without OpenGL: destroying the instance is what unloads the runtime.
             instance = xr.create_instance(
                 xr.InstanceCreateInfo(
                     application_info=xr.ApplicationInfo(application_name="Ito"),

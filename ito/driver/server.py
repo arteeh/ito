@@ -52,9 +52,9 @@ class Driver:
         if not math.isfinite(command_rate) or not 1 <= command_rate <= 240:
             raise ValueError("command_rate must be between 1 and 240 Hz")
         if audio_source is not None:
-            Audio(audio_source, audio_sink)  # Reject invalid CLI sources before serving.
+            Audio(audio_source, audio_sink)
         if (audio_source, audio_sink) == ("none", "none"):
-            audio_source = None  # A robot without microphone and speaker carries no audio.
+            audio_source = None
         self.audio_source, self.audio_sink = audio_source, audio_sink
         self.adapter = adapter
         adapter.frame_sink = self.publish_frame
@@ -64,7 +64,7 @@ class Driver:
         self.command_rate = command_rate
         self.ice_servers = ice_servers
         self.pairing = Pairing(pairing_file or default_path())
-        self._pairing_code: str | None = None  # The code the current pilot paired with.
+        self._pairing_code: str | None = None
         self.peer: Peer | None = None
         self.state = "neutral"
         self.reason = "waiting for pilot"
@@ -85,14 +85,14 @@ class Driver:
         self._last_status = 0.0
         self._last_apply = 0.0
         self._input_latency_ms: float | None = None
-        self._applied = Rate()  # pilot poses applied to the robot
+        self._applied = Rate()
         self._timing = PoseTiming.from_environment()
-        self._arrived = asyncio.Event()  # A new pilot state to apply.
+        self._arrived = asyncio.Event()
         self._connected_at = 0.0
         self._negotiating = False
         self._closing = False
         self.address: str | None = None
-        self.failed = asyncio.Event()  # The watchdog died; serve() exits instead of idling.
+        self.failed = asyncio.Event()
 
     def _neutral(self, reason: str) -> None:
         self._latest = None
@@ -246,7 +246,6 @@ class Driver:
             if self._fault and not self._is_neutral:
                 if now - self._last_neutral_attempt >= 1 / self.command_rate:
                     self._neutral(self.reason)
-            # Reserve a watchdog tick so neutral is enqueued by the configured timeout.
             if (
                 self._latest
                 and now - min(self._received, self._capture) >= self.input_timeout - interval
@@ -271,7 +270,6 @@ class Driver:
             if now - self._last_status >= 0.1:
                 self._status()
                 self._last_status = now
-            # An abandoned offer or dead peer must not prevent the next direct connection.
             if self.peer and not self._negotiating:
                 idle_since = max(self.peer.last_received, self._connected_at)
                 if self.peer.closed.is_set() or now - idle_since > max(5, 4 * self.input_timeout):
@@ -279,8 +277,6 @@ class Driver:
                     await expired.close()
                     if self.peer is expired:
                         self.peer = None
-            # Apply each pilot state as it arrives, as soon as the command rate allows, rather
-            # than on the next watchdog tick: polling held a 50 Hz robot to about 39.
             if self._latest and self._latest.sequence != self._applied_sequence:
                 due = self._last_apply + 1 / self.command_rate - clock.now()
                 await asyncio.sleep(min(interval, max(0, due)))
@@ -359,7 +355,6 @@ class Driver:
                 if len(remote_media) > 18:
                     raise ValueError("too many media tracks")
                 tracks = list(self.adapter.media_tracks())
-                # Adapters with their own audio keep ownership of both directions.
                 if any(track.kind == "audio" for track in tracks):
                     peer.audio = None
                 await peer.pc.setRemoteDescription(RTCSessionDescription(offer.sdp, "offer"))
@@ -370,8 +365,6 @@ class Driver:
                         for m in remote_media
                     ):
                         tracks.append(peer.audio.track)
-                    # The pilot's microphone needs the robot's speaker and its speakers the
-                    # robot's microphone; it opens only the devices that have a counterpart.
                     audio = {"microphone": peer.audio.source, "speaker": peer.audio.sink}
                     capabilities = description.capabilities + tuple(
                         name
@@ -453,7 +446,6 @@ class Driver:
         try:
             if self._task:
                 self._task.cancel()
-                # A watchdog that died has been reported by _watchdog_ended already.
                 await asyncio.gather(self._task, return_exceptions=True)
             if self._runner:
                 await self._runner.cleanup()

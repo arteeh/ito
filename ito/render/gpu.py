@@ -1,5 +1,3 @@
-"""One persistent NVML connection; sampling never runs on the display thread."""
-
 import ctypes as ct
 import threading
 
@@ -58,7 +56,6 @@ class GPU:
             self.busy = None
 
     def used(self):
-        """Device-wide (used, total) bytes as last sampled; None without NVML."""
         if self.library is None or not self.total:
             return None
         return self.total - self.free, self.total
@@ -81,7 +78,7 @@ class GPU:
         if self.thread is not None:
             self.thread.join(timeout=1)
             if self.thread.is_alive():
-                return  # Never unload a library while its query is still running.
+                return
         if self.library is not None:
             self.library.nvmlShutdown()
             self.library = None

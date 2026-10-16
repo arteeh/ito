@@ -24,7 +24,6 @@ log = logging.getLogger(__name__)
 
 
 def alert(message):
-    """Without a console (ito.exe double-clicked), errors still have to reach the pilot."""
     if sys.stderr is None and os.name == "nt":
         import ctypes
 
@@ -97,7 +96,6 @@ def main(argv=None, *, on_frame=None):
         for key in Settings.model_fields
         if getattr(args, key, None) is not None
     }
-    # Without an address or --sim, the pilot picks a robot on screen and can come back to it.
     choosing = args.address is None and not args.sim
     credential = settings.credential(args.address) if args.address else None
     choice = connect.Choice(args.address, args.mode == "xr", code, credential)
@@ -121,7 +119,7 @@ def main(argv=None, *, on_frame=None):
         )
 
     try:
-        Audio(args.audio_source, args.audio_sink)  # Validate before any window opens.
+        Audio(args.audio_source, args.audio_sink)
         Settings.model_validate(Settings().model_dump() | overrides)
         if args.max_splats is not None:
             selected = AppSettings.model_validate(
@@ -171,7 +169,6 @@ def main(argv=None, *, on_frame=None):
                 window.overlay.leave = False
                 refusal = pilot_window(window, args, overrides, metrics, choice, on_frame)
                 if refusal:
-                    # Ask for the code on the connect screen, whichever way ito started.
                     choosing, pairing, error = True, choice.address, refusal
                     continue
                 if not window.overlay.leave:
@@ -188,8 +185,6 @@ def main(argv=None, *, on_frame=None):
                     window.close()
         finally:
             diagnostics.close()
-            # A message box waits for the pilot: only once the window, which may still hold
-            # the grabbed mouse and no longer answers the system, is gone.
             if failure:
                 alert(failure)
             if stuck:

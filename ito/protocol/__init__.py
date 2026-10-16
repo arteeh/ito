@@ -217,8 +217,6 @@ class MotionSample(Model):
 
 
 class Motion(Message):
-    """The robot's own camera motion, batched: every sample once, oldest first."""
-
     type: Literal["motion"] = "motion"
     samples: tuple[MotionSample, ...] = Field(min_length=1, max_length=16)
 
@@ -250,8 +248,6 @@ class ImuSample(Model):
 
 
 class Imu(Model):
-    """A camera-mounted IMU's samples since the last batch, oldest first."""
-
     sensor: Name
     mount: Pose = Field(description="Sensor-to-camera transform")
     gyro_sigma: Number = Field(gt=0, description="One sigma of each rate, rad/s, bias included")
@@ -294,9 +290,6 @@ class RangeGrid(Model):
 
 
 class Sensors(Message):
-    """What a robot's camera-mounted sensors measured, beside its motion: optional, so a
-    robot without them sends none and Ito works from the camera and motion alone."""
-
     type: Literal["sensors"] = "sensors"
     camera: Name = Field(description="The described camera the mounts are relative to")
     imu: tuple[Imu, ...] = Field(default=(), max_length=4)
@@ -336,8 +329,6 @@ class Credential(Message):
 
 
 class Paired(Message):
-    """The pilot stored its credential; the driver may retire the pairing code."""
-
     type: Literal["paired"] = "paired"
     pilot: Token
 
@@ -412,7 +403,6 @@ def decode(data: str | bytes) -> WireMessage:
 
 
 def encode(message: WireMessage) -> str:
-    # Revalidate instances: nested dictionaries may have been mutated by an adapter.
     data = message.model_dump_json()
     decode(data)
     return data

@@ -1,5 +1,3 @@
-"""Independently paced SDL input and desktop drawing."""
-
 import json
 import logging
 import math
@@ -37,7 +35,7 @@ class DesktopState:
     status: PilotStatus = field(default_factory=PilotStatus)
     video: object | None = field(default=None, repr=False, compare=False)
     video_time: float = 0
-    video_fov: float | None = None  # The camera's horizontal field of view in radians.
+    video_fov: float | None = None
     flat_video: bool = False
     # Fusion's world-from-odometry: the eye is drawn at correction @ robot_camera, eased in.
     correction: FloatArray = field(default_factory=pose)
@@ -97,7 +95,6 @@ class DesktopWindow:
                 for name in ("llvmpipe", "softpipe", "software")
             )
             self.gpu = GPU() if "nvidia" in self.context.info["GL_VENDOR"].lower() else None
-            # Only OpenGL's buffer size is fixed; the worker fits splats to free VRAM live.
             buffer_limit = self.context.info["GL_MAX_SHADER_STORAGE_BLOCK_SIZE"]
             self.splat_limit = 16_384 if software else min(MAX_SLOT_COUNT, buffer_limit // 64)
             self.renderer = GaussianRenderer(self.context)
@@ -147,7 +144,6 @@ class DesktopWindow:
         metrics: TextIO | None = None,
         save_settings: Callable[[int], None] = save_budget,
     ) -> None:
-        """Poll input at 90 Hz while the display draws the latest snapshot."""
         dispatch = DisplayDispatch(self)
         self.input.heading = lambda: state().robot_heading
         dispatch.run(
@@ -215,7 +211,6 @@ class DesktopWindow:
                 )
                 log.info("Command: %s", pilot.commands[-1])
             applied = []
-            # A bounded drain never lets a fast producer take over the display loop.
             for _ in range(PUBLICATION_PACKETS):
                 frame = pending if pending is not None else source.poll()
                 if frame is None:
@@ -344,8 +339,6 @@ class DesktopWindow:
             if remaining > 0:
                 time.sleep(remaining)
             else:
-                # Count the late frame, then skip obsolete starts; don't catch up
-                # by submitting a burst of frames the pilot cannot see.
                 skipped = int(-remaining * self.fps) + 1
                 self.performance.skipped_deadlines(skipped)
                 due += skipped / self.fps
@@ -355,12 +348,10 @@ class DesktopWindow:
             pacing.tick(0)
 
     def glided(self, current, now, head=None):
-        """The eye to draw now: glided between updates, fusion's corrections eased in."""
         anchor = self.glide(current.robot_camera, now)
         return replace(current, robot_camera=self.ease(current.correction, anchor, head, now))
 
     def draw_view(self, current, head, projection, target, viewport, sort=True, center=None):
-        """Draw one eye; center is the pose between both eyes, for a stereo panel."""
         if current.flat_video:
             self.video_panel.draw(
                 current.video,

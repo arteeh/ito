@@ -1,5 +1,3 @@
-"""MuJoCo physics has its own deadman; GL rendering never holds the simulation lock."""
-
 import asyncio
 import math
 import os
@@ -221,7 +219,6 @@ class MujocoAdapter(Adapter):
         values = self._telemetry.copy()
         command = self._command
         if command is None or clock.now() - command[0] >= self.input_timeout:
-            # Neutral is enqueued immediately; measured velocity follows on the physics tick.
             values.update(left_command=0.0, right_command=0.0)
         return values
 
@@ -286,7 +283,6 @@ class MujocoAdapter(Adapter):
                         ),
                     }
                 active = state is not None
-                # Bound catch-up after scheduling stalls instead of teleporting the robot.
                 deadline = max(deadline + self.model.opt.timestep, now - 0.02)
                 self._stop.wait(max(0, deadline - clock.now()))
         except BaseException as exc:
@@ -298,7 +294,6 @@ class MujocoAdapter(Adapter):
         try:
             self._render_data = self.mj.MjData(self.model)
             self._renderer = self.mj.Renderer(self.model, self.height, self.width)
-            # Exercise GL before advertising a listening driver.
             self._renderer.update_scene(self.data, camera=self.camera_id)
             self._renderer.render()
         except Exception as exc:

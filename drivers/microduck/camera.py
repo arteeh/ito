@@ -1,5 +1,3 @@
-"""Rectify mediad's calibrated sensor image before exposing a pinhole camera to Ito."""
-
 import asyncio
 from fractions import Fraction
 
@@ -14,7 +12,6 @@ from ito.protocol import FrameMetadata, Intrinsics
 
 class Camera:
     def __init__(self, info, measured=dict):
-        """Measured returns the robot's FrameMetadata fields for a frame arriving now."""
         import cv2
 
         self.cv = cv2

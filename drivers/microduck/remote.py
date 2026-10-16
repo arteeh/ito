@@ -1,5 +1,3 @@
-"""Microduck mediad's LAN signalling and JSON-RPC contract (upstream API 40)."""
-
 import asyncio
 import contextlib
 import json
@@ -11,7 +9,7 @@ from aiortc.sdp import candidate_from_sdp
 
 
 class RemoteError(RuntimeError):
-    """An RPC refusal, distinct from a broken or stalled control connection."""
+    pass
 
 
 _PROFILE = re.compile(r"^(a=fmtp:(\d+) .*?profile-level-id=)([0-9a-fA-F]{6})", re.MULTILINE)
@@ -99,20 +97,15 @@ class Remote:
             elif "method" in message:
                 self.notification(message["method"], message.get("params", {}))
             elif "error" in message:
-                # Only a notification is refused without an id: robotd will not do what the
-                # driver keeps asking for.
                 raise RemoteError(f"Microduck refused a notification: {message['error']}")
         except Exception as exc:
             self.fail(exc)
 
     def notify(self, method, params):
-        """A continuous intent: robotd applies the newest on its next tick and never answers."""
         self.check()
         self.channel.send(json.dumps({"jsonrpc": "2.0", "method": method, "params": params}))
 
     async def call(self, method, params=None, deadline=0.5, then=()):
-        """Ask and wait for the answer. `then` holds (method, params) notifications sent right
-        behind the request on the same ordered channel: robotd applies them after it."""
         self.check()
         self.sequence += 1
         sequence = self.sequence

@@ -17,7 +17,7 @@ class Offer(Model):
     sdp: str = Field(min_length=1, max_length=200_000)
     nonce: str | None = Field(default=None, pattern="^[0-9a-f]{32}$")
     proof: str | None = Field(default=None, pattern="^[0-9a-f]{64}$")
-    pilot: Token | None = None  # Proves this pilot's secret instead of the pairing code.
+    pilot: Token | None = None
 
 
 class Challenge(Model):
@@ -36,14 +36,6 @@ async def connect(
     code: str | None = None,
     credential: Credential | None = None,
 ) -> Peer:
-    """Connect directly to a driver; caller consumes tracks without blocking input.
-
-    A credential from an earlier pairing replaces the code. After a code, the returned
-    peer holds the driver's new credential: store it, then send Paired so the driver
-    retires the code. Raises PairingError when the driver refuses the code or credential
-    (or neither was given), and ConnectionError when whatever answered cannot prove it is
-    the robot: that is no reason to forget the credential.
-    """
     if not 0 <= video_tracks <= 16:
         raise ValueError("video_tracks must be between 0 and 16")
     if audio is not None and audio.kind != "audio":
@@ -56,7 +48,7 @@ async def connect(
             for _ in range(video_tracks):
                 peer.pc.addTransceiver("video", direction="recvonly")
             if audio_io is not None:
-                audio = audio_io.track  # Devices open once the robot says what it has.
+                audio = audio_io.track
             if audio is not None:
                 peer.pc.addTrack(audio)
             elif receive_audio:
@@ -116,7 +108,6 @@ async def connect(
 
 
 async def reason(response) -> str:
-    """The driver's plain-text refusal, short enough to show the pilot."""
     if response.content_type != "text/plain":
         return ""
     return (await response.text())[:200].strip()

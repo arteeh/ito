@@ -1,5 +1,3 @@
-"""RGB, optical-axis depth and camera pose come from the same immutable physics snapshot."""
-
 import asyncio
 from fractions import Fraction
 

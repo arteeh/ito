@@ -13,7 +13,6 @@ from pathlib import Path
 
 from ito import clock
 
-# Histogram bin edges, milliseconds: a 90 Hz pilot sends every 11.1 ms.
 EDGES = (2, 5, 8, 10, 12, 14, 20, 30, 50)
 
 
@@ -47,8 +46,6 @@ class PoseTiming:
         self.arrivals, self.sends, self.applies, self.ages = [], [], [], []
 
     def received_pose(self, sequence, capture, now, pending):
-        """A pose arrived: its sequence, capture time in local clock, and whether an earlier
-        pose was still waiting to be applied (this one replaces it)."""
         self.received += 1
         self.superseded += pending
         if self.last_arrival is not None:

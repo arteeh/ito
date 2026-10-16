@@ -70,20 +70,12 @@ Tracking/focus loss disarms input. E-stop and link loss pulse the controllers.
 Role-assigned Vive trackers are sent when the runtime supports `XR_HTCX_vive_tracker_interaction`.
 F12 saves left-eye, right-eye and panel images. On Linux, `XR_RUNTIME_JSON` selects a runtime.
 
-XR end-to-end check on Windows: start SteamVR or Virtual Desktop with VDXR set as the active
-OpenXR runtime, wear the headset, then run `uv run python e2e/openxr.py` from the checkout.
-It launches its own MuJoCo driver and saves eye captures, logs and metrics in `e2e/out/xr`.
-Add `--reference-space standing` to check room-scale space. The same script runs on Linux
-with a configured OpenXR runtime, including Monado’s simulated HMD. `e2e/openxr_flat.py`
-checks that both eyes see the flat camera feed straight ahead with the right disparity.
-
 Comfort and input preferences are saved per driver address and robot name: `--fov 75`,
 `--sensitivity 0.0025`, `--invert-y` / `--no-invert-y`, `--move-x move_x`, `--move-y move_y`.
 `--camera NAME --cameras N` selects a camera from a driver with N video tracks.
 Max splats is global; old per-robot budgets are ignored. Software rendering and OpenGL
 buffer limits cap the active count, and the live VRAM manager can lower it further without
-changing the saved setting. [The shared GPU budget](docs/gpu-budget.md) reserves the
-display first and admits reconstruction between completed frames.
+changing the saved setting.
 `ito-desktop scene.ply` remains a local scene viewer with WASD and Page Up/Down free flight.
 
 `ito.reconstruction.Reconstruction(intrinsics, max_splats=window.max_splats)` accepts synchronized
@@ -111,30 +103,16 @@ The driver streams the head camera's pose at robotd's 50 Hz, stamped when robotd
 Virtual Microduck on Ubuntu: `drivers/microduck/setup-sim.sh /path/to/prefix`, then `/path/to/prefix/microduck-sim --viewer`.
 It builds Pollen's stack at the `third_party/` submodule pins (microduck at a release tag, microduck_rl's develop) and runs this checkout's driver.
 On Windows, use the prefix `~/.local/share/ito-microduck` in the default WSL distro; `drivers/microduck/microduck-sim.cmd` and `ito-microduck.cmd` launch it from there.
-From built checkouts: `uv run --extra microduck python -m drivers.microduck.sim --microduck /path/to/microduck --rl /path/to/microduck_rl --policies /path/to/policies/current [--viewer] [--camera-height 360|720|1080]` (head camera size; the lens is the real 62 degrees at all of them).
+From built checkouts: `uv run --extra microduck python -m drivers.microduck.sim --microduck /path/to/microduck --rl /path/to/microduck_rl --policies /path/to/policies/current [--viewer] [--camera-height 360|720|1080] [--board beta|zero3]` (beta by default; its lens is an estimate until a beta is calibrated, `--beta-hfov` tries another).
 Enter the printed address and pairing code in Ito; Ctrl+C or closing the viewer stops the complete robot.
-`--truth FILE` writes each head-camera frame's true pose, and `--blur N` averages N back-to-back renders per frame (motion blur); `e2e/slam_drive.py --record` and `e2e/slam_replay.py --pose L1..L5 --truth FILE` score tracking against them.
 
 ## Development and releases
 
 Windows release, from a VS 2022 x64 developer shell with CUDA Toolkit 12.4:
 `uv run --python 3.12 --extra slam python release/windows.py` writes the `dist/ito` folder
 (Python runtime, `ito.exe`, and `models/` from `ito.build` with its CC BY-NC-SA licences;
-`--models DIR` reuses a built bundle). `uv run python e2e/release.py > release.log 2>&1`,
-run in the desktop session, copies it into a clean environment and pilots it.
+`--models DIR` reuses a built bundle).
 
-CUDA end-to-end check on Windows (Developer PowerShell for VS 2022, CUDA 12.4 on PATH;
-`UV_PROJECT_ENVIRONMENT` can point to the existing venv):
-
-```powershell
-Set-Location C:\Users\me\Projects\ito
-uv run --python 3.12 --extra slam python e2e/slam.py --cuda
-```
-
-It launches a real RGB-only MuJoCo driver and checks tracking, motion, splat budget eviction,
-worker suspension/crash fallback, input and e-stop; captures/metrics go to `e2e/out/slam-cuda`.
-The same command runs on Linux with CUDA. `uv run python e2e/slam.py` hides CUDA and verifies
-the live fallback; on a headless Linux box set `DISPLAY` and `LIBGL_ALWAYS_SOFTWARE=1`.
 Use `ito-driver-mujoco --rgb-only` to omit both depth and pose for manual piloting.
 
 The MuJoCo driver needs `libosmesa6` on Debian/Ubuntu for headless software rendering;
@@ -158,25 +136,7 @@ Linux device audio needs PortAudio (`libportaudio2` on Debian/Ubuntu); missing d
 piloting available with an audio status line. Both CLIs accept `--audio-source device|none|tone:440`
 and `--audio-sink device|none|capture.wav`. MuJoCo has no microphone unless given a source.
 
-End-to-end checks (no GPU or headset needed):
-
-```sh
-LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/audio.py # two-way tones, mute, no device
-uv run python e2e/webrtc.py
-uv run python e2e/depth_load.py                            # Status and clock under VGA depth
-uv run python e2e/pairing.py                               # recorded signaling yields nothing reusable
-LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/lifecycle.py # app closes in 2 s under faults
-uv run python e2e/mujoco_driver.py                         # saves RGB-D samples in e2e/out/mujoco
-uv run python e2e/reconstruction_faults.py
-LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/app.py # live MuJoCo, SDL input, reconnect
-LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/stall.py # input stalls, re-arm, focus, close
-LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/connect.py # connect screen, simulated robot
-LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/render.py
-LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/desktop.py
-uv run python e2e/tab_look.py   # Tab never turns the view; own Xvfb + Xvnc, needs xdotool, tigervnc
-LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/stream.py
-LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/anchor_glide.py # no eye steps at SLAM rate
-LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/correction_ease.py # fusion's corrections eased in
-LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/flat_panel.py # flat feed follows the head
-LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a uv run python e2e/reconstruction.py  # two-minute live room
-```
+Testing is running the software. On the Windows PC, build a branch with `release.ps1 -Branch NAME`,
+then in WSL `uv run tools/session.py NAME RUN` drives it against the virtual Microduck with a
+pilot script (`tools/scripts/`) and writes `screen.mp4` and `camera.mp4` to `out\sessions\RUN`;
+`uv run tools/frame.py VIDEO SECONDS [-n COUNT]` saves a frame, or consecutive frames side by side.

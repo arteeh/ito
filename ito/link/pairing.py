@@ -18,7 +18,7 @@ DIGITS = 6
 
 
 class PairingError(ConnectionError):
-    """The driver refused the pilot's pairing code or credential (HTTP 401 or 403)."""
+    pass
 
 
 def generate() -> str:
@@ -26,12 +26,10 @@ def generate() -> str:
 
 
 def token() -> str:
-    """128 random bits: a pilot identity or secret."""
     return secrets.token_hex(16)
 
 
 def normalize(code: str) -> str | None:
-    """Accept what a pilot types ("482 913", "482-913"); None if it cannot be a code."""
     digits = re.sub(r"[\s-]", "", code)
     return digits if re.fullmatch(rf"[0-9]{{{DIGITS}}}", digits) else None
 

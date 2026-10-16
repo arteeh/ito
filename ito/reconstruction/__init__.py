@@ -1,5 +1,3 @@
-"""Nonblocking RGB-D/monocular input and incremental shared-memory scene output."""
-
 import json
 import logging
 import multiprocessing as mp
@@ -23,7 +21,6 @@ from .slam_vision import RESTART_CAUSES
 __all__ = ["Reconstruction", "SplatUpdate", "default_budget"]
 
 log = logging.getLogger(__name__)
-# A worker gets this long to see the stop flag; one busy in a step that never ends is killed.
 STOP_WAIT = 0.5
 # Max splats also bounds sorting and drawing per frame: 2^19 kept 90 Hz stereo on an
 # RTX 4070 Ti with a full scene. VRAM may hold fewer; the worker budgets that live.
@@ -91,7 +88,6 @@ def _run(recon):
         published_slots = len(backend.keys)
         captured = recon.epoch
         published_capture = recon.epoch
-        # A pilot app that died without closing it would otherwise leave it holding the GPU.
         parent = mp.parent_process()
         while not recon.stopped.value and parent.is_alive():
             now = clock.now() - recon.epoch
@@ -175,8 +171,6 @@ def _run(recon):
                     recon.report_oom(exc)
                     dropped = True
                 if dropped:
-                    # The failed call's traceback and temporaries are gone before
-                    # releasing cached blocks. No weights or precision are changed.
                     if robot_first:
                         node = backend.graph.current
                         if node is not None and node not in backend.graph.keyframes:
@@ -265,18 +259,14 @@ def _run(recon):
                         recon.restart_counts[:] = [backend.restarts[c] for c in RESTART_CAUSES]
                     finally:
                         recon.output_lock.release()
-            # Bound work per turn; dirty slots coalesce while the display is behind.
             for _ in range(recon.ring.slots):
                 dirty = np.flatnonzero(backend.dirty)
                 start = np.searchsorted(dirty, cursor)
                 ordered = np.concatenate((dirty[start:], dirty[:start]))
-                # Fades must reach GL and be acknowledged even under a stream of
-                # refreshed slots; otherwise a full pool can never release victims.
                 eviction = backend.sequences[ordered] == 0
                 indices = np.concatenate((ordered[eviction], ordered[~eviction]))[
                     : recon.ring.batch
                 ]
-                # A changed slot count must reach GL even with nothing dirty.
                 if not len(indices) and len(backend.keys) == published_slots:
                     break
                 contributing = backend.sequences[indices] > 0
@@ -318,8 +308,6 @@ def _run(recon):
         if not recon.stopped.value:
             recon.errors.send("GPU admission stopped")
     except Exception as exc:
-        # The pilot shows the first line; its log keeps the cause. This spawned process
-        # has no log file of its own, so the traceback travels with the message.
         torch = sys.modules.get("torch")
         if torch is not None and isinstance(exc, torch.cuda.OutOfMemoryError):
             recon.report_oom(exc)
@@ -351,9 +339,6 @@ class Reconstruction:
         precision="full",
         input_resolution=100,
     ):
-        """tracking: for SLAM, "robot" fuses the robot's Motion with vision (it needs the
-        robot's motion_noise); "vision" is MASt3R-SLAM alone, steered by the pose prior
-        each frame carries."""
         if not 1 <= max_splats <= MAX_SLOT_COUNT:
             raise ValueError(f"Max splats must be between 1 and {MAX_SLOT_COUNT:,}")
         if not all(np.isfinite(v) and v > 0 for v in (voxel_size, fade_seconds)):
@@ -390,11 +375,10 @@ class Reconstruction:
         self.output_camera = context.RawArray("f", 16)
         self.output_correction = context.RawArray("f", np.eye(4).ravel().tolist())
         self.motion_ring = MotionRing(context)
-        # Head IMU and ToF readings (Pilot._sensors): a few per robot tick, small.
         self.sensor_queue = context.Queue(maxsize=256)
         self.output_captured = context.RawValue("d", 0)
         self.tracked = context.RawValue("Q", 0)
-        self.integrated = context.RawValue("Q", 0)  # backend calls, including pose-only frames
+        self.integrated = context.RawValue("Q", 0)
         self.matched = context.RawValue("Q", 0)
         self.blurred = context.RawValue("Q", 0)
         self.scene_slots = context.RawValue("I", 0)
@@ -402,9 +386,9 @@ class Reconstruction:
         self.dirty_slots = context.RawValue("I", 0)
         self.oldest_dirty_capture = context.RawValue("d", 0)
         self.work_seconds = context.RawValue("d", 0)
-        self.work_total = context.RawValue("d", 0)  # Seconds integrating, for per-second means.
+        self.work_total = context.RawValue("d", 0)
         self.vram_free = context.RawValue("Q", 0)
-        self.vram_cached = context.RawValue("Q", 0)  # Torch/CuPy blocks held for reuse.
+        self.vram_cached = context.RawValue("Q", 0)
         self.cache_releases = context.RawValue("Q", 0)
         self.input_age_seconds = context.RawValue("d", 0)
         self.skipped_inputs = context.RawValue("Q", 0)
@@ -417,9 +401,6 @@ class Reconstruction:
             if self.tracking_mode == "robot"
             else "Starting MASt3R-SLAM"
         )
-        # The worker publishes only between integrations, which take ~100 ms with
-        # SLAM; a whole frame's refreshed slots must fit in one turn or they queue
-        # behind the next frame. The display still drains a bounded few per frame.
         self.ring = UpdateRing(context, self.epoch, fade_seconds, slots=16)
         pixels = intrinsics.width * intrinsics.height
         self.rgb = context.RawArray("B", pixels * 3)
@@ -428,14 +409,13 @@ class Reconstruction:
         self.captured = context.RawValue("d", 0)
         self.measured = context.RawValue("b", False)
         self.sequence = context.RawValue("Q", 0)
-        self.budget = context.RawValue("I", max_splats)  # The pilot's Max splats.
-        self.splat_limit = context.RawValue("I", max_splats)  # What also fits in VRAM.
+        self.budget = context.RawValue("I", max_splats)
+        self.splat_limit = context.RawValue("I", max_splats)
         self.slot_capacity = context.RawValue("I", 0)
         self.input_lock = context.Lock()
         self.stopped = context.RawValue("b", False)
         self.admission = Admission(context, self.stopped)
         reader, self.errors = context.Pipe(duplex=False)
-        # The worker has no log file of its own; what it notes goes to the pilot's.
         notes, self.notes = context.Pipe(duplex=False)
         self.process = None
         process = context.Process(target=_run, args=(self,), name="ito-reconstruction")
@@ -552,8 +532,6 @@ class Reconstruction:
             self.output_lock.release()
 
     def correction(self):
-        """World-from-odometry for the newest pose: the robot's own camera pose, moved by it,
-        is the fused one. Identity unless tracking is robot-first; None while publishing."""
         if not self.output_lock.acquire(False):
             return None
         try:
@@ -562,14 +540,10 @@ class Reconstruction:
             self.output_lock.release()
 
     def motion(self, samples):
-        """The robot's camera motion on the pilot clock, (time, world-from-camera, rad/s,
-        state) oldest first. Never waits: a busy worker gets them with the next batch."""
         if self.tracking_mode == "robot" and self.backend == "slam":
             self.motion_ring.put(samples)
 
     def sensors(self, imu, ranges):
-        """The robot's camera-mounted sensor readings on the pilot clock (Pilot._sensors).
-        Never waits: with the worker behind, the oldest readings give way."""
         if self.closed or self.tracking_mode != "robot" or self.backend != "slam":
             return
         for _ in range(2):
@@ -583,7 +557,6 @@ class Reconstruction:
                     pass
 
     def restarts(self):
-        """SLAM's local map restarts so far by cause; None while the worker is publishing."""
         if not self.output_lock.acquire(False):
             return None
         try:
@@ -660,7 +633,6 @@ class Reconstruction:
         return self.ring.poll()
 
     def close(self):
-        """Bounded even for a suspended or wedged worker."""
         if not self.closed:
             self.closed = True
             # A killed worker may leave an Event's internal condition locked forever.

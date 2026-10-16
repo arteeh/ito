@@ -1,5 +1,3 @@
-"""Read shipped SLAM assets in the reconstruction worker, never on the display thread."""
-
 import hashlib
 import importlib.util
 import json
@@ -12,19 +10,17 @@ from pathlib import Path
 
 
 def models_directory():
-    # The Windows release: models\ sits beside ito.exe and the runtime\ it starts.
     release = Path(sys.base_prefix).parent
     if (release / "ito.exe").is_file() and (release / "runtime").is_dir():
         return release / "models"
     checkout = Path(__file__).resolve().parents[2]
     if (checkout / "pyproject.toml").is_file():
         return checkout / "models"
-    # Console entry points live in bin/ on Unix and Scripts/ on Windows.
     return Path(sysconfig.get_path("scripts")) / "models"
 
 
 MODELS = models_directory()
-BUNDLE_VERSION = 5  # Bump when source pins, layout or kernel adaptations change.
+BUNDLE_VERSION = 5
 EXTENSIONS = ("lietorch_backends", "mast3r_slam_backends", "curope")
 MODEL_FILES = {
     "model.safetensors": "0a615eb05fa9db654050aa655945ee5696e7c6c1b7f93f1ee8c37249010f6feb",
@@ -87,7 +83,6 @@ def prepare(report):
         raise RuntimeError("MASt3R needs an NVIDIA CUDA device and driver")
 
     report("Loading MASt3R")
-    # Instantiate locally below; also disable upstream hub lookups and telemetry.
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
     try:
@@ -113,7 +108,6 @@ def load_model(weights, report, *, precision="full", precision_report=None):
         from mast3r.model import AsymmetricMASt3R
         from safetensors.torch import load_file
 
-        # No from_pretrained/hub path, pickle checkpoint, cache or runtime writes.
         model = AsymmetricMASt3R(**json.loads((weights / "config.json").read_text()))
         result = model.load_state_dict(load_file(weights / "model.safetensors"), strict=False)
         # Safetensors stores each shared tensor once; DPT's layer_rn list aliases layerN_rn.
@@ -147,8 +141,6 @@ def load_model(weights, report, *, precision="full", precision_report=None):
 
 
 class NetworkPrecision:
-    """Keep features inside the Half network; tracking and native kernels receive fp32."""
-
     def __init__(self, model, report):
         import torch
 
@@ -164,14 +156,11 @@ class NetworkPrecision:
             self.notify(active)
 
     def statistics(self):
-        # Called once a second between integrations, never from a network call.
         return 0 if self.invalid_count is None else int(self.invalid_count.item())
 
     def sanitize(self, result):
         import torch
 
-        # Head outputs share B,H,W. Reject a pixel if its points, descriptors or
-        # confidences overflow; both tracker confidence masks then ignore it.
         valid = torch.isfinite(result["pts3d"]).all(dim=-1)
         valid &= torch.isfinite(result["desc"]).all(dim=-1)
         valid &= torch.isfinite(result["conf"]) & torch.isfinite(result["desc_conf"])
@@ -184,8 +173,6 @@ class NetworkPrecision:
     def fp32_norm_weights(self):
         import torch
 
-        # Autocast already computes LayerNorm in fp32. Promote its rounded Half
-        # scale/bias once, preserving their values and avoiding casts at every call.
         for module in self.model.modules():
             if isinstance(module, torch.nn.LayerNorm):
                 module.float()
@@ -193,7 +180,6 @@ class NetworkPrecision:
     def native_positions(self):
         import torch
 
-        # MASt3R deep-copies the second decoder, including its separate RoPE module.
         ropes = {
             module.rope
             for module in self.model.modules()
@@ -218,9 +204,6 @@ class NetworkPrecision:
 
         @torch.inference_mode()
         def decoder(model, feat1, feat2, pos1, pos2, shape1, shape2):
-            # Upstream's decoder promotes every token to fp32 before the heads,
-            # only for autocast to demote it again. These are network internals;
-            # only head outputs cross the boundary to fp32 camera/solver math.
             dec1, dec2 = model._decoder(feat1, pos1, feat2, pos2)
             return (
                 model._downstream_head(1, dec1, shape1),
@@ -240,8 +223,6 @@ class NetworkPrecision:
                 result = original(*args, **kwargs)
             if name == "_downstream_head":
                 result = tensors(result, lambda t: t.float() if t.is_floating_point() else t)
-            # bf16 has fp32 range. fp16 cleanup and its counter stay entirely on
-            # the device; converting a reduction to bool would fence every call.
             if name == "_downstream_head" and self.dtype == torch.float16:
                 result = self.sanitize(result)
             return result

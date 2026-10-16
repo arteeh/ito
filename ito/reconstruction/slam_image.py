@@ -1,5 +1,3 @@
-"""One uncropped patch grid for MASt3R's image, points and camera calibration."""
-
 import math
 from functools import cache
 
@@ -23,9 +21,6 @@ def sensor_frame_type():
 
     class SensorFrame(Frame):
         def update_pointmap(self, points, confidence):
-            # The patch canvas includes no observation outside the fitted sensor.
-            # Ignore those pixels in tracking as well as scene admission; true black
-            # pixels inside the sensor remain ordinary observations.
             super().update_pointmap(
                 torch.where(self.sensor_pixels, points, 0),
                 torch.where(self.sensor_pixels, confidence, 0),
@@ -60,7 +55,6 @@ class SLAMImage:
         import torch
         from mast3r_slam.frame import Frame
 
-        # Fit the whole sensor into the nearest patch grid; only sub-patch padding remains.
         image = np.zeros((self.height, self.width, 3), np.uint8)
         width, height = self.scaled
         image[self.top : self.top + height, self.left : self.left + width] = cv2.resize(
@@ -72,8 +66,6 @@ class SLAMImage:
         normalized = (
             pixels.to(device="cuda", dtype=torch.float32).permute(2, 0, 1)[None] / 127.5 - 1
         )
-        # Dimensions are host metadata. The heads inspect them on the CPU; a
-        # CUDA shape would add a fence to every head, in Full and Half alike.
         shape = torch.tensor([[self.height, self.width]], dtype=torch.int32)
         frame_type = Frame
         if self.scaled != (self.width, self.height):

@@ -37,7 +37,6 @@ class _Stream:
         image = Image.fromarray(np.ascontiguousarray(rgb[..., :3]))
         if image.width > WIDTH:
             image = image.resize((WIDTH, round(image.height * WIDTH / image.width)), Image.BILINEAR)
-        # Video encoders need even sizes.
         image = image.crop((0, 0, image.width & ~1, image.height & ~1))
         name = f"{self.count:06d}.jpg"
         image.save(self.folder / name, quality=90)

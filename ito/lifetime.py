@@ -17,7 +17,6 @@ def child_environment() -> dict[str, str]:
 
 
 def follow_parent() -> None:
-    """Call first thing in a child process; a no-op unless the pilot app started it."""
     parent = os.environ.pop(PARENT, None)
     if parent is None or not sys.platform.startswith("linux"):
         return

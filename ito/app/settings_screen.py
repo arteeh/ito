@@ -1,5 +1,3 @@
-"""The same button-only settings page in the desktop window and VR panel."""
-
 import logging
 from concurrent.futures import ThreadPoolExecutor
 
@@ -37,7 +35,6 @@ class SettingsScreen:
 
     @staticmethod
     def persist(selected):
-        # Disk writes and first-time log initialization must never hold the VR draw thread.
         try:
             save(selected)
         except OSError as exc:

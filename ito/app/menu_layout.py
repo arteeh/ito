@@ -1,5 +1,3 @@
-"""One centred, font-scaled content width for desktop and headset menu screens."""
-
 from contextlib import contextmanager
 
 from imgui_bundle import imgui

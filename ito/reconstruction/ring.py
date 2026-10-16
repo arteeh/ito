@@ -22,7 +22,6 @@ class SplatUpdate:
     epoch: float
     fade_seconds: float
     acknowledge: Callable[[], None] | None = None
-    # Actual contributing frames, not the most recent backend call. Empty for evictions.
     observations: tuple[tuple[int, float], ...] = ()
 
 
@@ -149,20 +148,12 @@ class UpdateRing:
             self.locks[slot].release()
 
 
-# The robot's motion samples cross to the worker as rows of time, a 4x4 world-from-camera
-# pose, camera-frame angular velocity and a state index.
 MOTION_STATES = ("standing", "walking", "turning", "held", "fallen")
 MOTION_CAPACITY = 512  # 10 s at robotd's 50 Hz
 MOTION_FIELDS = 1 + 16 + 3 + 1
 
 
 class MotionRing:
-    """Single-writer shared ring of motion samples from the pilot to the worker.
-
-    The writer never waits: a busy lock keeps the samples for its next call. The worker
-    reads everything written since its last read.
-    """
-
     def __init__(self, context, capacity=MOTION_CAPACITY):
         self.capacity = capacity
         self.data = context.RawArray("d", capacity * MOTION_FIELDS)
@@ -171,7 +162,6 @@ class MotionRing:
         self.pending = []
 
     def put(self, samples):
-        """samples: (time, 4x4 world-from-camera, angular velocity, state name), oldest first."""
         self.pending.extend(samples)
         del self.pending[: -self.capacity]
         if not self.pending or not self.lock.acquire(False):
@@ -192,7 +182,6 @@ class MotionRing:
             self.lock.release()
 
     def read(self, cursor):
-        """(rows since cursor, new cursor); rows lost to a lapped reader are skipped."""
         with self.lock:
             written = self.written.value
             first = max(cursor, written - self.capacity)

@@ -1,5 +1,3 @@
-"""Desktop tracking and input, using SDL's standardized controller mappings."""
-
 import json
 import logging
 import math
@@ -25,9 +23,8 @@ class PilotInput:
     timestamp: float
     head: FloatArray
     movement: tuple[float, float, float]  # right, up, forward; normalized [-1, 1]
-    look: tuple[float, float]  # right/up stick
+    look: tuple[float, float]
     buttons: frozenset[str]
-    # stop, e_stop, resume, focus_stop, rearm (scene click after focus_stop); edge triggered
     commands: tuple[str, ...]
     active: bool
     quit: bool = False
@@ -84,7 +81,6 @@ class PilotScript:
                 pygame.event.post(pygame.event.Event(kind, pos=position, button=1))
 
     def step(self, now: float) -> tuple[dict | None, bool]:
-        """The step running now, and whether it just started."""
         if self.started is None:
             self.started = now
         elapsed, end = now - self.started, 0.0
@@ -109,9 +105,9 @@ class DesktopInput:
         # the view there, so recentering never swings the robot back to where it started.
         self.heading: Callable[[], float] = lambda: 0.0
         self.captured = False
-        self.grabbing: str | None = None  # "batch", then "baseline": motion not to look with
+        self.grabbing: str | None = None
         self.active = True
-        self.refocus = False  # Focus loss stopped the robot and no safety key followed.
+        self.refocus = False
         self.translate = True
         self.sensitivity = 0.0025
         self.invert_y = False
@@ -312,7 +308,6 @@ class DesktopInput:
         )
 
     def recenter(self) -> None:
-        """Put the view back on the robot: at its camera, level, looking where it looks now."""
         try:
             heading = float(self.heading())
         except Exception:

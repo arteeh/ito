@@ -10,13 +10,9 @@ from contextlib import nullcontext
 import numpy as np
 
 LEVELS = 32  # Power-of-two cell sizes from 2^-16 to 2^15 world units.
-KEEP = 1e30  # Fade deadline of a splat nothing has evicted: never.
-# Slots are allocated on demand, doubling up to the budget: the GL buffer holds a scene's
-# own splats, not its limit.
+KEEP = 1e30
 FIRST_SLOTS = 65_536
-# A key no voxel has (voxel keys use bits 0-61): a moved splat's fading original.
 MOVED = 1 << 62
-# Per-slot state: type, value in an empty slot, shape per slot.
 SLOT_FIELDS = {
     "records": (np.float32, 0, (4, 4)),
     "keys": (np.int64, -1, ()),
@@ -50,8 +46,6 @@ class RGBDBackend:
                 import cupy
 
                 if cupy.cuda.runtime.getDeviceCount():
-                    # Compile and run one kernel now: a missing toolkit must surface here,
-                    # where "auto" can still fall back, not mid-session.
                     float((cupy.arange(4, dtype=cupy.float32) * 2).sum())
                     self.xp = cupy
             except Exception as exc:
@@ -106,17 +100,12 @@ class RGBDBackend:
         return int(np.count_nonzero(self.keys >= 0))
 
     def grow(self, slots):
-        # Counted once: the fields grow one by one, keys among them.
         added = slots - len(self.keys)
         for name, (dtype, empty, shape) in SLOT_FIELDS.items():
             extra = np.full((added, *shape), empty, dtype)
             setattr(self, name, np.concatenate((getattr(self, name), extra)))
 
     def resize(self, budget, now):
-        """A new splat limit; returns how many of the longest-unseen splats it retires.
-
-        Slots grow on demand; a smaller budget gives its slots back through compact().
-        """
         self.budget = budget
         excess = max(0, self.count - budget - int(self.retiring.sum()))
         candidates = np.flatnonzero((self.keys >= 0) & ~self.retiring)
@@ -125,8 +114,6 @@ class RGBDBackend:
         return excess
 
     def compact(self):
-        """Move live splats from slots past the budget into free ones below it; once the
-        rest has faded, drop those slots. Returns whether the slot count changed."""
         high = np.arange(self.budget, len(self.keys))
         movers = high[(self.keys[high] >= 0) & ~self.retiring[high]]
         free = np.flatnonzero(self.keys[: self.budget] < 0)
@@ -136,10 +123,8 @@ class RGBDBackend:
             for name in SLOT_FIELDS:
                 array = getattr(self, name)
                 array[target] = array[source]
-            self.sequences[target] = 0  # A move is no new observation.
+            self.sequences[target] = 0
             self.dirty[target] = True
-            # The original fades out under its copy, never matched again: observations
-            # refresh only the copy.
             self.keys[source] = MOVED + source
             self.retire(source, pressure=True)
         if (self.keys[self.budget :] >= 0).any():
@@ -149,13 +134,11 @@ class RGBDBackend:
         return True
 
     def oldest(self, candidates, n):
-        # A partial selection: a full budget is too many slots to sort every frame.
         if n >= len(candidates):
             return candidates
         return candidates[np.argpartition(self.seen[candidates], n - 1)[:n]]
 
     def retire(self, indices, *, pressure=False):
-        # Preserve the natural deadline so delayed eviction packets cannot revive stale geometry.
         self.records[indices, 3, 3] = 1
         self.retiring[indices] = True
         self.pressure_victims[indices] = pressure
@@ -210,7 +193,6 @@ class RGBDBackend:
                 seen = ahead & (u >= 0) & (u < width) & (v >= 0) & (v < height)
                 observed = xp.zeros(len(batch), xp.float32)
                 observed[seen] = depth[v[seen], u[seen]]
-                # On or in front of the seen surface, within depth noise and the splat's size.
                 stale = (observed > 0) & (z < observed * 1.1 + 2 * size)
                 if xp is not np:
                     stale = xp.asnumpy(stale)
@@ -232,12 +214,6 @@ class RGBDBackend:
         self.carve(camera, i.fx, i.fy, i.cx, i.cy, observed, now)
 
     def integrate_points(self, points, colors, now, sizes=None):
-        """Fuse world-space dense points through the same budget, fade and eviction policy.
-
-        Sizes are optional per-point cell edges in world units. They snap to power-of-two
-        levels, so near and far surfaces each get splats about one pixel footprint wide
-        instead of one fixed voxel that is either huge or needlessly fine.
-        """
         xp = self.xp
         with self.gpu_chunk("voxelize"):
             valid = xp.all(xp.isfinite(points), axis=1)
@@ -259,8 +235,6 @@ class RGBDBackend:
             keys = (levels << 57) | (cells[:, 0] << 38) | (cells[:, 1] << 19) | cells[:, 2]
             keys, unique = xp.unique(keys, return_index=True)
             points, colors, cell = points[unique], colors[unique], cell[unique]
-            # Match against the live slots where the keys are: sorting a full budget of
-            # keys on the CPU costs more than a dense frame's whole GPU pass.
         with self.gpu_chunk("match"):
             occupied = np.flatnonzero(self.keys >= 0)
             stored = xp.asarray(self.keys[occupied])
@@ -289,14 +263,12 @@ class RGBDBackend:
         self.refreshed += len(slots)
         refreshed_slots, previous_seen = slots.copy(), self.seen[slots].copy()
         new = np.flatnonzero(~matched)
-        # Keep the same spare as the pressure rule below, so growth comes before eviction.
         needed = self.count + len(new) + self.budget // 8
         if len(self.keys) < min(needed, self.budget):
             self.grow(min(self.budget, max(needed, 2 * len(self.keys))))
         free = np.flatnonzero(self.keys[: self.budget] < 0)
         room = max(0, self.budget - self.count)
         admitted = min(len(new), len(free), room)
-        # Spread admissions over the image instead of favoring one sorted spatial edge.
         selected = new[np.linspace(0, len(new) - 1, admitted, dtype=int)] if admitted else new[:0]
         slots = np.concatenate((slots, free[:admitted]))
         observed = np.concatenate((observed, selected))
@@ -311,8 +283,6 @@ class RGBDBackend:
         self.records[slots, 2, 0] = 1
         self.records[slots, 3, :3] = (colors[observed] / 255 - 0.5) / 0.2820947918
         self.dirty[slots] = True
-        # Keep a little room free: splats the view replaces hold their slots while they
-        # fade, and the next frame's own splats must not wait for them.
         spare = max(0, self.budget - self.count) + int(self.retiring.sum())
         wanted = len(new) - admitted + self.budget // 8
         pressure = min(max(0, wanted - spare), max(1, self.budget // 4))
@@ -320,9 +290,6 @@ class RGBDBackend:
         if pressure:
             victims = self.oldest(candidates, pressure)
             self.retire(victims, pressure=True)
-            # If this view touches the entire pool, there may be no unseen victim.
-            # Make room for genuinely new detail rather than refreshing a full
-            # pool forever. Prefer slots least recently seen before this frame.
             missing = min(pressure - len(victims), len(new) - admitted, len(refreshed_slots))
             if missing > 0:
                 chosen = np.argpartition(previous_seen, missing - 1)[:missing]
