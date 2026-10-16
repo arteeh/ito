@@ -13,8 +13,20 @@ class Registration:
         cv2.setNumThreads(1)
         self.map_from_estimator = np.eye(4)
         self.accepted = 0
+        self.frames = {}
+
+    def remember(self, node, estimated, mapped, live_nodes):
+        self.frames = {key: value for key, value in self.frames.items() if key in live_nodes}
+        self.frames[node] = (estimated.copy(), mapped.copy())
 
     def revise(self, poses, views):
+        for node in reversed(self.frames):
+            if node in poses:
+                self.map_from_estimator = self.frames[node][1] @ np.linalg.inv(poses[node])
+                for key, pose in poses.items():
+                    if key in self.frames:
+                        self.frames[key] = (pose.copy(), self.frames[key][1])
+                return
         for view in reversed(views):
             if view.node in poses:
                 self.map_from_estimator = view.pose @ np.linalg.inv(poses[view.node])

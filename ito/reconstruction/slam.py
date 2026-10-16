@@ -83,6 +83,7 @@ class SLAMBackend(GaussianBackend):
         self.unmatched_since = None
         self.recalls = 0
         self.waiting = False
+        self.retired_keyframes = 0
         from .registration import Registration
 
         self.registration = Registration()
@@ -110,7 +111,9 @@ class SLAMBackend(GaussianBackend):
             self.waiting = True
             return
         self.waiting = False
-        self.frontend.forget(graph.expire(self.motion.times[0]))
+        expired = graph.expire(self.motion.times[0])
+        self.retired_keyframes += len(expired)
+        self.frontend.forget(expired)
         node = graph.add_frame(captured)
         predicted = graph.pose(node)
         last = graph.latest_keyframe()
@@ -160,6 +163,7 @@ class SLAMBackend(GaussianBackend):
             self.frontend.correct(poses, scale)
         self.revise(poses)
         if dropped:
+            self.retired_keyframes += len(dropped)
             self.frontend.forget(dropped)
         if cloud is not None:
             cloud = cloud._replace(points=cloud.points * scale)
@@ -195,6 +199,7 @@ class SLAMBackend(GaussianBackend):
         mapped, scale = self.registration.align(
             image, -points[..., 2], pose, cloud.intrinsics, self.views
         )
+        self.registration.remember(node, pose, mapped, self.graph.nodes)
         self.camera_pose = mapped.astype(np.float32)
         self.correction = (
             self.registration.map_from_estimator @ self.graph.correction(node)

@@ -243,6 +243,10 @@ def _run(recon):
                             getattr(backend, "registration", None), "accepted", 0
                         ),
                         estimator_keyframes=len(backend.graph.keyframes) if robot_first else None,
+                        retired_keyframes=getattr(backend, "retired_keyframes", 0),
+                        oldest_surface_capture=float(backend.captures[backend.keys >= 0].min())
+                        if backend.count
+                        else None,
                         recalls=getattr(backend, "recalls", None),
                         matched=getattr(backend, "matched", None),
                         backend_calls=recon.integrated.value,
