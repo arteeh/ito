@@ -36,10 +36,11 @@ class GaussianBackend(GaussianSlots):
         self.views = []
         self.anchors = {}
         self.next_anchor = 0
-        self.fit_cursor = 0
+        self.fit_steps = 0
         self.next_key = 0
         self.fitter = None
         self.refits = 0
+        self.pending_fit = None
 
     def revise(self, poses):
         changed = False

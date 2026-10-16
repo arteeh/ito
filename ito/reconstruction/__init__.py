@@ -134,7 +134,11 @@ def _run(recon):
                     except queue.Empty:
                         break
             frame = None
-            take = recon.sequence.value != sequence and recon.admission.available()
+            take = (
+                recon.sequence.value != sequence
+                and recon.admission.available()
+                and backend.pending_fit is None
+            )
             if take and recon.input_lock.acquire(False):
                 try:
                     if recon.sequence.value != sequence:
@@ -234,7 +238,7 @@ def _run(recon):
                         map_anchors=len(backend.anchors),
                         retained_views=len(backend.views),
                         local_refits=backend.refits,
-                        fit_steps=sum(v.steps for v in backend.views),
+                        fit_steps=backend.fit_steps,
                         estimator_keyframes=len(backend.graph.keyframes) if robot_first else None,
                         recalls=getattr(backend, "recalls", None),
                         matched=getattr(backend, "matched", None),
@@ -284,6 +288,8 @@ def _run(recon):
                 indices = np.concatenate((ordered[eviction], ordered[~eviction]))[
                     : recon.ring.batch
                 ]
+                if backend.pending_fit is not None:
+                    indices = backend.pending_fit
                 if not len(indices) and len(backend.keys) == published_slots:
                     break
                 contributing = backend.sequences[indices] > 0
@@ -311,6 +317,7 @@ def _run(recon):
                 if len(indices):
                     cursor = (int(indices[-1]) + 1) % len(backend.keys)
                 backend.dirty[indices] = False
+                backend.pending_fit = None
                 revision += 1
             recon.scene_slots.value = backend.count
             recon.retiring_slots.value = int(backend.retiring.sum())

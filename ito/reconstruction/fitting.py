@@ -45,7 +45,7 @@ class LocalFit:
         h, w = view.image.shape[:2]
         cols = (w + PATCH - 1) // PATCH
         rows = (h + PATCH - 1) // PATCH
-        tile = (view.steps // STEPS) % (cols * rows)
+        tile = self.serial % (cols * rows)
         x, y = (tile % cols) * PATCH, (tile // cols) * PATCH
         left, top = max(0, x - HALO), max(0, y - HALO)
         right, bottom = min(w, x + PATCH + HALO), min(h, y + PATCH + HALO)
@@ -170,11 +170,13 @@ class LocalFit:
             return
         b.records[ids] = records
         b.dirty[ids] = True
+        b.pending_fit = ids.copy()
         older = b.captures[ids] > a["view"].captured
         b.captures[ids[older]] = a["view"].captured
         b.sequences[ids[older]] = a["view"].sequence
         a["view"].exposure = exposure
         a["view"].steps += 1
+        b.fit_steps += 1
         a["steps"] += 1
         if a["steps"] >= STEPS:
             self.active = None
