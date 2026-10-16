@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from importlib.util import find_spec
 
 import numpy as np
-from scipy.ndimage import distance_transform_edt
+from scipy.ndimage import distance_transform_edt, median_filter
 from scipy.spatial.transform import Rotation
 
 from .slots import KEEP, GaussianSlots
@@ -28,6 +28,8 @@ class Observation:
     sequence: int
     steps: int = 0
     exposure: np.ndarray | None = None
+    features: tuple | None = None
+    estimated_pose: np.ndarray | None = None
 
 
 class GaussianBackend(GaussianSlots):
@@ -56,13 +58,14 @@ class GaussianBackend(GaussianSlots):
             pose = poses.get(view.node)
             if pose is None:
                 continue
-            delta = np.linalg.inv(view.pose) @ pose
+            previous = view.pose if view.estimated_pose is None else view.estimated_pose
+            delta = np.linalg.inv(previous) @ pose
             angle = np.arccos(np.clip((np.trace(delta[:3, :3]) - 1) / 2, -1, 1))
             if angle < 1e-5 and np.linalg.norm(delta[:3, 3]) < 1e-5:
                 continue
             # Estimator corrections change the fitting cameras, never published
             # anchor transforms. A large correction restarts the affected local fit.
-            view.pose = pose.copy()
+            view.estimated_pose = pose.copy()
             if angle * view.intrinsics[0] > 2 or np.linalg.norm(delta[:3, 3]) > 0.01:
                 view.steps = 0
                 self.refits += 1
@@ -160,9 +163,6 @@ class GaussianBackend(GaussianSlots):
             self.contribution[winners] = counts
             # Same-pixel, same-depth duplicates provide no additional coverage. Do
             # not confuse an occluded background with a redundant visible surface.
-            duplicate = agreement & (self.contribution[live] == 0)
-            redundant = live[duplicate]
-            self.retire(redundant)
             surface[np.isin(surface, gone)] = -1
         covered = surface >= 0
         mapped_depth = np.zeros_like(depth)
@@ -195,8 +195,18 @@ class GaussianBackend(GaussianSlots):
             p = points[y, x]
             fx, fy, _, _ = intrinsics
             d = -p[:, 2]
-            dx = (points[y, np.minimum(x + 1, width - 1)] - points[y, np.maximum(x - 1, 0)]) / 2
-            dy = (points[np.minimum(y + 1, height - 1), x] - points[np.maximum(y - 1, 0), x]) / 2
+            # Learned depth has pixel noise; differentiating it directly makes long,
+            # nearly edge-on splats. Filter only the tangent estimate, not the centers.
+            filtered = median_filter(depth, size=5)
+            tangent_points = points * (filtered / np.maximum(depth, 1e-6))[..., None]
+            dx = (
+                tangent_points[y, np.minimum(x + 2, width - 1)]
+                - tangent_points[y, np.maximum(x - 2, 0)]
+            ) / 4
+            dy = (
+                tangent_points[np.minimum(y + 2, height - 1), x]
+                - tangent_points[np.maximum(y - 2, 0), x]
+            ) / 4
             smooth = np.isfinite(dx).all(-1) & np.isfinite(dy).all(-1)
             smooth &= (np.linalg.norm(dx, axis=1) < d * 0.04) & (
                 np.linalg.norm(dy, axis=1) < d * 0.04
@@ -256,6 +266,7 @@ class GaussianBackend(GaussianSlots):
                     intrinsics,
                     self.source_captured,
                     self.source_sequence,
+                    estimated_pose=getattr(self, "observation_estimate", camera).copy(),
                 )
             )
             if len(self.views) > MAX_VIEWS:

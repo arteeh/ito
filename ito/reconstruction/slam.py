@@ -83,6 +83,9 @@ class SLAMBackend(GaussianBackend):
         self.unmatched_since = None
         self.recalls = 0
         self.waiting = False
+        from .registration import Registration
+
+        self.registration = Registration()
         report("MASt3R ready; waiting for camera and robot motion")
 
     def bind_admission(self, admission):
@@ -165,14 +168,16 @@ class SLAMBackend(GaussianBackend):
             self.place(cloud, pose, now + clock.now() - started)
 
     def pose_at(self, captured):
-        return self.graph.pose_at(captured)
+        pose = self.graph.pose_at(captured)
+        return None if pose is None else self.registration.map_from_estimator @ pose
 
     def _publish(self, node):
         graph = self.graph
         graph.publish(node)
         pose = graph.pose(node)
-        self.camera_pose = pose.astype(np.float32)
-        self.correction = graph.correction(node).astype(np.float32)
+        mapping = self.registration.map_from_estimator
+        self.camera_pose = (mapping @ pose).astype(np.float32)
+        self.correction = (mapping @ graph.correction(node)).astype(np.float32)
         self.tracked += 1
         self.report(
             f"Robot-first tracking | {self.tracked} frames, "
@@ -184,11 +189,21 @@ class SLAMBackend(GaussianBackend):
 
     def place(self, cloud, pose, when):
         height, width = cloud.shape
+        points = cloud.points.detach().float().cpu().numpy().reshape(height, width, 3)
+        image = cloud.colors.detach().cpu().numpy().reshape(height, width, 3)
+        self.observation_estimate = pose
+        mapped, scale = self.registration.align(
+            image, -points[..., 2], pose, cloud.intrinsics, self.views
+        )
+        self.camera_pose = mapped.astype(np.float32)
+        self.correction = (
+            self.registration.map_from_estimator @ self.graph.correction(self.graph.current)
+        ).astype(np.float32)
         self.observe(
-            cloud.points.detach().float().cpu().numpy().reshape(height, width, 3),
-            cloud.colors.detach().cpu().numpy().reshape(height, width, 3),
+            points * scale,
+            image,
             cloud.valid.detach().cpu().numpy(),
-            pose,
+            mapped,
             cloud.intrinsics,
             when,
             node=self.graph.current,
