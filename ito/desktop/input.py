@@ -38,16 +38,12 @@ class PilotInput:
 
 
 class PilotScript:
-    """Opt-in scripted pilot for recorded by-eye tests: ITO_PILOT_SCRIPT=<file.json>.
-
-    The file is a list of steps run in order, each held for "for" seconds:
-    {"for": 3, "keys": "w", "turn": 30, "tilt": -10, "do": "resume", "note": "..."}
-    keys are held WASD letters; turn and tilt are head rates in degrees per second
-    (positive: right, up); do is a pilot command sent once as the step starts (resume,
-    stop, e_stop, recenter, quit). The clock starts at the first poll. The script owns
-    the input whatever window has focus, so a person can use the PC meanwhile; real
-    keys and the mouse still work alongside it. Pair it with ITO_RECORD.
-    """
+    """ITO_PILOT_SCRIPT=<file.json>: a list of steps run in order, each held for "for" seconds:
+    {"for": 3, "keys": "w", "turn": 30, "tilt": -10, "do": "resume", "press": "f12",
+    "click": "disconnect", "note": "..."}. keys: held WASD letters; turn/tilt: head rates in
+    degrees/s (positive right, up); do: a pilot command as the step starts (resume, stop,
+    e_stop, recenter, quit); press: a pygame key name tapped once; click: an overlay control
+    (Overlay.layout) clicked once. The script owns the input whatever window has focus."""
 
     KEYS = {"w": (0, 0, 1), "s": (0, 0, -1), "a": (-1, 0, 0), "d": (1, 0, 0)}
 
@@ -55,6 +51,7 @@ class PilotScript:
         self.steps = steps
         self.started: float | None = None
         self.index = -1
+        self.controls: dict = {}
 
     @classmethod
     def from_env(cls) -> "PilotScript | None":
@@ -70,6 +67,22 @@ class PilotScript:
         )
         return cls(steps)
 
+    def act(self, step: dict) -> None:
+        if step.get("press"):
+            code = pygame.key.key_code(step["press"])
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=code, mod=0, unicode=""))
+            pygame.event.post(pygame.event.Event(pygame.KEYUP, key=code, mod=0))
+        if step.get("click"):
+            position = self.controls.get(step["click"])
+            if position is None:
+                log.warning("Pilot script: no control %r on screen", step["click"])
+                return
+            pygame.event.post(
+                pygame.event.Event(pygame.MOUSEMOTION, pos=position, rel=(0, 0), buttons=(0, 0, 0))
+            )
+            for kind in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP):
+                pygame.event.post(pygame.event.Event(kind, pos=position, button=1))
+
     def step(self, now: float) -> tuple[dict | None, bool]:
         """The step running now, and whether it just started."""
         if self.started is None:
@@ -82,7 +95,7 @@ class PilotScript:
                 if fresh:
                     self.index = index
                     diagnostics.event("pilot_script_step", index=index, note=step.get("note", ""))
-                    log.info("Pilot script step %d: %s", index, step.get("note", step))
+                    log.info("Pilot script step %d t=%.3f: %s", index, now, step.get("note", step))
                 return step, fresh
         return None, self.index != len(self.steps)
 
@@ -256,6 +269,8 @@ class DesktopInput:
                     quit_requested = True
                     commands.append("stop")
             else:
+                if fresh:
+                    self.script.act(step)
                 if fresh and step.get("do") == "recenter":
                     self.recenter()
                 elif fresh and step.get("do") == "quit":

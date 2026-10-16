@@ -1,9 +1,7 @@
 """Keep the CAD body visible in Pollen's viewer without occluding its head camera."""
 
 import atexit
-import base64
 import collections
-import json
 import os
 import socket
 import struct
@@ -17,19 +15,6 @@ from mjlab_microduck.sim import body_server
 from mjlab_microduck.sim.camera import Camera, to_uyvy
 
 from drivers.microduck import lens
-
-WORLD = np.array([[0, -1, 0], [0, 0, 1], [-1, 0, 0]])
-UPRIGHT = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]])
-THUMB = 24
-
-
-def thumbnail(rgb):
-    """A THUMB x THUMB grey image of a frame, base64: enough to tell frames apart."""
-    height, width = rgb.shape[:2]
-    rows = (np.arange(THUMB) + 0.5) * height / THUMB
-    columns = (np.arange(THUMB) + 0.5) * width / THUMB
-    grey = rgb[rows.astype(int)][:, columns.astype(int)].mean(axis=2)
-    return base64.b64encode(grey.astype(np.uint8).tobytes()).decode("ascii")
 
 
 class HeadCamera(Camera):
@@ -50,11 +35,6 @@ class HeadCamera(Camera):
         )
         super().__init__(model, name, width, height, mount=mount)
         self.mount = mount
-        # ITO_MICRODUCK_TRUTH names a file for one line per rendered frame: when it was taken
-        # (perf_counter, the driver's clock), the camera's true pose and a thumbnail to find
-        # it again among the frames the pilot received (e2e/truth.py).
-        path = os.environ.get("ITO_MICRODUCK_TRUTH")
-        self.truth = open(path, "a", buffering=1) if path else None
         # ITO_MICRODUCK_BLUR=N averages N renders into each frame: motion blur the simulator
         # otherwise never shows (drive (f) of #36). The exposure is their span; the truth pose
         # is the middle one's. ThreadedHeadCamera renders N consecutive physics steps (5 ms
@@ -66,23 +46,15 @@ class HeadCamera(Camera):
 
     def render(self, world):
         """Render the live world now: each of the N renders reads it under the world's lock."""
-        frames, poses = [], []
+        frames = []
         for _ in range(self.blur):
             with world.lock:
-                poses.append((time.perf_counter(), self.scene(world.data)))
+                self.scene(world.data)
             frames.append(self.draw())
-        self.publish(frames, poses)
+        self.publish(frames)
 
     def scene(self, data):
-        """Copy what `data` shows into the renderer; return the camera's true pose."""
         self.renderer.update_scene(data, camera=self.camera, scene_option=self.option)
-        camera = np.eye(4)
-        # MuJoCo's world (z up) and camera to Ito's (y up), the image upright.
-        camera[:3, :3] = WORLD @ data.cam_xmat[self.camera].reshape(3, 3)
-        if self.mount == 90:
-            camera[:3, :3] = camera[:3, :3] @ UPRIGHT
-        camera[:3, 3] = WORLD @ data.cam_xpos[self.camera]
-        return camera
 
     def draw(self):
         # MuJoCo's shadow pass produces dark floor triangles at this low camera height.
@@ -90,22 +62,8 @@ class HeadCamera(Camera):
         self.renderer.scene.flags[mujoco.mjtRndFlag.mjRND_SHADOW] = False
         return self.renderer.render().copy()
 
-    def publish(self, frames, poses):
-        """frames: the N renders of one frame; poses: (time taken, true pose) of each."""
+    def publish(self, frames):
         rgb = frames[0] if self.blur == 1 else np.mean(frames, axis=0).astype(np.uint8)
-        if self.truth:
-            taken, camera = poses[len(poses) // 2]
-            self.truth.write(
-                json.dumps(
-                    dict(
-                        t=taken,
-                        exposure=poses[-1][0] - poses[0][0],
-                        camera=camera.ravel().tolist(),
-                        thumb=thumbnail(rgb),
-                    ),
-                )
-                + "\n"
-            )
         packed = to_uyvy(rgb)
         with self.lock:
             self.latest = packed
@@ -252,14 +210,12 @@ class ThreadedHeadCamera(HeadCamera):
             elif next_frame > now:
                 time.sleep(next_frame - now)
             start = time.perf_counter()
-            frames, poses = [], []
+            frames = []
             for state in states:
                 self.pose(kept, state)
-                # On the driver's clock, each render at its offset in simulated time.
-                taken = start + state[0] - states[0][0]
-                poses.append((taken, self.scene(kept)))
+                self.scene(kept)
                 frames.append(self.draw())
-            self.publish(frames, poses)
+            self.publish(frames)
             with self.lock:
                 self.seq += 1
                 self.fresh.notify_all()

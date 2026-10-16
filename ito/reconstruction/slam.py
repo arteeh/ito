@@ -55,8 +55,7 @@ SCALE_STEP = 0.01  # Between keyframes the front end takes a new scale past this
 class SLAMBackend(RGBDBackend):
     """frame_delay: the driver's estimate of how long before its capture_time a frame was
     exposed; exposure: how long the sensor integrates one, None if the driver cannot say.
-    aligner: a tracking.MapAligner, the map's say in every tracked frame's pose.
-    oracle: replaces fusion's pose with a known one (e2e/slam_replay's rungs)."""
+    aligner: a tracking.MapAligner, the map's say in every tracked frame's pose."""
 
     def __init__(
         self,
@@ -72,7 +71,6 @@ class SLAMBackend(RGBDBackend):
         input_resolution=100,
         precision_report=None,
         aligner=None,
-        oracle=None,
         **options,
     ):
         if frontend is None:
@@ -92,7 +90,6 @@ class SLAMBackend(RGBDBackend):
         self.aligner = aligner
         self.intrinsics = intrinsics
         self.aligned = 0  # frames the map aligner placed
-        self.oracle = oracle
         # A keyframe needs the robot's motion back to its exposure; a minute outlasts any
         # look around the room.
         self.motion = MotionBuffer(motion_noise, seconds=60.0)
@@ -141,8 +138,7 @@ class SLAMBackend(RGBDBackend):
         self.waiting = False
         self.frontend.forget(graph.expire(self.motion.times[0]))
         node = graph.add_frame(captured)
-        oracle = None if self.oracle is None else self.oracle(captured)
-        predicted = graph.pose(node) if oracle is None else oracle
+        predicted = graph.pose(node)
         last = graph.latest_keyframe()
         reference_time = graph.nodes[last].time if last is not None else captured
         _, covariance = self.motion.between(reference_time - graph.td, exposure)
@@ -150,7 +146,7 @@ class SLAMBackend(RGBDBackend):
         if gyro is None:
             gyro = self.motion.angular_velocity(exposure)
         spin = float(np.linalg.norm(gyro))
-        if oracle is None and spin * self.exposure * self.focal > BLUR_PIXELS:
+        if spin * self.exposure * self.focal > BLUR_PIXELS:
             self.blurred += 1
             graph.solve_frame()
             self._publish(node)
@@ -183,22 +179,16 @@ class SLAMBackend(RGBDBackend):
                     sum(w * value for w, (value, _) in zip(weights, seen, strict=True))
                     / sum(weights)
                 )
-        if oracle is not None:
-            graph.nodes[node].pose = np.array(oracle, dtype=np.float64)
-        else:
-            graph.solve_frame()
-            if self.aligner is not None:
-                found = self.aligner.align(rgb, graph.pose(node), self.intrinsics)
-                if found is not None and found[2] > 0 and graph.add_map(node, *found[:2]):
-                    graph.solve_frame()
-                    self.aligned += 1
+        graph.solve_frame()
+        if self.aligner is not None:
+            found = self.aligner.align(rgb, graph.pose(node), self.intrinsics)
+            if found is not None and found[2] > 0 and graph.add_map(node, *found[:2]):
+                graph.solve_frame()
+                self.aligned += 1
         poses, dropped = {}, []
         if result.keyframe:
             dropped = graph.promote()
-            if oracle is None:
-                poses = graph.solve_window()
-            else:
-                poses = {k: graph.pose(k) for k in graph.keyframes}
+            poses = graph.solve_window()
         scale = 1.0
         if poses or abs(graph.log_scale) > SCALE_STEP:
             scale = graph.fold_scale()

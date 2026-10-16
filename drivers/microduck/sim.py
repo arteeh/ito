@@ -74,7 +74,6 @@ def simulation(
     viewer=False,
     gl=None,
     camera_height=None,
-    truth=None,
     blur=1,
     board="beta",
     hfov=None,
@@ -109,8 +108,6 @@ def simulation(
         "ITO_MICRODUCK_CAMERA_HFOV": str(hfov),
         "ITO_MICRODUCK_CAMERA_FPS": "30",
     }
-    if truth is not None:
-        sim_env["ITO_MICRODUCK_TRUTH"] = str(Path(truth).resolve())
     sim_env["ITO_MICRODUCK_BLUR"] = str(blur)
     on_screen = sim_env["MUJOCO_GL"] == "glfw"
     if on_screen and Path("/dev/dxg").exists() and "GALLIUM_DRIVER" not in os.environ:
@@ -460,9 +457,6 @@ def main():
         "a beta, 360 on a zero3",
     )
     parser.add_argument(
-        "--truth", type=Path, help="write each head camera frame's true pose here (JSONL)"
-    )
-    parser.add_argument(
         "--blur",
         type=int,
         default=1,
@@ -497,7 +491,6 @@ def main():
             viewer=args.viewer,
             gl=args.gl,
             camera_height=args.camera_height,
-            truth=args.truth,
             blur=args.blur,
             board=args.board,
             hfov=args.beta_hfov if args.board == "beta" else None,

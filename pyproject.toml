@@ -73,6 +73,7 @@ packages = ["ito", "drivers"]
 
 [dependency-groups]
 dev = [
+    "imageio-ffmpeg>=0.6",
     "pillow>=12.3.0",
     "psutil>=7,<8",
     "ruff>=0.13",

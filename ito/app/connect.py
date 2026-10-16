@@ -15,7 +15,7 @@ from ito.xr import runtimes
 from . import settings
 from .menu_layout import MenuLayout
 
-# Where the last frame drew each control, so e2e scripts click what the pilot sees.
+# Control centres on the last frame.
 layout = {}
 
 

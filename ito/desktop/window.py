@@ -25,7 +25,7 @@ from ito.render.video import VideoPanel
 from .dispatch import DisplayDispatch
 from .input import DesktopInput, PilotInput
 from .overlay import Overlay, PilotStatus
-from .record import Recorder, from_env, heading
+from .record import Recorder, from_env
 from .settings import load_budget, save_budget
 
 log = logging.getLogger(__name__)
@@ -110,6 +110,8 @@ class DesktopWindow:
                 self.gpu.start()
             self.overlay = Overlay(self.context, self.max_splats)
             self.input = DesktopInput(speed)
+            if self.input.script is not None:
+                self.input.script.controls = self.overlay.layout
             log.info(
                 "OpenGL %s | %s", self.context.info["GL_VERSION"], self.context.info["GL_RENDERER"]
             )
@@ -163,33 +165,20 @@ class DesktopWindow:
                 source, state, on_input, max_frames, metrics, save_settings, dispatch, recorder
             )
         finally:
-            summary = self.performance.close(metrics)
+            self.performance.close(metrics)
             if recorder is not None:
-                recorder.close(summary)
+                recorder.close()
 
-    def _record(self, recorder: Recorder, now, current, pilot, frame, age, revision):
-        recorder.camera(current.video, current.video_time, now, current.robot_camera)
+    def _record(self, recorder: Recorder, current):
+        recorder.camera(current.video, current.video_time)
+        now = clock.now()
         if not recorder.due(now):
             return
         GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, 0)
         GL.glReadBuffer(GL.GL_BACK)
         GL.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1)
         pixels = GL.glReadPixels(0, 0, *self.size, GL.GL_RGB, GL.GL_UNSIGNED_BYTE)
-        recorder.pilot(
-            now,
-            pixels,
-            self.size,
-            frame=frame,
-            revision=revision,
-            gaussians=self.renderer.count,
-            flat_video=current.flat_video,
-            capture_age_ms=None if age is None else round(age * 1000, 1),
-            yaw=heading(current.robot_camera),
-            head_yaw=heading(pilot.head),
-            move=[round(v, 2) for v in pilot.movement],
-            look=[round(v, 2) for v in pilot.look],
-            performance=self.performance.last,
-        )
+        recorder.screen(now, pixels, self.size)
 
     def _draw_loop(
         self, source, state, on_input, max_frames, metrics, save_settings, dispatch, recorder
@@ -249,8 +238,6 @@ class DesktopWindow:
             self.draw_view(current, pilot.head, projection, self.screen, (0, 0, *self.size))
             visible_time = current.video_time if current.flat_video else captured_at
             age = None if visible_time is None else max(0, now - visible_time)
-            if recorder is not None:
-                self._record(recorder, now, current, pilot, frames, age, revision)
             budget = self.overlay.draw(
                 current.status,
                 pacing.get_fps(),
@@ -273,6 +260,8 @@ class DesktopWindow:
                     save_settings(budget)
                 except OSError as exc:
                     self.overlay.error = f"Could not save setting: {exc}"
+            if recorder is not None:
+                self._record(recorder, current)
             capture = None
             if pilot.screenshot:
                 try:

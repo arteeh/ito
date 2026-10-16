@@ -52,7 +52,7 @@ class Overlay:
         self.can_leave = self.leave = False  # Disconnect returns to the connect screen.
         self.simulation = None
         self.captured = False
-        self.layout = {}  # Where the last frame drew each control, so e2e clicks what pilots see.
+        self.layout = {}  # Control centres, for scripted clicks (ITO_PILOT_SCRIPT).
         self.prompt_status = None
         self.nudged = -math.inf  # When the pilot last tried to move a robot that is stopped.
 
