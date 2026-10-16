@@ -235,6 +235,8 @@ class GaussianBackend(GaussianSlots):
                 ray = self.records[matched, 0, :3] - camera[:3, 3]
                 self.records[matched, 0, :3] += ray * (offset / mz)[:, None]
                 self.dirty[matched] = True
+                self.captures[matched] = self.source_captured
+                self.sequences[matched] = self.source_sequence
                 # Cancel a private fit whose base records have just received evidence.
                 self.recover()
         covered = surface >= 0
