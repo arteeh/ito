@@ -4,10 +4,11 @@ Used by session.py --correction-after. The released application and simulator ar
 The correction changes the estimator's coordinate gauge, not the robot's measured motion.
 """
 
-import logging
+import json
 import os
 import runpy
 from collections import deque
+from pathlib import Path
 
 import numpy as np
 from scipy.spatial.transform import Rotation
@@ -42,11 +43,15 @@ def corrected(self, *args, captured, **kwargs):
         self.frontend.correct(poses, 1.0)
         self.revise(poses)
         self.manual_correction_done = True
-        logging.getLogger(__name__).info(
-            "Manual estimator correction at capture %.6f: "
-            "yaw 35 degrees, translation (1.2,0,-0.4) m",
-            captured,
+        event = dict(
+            event="manual_estimator_correction",
+            captured=captured,
+            transform=change.tolist(),
+            local_refits=self.refits,
         )
+        with Path(os.environ["ITO_TIMELINE"]).open("a") as out:
+            out.write(json.dumps(event) + "\n")
+        print(f"Manual estimator correction at capture {captured:.6f}", flush=True)
     return integrate(self, *args, captured=captured, **kwargs)
 
 

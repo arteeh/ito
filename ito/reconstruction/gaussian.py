@@ -44,6 +44,7 @@ class GaussianBackend(GaussianSlots):
         self.fitter = None
         self.refits = 0
         self.pending_fit = None
+        self.fusion_cursor = 0
         self.can_fit = (
             self.xp is not np and find_spec("torch") is not None and find_spec("gsplat") is not None
         )
@@ -84,6 +85,8 @@ class GaussianBackend(GaussianSlots):
 
             self.fitter = LocalFit(self)
         self.fitter.step()
+        if self.pending_fit is not None and self.fitter.active is not None:
+            self.fitter.step()
 
     def recover(self):
         if self.fitter is not None:
@@ -147,7 +150,8 @@ class GaussianBackend(GaussianSlots):
         if len(live):
             observed = depth[v, u]
             tolerance = np.maximum(0.05 * z, 2 * self.records[live, 1, :3].max(-1))
-            agreement = (observed > 0) & (np.abs(observed - z) <= tolerance)
+            depth_agreement = (observed > 0) & (np.abs(observed - z) <= tolerance)
+            agreement = depth_agreement.copy()
             color_error = np.abs(
                 self.records[live, 3, :3] * C0 + 0.5 - image[v, u].astype(np.float32) / 255
             ).max(-1)
@@ -187,6 +191,52 @@ class GaussianBackend(GaussianSlots):
             self.contribution[live[redundant]] = 0
             self.retire(live[redundant])
             surface[np.isin(surface, gone)] = -1
+            # Fuse only the frontmost matched surface. A bounded radial correction
+            # refines depth without sliding a sample across the current image. Colour
+            # updates fit the observed radiance; occluded background keeps its evidence.
+            visible = (peers == live) & depth_agreement & ~self.retiring[live]
+            selected = np.flatnonzero(visible)
+            if len(selected) > 4096:
+                sample = selected[(np.arange(1024) + self.fusion_cursor) % len(selected)]
+                self.fusion_cursor += len(sample)
+                remaining = np.setdiff1d(selected, sample, assume_unique=True)
+                worst = remaining[np.argpartition(color_error[remaining], -3072)[-3072:]]
+                selected = np.concatenate((sample, worst))
+            matched = live[selected]
+            if len(matched):
+                fx, fy, cx, cy = intrinsics
+                local = (self.records[matched, 0, :3] - camera[:3, 3]) @ camera[:3, :3]
+                mz = -local[:, 2]
+                pu = cx + fx * local[:, 0] / mz
+                pv = cy - fy * local[:, 1] / mz
+                from scipy.ndimage import map_coordinates
+
+                rgb = (
+                    np.stack(
+                        [
+                            map_coordinates(
+                                image[..., channel].astype(np.float32),
+                                [pv, pu],
+                                order=1,
+                                mode="nearest",
+                                prefilter=False,
+                            )
+                            for channel in range(3)
+                        ],
+                        -1,
+                    )
+                    / 255
+                )
+                weight = 1 / np.minimum(self.support[matched] + 1, 12)
+                self.records[matched, 3, :3] += weight[:, None] * (
+                    (rgb - 0.5) / C0 - self.records[matched, 3, :3]
+                )
+                offset = np.clip((observed[selected] - mz) * 0.05, -mz / fx * 0.1, mz / fx * 0.1)
+                ray = self.records[matched, 0, :3] - camera[:3, 3]
+                self.records[matched, 0, :3] += ray * (offset / mz)[:, None]
+                self.dirty[matched] = True
+                # Cancel a private fit whose base records have just received evidence.
+                self.recover()
         covered = surface >= 0
         mapped_depth = np.zeros_like(depth)
         centers = self.records[surface[covered], 0, :3] - camera[:3, 3]

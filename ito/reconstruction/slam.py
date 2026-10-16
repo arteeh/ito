@@ -111,10 +111,15 @@ class SLAMBackend(GaussianBackend):
             self.waiting = True
             return
         self.waiting = False
+        propagated = graph.predict(captured) if graph.latest() is not None else None
         expired = graph.expire(self.motion.times[0])
         self.retired_keyframes += len(expired)
         self.frontend.forget(expired)
-        node = graph.add_frame(captured)
+        if expired and not graph.keyframes:
+            graph.anchor = propagated.copy()
+        node = graph.add_frame(
+            captured, pose=propagated if expired and not graph.keyframes else None
+        )
         predicted = graph.pose(node)
         last = graph.latest_keyframe()
         reference_time = graph.nodes[last].time if last is not None else captured
