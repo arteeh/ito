@@ -139,4 +139,4 @@ and `--audio-sink device|none|capture.wav`. MuJoCo has no microphone unless give
 Testing is running the software. On the Windows PC, build a branch with `release.ps1 -Branch NAME`,
 then in WSL `uv run tools/session.py NAME RUN` drives it against the virtual Microduck with a
 pilot script (`tools/scripts/`) and writes `screen.mp4` and `camera.mp4` to `out\sessions\RUN`;
-`uv run tools/frame.py VIDEO SECONDS [-n COUNT]` saves a frame, or consecutive frames side by side.
+`uv run tools/frame.py VIDEO FRAME [-n COUNT]` saves a frame by number, or COUNT neighbouring frames side by side; steps.txt says which frame each script step starts at.

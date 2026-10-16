@@ -6,11 +6,13 @@ record videos of it. Run in WSL on the Windows PC:
 BUILD is a folder under C:\\Users\\me\\Projects\\ito\\builds (release.ps1 -Branch ...).
 Output goes to C:\\Users\\me\\Projects\\ito\\out\\sessions\\NAME: screen.mp4 (the Ito window),
 camera.mp4 (the robot camera frames Ito received), steps.txt (when each script step
-started, in video time), ito.log, sim.log and the sim's own logs. Script steps are
-described in ito/desktop/input.py (PilotScript). Look at frames with tools/frame.py.
+started, in seconds and as frame numbers of both videos), ito.log, sim.log and the sim's
+own logs. Script steps are described in ito/desktop/input.py (PilotScript). Look at frames
+with tools/frame.py.
 """
 
 import argparse
+import bisect
 import json
 import os
 import re
@@ -37,7 +39,8 @@ def stop_sim():
 
 
 def encode(stream: Path, video: Path, fps: int = 30) -> int:
-    """JPEGs + frames.jsonl -> mp4 at a steady rate, each frame shown for as long as it was."""
+    """JPEGs + frames.jsonl -> mp4 holding each recorded frame exactly once (frame N of the
+    video is recorded frame N), each shown for as long as it was."""
     rows = [json.loads(line) for line in (stream / "frames.jsonl").read_text().splitlines()]
     if not rows:
         return 0
@@ -46,7 +49,6 @@ def encode(stream: Path, video: Path, fps: int = 30) -> int:
         for row, after in zip(rows, rows[1:] + [None], strict=True):
             duration = 1 / fps if after is None else max(after["t"] - row["t"], 1e-3)
             out.write(f"file '{stream / row['file']}'\nduration {duration:.4f}\n")
-        out.write(f"file '{stream / rows[-1]['file']}'\n")
     subprocess.run(
         [
             imageio_ffmpeg.get_ffmpeg_exe(),
@@ -60,9 +62,7 @@ def encode(stream: Path, video: Path, fps: int = 30) -> int:
             "-i",
             str(listing),
             "-fps_mode",
-            "cfr",
-            "-r",
-            str(fps),
+            "passthrough",
             "-c:v",
             "libx264",
             "-crf",
@@ -78,13 +78,25 @@ def encode(stream: Path, video: Path, fps: int = 30) -> int:
     return len(rows)
 
 
-def step_times(log: Path, start: float) -> str:
-    """When each script step started, in seconds into screen.mp4 (from ito.log)."""
-    lines = []
+def frame_times(stream: Path) -> list[float]:
+    index = stream / "frames.jsonl"
+    if not index.exists():
+        return []
+    return [json.loads(line)["t"] for line in index.read_text().splitlines()]
+
+
+def step_times(log: Path, screen: list[float], camera: list[float]) -> str:
+    """When each script step started (from ito.log): seconds into screen.mp4, and the first
+    frame number of screen.mp4 and camera.mp4 at or after it, for tools/frame.py."""
+    lines = ["seconds  screen  camera  step"]
     for found in re.finditer(
         r"Pilot script step (\d+) t=([\d.]+): (.*)", log.read_text("utf-8", "replace")
     ):
-        lines.append(f"{float(found[2]) - start:7.2f}s  step {found[1]}: {found[3].strip()}")
+        t = float(found[2])
+        frames = [bisect.bisect_left(times, t) for times in (screen, camera)]
+        lines.append(
+            f"{t - screen[0]:7.2f}  {frames[0]:6d}  {frames[1]:6d}  {found[1]}: {found[3].strip()}"
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -189,10 +201,10 @@ def main():
         if (rec / name / "frames.jsonl").exists():
             count = encode(rec / name, out / f"{name}.mp4")
             print(f"{name}.mp4: {count} frames", flush=True)
-    index = rec / "screen/frames.jsonl"
-    if index.exists() and index.stat().st_size:
-        start = json.loads(index.read_text().splitlines()[0])["t"]
-        (out / "steps.txt").write_text(step_times(out / "ito.log", start))
+    screen = frame_times(rec / "screen")
+    if screen:
+        steps = step_times(out / "ito.log", screen, frame_times(rec / "camera"))
+        (out / "steps.txt").write_text(steps)
     shutil.rmtree(rec, ignore_errors=True)
     print(f"done: {out}")
 

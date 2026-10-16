@@ -13,7 +13,7 @@ What Ito is and why: the intro of [README.md](README.md). The plan being built: 
 ## How to work
 
 - Source work happens in WSL on ceres: clone `~/Projects/ito/main`, worktrees `~/Projects/ito/work/<name>`. Windows only builds: `release.ps1 -Branch <branch>` → `C:\Users\me\Projects\ito\builds\<branch>\ito`.
-- Test by running the software: `uv run tools/session.py BUILD NAME` records a scripted session against the virtual Microduck (`tools/scripts/`), `uv run tools/frame.py VIDEO SECONDS [-n N]` shows frames. Compare against main's build by eye. No unit tests, no numeric gates.
+- Do not write (automated) tests. Test your work simply by running the software: `uv run tools/session.py BUILD NAME` records a scripted session against the virtual Microduck (`tools/scripts/`), `uv run tools/frame.py VIDEO FRAME [-n N]` shows a frame and its neighbours (frame numbers per step in `steps.txt`). Compare against main's build by eye. No unit tests, no numeric gates.
 - Never change the shared sim install (`~/.local/share/ito-microduck`) from a branch; use `--sim-source`/`--sim-prefix`.
 - At most 50 GB of disk per job; delete what you record once judged.
 - Branch + PR with `Closes #N` (GitHub project board arteeh/projects/1). Agents never merge, and never open, comment on or edit issues or PRs; report findings in your final message.
