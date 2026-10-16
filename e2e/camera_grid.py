@@ -27,20 +27,30 @@ def main():
     out, first, last, *runs = sys.argv[1:]
     first, last = float(first), float(last)
     sources = [frames(Path(r)) for r in runs]
+    # Each run's cells keep its camera's aspect: a zero3's is portrait, a beta's landscape.
+    cells = []
+    for folder, _, rows in sources:
+        with Image.open(folder / rows[len(rows) // 2]["file"]) as sample:
+            portrait = sample.height > sample.width
+        cells.append(CELL if portrait else CELL[::-1])
     seconds = range(int(first), int(last) + 1)
-    sheet = Image.new("RGB", (60 + CELL[0] * len(seconds), 24 + CELL[1] * len(runs)), "black")
+    column_width = max(cell[0] for cell in cells)
+    tops = [24 + sum(cell[1] for cell in cells[:row]) for row in range(len(cells))]
+    sheet = Image.new(
+        "RGB", (60 + column_width * len(seconds), 24 + sum(c[1] for c in cells)), "black"
+    )
     draw = ImageDraw.Draw(sheet)
     for column, second in enumerate(seconds):
-        draw.text((60 + column * CELL[0] + 4, 4), f"{second}s", fill="white")
+        draw.text((60 + column * column_width + 4, 4), f"{second}s", fill="white")
     for row, (folder, start, rows) in enumerate(sources):
-        draw.text((4, 24 + row * CELL[1] + 4), Path(runs[row]).name[:9], fill="white")
+        draw.text((4, tops[row] + 4), Path(runs[row]).name[:9], fill="white")
         for column, second in enumerate(seconds):
             shown = [r for r in rows if r["t"] - start <= second]
             if not shown:
                 continue
             image = Image.open(folder / shown[-1]["file"])
-            image.thumbnail(CELL)
-            sheet.paste(image, (60 + column * CELL[0], 24 + row * CELL[1]))
+            image.thumbnail(cells[row])
+            sheet.paste(image, (60 + column * column_width, tops[row]))
     sheet.save(out, quality=88)
 
 
