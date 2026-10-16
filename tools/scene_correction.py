@@ -1,4 +1,4 @@
-"""Manual session entry: inject one estimator gauge correction, then inspect the recording.
+"""Manual session entry: inject a gauge correction or allocation failure for visual inspection.
 
 Used by session.py --correction-after. The released application and simulator are unchanged.
 The correction changes the estimator's coordinate gauge, not the robot's measured motion.
@@ -22,7 +22,21 @@ def corrected(self, *args, captured, **kwargs):
     if not hasattr(self, "manual_correction_start"):
         self.manual_correction_start = captured
         self.manual_correction_done = False
-    after = float(os.environ["ITO_MANUAL_CORRECTION_AFTER"])
+        self.manual_oom_done = False
+    oom_after = float(os.environ.get("ITO_MANUAL_OOM_AFTER", "inf"))
+    if not self.manual_oom_done and captured - self.manual_correction_start >= oom_after:
+        import torch
+
+        self.manual_oom_done = True
+        with Path(os.environ["ITO_TIMELINE"]).open("a") as out:
+            out.write(
+                json.dumps(
+                    dict(event="manual_cuda_oom", captured=captured, precision=self.precision)
+                )
+                + "\n"
+            )
+        raise torch.cuda.OutOfMemoryError("Manual session allocation failure")
+    after = float(os.environ.get("ITO_MANUAL_CORRECTION_AFTER", "inf"))
     if not self.manual_correction_done and captured - self.manual_correction_start >= after:
         graph = self.graph
         change = np.eye(4)

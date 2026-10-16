@@ -133,6 +133,11 @@ def main():
         help="manually inject a 35-degree/1.2-metre estimator gauge correction after N seconds",
     )
     parser.add_argument(
+        "--oom-after",
+        type=float,
+        help="inject one CUDA allocation failure after N seconds; inspect warning and precision",
+    )
+    parser.add_argument(
         "--sim-args", default="", help='extra sim options, e.g. "--camera-height 1080"'
     )
     args = parser.parse_args()
@@ -226,12 +231,17 @@ def main():
         print(f"recording {args.build} into {windows(out)}", flush=True)
         entry = "-m ito.app"
         correction_env = ""
-        if args.correction_after is not None:
+        if args.correction_after is not None or args.oom_after is not None:
             shutil.copy(HERE / "tools/scene_correction.py", out / "scene_correction.py")
             entry = windows(out / "scene_correction.py")
+        if args.correction_after is not None:
             correction_env = f"&& set ITO_MANUAL_CORRECTION_AFTER={args.correction_after}"
             with (out / "about.txt").open("a") as about:
                 about.write(f"manual estimator gauge correction after {args.correction_after} s\n")
+        if args.oom_after is not None:
+            correction_env += f"&& set ITO_MANUAL_OOM_AFTER={args.oom_after}"
+            with (out / "about.txt").open("a") as about:
+                about.write(f"manual CUDA allocation failure after {args.oom_after} s\n")
         command = (
             f"set APPDATA={windows(profile)}&& set ITO_RECORD={windows(rec)}"
             f"&& set ITO_PILOT_SCRIPT={windows(out / 'script.json')}"
