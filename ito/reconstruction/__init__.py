@@ -34,6 +34,9 @@ def default_budget(renderer: str = "") -> int:
 
 
 def _run(recon):
+    from threadpoolctl import threadpool_limits
+
+    cpu_threads = threadpool_limits(limits=1, user_api="blas")
     vram = None
     try:
         robot_first = recon.backend == "slam" and recon.tracking_mode == "robot"
@@ -72,6 +75,8 @@ def _run(recon):
                 recon.budget.value, recon.intrinsics, precision=recon.precision, **recon.options
             )
         backend.bind_admission(recon.admission)
+        if (torch := sys.modules.get("torch")) is not None:
+            torch.set_num_threads(1)
         if backend.xp is not np:
             from .memory import VRAM
 
@@ -115,7 +120,7 @@ def _run(recon):
                 recon.splat_limit.value = limit
                 if retired:
                     recon.notes.send(
-                        f"Splat limit {limit:,}: {retired:,} low-contribution or unseen splats fade out"
+                        f"Splat limit {limit:,}: {retired:,} redundant or unseen splats fade out"
                     )
             if len(backend.keys) > backend.budget and backend.compact():
                 recon.notes.send(f"Splat slots shrunk to {len(backend.keys):,}")
@@ -343,6 +348,7 @@ def _run(recon):
         cause = "".join(traceback.format_exception(exc))
         recon.errors.send(message.splitlines()[0][:500] + "\n" + cause[-6000:])
     finally:
+        cpu_threads.restore_original_limits()
         if vram is not None:
             vram.close()
         recon.errors.close()

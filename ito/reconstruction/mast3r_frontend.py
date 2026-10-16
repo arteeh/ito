@@ -47,7 +47,7 @@ class MASt3RFrontend:
         load_config(str(source / "config/base.yaml"))
         config["single_thread"] = True
         config["use_calib"] = True
-        config["tracking"]["filtering_mode"] = "recent"
+        config["tracking"]["filtering_mode"] = "weighted_pointmap"
         config["local_opt"]["max_iters"] = 5
         self.config = config
         self.model = load_model(
@@ -57,7 +57,19 @@ class MASt3RFrontend:
         self.torch = torch
         self.frames = Keyframes()
         self.ids = []
-        self.tracker = FrameTracker(self.model, self.frames, "cuda")
+
+        class DepthTracker(FrameTracker):
+            def get_points_poses(self, frame, keyframe, indices, *args, **kwargs):
+                self.depth_indices = indices
+                return super().get_points_poses(frame, keyframe, indices, *args, **kwargs)
+
+            def opt_pose_calib_sim3(self, *args, **kwargs):
+                self.depth_valid = args[5]
+                return super().opt_pose_calib_sim3(*args, **kwargs)
+
+        self.tracker = DepthTracker(self.model, self.frames, "cuda")
+        self.depth_match = None
+        self.fused_pixels = 0
         if not hasattr(self.tracker, "prior"):
             raise RuntimeError("MASt3R bundle predates robot-first tracking; rebuild it")
         from .slam_image import SLAMImage
@@ -129,6 +141,13 @@ class MASt3RFrontend:
         match = 0.0 if lost else float(self.tracker.match_frac)
         pose, scale = (None, keyframe_scale) if lost else self.placed(frame.T_WC)
         usable = pose is not None and keyframe_pose is not None and match >= MIN_MATCH
+        if usable:
+            self.depth_match = (
+                self.ids[reference],
+                frame,
+                self.tracker.depth_indices,
+                self.tracker.depth_valid,
+            )
         return new_keyframe, usable, match, keyframe_pose, keyframe_scale, pose, scale
 
     def _cloud(self, frame, scale):
@@ -140,7 +159,16 @@ class MASt3RFrontend:
         valid = torch.isfinite(points).all(dim=1) & (local[:, 2] > 0)
         colors = (frame.uimg.to("cuda").reshape(-1, 3) * 255).to(torch.uint8)
         fx, fy, cx, cy = (float(self.K[i, j]) for i, j in ((0, 0), (1, 1), (0, 2), (1, 2)))
-        return Cloud(points, colors, valid, tuple(frame.img.shape[-2:]), (fx, fy, cx, cy))
+        score = frame.get_average_conf().reshape(-1)
+        confidence = torch.nan_to_num(1 - score.clamp_min(1).reciprocal()).clamp(0, 1)
+        return Cloud(
+            points,
+            colors,
+            valid,
+            tuple(frame.img.shape[-2:]),
+            (fx, fy, cx, cy),
+            torch.where(valid, confidence, 0),
+        )
 
     def _prior_weight(self, prior_sigma, scale):
         # Upstream's Sim3 tangent of the keyframe-from-frame pose: translation (in the
@@ -158,6 +186,7 @@ class MASt3RFrontend:
         from mast3r_slam.mast3r_utils import mast3r_inference_mono
 
         torch = self.torch
+        self.depth_match = None
         with torch.inference_mode():
             frame = self.image.frame(
                 self.frame_id,
@@ -175,28 +204,33 @@ class MASt3RFrontend:
             reference = self._reference(predicted)
             attempt = self._attempt(frame, reference, predicted, prior_sigma)
             if not attempt[1] and (other := self._retry(predicted, reference)) is not None:
+                original = (frame.X_canon, frame.C, frame.N, frame.N_updates, frame.T_WC)
                 retried = self._attempt(frame, other, predicted, prior_sigma)
                 if retried[1]:
                     reference, attempt = other, retried
+                else:
+                    frame.X_canon, frame.C, frame.N, frame.N_updates, frame.T_WC = original
             new_keyframe, usable, match, keyframe_pose, keyframe_scale, pose, scale = attempt
             self.unmatched = 0 if usable else self.unmatched + 1
             if not usable:
                 frame.T_WC = self.unplaced(predicted, keyframe_scale)
                 scale = keyframe_scale
-            cloud = self._cloud(frame, scale)
             becomes = bool(new_keyframe) and usable or self.unmatched >= UNMATCHED_KEYFRAME
             relative = np.linalg.inv(keyframe_pose) @ pose if usable else None
             if becomes:
                 self._keep(frame, node)
                 if usable:
                     relative = self._local_graph(reference)
+                    _, scale = self.placed(frame.T_WC)
                 self.unmatched = 0
             sigma = (
                 np.repeat((VISUAL_ROTATION, VISUAL_TRANSLATION), 3) / math.sqrt(match)
                 if relative is not None
                 else UNKNOWN
             )
-            return VisualResult(self.ids[reference], relative, sigma, match, cloud, becomes)
+            return VisualResult(
+                self.ids[reference], relative, sigma, match, self._cloud(frame, scale), becomes
+            )
 
     def _keep(self, frame, node):
         self.frames.append(frame)
@@ -234,6 +268,72 @@ class MASt3RFrontend:
                     pose, _ = self.placed(keyframe.T_WC)
                 if pose is not None:
                     keyframe.T_WC = self.unplaced(pose, own * scale)
+
+    def refine(self, cloud, pose, reference):
+        """Fuse accepted feature correspondences with the accumulated keyframe pointmap.
+
+        A pointmap solve returns a new guess for the current image. Its reference has
+        already seen many frames; carry that evidence onto the current pixel rays.
+        This is in the shared visual gauge, before the independent metric calibration.
+        """
+        self.fused_pixels = 0
+        if self.depth_match is None or reference not in self.ids:
+            return cloud._replace(confidence=cloud.confidence * 0.25)
+        node, frame, indices, valid = self.depth_match
+        if node != reference:
+            return cloud
+        torch = self.torch
+        with torch.inference_mode():
+            keyframe = self.frames[self.ids.index(reference)]
+            origin, scale = self.placed(keyframe.T_WC)
+            points = self._cloud(keyframe, scale).points
+            transform = torch.as_tensor(
+                np.linalg.inv(pose) @ origin, device="cuda", dtype=torch.float32
+            )
+            projected = points @ transform[:3, :3].T + transform[:3, 3]
+            z = -projected[:, 2]
+            h, w = cloud.shape
+            fx, fy, cx, cy = cloud.intrinsics
+            u = fx * projected[:, 0] / z.clamp_min(1e-6) + cx
+            v = cy - fy * projected[:, 1] / z.clamp_min(1e-6)
+            indices = indices.reshape(-1).long()
+            accepted = valid.reshape(-1) & torch.isfinite(projected).all(1) & (z > 0)
+            accepted &= (indices >= 0) & (indices < h * w)
+            indices = indices.clamp(0, h * w - 1)
+            accepted &= cloud.valid[indices]
+            candidates = torch.zeros(h * w, device="cuda")
+            candidates.scatter_add_(0, indices, accepted.float())
+            accepted &= (u - indices.remainder(w)).square() + (
+                v - indices.div(w, rounding_mode="floor")
+            ).square() < 9
+            confidence = keyframe.get_average_conf().reshape(-1).clamp(0, 10)
+            confidence = confidence * min(keyframe.N_updates, 4)
+            confidence = torch.where(accepted, confidence, 0)
+            weighted = torch.zeros(h * w, device="cuda")
+            weight = torch.zeros_like(weighted)
+            second = torch.zeros_like(weighted)
+            weighted.scatter_add_(0, indices, torch.where(accepted, z * confidence, 0))
+            second.scatter_add_(0, indices, torch.where(accepted, z.square() * confidence, 0))
+            weight.scatter_add_(0, indices, confidence)
+            current = frame.get_average_conf().reshape(-1).clamp(0.1, 10)
+            depth = -cloud.points[:, 2]
+            fused = (weighted + current * depth) / (weight + current)
+            variance = (second + current * depth.square()) / (weight + current) - fused.square()
+            variance = variance.clamp_min(0) / fused.square().clamp_min(1e-8)
+            reliable = (weight > 0) & (variance < 0.15**2)
+            certainty = torch.where(
+                reliable,
+                cloud.confidence * torch.exp(-variance / 0.15**2),
+                torch.where(candidates > 0, 0, cloud.confidence * 0.25),
+            )
+            fused = torch.where(reliable, fused, depth)
+            points = cloud.points * (fused / depth.clamp_min(1e-6))[:, None]
+            self.fused_pixels = int(reliable.sum())
+            # The retained frame now carries all contributing views, rather than
+            # reverting to its first network prediction when it becomes a reference.
+            _, own = self.placed(frame.T_WC)
+            frame.X_canon = points * self.axes / own
+            return cloud._replace(points=points, confidence=certainty)
 
     def forget(self, nodes):
         keep = [i for i, node in enumerate(self.ids) if node not in set(nodes)]

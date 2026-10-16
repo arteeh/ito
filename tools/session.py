@@ -124,6 +124,9 @@ def main():
         help="sim install from drivers/microduck/setup-sim.sh",
     )
     parser.add_argument("--viewer", action="store_true", help="also open the MuJoCo viewer")
+    parser.add_argument("--precision", choices=("full", "half"))
+    parser.add_argument("--input-resolution", type=int, choices=(25, 50, 75, 100))
+    parser.add_argument("--max-splats", type=int)
     parser.add_argument(
         "--sim-args", default="", help='extra sim options, e.g. "--camera-height 1080"'
     )
@@ -157,8 +160,25 @@ def main():
         except OSError:
             sys.exit("port 8081 is in use; leaving the existing simulator alone")
     settings = Path("/mnt/c/Users/me/AppData/Roaming/ito/settings.json")
-    if settings.exists():
-        shutil.copy(settings, out / "settings.json")
+    values = (
+        json.loads(settings.read_text())
+        if settings.exists()
+        else {
+            "precision": "full",
+            "input_resolution": 100,
+            "max_splats": 1_000_000,
+            "diagnostic_logging": False,
+        }
+    )
+    for name in ("precision", "input_resolution", "max_splats"):
+        if getattr(args, name) is not None:
+            values[name] = getattr(args, name)
+    profile = out / "profile"
+    (profile / "ito").mkdir(parents=True)
+    (out / "settings.json").write_text(json.dumps(values) + "\n")
+    shutil.copy(out / "settings.json", profile / "ito/settings.json")
+    if (settings.parent / "robots").exists():
+        shutil.copytree(settings.parent / "robots", profile / "ito/robots")
     prefix = args.sim_prefix
     sim_log = (out / "sim.log").open("w")
     sim = subprocess.Popen(
@@ -200,7 +220,8 @@ def main():
         rec = out / "rec"
         print(f"recording {args.build} into {windows(out)}", flush=True)
         command = (
-            f"set ITO_RECORD={windows(rec)}&& set ITO_PILOT_SCRIPT={windows(out / 'script.json')}"
+            f"set APPDATA={windows(profile)}&& set ITO_RECORD={windows(rec)}"
+            f"&& set ITO_PILOT_SCRIPT={windows(out / 'script.json')}"
             f"&& set ITO_TIMELINE={windows(out / 'timeline.jsonl')}"
             # The build's own Python rather than ito.exe, whose log never reaches a pipe.
             f"&& runtime\\python.exe -I -X utf8 -m ito.app {ip}:8081 --code {code}"
@@ -216,6 +237,7 @@ def main():
     finally:
         stop_sim(sim)
         (out / "pairing-code").unlink(missing_ok=True)
+        shutil.rmtree(profile, ignore_errors=True)
 
     for name in ("screen", "camera"):
         if (rec / name / "frames.jsonl").exists():

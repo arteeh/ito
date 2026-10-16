@@ -1001,6 +1001,7 @@ dependencies = [
     { name = "pyopenxr" },
     { name = "scipy" },
     { name = "sounddevice" },
+    { name = "threadpoolctl" },
 ]
 
 [package.optional-dependencies]
@@ -1069,6 +1070,7 @@ requires-dist = [
     { name = "scipy", specifier = "==1.15.3" },
     { name = "setuptools", marker = "extra == 'slam'", specifier = "==75.8.0" },
     { name = "sounddevice", specifier = ">=0.5,<1" },
+    { name = "threadpoolctl", specifier = ">=3.6,<4" },
     { name = "torch", marker = "python_full_version < '3.13' and extra == 'slam'", specifier = "==2.5.1", index = "https://download.pytorch.org/whl/cu124", conflict = { package = "ito", extra = "slam" } },
     { name = "torchvision", marker = "python_full_version < '3.13' and extra == 'slam'", specifier = "==0.20.1", index = "https://download.pytorch.org/whl/cu124", conflict = { package = "ito", extra = "slam" } },
 ]
@@ -2512,6 +2514,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/ca/99/5a5b6f19ff9f083671ddf7b9632028436167cd3d33e11015754e41b249a4/sympy-1.13.1.tar.gz", hash = "sha256:9cebf7e04ff162015ce31c9c6c9144daa34a93bd082f54fd8f12deca4f47515f", size = 7533040, upload-time = "2024-07-19T09:26:51.238Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b2/fe/81695a1aa331a842b582453b605175f419fe8540355886031328089d840a/sympy-1.13.1-py3-none-any.whl", hash = "sha256:db36cdc64bf61b9b24578b6f7bab1ecdd2452cf008f34faa33776680c26d66f8", size = 6189177, upload-time = "2024-07-19T09:26:48.863Z" },
+]
+
+[[package]]
+name = "threadpoolctl"
+version = "3.7.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/00/dc/6c58154c1c65f758ea979e7139cb76993a9cfc662d14e9be3c4a667cfb77/threadpoolctl-3.7.0.tar.gz", hash = "sha256:61348cfb77d53b9242e0017029244b559b810c142ced65b4e21eeca1843959a7", size = 31961, upload-time = "2026-09-15T15:46:20.263Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/43/3f/f88a53f60a472b46f4023f56d204dd7de33d34c5d2acbfa0d70a674e639e/threadpoolctl-3.7.0-py3-none-any.whl", hash = "sha256:cd8b60b5641b45c67bbf73c64c843235fc2d8a480c87389f52f5dbee893b86be", size = 26362, upload-time = "2026-09-15T15:46:19.168Z" },
 ]
 
 [[package]]

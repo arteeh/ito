@@ -162,6 +162,7 @@ class SLAMBackend(GaussianBackend):
             cloud = cloud._replace(points=cloud.points * scale)
         pose = self._publish(node)
         if cloud is not None:
+            cloud = self.frontend.refine(cloud, pose, result.reference)
             self.place(cloud, pose, now + clock.now() - started)
 
     def pose_at(self, captured):
@@ -192,6 +193,9 @@ class SLAMBackend(GaussianBackend):
             cloud.intrinsics,
             when,
             node=self.graph.current,
+            confidence=cloud.confidence.detach().cpu().numpy()
+            if cloud.confidence is not None
+            else None,
         )
 
 

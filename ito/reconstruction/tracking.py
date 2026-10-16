@@ -20,6 +20,7 @@ class Cloud(NamedTuple):
     valid: object
     shape: tuple[int, int]
     intrinsics: tuple[float, float, float, float]  # fx, fy, cx, cy at that shape
+    confidence: object = None
 
 
 class VisualResult(NamedTuple):

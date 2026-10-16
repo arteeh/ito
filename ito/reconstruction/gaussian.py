@@ -119,7 +119,7 @@ class GaussianBackend(GaussianSlots):
             surface[distance > 1.5] = -1
         return surface, live, z, u, v
 
-    def observe(self, points, image, valid, camera, intrinsics, now, *, node=None):
+    def observe(self, points, image, valid, camera, intrinsics, now, *, node=None, confidence=None):
         points = np.asarray(points, np.float32)
         height, width = image.shape[:2]
         points = points.reshape(height, width, 3)
@@ -228,7 +228,9 @@ class GaussianBackend(GaussianSlots):
             self.next_key += count
             self.owners[slots] = anchor
             self.support[slots] = 1
-            self.uncertainty[slots] = 0.1
+            self.uncertainty[slots] = (
+                0.1 if confidence is None else (1 - np.asarray(confidence).reshape(-1)[seeds])
+            )
             self.contribution[slots] = 1
             self.contradictions[slots] = 0
             self.seen[slots] = now

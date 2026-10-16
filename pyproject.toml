@@ -15,6 +15,7 @@ dependencies = [
     "moderngl>=5.12,<6",
     "numpy>=2,<3",
     "scipy==1.15.3",
+    "threadpoolctl>=3.6,<4",
     "plyfile>=1.1,<2",
     "pygame-ce>=2.5,<3",
     "mujoco>=3.3,<4",

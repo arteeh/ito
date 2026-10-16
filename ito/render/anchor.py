@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 from .scene import FloatArray
 
@@ -54,19 +55,11 @@ def _angle(rotation):
 
 
 def _toward_identity(rotation, angle):
-    full = _angle(rotation)
+    vector = Rotation.from_matrix(rotation).as_rotvec()
+    full = np.linalg.norm(vector)
     if full <= angle or full < 1e-9:
         return np.eye(3)
-    axis = np.array(
-        (
-            rotation[2, 1] - rotation[1, 2],
-            rotation[0, 2] - rotation[2, 0],
-            rotation[1, 0] - rotation[0, 1],
-        )
-    ) / (2 * np.sin(full))
-    keep = full - angle
-    k = np.array(((0, -axis[2], axis[1]), (axis[2], 0, -axis[0]), (-axis[1], axis[0], 0)))
-    return np.eye(3) + np.sin(keep) * k + (1 - np.cos(keep)) * (k @ k)
+    return Rotation.from_rotvec(vector * (1 - angle / full)).as_matrix()
 
 
 class CorrectionEase:
