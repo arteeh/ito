@@ -1,0 +1,47 @@
+[
+  {
+    "for": 20,
+    "note": "connect and settle"
+  },
+  {
+    "for": 2,
+    "do": "resume",
+    "note": "resume"
+  },
+  {
+    "for": 70,
+    "note": "stationary bookshelf; estimator gauge correction at 60 seconds"
+  },
+  {
+    "for": 2,
+    "turn": -40,
+    "note": "look left"
+  },
+  {
+    "for": 8,
+    "note": "hold left"
+  },
+  {
+    "for": 4,
+    "turn": 40,
+    "note": "look right"
+  },
+  {
+    "for": 8,
+    "note": "hold right"
+  },
+  {
+    "for": 2,
+    "turn": -40,
+    "note": "return to corrected bookshelf"
+  },
+  {
+    "for": 25,
+    "note": "stationary revisit after correction"
+  },
+  {
+    "for": 2,
+    "do": "stop",
+    "note": "finish"
+  }
+]

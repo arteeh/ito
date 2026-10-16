@@ -147,11 +147,18 @@ class GaussianBackend(GaussianSlots):
             observed = depth[v, u]
             tolerance = np.maximum(0.05 * z, 2 * self.records[live, 1, :3].max(-1))
             agreement = (observed > 0) & (np.abs(observed - z) <= tolerance)
+            color_error = np.abs(
+                self.records[live, 3, :3] * C0 + 0.5 - image[v, u].astype(np.float32) / 255
+            ).max(-1)
+            agreement &= color_error < 0.15
             supported = live[agreement]
             self.support[supported] += 1
             self.seen[supported] = now
             self.uncertainty[supported] = 0.9 * self.uncertainty[supported] + 0.1 * (
-                np.abs(observed[agreement] - z[agreement]) / np.maximum(z[agreement], 0.01)
+                np.maximum(
+                    np.abs(observed[agreement] - z[agreement]) / np.maximum(z[agreement], 0.01),
+                    color_error[agreement],
+                )
             )
             self.contradictions[supported] = 0
             contradicted = live[(observed > z + 3 * tolerance) & (observed > 0)]
@@ -166,6 +173,16 @@ class GaussianBackend(GaussianSlots):
             self.contribution[winners] = counts
             # Contributions guide pressure pruning. Two centers sharing a pixel are
             # not proof of redundancy: their Gaussian footprints can cover different edges.
+            peers = surface[v, u]
+            own, peer = self.records[live], self.records[peers]
+            redundant = (peers != live) & (peers >= 0)
+            redundant &= np.linalg.norm(own[:, 0, :3] - peer[:, 0, :3], axis=1) < (
+                0.35 * own[:, 1, :3].min(-1)
+            )
+            redundant &= np.abs(own[:, 3, :3] - peer[:, 3, :3]).max(-1) * C0 < 0.02
+            redundant &= np.abs((own[:, 2] * peer[:, 2]).sum(-1)) > 0.999
+            redundant &= (peer[:, 1, :3] >= 0.9 * own[:, 1, :3]).all(-1)
+            self.retire(live[redundant])
             surface[np.isin(surface, gone)] = -1
         covered = surface >= 0
         mapped_depth = np.zeros_like(depth)

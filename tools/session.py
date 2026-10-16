@@ -128,6 +128,11 @@ def main():
     parser.add_argument("--input-resolution", type=int, choices=(25, 50, 75, 100))
     parser.add_argument("--max-splats", type=int)
     parser.add_argument(
+        "--correction-after",
+        type=float,
+        help="manually inject a 35-degree/1.2-metre estimator gauge correction after N seconds",
+    )
+    parser.add_argument(
         "--sim-args", default="", help='extra sim options, e.g. "--camera-height 1080"'
     )
     args = parser.parse_args()
@@ -219,12 +224,21 @@ def main():
         code = (out / "pairing-code").read_text().strip()
         rec = out / "rec"
         print(f"recording {args.build} into {windows(out)}", flush=True)
+        entry = "-m ito.app"
+        correction_env = ""
+        if args.correction_after is not None:
+            shutil.copy(HERE / "tools/scene_correction.py", out / "scene_correction.py")
+            entry = windows(out / "scene_correction.py")
+            correction_env = f"&& set ITO_MANUAL_CORRECTION_AFTER={args.correction_after}"
+            with (out / "about.txt").open("a") as about:
+                about.write(f"manual estimator gauge correction after {args.correction_after} s\n")
         command = (
             f"set APPDATA={windows(profile)}&& set ITO_RECORD={windows(rec)}"
             f"&& set ITO_PILOT_SCRIPT={windows(out / 'script.json')}"
             f"&& set ITO_TIMELINE={windows(out / 'timeline.jsonl')}"
+            f"{correction_env}"
             # The build's own Python rather than ito.exe, whose log never reaches a pipe.
-            f"&& runtime\\python.exe -I -X utf8 -m ito.app {ip}:8081 --code {code}"
+            f"&& runtime\\python.exe -I -X utf8 {entry} {ip}:8081 --code {code}"
             f" --capture-dir {windows(out / 'captures')}"
             f" --metrics {windows(out / 'metrics.jsonl')}"
         )
