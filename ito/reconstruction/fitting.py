@@ -8,8 +8,8 @@ import numpy as np
 
 from .gaussian import C0
 
-PATCH = 64
-HALO = 12
+PATCH = 32
+HALO = 6
 MAX_LOCAL = 4096
 STEPS = 4
 
@@ -71,9 +71,7 @@ class LocalFit:
             "quats": torch.nn.Parameter(original[:, 2].clone()),
             "opacity": torch.nn.Parameter(torch.logit(original[:, 0, 3].clamp(0.001, 0.999))),
             "color": torch.nn.Parameter(original[:, 3, :3].clone()),
-            "exposure": torch.nn.Parameter(
-                self.tensor(np.zeros((2, 3)) if view.exposure is None else view.exposure)
-            ),
+            "exposure": torch.nn.Parameter(self.tensor(np.zeros((2, 2, 3)))),
         }
         rates = dict(
             means=0.0001, scales=0.002, quats=0.0005, opacity=0.01, color=0.01, exposure=0.001
@@ -81,25 +79,61 @@ class LocalFit:
         optimizer = torch.optim.Adam(
             [{"params": [value], "lr": rates[key]} for key, value in p.items()], fused=True
         )
-        camera = np.linalg.inv(view.pose @ np.diag([1.0, -1.0, -1.0, 1.0]))
-        calibration = [[fx, 0, cx - left], [0, fy, cy - top], [0, 0, 1]]
-        target = self.tensor(view.image[top:bottom, left:right]) / 255
-        mask = self.tensor(view.depth[top:bottom, left:right] > 0).bool()
-        interior = torch.zeros_like(mask)
-        interior[y - top : min(y + PATCH, h) - top, x - left : min(x + PATCH, w) - left] = True
+        nearby = [
+            v
+            for v in b.views
+            if v is not view
+            and v.pose[:3, 2] @ view.pose[:3, 2] > 0.94
+            and np.linalg.norm(v.pose[:3, 3] - view.pose[:3, 3]) < 0.3
+        ]
+        other = min(nearby, key=lambda v: v.steps, default=None)
+        targets = []
+        center = np.median(b.records[ids, 0, :3], axis=0)
+        for observation in [view] + ([] if other is None else [other]):
+            ih, iw = observation.depth.shape
+            ox, oy, ocx, ocy = observation.intrinsics
+            if observation is view:
+                tx, ty = x, y
+            else:
+                local_center = (center - observation.pose[:3, 3]) @ observation.pose[:3, :3]
+                if local_center[2] >= -0.01:
+                    continue
+                tx = int(ocx - ox * local_center[0] / local_center[2]) - PATCH // 2
+                ty = int(ocy + oy * local_center[1] / local_center[2]) - PATCH // 2
+                tx, ty = np.clip(tx, 0, iw - PATCH), np.clip(ty, 0, ih - PATCH)
+            left, top = max(0, tx - HALO), max(0, ty - HALO)
+            right, bottom = min(iw, tx + PATCH + HALO), min(ih, ty + PATCH + HALO)
+            camera = np.linalg.inv(observation.pose @ np.diag([1.0, -1.0, -1.0, 1.0]))
+            calibration = [[ox, 0, ocx - left], [0, oy, ocy - top], [0, 0, 1]]
+            target = self.tensor(observation.image[top:bottom, left:right]) / 255
+            depth = self.tensor(observation.depth[top:bottom, left:right])
+            interior = torch.zeros_like(depth, dtype=torch.bool)
+            interior[
+                ty - top : min(ty + PATCH, ih) - top, tx - left : min(tx + PATCH, iw) - left
+            ] = True
+            targets.append(
+                dict(
+                    view=observation,
+                    camera=self.tensor(camera)[None],
+                    calibration=self.tensor(calibration)[None],
+                    target=target,
+                    depth=depth,
+                    mask=(depth > 0) & interior,
+                )
+            )
+        for index, target in enumerate(targets):
+            if target["view"].exposure is not None:
+                with torch.no_grad():
+                    p["exposure"][index].copy_(self.tensor(target["view"].exposure))
         self.active = dict(
             ids=ids,
             keys=b.keys[ids].copy(),
             original=original,
             p=p,
             optimizer=optimizer,
-            view=view,
-            camera=self.tensor(camera)[None],
-            calibration=self.tensor(calibration)[None],
-            target=target,
-            mask=mask & interior,
+            targets=targets,
             steps=0,
-            mature=self.tensor(b.support[ids] >= 3).bool(),
+            mature=self.tensor((b.support[ids] >= 20) & (b.uncertainty[ids] < 0.03)).bool(),
         )
         return True
 
@@ -116,7 +150,9 @@ class LocalFit:
         ):
             self.active = None
             return
-        h, w = a["target"].shape[:2]
+        target_index = a["steps"] % len(a["targets"])
+        target_view = a["targets"][target_index]
+        h, w = target_view["target"].shape[:2]
         with b.gpu_chunk("fit_forward"):
             pred, alpha, info = self.rasterize(
                 means=p["means"],
@@ -125,19 +161,25 @@ class LocalFit:
                 opacities=p["opacity"].sigmoid(),
                 colors=p["color"][:, None],
                 sh_degree=0,
-                viewmats=a["camera"],
-                Ks=a["calibration"],
+                viewmats=target_view["camera"],
+                Ks=target_view["calibration"],
                 width=w,
                 height=h,
                 packed=False,
                 near_plane=0.01,
                 far_plane=1000,
                 rasterize_mode="classic",
+                render_mode="RGB+ED",
             )
-            target = a["target"].to(self.dtype)
-            rgb = (pred[0] * p["exposure"][0].exp() + p["exposure"][1]).to(self.dtype)
-            mask = a["mask"] & (alpha[0, ..., 0].detach() > 0.5)
+            target = target_view["target"].to(self.dtype)
+            exposure = p["exposure"][target_index]
+            rgb = (pred[0, ..., :3] * exposure[0].exp() + exposure[1]).to(self.dtype)
+            observed_depth = target_view["depth"]
+            depth_error = (pred[0, ..., 3] - observed_depth) / observed_depth.clamp_min(0.01)
+            mask = target_view["mask"] & (alpha[0, ..., 0].detach() > 0.9)
+            mask &= depth_error.detach().abs() < 0.15
             loss = ((rgb - target).abs() * mask[..., None]).sum() / mask.sum().clamp_min(1) / 3
+            loss = loss + 0.02 * (depth_error.abs() * mask).sum() / mask.sum().clamp_min(1)
             loss = loss + 0.01 * p["exposure"].square().mean()
         with b.gpu_chunk("fit_backward"):
             loss.backward()
@@ -145,7 +187,7 @@ class LocalFit:
             a["optimizer"].zero_grad(set_to_none=True)
         with b.gpu_chunk("fit_readback"), torch.no_grad():
             original = a["original"]
-            bound = original[:, 1, :3].min(-1).values[:, None] * 0.5
+            bound = original[:, 1, :3].max(-1).values[:, None] * 0.25
             p["means"].copy_(
                 original[:, 0, :3] + (p["means"] - original[:, 0, :3]).clamp(-bound, bound)
             )
@@ -164,18 +206,18 @@ class LocalFit:
             records[:, 2] = p["quats"]
             records[:, 3, :3] = p["color"]
             records = records.cpu().numpy()
-            exposure = p["exposure"].cpu().numpy().copy()
+            exposure = p["exposure"][target_index].cpu().numpy().copy()
         if not np.isfinite(records).all():
             self.active = None
             return
         b.records[ids] = records
         b.dirty[ids] = True
         b.pending_fit = ids.copy()
-        older = b.captures[ids] > a["view"].captured
-        b.captures[ids[older]] = a["view"].captured
-        b.sequences[ids[older]] = a["view"].sequence
-        a["view"].exposure = exposure
-        a["view"].steps += 1
+        older = b.captures[ids] > target_view["view"].captured
+        b.captures[ids[older]] = target_view["view"].captured
+        b.sequences[ids[older]] = target_view["view"].sequence
+        target_view["view"].exposure = exposure
+        target_view["view"].steps += 1
         b.fit_steps += 1
         a["steps"] += 1
         if a["steps"] >= STEPS:
