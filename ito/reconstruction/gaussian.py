@@ -30,6 +30,8 @@ class Observation:
     exposure: np.ndarray | None = None
     features: tuple | None = None
     estimated_pose: np.ndarray | None = None
+    estimated_map_pose: np.ndarray | None = None
+    refitting: bool = False
 
 
 class GaussianBackend(GaussianSlots):
@@ -62,16 +64,21 @@ class GaussianBackend(GaussianSlots):
             pose = poses.get(view.node)
             if pose is None:
                 continue
-            previous = view.pose if view.estimated_pose is None else view.estimated_pose
-            delta = np.linalg.inv(previous) @ pose
+            mapped = pose if registration is None else registration.map_from_estimator @ pose
+            previous = view.pose if view.estimated_map_pose is None else view.estimated_map_pose
+            delta = mapped @ np.linalg.inv(previous)
             angle = np.arccos(np.clip((np.trace(delta[:3, :3]) - 1) / 2, -1, 1))
             if angle < 1e-5 and np.linalg.norm(delta[:3, 3]) < 1e-5:
                 continue
-            # Registered cameras stay in the persistent frame. An estimator revision
-            # invalidates a local fit, not the independently observed anchor pose.
             view.estimated_pose = pose.copy()
+            view.estimated_map_pose = mapped.copy()
+            # Gauge changes cancel in the persistent frame. Relative corrections
+            # change the fitting camera, never the published surface or its anchor.
+            view.pose = delta @ view.pose
+            view.features = None
             if angle * view.intrinsics[0] > 2 or np.linalg.norm(delta[:3, 3]) > 0.01:
                 view.steps = 0
+                view.refitting = True
                 self.refits += 1
             changed = True
         if changed:
@@ -344,6 +351,7 @@ class GaussianBackend(GaussianSlots):
                     self.source_captured,
                     self.source_sequence,
                     estimated_pose=getattr(self, "observation_estimate", camera).copy(),
+                    estimated_map_pose=getattr(self, "observation_map_estimate", camera).copy(),
                 )
             )
             if len(self.views) > MAX_VIEWS:

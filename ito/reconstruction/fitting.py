@@ -133,7 +133,9 @@ class LocalFit:
             optimizer=optimizer,
             targets=targets,
             steps=0,
-            mature=self.tensor((b.support[ids] >= 20) & (b.uncertainty[ids] < 0.03)).bool(),
+            mature=self.tensor(
+                (b.support[ids] >= 20) & (b.uncertainty[ids] < 0.03) & ~np.bool_(view.refitting)
+            ).bool(),
         )
         return True
 

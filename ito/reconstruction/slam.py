@@ -209,6 +209,7 @@ class SLAMBackend(GaussianBackend):
         points = cloud.points.detach().float().cpu().numpy().reshape(height, width, 3)
         image = cloud.colors.detach().cpu().numpy().reshape(height, width, 3)
         self.observation_estimate = pose
+        self.observation_map_estimate = self.registration.map_from_estimator @ pose
         mapped, scale = self.registration.align(
             image, -points[..., 2], pose, cloud.intrinsics, self.views
         )
