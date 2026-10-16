@@ -133,6 +133,7 @@ class GaussianBackend(GaussianSlots):
         v = np.rint(cy - fy * local[:, 1] / safe).astype(int)
         inside = (z > 0.01) & (u >= 0) & (u < width) & (v >= 0) & (v < height)
         live, z, u, v = live[inside], z[inside], u[inside], v[inside]
+        local = local[inside]
         pixels = v * width + u
         nearest_depth = np.full(height * width, np.inf, z.dtype)
         np.minimum.at(nearest_depth, pixels, z)
@@ -141,10 +142,26 @@ class GaussianBackend(GaussianSlots):
         surface[pixels[winners]] = live[winners]
         surface = surface.reshape(height, width)
         if len(winners):
-            radius = np.zeros(height * width, np.float32)
-            radius[pixels[winners]] = np.clip(
-                1.5 * fx * self.records[live[winners], 1, :2].min(-1) / z[winners], 1.5, 3
+            records = self.records[live[winners]]
+            centers = local[winners]
+            depths = z[winners]
+            jacobian = (
+                np.stack(
+                    (
+                        (camera[:3, 0] + centers[:, 0:1] / depths[:, None] * camera[:3, 2]) * fx,
+                        (camera[:3, 1] + centers[:, 1:2] / depths[:, None] * camera[:3, 2]) * fy,
+                    ),
+                    1,
+                )
+                / depths[:, None, None]
             )
+            rotations = Rotation.from_quat(records[:, 2, [1, 2, 3, 0]]).as_matrix()
+            projected = (jacobian @ rotations) * records[:, None, 1, :3]
+            covariance = projected @ projected.transpose(0, 2, 1)
+            a, b, c = covariance[:, 0, 0], covariance[:, 0, 1], covariance[:, 1, 1]
+            minor = np.maximum(0, (a + c - np.sqrt((a - c) ** 2 + 4 * b * b)) / 2)
+            radius = np.zeros(height * width, np.float32)
+            radius[pixels[winners]] = np.clip(1.5 * np.sqrt(minor), 1.5, 3)
             radius = radius.reshape(height, width)
             distance, nearest = distance_transform_edt(surface < 0, return_indices=True)
             surface = surface[tuple(nearest)]
