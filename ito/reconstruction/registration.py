@@ -1,6 +1,7 @@
 """Register new evidence to retained observations in the persistent map frame."""
 
 import numpy as np
+from scipy.spatial import cKDTree
 
 AXES = np.diag([1.0, -1.0, -1.0, 1.0])
 
@@ -47,6 +48,9 @@ class Registration:
             if cosine > 0.9 and distance < 0.5 and view.depth.shape == depth.shape:
                 candidates.append((1 - cosine + distance * 0.1, view))
         candidates.sort(key=lambda item: item[0])
+        if candidates:
+            anchor = min(candidates, key=lambda item: item[1].captured)
+            candidates = [anchor] + [item for item in candidates if item[1] is not anchor[1]]
         for _, view in candidates[:4]:
             if view.features is None:
                 source = cv.cvtColor(view.image, cv.COLOR_RGB2GRAY)
@@ -134,6 +138,24 @@ class Registration:
             valid = (observed > 0) & (expected > 0)
             scale = float(np.median(expected[valid] / observed[valid])) if valid.any() else 1.0
             scale = np.clip(scale, 0.8, 1.25)
+            if valid.sum() >= 40:
+                # A single scale cannot reconcile independently predicted depth fields.
+                # Tracked surface points constrain nearby rays without propagating a
+                # foreground correction across an observed depth discontinuity.
+                samples = matched[inside][valid]
+                ratios = np.clip(expected[valid] / observed[valid], 0.6, 1.67)
+                yy, xx = np.mgrid[: depth.shape[0], : depth.shape[1]]
+                pixels = np.column_stack((xx.ravel(), yy.ravel()))
+                distance, nearest = cKDTree(samples).query(pixels, k=3)
+                neighbors = observed[valid][nearest]
+                same_surface = np.abs(neighbors - depth.ravel()[:, None]) < 0.15 * neighbors
+                weights = np.maximum(0, 1 - distance / 24) ** 2 * same_surface
+                total = weights.sum(-1)
+                local = (weights * np.log(ratios[nearest])).sum(-1) / np.maximum(total, 1e-8)
+                influence = np.minimum(1, total * 2)
+                scale = np.exp(influence * local + (1 - influence) * np.log(scale)).reshape(
+                    depth.shape
+                )
             self.accepted += 1
             return pose, scale
         return predicted, 1.0
