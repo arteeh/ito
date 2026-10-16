@@ -239,6 +239,9 @@ def _run(recon):
                         retained_views=len(backend.views),
                         local_refits=backend.refits,
                         fit_steps=backend.fit_steps,
+                        registered_observations=getattr(
+                            getattr(backend, "registration", None), "accepted", 0
+                        ),
                         estimator_keyframes=len(backend.graph.keyframes) if robot_first else None,
                         recalls=getattr(backend, "recalls", None),
                         matched=getattr(backend, "matched", None),

@@ -14,6 +14,12 @@ class Registration:
         self.map_from_estimator = np.eye(4)
         self.accepted = 0
 
+    def revise(self, poses, views):
+        for view in reversed(views):
+            if view.node in poses:
+                self.map_from_estimator = view.pose @ np.linalg.inv(poses[view.node])
+                break
+
     def align(self, image, depth, estimated, intrinsics, views):
         cv = self.cv
         predicted = self.map_from_estimator @ estimated

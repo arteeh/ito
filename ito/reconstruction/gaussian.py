@@ -53,6 +53,9 @@ class GaussianBackend(GaussianSlots):
             self.can_fit = torch.cuda.is_available()
 
     def revise(self, poses):
+        registration = getattr(self, "registration", None)
+        if registration is not None:
+            registration.revise(poses, self.views)
         changed = False
         for view in self.views:
             pose = poses.get(view.node)
