@@ -1,14 +1,3 @@
-"""MASt3R-SLAM's tracker and local graph as a visual front end (tracking.Frontend).
-
-Its map is fusion's world, in metres: every keyframe sits where fusion last put it. Each
-frame is seeded at the pose fusion predicts and solved with that prediction as a prior
-inside MASt3R's own Gauss-Newton step (Ito's adaptation of upstream's FrameTracker.solve),
-so a plain wall or a blurred pan yields a pose leaning on the robot instead of "lost". A
-frame that matches too little to say anything becomes a keyframe where fusion places it,
-and later frames track against that: there is no map to restart. The reference keyframe
-is the retained one that faced the predicted view most nearly, the newest when it is close.
-"""
-
 import math
 
 import numpy as np
@@ -16,36 +5,24 @@ import numpy as np
 from .tracking import Cloud, VisualResult
 
 AXES = np.array([1.0, -1.0, -1.0])  # OpenCV camera/world axes (+Y down, +Z forward) to Ito.
-LOCAL_WINDOW = 4  # keyframes in MASt3R's own local graph
-# Under this match fraction a solve only echoes its prior: no visual factor. Upstream
-# declares such a frame lost.
+LOCAL_WINDOW = 4
 MIN_MATCH = 0.05
-# This many such frames in a row and the next becomes a keyframe at fusion's pose.
 UNMATCHED_KEYFRAME = 3
-# An older keyframe becomes the reference when it faces the predicted view this much closer
-# than the newest one: coming back to a view ties the frame to where it was placed before.
 NEWEST_PREFERENCE = math.radians(10)
-# A frame the reference does not match is tried once more against the other keyframe that
-# faces its predicted view most nearly, within this: after a turn too fast to follow, the
-# view is often one an older keyframe in fusion's window saw.
 RETRY_ANGLE = math.radians(30)
-# A fully matched relative pose, one sigma; fewer matches widen it by 1/sqrt(match).
 VISUAL_ROTATION = math.radians(0.5)
 VISUAL_TRANSLATION = 0.02
-SCALE_PRIOR = 0.1  # The prior's log-scale sigma: MASt3R keeps its own scale between frames.
+SCALE_PRIOR = 0.1
 UNKNOWN = np.full(6, np.inf)
 
 
 def view_angle(a, b):
-    """Angle between two world-from-camera poses' viewing directions (-Z)."""
     cosine = float(np.clip(a[:3, 2] @ b[:3, 2], -1, 1))
     return math.acos(cosine)
 
 
 class Keyframes(list):
-    """Upstream's keyframe store: the tracker reads last_keyframe(), the graph writes poses."""
-
-    reference = None  # index tracked against; None: the newest
+    reference = None
 
     def last_keyframe(self):
         return self[-1 if self.reference is None else self.reference]
@@ -69,8 +46,6 @@ class MASt3RFrontend:
 
         load_config(str(source / "config/base.yaml"))
         config["single_thread"] = True
-        # Ito always knows the camera's intrinsics; calibrated tracking and points
-        # on the true pixel rays keep straight edges straight.
         config["use_calib"] = True
         config["tracking"]["filtering_mode"] = "recent"
         config["local_opt"]["max_iters"] = 5
@@ -81,7 +56,7 @@ class MASt3RFrontend:
         self.lietorch = lietorch
         self.torch = torch
         self.frames = Keyframes()
-        self.ids = []  # node id of each keyframe, parallel to frames
+        self.ids = []
         self.tracker = FrameTracker(self.model, self.frames, "cuda")
         if not hasattr(self.tracker, "prior"):
             raise RuntimeError("MASt3R bundle predates robot-first tracking; rebuild it")
@@ -101,10 +76,7 @@ class MASt3RFrontend:
         self.admission_hooks = bind_model(self.model, admission)
         bind_native(admission)
 
-    # -- poses between MASt3R's Sim3 map and Ito ----------------------------------------
-
     def placed(self, transform):
-        """The Ito world-from-camera pose of a map Sim3 and its scale, or None if unusable."""
         matrix = transform.matrix()[0].double().cpu().numpy()
         scale = abs(np.linalg.det(matrix[:3, :3])) ** (1 / 3)
         if not np.isfinite(matrix).all() or not 0.01 < scale < 100:
@@ -117,14 +89,11 @@ class MASt3RFrontend:
         return rigid, scale
 
     def unplaced(self, pose, scale):
-        """The map's Sim3 for an Ito world-from-camera pose."""
         from ito.render.pose import quaternion
 
         rotation = pose[:3, :3] * AXES[:, None] * AXES[None, :]
         data = [*(pose[:3, 3] * AXES), *quaternion(rotation), scale]
         return self.lietorch.Sim3(self.K.new_tensor(data)[None])
-
-    # -- tracking -----------------------------------------------------------------------
 
     def _angles(self, predicted):
         poses = [self.placed(kf.T_WC)[0] for kf in self.frames]
@@ -138,17 +107,13 @@ class MASt3RFrontend:
         return best
 
     def _retry(self, predicted, tried):
-        """The keyframe besides `tried` facing the predicted view most nearly, if close."""
         angles = self._angles(predicted)
         angles[tried] = math.inf
         best = int(np.argmin(angles))
         return best if angles[best] <= RETRY_ANGLE else None
 
     def _attempt(self, frame, reference, predicted, prior_sigma):
-        """Track the frame against one keyframe: (new keyframe, lost, keyframe pose and
-        scale, the frame's pose and scale)."""
         if self.ids[reference] != self.tracked_against:
-            # Upstream reuses the last frame's matches as the next search's start.
             self.tracker.reset_idx_f2k()
             self.tracked_against = self.ids[reference]
         self.frames.reference = reference
@@ -241,10 +206,6 @@ class MASt3RFrontend:
         self.tracked_against = None
 
     def _local_graph(self, reference):
-        """MASt3R's own bundle adjustment over the newest keyframes and the reference.
-
-        Returns the new keyframe's pose relative to the reference after it.
-        """
         from mast3r_slam.global_opt import FactorGraph
 
         indices = list(range(max(0, len(self.frames) - LOCAL_WINDOW), len(self.frames)))
@@ -253,8 +214,6 @@ class MASt3RFrontend:
         window = Keyframes(self.frames[i] for i in indices)
         last = len(window) - 1
         graph = FactorGraph(self.model, window, self.K, device="cuda")
-        # Neighbours in time, and the reference to the new keyframe; upstream drops edges
-        # whose views do not overlap. The first keyframe stays pinned.
         graph.add_factors(list(range(last)), list(range(1, last + 1)), 0.1)
         if last > 1:
             graph.add_factors([indices.index(reference)], [last], 0.1)
@@ -267,7 +226,6 @@ class MASt3RFrontend:
         return np.linalg.inv(reference_pose) @ new_pose
 
     def correct(self, keyframe_poses, scale):
-        """Fused poses back into MASt3R's keyframes, so its references agree with fusion."""
         with self.torch.inference_mode():
             for keyframe, node in zip(self.frames, self.ids, strict=True):
                 _, own = self.placed(keyframe.T_WC)

@@ -1,8 +1,7 @@
-"""Run Pollen's real body, policy daemon and WebRTC camera as one virtual Microduck."""
-
 import argparse
 import contextlib
 import json
+import math
 import os
 import signal
 import socket
@@ -35,7 +34,6 @@ def process(logs, name, command, env=None):
         try:
             yield child
         finally:
-            # Kill the whole owned group, including any grandchildren, on every exit path.
             for sig in (signal.SIGTERM, signal.SIGKILL):
                 try:
                     os.killpg(child.pid, sig)
@@ -66,10 +64,20 @@ def simulation(
     driver_port=8081,
     viewer=False,
     gl=None,
-    camera_height=360,
-    truth=None,
+    camera_height=None,
     blur=1,
+    hfov=None,
+    calibrated=True,
+    head_imu=None,
+    imu_noise=1.0,
+    tof_noise=1.0,
+    seed=0,
 ):
+    camera_height = camera_height or lens.DEFAULT_HEIGHT
+    hfov = hfov or lens.HFOV_ESTIMATE_DEG
+    if not 10 <= hfov <= 170:
+        raise ValueError("the camera's field of view must be between 10 and 170 degrees")
+    head_imu = True if head_imu is None else head_imu
     upstream, rl, policies_dir = (p.resolve() for p in (upstream, rl, policies_dir))
     logs.mkdir(parents=True, exist_ok=True)
     binaries = upstream / "target/debug"
@@ -80,10 +88,9 @@ def simulation(
         "OPENBLAS_NUM_THREADS": "1",
         "OMP_NUM_THREADS": "1",
         "ITO_MICRODUCK_CAMERA_HEIGHT": str(camera_height),
+        "ITO_MICRODUCK_CAMERA_HFOV": str(hfov),
         "ITO_MICRODUCK_CAMERA_FPS": "30",
     }
-    if truth is not None:
-        sim_env["ITO_MICRODUCK_TRUTH"] = str(Path(truth).resolve())
     sim_env["ITO_MICRODUCK_BLUR"] = str(blur)
     on_screen = sim_env["MUJOCO_GL"] == "glfw"
     if on_screen and Path("/dev/dxg").exists() and "GALLIUM_DRIVER" not in os.environ:
@@ -127,9 +134,26 @@ def simulation(
         )
         code = pairing.read(pairing_file)
         robot_socket = state / "robot.sock"
+        tof_socket = state / "tof.sock"
         media_config = state / "media.toml"
-        media_config.write_text(f'[media]\nquality = "{lens.RESOLUTIONS[camera_height]}"\n')
-        # Match robotd's shipped default: velstand walks and also stands still at zero command.
+        media = [
+            "[board]",
+            'version = "beta"',
+            "[media]",
+            f'quality = "{lens.RESOLUTIONS[camera_height]}"',
+        ]
+        if calibrated:
+            focal = lens.focal_px(1920, hfov)
+            media += [
+                "[media.intrinsics]",
+                "width = 1920",
+                "height = 1080",
+                f"fx = {focal!r}",
+                f"fy = {focal!r}",
+                "cx = 960.0",
+                "cy = 540.0",
+            ]
+        media_config.write_text("\n".join(media) + "\n")
         policies = {
             "walk": "velstand",
             "sitstand": "alpha_sitstand",
@@ -139,22 +163,22 @@ def simulation(
             "roulade": "roulade",
         }
         params = state / "robotd.toml"
-        lines = ["[policy]", "enabled = true"]
+        lines = ["[board]", 'version = "beta"', "[policy]", "enabled = true"]
         for name, filename in policies.items():
             path = policies_dir / f"{filename}.onnx"
             if not path.is_file():
                 raise FileNotFoundError(path)
             lines.append(f"{name} = {json.dumps(str(path))}")
+        lines += ["[head_imu]", f"enabled = {str(head_imu).lower()}"]
         params.write_text("\n".join(lines) + "\n")
-        # Software shadows must not slow physics below the policy's 50 Hz control clock.
         source_scene = rl / "src/mjlab_microduck/robot/microduck/scene.xml"
         for asset in source_scene.parent.iterdir():
             if asset.name not in {"scene.xml", "robot_groundcontact.xml"}:
                 (state / asset.name).symlink_to(asset, target_is_directory=asset.is_dir())
-        # Hide CAD surfaces from the head camera; keep every inertial, collision and actuator.
         robot_model = ET.parse(source_scene.parent / "robot_groundcontact.xml")
         for geom in robot_model.findall(".//worldbody//geom"):
             geom.set("group", "2" if geom.get("class") == "visual" else "3")
+        gear_play(robot_model)
         robot_model.write(state / "robot_groundcontact.xml")
         scene = furnish(source_scene)
         ET.SubElement(scene.find("visual"), "quality", shadowsize="256", offsamples="1")
@@ -184,6 +208,14 @@ def simulation(
                 camera_port,
                 "--scene",
                 scene_path,
+                "--board",
+                "beta",
+                "--imu-noise",
+                imu_noise,
+                "--tof-noise",
+                tof_noise,
+                "--seed",
+                seed,
             ],
             sim_env,
         )
@@ -200,10 +232,13 @@ def simulation(
                     raise RuntimeError(f"body did not listen; see {logs / 'body.log'}") from None
                 time.sleep(0.2)
         body = stack.enter_context(body_socket.makefile("rw"))
-        body.write('{"op":"hello","protocol":1,"joints":15}\n')
+        body.write('{"op":"hello","protocol":2,"joints":15}\n')
         body.flush()
-        if json.loads(body.readline())["protocol"] != 1:
-            raise RuntimeError("incompatible Pollen body protocol")
+        hello = json.loads(body.readline())
+        if hello.get("protocol") != 2 or hello.get("board") != "beta":
+            raise RuntimeError(
+                f"the body speaks {hello}, not protocol 2 for a beta: re-run setup-sim.sh"
+            )
         launch(
             "robot",
             [
@@ -228,6 +263,18 @@ def simulation(
                 raise RuntimeError(f"robot enable failed: {result.stderr.decode()}")
             time.sleep(0.2)
         launch(
+            "tof",
+            [
+                binaries / "tofd",
+                "--sim",
+                f"127.0.0.1:{body_port}",
+                "--socket",
+                tof_socket,
+                "--config",
+                params,
+            ],
+        )
+        launch(
             "media",
             [
                 binaries / "mediad",
@@ -241,7 +288,7 @@ def simulation(
                 "--robot-socket",
                 robot_socket,
                 "--tof-socket",
-                state / "absent-tof.sock",
+                tof_socket,
                 "--frame-socket",
                 state / "media.sock",
                 "--config",
@@ -251,7 +298,6 @@ def simulation(
             ],
             media_env,
         )
-        # Wait for mediad before the driver's deliberately bounded connection attempt.
         deadline = time.monotonic() + 20
         while True:
             try:
@@ -277,8 +323,9 @@ def simulation(
                 "--robot",
                 f"ws://127.0.0.1:{media_port}",
             ],
-            # The driver tells Ito whether its frames are sharp (Camera.exposure).
-            os.environ | {"ITO_MICRODUCK_BLUR": str(blur)},
+            os.environ
+            | {"ITO_MICRODUCK_BLUR": str(blur)}
+            | ({"ITO_MICRODUCK_EXPOSURE": "0"} if blur == 1 else {}),
         )
         deadline = time.monotonic() + 30
         while True:
@@ -295,6 +342,43 @@ def simulation(
         yield SimpleNamespace(body=body, children=children, code=code, port=driver_port)
 
 
+# The head's four servos. Each has gear play between its output, which its encoder reads and
+# robotd's kinematics place the camera by, and the link it turns: ~2 degrees total per servo,
+# upstream's own model of the real robot (microduck_rl's add_backlash.py). The camera, the head
+# IMU and the ToF ride on the links, so the twin's head wobbles off its kinematics the way a
+# duck's does, which is what a head IMU is for. The legs keep the play-free model the walking
+# policy was trained on.
+HEAD_JOINTS = ("neck_pitch", "head_pitch", "head_yaw", "head_roll")
+GEAR_PLAY = math.radians(1.0)  # each way
+
+
+def gear_play(robot):
+    defaults = robot.getroot().find("default")
+    play = ET.SubElement(ET.SubElement(defaults, "default", {"class": "backlash"}), "joint")
+    play.attrib.update(
+        damping="0.01",
+        frictionloss="0",
+        armature="0.001",
+        limited="true",
+        range=f"{-GEAR_PLAY!r} {GEAR_PLAY!r}",
+        solreflimit="0.01 1",
+        solimplimit="0.95 0.999 0.0001 0.5 2",
+    )
+    for body in robot.getroot().iter("body"):
+        for joint in list(body.findall("joint")):
+            if joint.get("name") in HEAD_JOINTS:
+                passive = ET.Element(
+                    "joint",
+                    {
+                        "axis": joint.get("axis"),
+                        "name": f"passive_{joint.get('name')}_backlash",
+                        "type": "hinge",
+                        "class": "backlash",
+                    },
+                )
+                body.insert(list(body).index(joint) + 1, passive)
+
+
 def arguments(parser):
     parser.add_argument("--microduck", type=Path, required=True)
     parser.add_argument("--rl", type=Path, required=True)
@@ -304,17 +388,33 @@ def arguments(parser):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     arguments(parser)
+    parser.add_argument(
+        "--beta-hfov",
+        type=float,
+        help=f"the beta's lens, degrees across (default: estimate {lens.HFOV_ESTIMATE_DEG})",
+    )
+    parser.add_argument(
+        "--uncalibrated",
+        action="store_true",
+        help="a beta with no [media.intrinsics], which publishes no camera geometry",
+    )
+    parser.add_argument(
+        "--no-head-imu", dest="head_imu", action="store_false", default=None, help="no head IMU"
+    )
+    parser.add_argument(
+        "--imu-noise", type=float, default=1.0, help="head IMU datasheet noise ratio (0: exact)"
+    )
+    parser.add_argument(
+        "--tof-noise", type=float, default=1.0, help="ToF datasheet noise ratio (0: exact)"
+    )
+    parser.add_argument("--seed", type=int, default=0, help="sensor noise seed")
     parser.add_argument("--viewer", action="store_true", help="open Pollen's MuJoCo viewer")
     parser.add_argument("--gl", choices=("osmesa", "egl", "glfw"))
     parser.add_argument(
         "--camera-height",
         type=int,
         choices=sorted(lens.RESOLUTIONS),
-        default=360,
-        help="head camera frame height in pixels (16:9); larger costs render time",
-    )
-    parser.add_argument(
-        "--truth", type=Path, help="write each head camera frame's true pose here (JSONL)"
+        help="head camera frame height in pixels (16:9), mediad's quality rung; default 720",
     )
     parser.add_argument(
         "--blur",
@@ -349,13 +449,18 @@ def main():
             viewer=args.viewer,
             gl=args.gl,
             camera_height=args.camera_height,
-            truth=args.truth,
             blur=args.blur,
+            hfov=args.beta_hfov,
+            calibrated=not args.uncalibrated,
+            head_imu=args.head_imu,
+            imu_noise=args.imu_noise,
+            tof_noise=args.tof_noise,
+            seed=args.seed,
         ) as sim:
             addresses = [args.host]
             if args.host == "0.0.0.0":
                 addresses = subprocess.check_output(["hostname", "-I"], text=True).split()
-            print("Virtual Microduck ready. In Ito, connect to:", flush=True)
+            print("Virtual Microduck (beta) ready. In Ito, connect to:", flush=True)
             for address in addresses:
                 if ":" not in address:
                     print(f"  {address}:{args.port}", flush=True)
@@ -364,7 +469,6 @@ def main():
                 flush=True,
             )
             while True:
-                # Closing the viewer also stops the complete robot.
                 if args.viewer and sim.children[0][1].poll() == 0:
                     break
                 check(sim.children, args.logs)

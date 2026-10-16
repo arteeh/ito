@@ -42,7 +42,6 @@ def normalized(q):
 
 
 def heading(yaw):
-    """Rotation about robotd's vertical axis."""
     return (math.cos(yaw / 2), 0.0, 0.0, math.sin(yaw / 2))
 
 
@@ -73,7 +72,6 @@ def conjugate(q):
 
 
 def rotation_vector(q):
-    """Axis times angle of a scalar-first unit quaternion, the short way round."""
     w, x, y, z = q if q[0] >= 0 else tuple(-v for v in q)
     sine = math.sqrt(x * x + y * y + z * z)
     if sine < 1e-12:
@@ -83,17 +81,12 @@ def rotation_vector(q):
 
 
 def angular_velocity(previous, current, dt):
-    """Camera-frame rad/s that turns xyzw orientation `previous` into `current` in dt."""
     q0 = (previous[3], *previous[:3])
     q1 = (current[3], *current[:3])
     return tuple(v / dt for v in rotation_vector(multiply(conjugate(q0), q1)))
 
 
 def gyro_in_camera(gyro, sensor, camera):
-    """A head-IMU gyro reading (sensor axes) in Ito camera axes, from the two trunk mounts.
-
-    sensor and camera are robotd's scalar-first sensor-to-trunk and camera-to-trunk rotations.
-    """
     trunk = rotate(normalized(sensor), gyro)
     x, y, z = rotate(conjugate(normalized(camera)), trunk)
     return (x, -y, -z)  # OpenCV camera axes to Ito's
@@ -116,8 +109,6 @@ def _time(sample):
 
 
 def at(history, when):
-    """(position, xyzw orientation, body yaw) at `when`, interpolated in a time-ordered
-    history of (time, position, orientation, body yaw) samples; held at either end."""
     later = bisect.bisect_right(history, when, key=_time)
     if later == 0 or later == len(history):
         return history[min(later, len(history) - 1)][1:]

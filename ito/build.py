@@ -1,5 +1,3 @@
-"""Fetch, verify and compile the offline SLAM bundle before packaging Ito."""
-
 import argparse
 import hashlib
 import json
@@ -37,7 +35,6 @@ def download(url, path, report, label, sha256=None):
         path.unlink()
     path.parent.mkdir(parents=True, exist_ok=True)
     partial = path.with_suffix(path.suffix + ".part")
-    # Restart an interrupted download; only a complete, verified file gets its final name.
     report(f"Downloading {label}", 0)
     digest = hashlib.sha256()
     try:
@@ -152,7 +149,6 @@ TRACKER_ADAPTATIONS = (
 def adapt_tracker(path):
     code = path.read_text(encoding="utf-8")
     for old, new in TRACKER_ADAPTATIONS:
-        # Both pose solvers share the relative-pose setup; everything else is unique.
         expected = 2 if old == RELATIVE_SETUP else 1
         if code.count(old) != expected:
             raise RuntimeError(f"MASt3R-SLAM tracker changed upstream; cannot adapt {path}")
@@ -180,7 +176,6 @@ def compile_extensions(cache, work):
     cxx = ["/O2", "/std:c++17"] if sys.platform == "win32" else ["-O3"]
     os.environ.setdefault("MAX_JOBS", "2")
 
-    # A release must run on other NVIDIA GPUs and build on GPU-less CI with nvcc.
     os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "7.5;8.0;8.6;8.9;9.0+PTX")
     native = {}
 
@@ -272,7 +267,6 @@ def main():
     work = Path(__file__).resolve().parents[1] / ".slam-build"
     cache.mkdir(parents=True, exist_ok=True)
     work.mkdir(parents=True, exist_ok=True)
-    # An interrupted rebuild must never appear ready to the pilot or packager.
     manifest = cache / "manifest.json"
     manifest.unlink(missing_ok=True)
     slam = source(
@@ -299,8 +293,6 @@ def main():
         "7a246279efcaf15464aac710ca36fde772000fa0a16082a8c03dfe78c15dce93",
         report,
     )
-    # Retain all upstream licences. Retrieval's ASMK database is unnecessary for a
-    # bounded live map: recovery searches the retained keyframes directly.
     utils = slam / "mast3r_slam/mast3r_utils.py"
     code = utils.read_text(encoding="utf-8")
     eager = "from mast3r_slam.retrieval_database import RetrievalDatabase\n"
@@ -352,7 +344,6 @@ def main():
         "and a pose prior in the frame tracker.\n",
         encoding="utf-8",
     )
-    # Never carry kernels from a different Python/platform through a skipped build.
     if (cache / "native").exists():
         shutil.rmtree(cache / "native")
     native, torch_version = compile_extensions(cache, work)

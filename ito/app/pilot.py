@@ -1,5 +1,3 @@
-"""The display reads snapshots; one background loop owns the link and worker lifetime."""
-
 import asyncio
 import contextlib
 import logging
@@ -15,7 +13,7 @@ from ito.desktop import DesktopState, PilotStatus
 from ito.desktop.settings import load as app_settings
 from ito.link import PairingError, connect
 from ito.link.audio import Audio
-from ito.protocol import Command, FrameMetadata, Motion, Paired, PilotState, Pose, Status
+from ito.protocol import Command, FrameMetadata, Motion, Paired, PilotState, Pose, Sensors, Status
 from ito.rates import CounterRate, Rate
 from ito.reconstruction import Reconstruction
 from ito.render import pose
@@ -25,17 +23,10 @@ from . import settings
 from .frames import FrameJoin, camera_matrix
 
 log = logging.getLogger(__name__)
-# SLAM's 3D view drops to the flat feed after this long without tracking (robot-first: without
-# the robot's motion), and returns only once it has run this steadily, so the view does not
-# flicker at the edge of tracking.
 TRACKING_LOST = 2.0
 TRACKING_STEADY = 1.0
 TRACKING_GAP = 0.5
-# A failed worker restarts after this delay, doubling up to RESTART_LONGEST; one that ran
-# RESTART_HEALTHY seconds before failing starts the count again.
 RESTART_FIRST, RESTART_LONGEST, RESTART_HEALTHY = 1.0, 30.0, 60.0
-# Input older than INPUT_FRESH releases the deadman. A pilot who never let go is re-armed when
-# input returns within SHORT_STALL; a longer gap may have changed the scene, so they resume.
 INPUT_FRESH, SHORT_STALL = 0.2, 1.0
 # Pilot state goes out as each input sample arrives (a headset's 72-90 Hz, a monitor's refresh),
 # and at least at HEARTBEAT when samples stop: the robot must hear the deadman go stale.
@@ -45,13 +36,11 @@ INPUT_FRESH, SHORT_STALL = 0.2, 1.0
 # one (1/120 s) made a desktop pilot's samples wait out the interval, which doubled
 # input-to-robot latency on Windows (#31).
 SEND_INTERVAL, HEARTBEAT = 0.002, 1 / 60
-# A closing app waits this long for the link to tear down, then this long more for each
-# reconstruction worker; anything still running is abandoned so the app can exit.
 LINK_WAIT, WORKER_WAIT = 1.0, 0.8
 
 
 class ShutdownStuck(RuntimeError):
-    """Part of the pilot did not stop; only ending the process releases it."""
+    pass
 
 
 class Pilot:
@@ -74,11 +63,11 @@ class Pilot:
         self.audio = None
         self.mic_muted = self.speaker_muted = False
         self.address, self.camera_name, self.cameras = address, camera, cameras
-        self.persist = persist  # The simulated robot's address changes every run.
-        self.code = code  # Used once, when the robot does not know this pilot yet.
+        self.persist = persist
+        self.code = code
         self.credential = credential
-        self.refusal = None  # Why the robot refused to pair; the pilot must act.
-        self.description = None  # The robot connected last
+        self.refusal = None
+        self.description = None
         self.settings = defaults or settings.Settings(**app_settings().model_dump())
         self.defaults = self.settings
         self.splat_limit = splat_limit
@@ -86,12 +75,12 @@ class Pilot:
         self.state = DesktopState(status=PilotStatus(link="CONNECTING"))
         self.telemetry = {}
         self.latest_input = None
-        self.input_arrived = None  # Set from the input thread to wake the link loop.
+        self.input_arrived = None
         self.commands = deque()
-        self.armed = False  # Resume sent and input fresh since, or back within SHORT_STALL.
-        self.stalled = False  # Disarmed by an input stall alone; fresh input soon re-arms.
-        self.resumed = False  # The last safety command this pilot gave was resume.
-        self.focus_hold = False  # The robot is stopped only because the window lost focus.
+        self.armed = False
+        self.stalled = False
+        self.resumed = False
+        self.focus_hold = False
         self.budget_change = None
         self.worker = None
         self.worker_lock = threading.Lock()
@@ -100,11 +89,11 @@ class Pilot:
         self.backend = "rgbd"
         self.reconstruction_status = ""
         self.tracked_frames = 0
-        self.slam_restarts = {}  # The worker's map restarts by cause, as last logged.
+        self.slam_restarts = {}
         self.tracking = False
         self.tracking_steady_since = 0.0
-        self.slam_view = False  # SLAM's 3D view is shown rather than the flat feed.
-        self.restart_at = None  # When a failed worker starts again.
+        self.slam_view = False
+        self.restart_at = None
         self.stop = threading.Event()
         self.thread = None
         self.loop = self.task = None
@@ -115,12 +104,11 @@ class Pilot:
         self.settings_revision = 0
         self.last_frame = 0.0
         self.extrinsics = pose()
-        self.camera_rate = Rate()  # joined frames handed to reconstruction
-        self.motion_rate = Rate()  # robot motion samples received
-        self.motion_time = -1.0  # Pilot-clock time of the newest robot motion sample
-        # SLAM places the eye from the robot's own motion, corrected by fusion (tracking.py).
+        self.camera_rate = Rate()
+        self.motion_rate = Rate()
+        self.motion_time = -1.0
         self.robot_first = False
-        self.backend_rate = CounterRate()  # includes pose-only and skipped integrations
+        self.backend_rate = CounterRate()
 
     @property
     def max_splats(self):
@@ -141,12 +129,9 @@ class Pilot:
                     setattr(self.audio, name, getattr(self, name))
                 continue
             if command == "focus_stop":
-                # Commands precede this sample's inactive input, so armed is still current.
                 self.focus_hold = self.resumed and (self.armed or self.stalled)
             else:
                 if command == "rearm":
-                    # Only a stop that focus loss alone caused is undone by clicking back in;
-                    # the driver still waits for fresh deadman input after the resume.
                     if not self.focus_hold or self.state.status.e_stop:
                         continue
                     command = "resume"
@@ -161,7 +146,7 @@ class Pilot:
         self.latest_input = value
         loop, arrived = self.loop, self.input_arrived
         if loop and arrived:
-            with contextlib.suppress(RuntimeError):  # The link loop has just closed.
+            with contextlib.suppress(RuntimeError):
                 loop.call_soon_threadsafe(arrived.set)
 
     def statistics(self):
@@ -246,7 +231,6 @@ class Pilot:
         )
 
     def _log_restarts(self, restarts):
-        """One diagnostic event per cause whose count of SLAM map restarts went up."""
         if not restarts:
             return
         for cause, count in restarts.items():
@@ -260,7 +244,6 @@ class Pilot:
         self.slam_restarts = restarts
 
     def _audio_status(self, peer):
-        """The pilot's devices that have a counterpart on the robot."""
         if not peer or not self.audio:
             return ""
         capabilities = peer.description.capabilities
@@ -301,15 +284,10 @@ class Pilot:
             self._anchor(camera)
         if self.worker is None or self.failure:
             return
-        # Frame metadata only uses an idle link; RGB may arrive without depth.
-        # Keep the last complete scene until another posed RGB-D observation arrives.
         if self.backend == "rgbd" and (depth is None or camera is None):
             return
         measured = False
         if self.backend == "slam":
-            # SLAM places the camera itself; it needs only the driver's best guess of
-            # this exposure's world orientation to align its map with gravity and heading.
-            # A driver that measures its camera pose or gaze also holds SLAM to its heading.
             measured = camera is not None or pair[1].head_angles is not None
             camera = self._prior(camera, pair[1])
         self.camera_rate.tick()
@@ -325,10 +303,6 @@ class Pilot:
             self.last_frame = clock.now()
 
     def _motion(self, message, peer):
-        """The robot's camera motion, on the pilot clock: (time, world-from-camera, rad/s, state).
-
-        Samples arrive in batches that may repeat ones already seen; only newer ones count.
-        """
         fresh = []
         for sample in message.samples:
             local = peer.clock.remote_to_local(sample.time)
@@ -340,27 +314,51 @@ class Pilot:
                 (local, camera_matrix(sample.camera_pose), sample.angular_velocity, sample.state)
             )
         if fresh and self.robot_first:
-            # The eye follows the robot's newest camera pose at its own 50 Hz; the renderer
-            # moves it by fusion's correction. Reconstruction fuses every sample.
             self._anchor(fresh[-1][1])
             worker = self.worker
             if worker is not None and not self.failure:
                 worker.motion(fresh)
         return fresh
 
+    def _sensors(self, message, peer):
+        worker = self.worker
+        if worker is None or self.failure or not self.robot_first:
+            return
+        local = peer.clock.remote_to_local
+        imu = [
+            dict(
+                sensor=unit.sensor,
+                mount=camera_matrix(unit.mount),
+                gyro_sigma=unit.gyro_sigma,
+                accel_sigma=unit.accel_sigma,
+                samples=[
+                    (local(x.time), x.angular_velocity, x.specific_force, x.orientation)
+                    for x in unit.samples
+                ],
+            )
+            for unit in message.imu
+        ]
+        ranges = [
+            dict(
+                sensor=grid.sensor,
+                time=local(grid.time),
+                mount=camera_matrix(grid.mount),
+                shape=(grid.rows, grid.cols),
+                field_of_view=grid.field_of_view,
+                distances=[math.nan if d is None else d for d in grid.distances],
+                sigma=grid.sigma,
+            )
+            for grid in message.ranges
+        ]
+        worker.sensors(imu, ranges)
+
     def _retire(self, worker):
-        # Never on the link loop: a busy or wedged worker takes a while to stop or kill.
         closer = threading.Thread(target=worker.close, name="ito-reconstruction-close")
         closer.start()
         retiring = [(c, w) for c, w in self.retiring if c.is_alive() or w.process.is_alive()]
         self.retiring = retiring + [(closer, worker)]
 
     def _prior(self, camera, metadata):
-        """World-from-camera as far as the robot knows it at this exposure.
-
-        A driver that knows the camera pose says so; otherwise its body heading and
-        measured head pan and tilt turn the startup camera mount; otherwise the mount.
-        """
         if camera is not None:
             return camera
         result = self.extrinsics.copy()
@@ -402,7 +400,6 @@ class Pilot:
         paired = peer.credential_received.is_set()
         if paired:
             self.credential = peer.credential
-        # The robot retires its code once this pilot can come back without it.
         if self._save(description.name) or (paired and not self.persist):
             if paired and peer.send(Paired(pilot=self.credential.pilot)):
                 self.code = None
@@ -426,7 +423,7 @@ class Pilot:
         )
         self.tracked_frames = 0
         self.tracking = self.slam_view = False
-        self.motion_time = -1.0  # A new link has a new clock offset.
+        self.motion_time = -1.0
         self.robot_first = False
         self.restart_at = None
         restart_delay = RESTART_FIRST
@@ -460,8 +457,6 @@ class Pilot:
 
         if self.backend != "video":
             reconstruct()
-        # Talking to a robot without a speaker, or listening to one without a microphone,
-        # would only hold the pilot's devices open.
         self.audio.start(
             capture="speaker" in description.capabilities,
             playback="microphone" in description.capabilities,
@@ -472,8 +467,8 @@ class Pilot:
         tasks = []
         self.armed = self.focus_hold = self.stalled = False
         previous_fresh = None
-        last_fresh = None  # Capture time of the newest sample that held the deadman.
-        motion_since = None  # When the robot's motion last began arriving without gaps.
+        last_fresh = None
+        motion_since = None
 
         def disarm(reason):
             nonlocal last_fresh
@@ -497,6 +492,8 @@ class Pilot:
                         self._submit(pair, peer)
                 elif isinstance(message, Motion):
                     self._motion(message, peer)
+                elif isinstance(message, Sensors) and message.camera == camera.name:
+                    self._sensors(message, peer)
                 elif isinstance(message, Status):
                     last_status = clock.now()
                     self.telemetry = message.telemetry
@@ -521,7 +518,7 @@ class Pilot:
 
         tasks.extend([asyncio.create_task(messages()), asyncio.create_task(tracks())])
         deadline = clock.now()
-        sent = -math.inf  # When the last pilot state went out.
+        sent = -math.inf
         self.input_arrived = arrived = asyncio.Event()
         try:
             while not self.stop.is_set():
@@ -533,7 +530,6 @@ class Pilot:
                     if message:
                         self.reconstruction_status = message
                     if self.backend == "slam":
-                        # A stalled worker may hold the pose lock; staleness alone pauses.
                         tracked = self.worker.pose()
                         if tracked:
                             transform, count, self.tracking, _ = tracked
@@ -596,12 +592,9 @@ class Pilot:
                         self.reconstruction_status += f"; restarting in {wait:.0f} s"
                     self.state = replace(self.state, flat_video=True)
                 if self.failure and self.worker:
-                    # A failed worker must not tear down the robot link or stop video/input.
                     with self.worker_lock:
                         failed, self.worker = self.worker, None
                     self._retire(failed)
-                    # Posed RGB-D has no missing model or device to wait for, nor has SLAM
-                    # that already tracked (a CUDA fault, a diverged solve): try again.
                     if self.backend == "rgbd" or self.tracked_frames:
                         if now - worker_started >= RESTART_HEALTHY:
                             restart_delay = RESTART_FIRST
@@ -631,7 +624,6 @@ class Pilot:
                         given = self.commands.popleft()
                         action = ("stop" if given == "focus_stop" else given).replace("_", "-")
                         if action == "resume":
-                            # Held input counts from here; a stall before resume is not one.
                             self.armed, self.stalled, last_fresh = True, False, None
                         else:
                             disarm("focus lost" if given == "focus_stop" else action)
@@ -640,15 +632,13 @@ class Pilot:
                     if peer.send(pending):
                         pending = None
                     else:
-                        break  # Retry backpressure; accepted commands use reliable SCTP.
+                        break
                 value = self.latest_input
                 if value is not None:
                     fresh = value.active and now - value.timestamp < INPUT_FRESH
                     if fresh != previous_fresh:
                         diagnostics.event("input_freshness_transition", fresh=fresh)
                         previous_fresh = fresh
-                    # The gap since the last sample that held the deadman, whichever thread
-                    # stalled: a link loop that was blocked never saw the input go stale.
                     gap = None
                     if last_fresh is not None:
                         gap = (value.timestamp if fresh else now) - last_fresh
@@ -773,7 +763,6 @@ class Pilot:
             except PairingError as exc:
                 log.warning("Pilot connection: %s", exc)
                 if self.credential is not None:
-                    # The robot's code was rotated, so it forgot this pilot.
                     self.credential = None
                     if self.persist:
                         settings.forget_credential(self.address)
@@ -795,7 +784,6 @@ class Pilot:
             with contextlib.suppress(asyncio.CancelledError), clock.fine_timers():
                 asyncio.run(self._run())
 
-        # Daemon: a link stuck in teardown must not keep the closed app alive.
         self.thread = threading.Thread(target=run, name="ito-link", daemon=True)
         self.thread.start()
         return self
@@ -808,7 +796,6 @@ class Pilot:
         """
         self.stop.set()
         if self.audio:
-            # A device still closing is left for the operating system to release.
             self.audio.close_timeout = 0.3
         if self.loop and self.task:
             with contextlib.suppress(RuntimeError):

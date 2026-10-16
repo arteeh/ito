@@ -1,5 +1,3 @@
-"""20 ms mono audio; bounded device queues discard backlog instead of adding latency."""
-
 import asyncio
 import atexit
 import contextlib
@@ -19,7 +17,7 @@ from av import AudioFrame, AudioResampler
 from ito import clock, diagnostics
 
 RATE, SAMPLES = 48000, 960
-CLOSE_TIMEOUT = 2.0  # A device that takes longer is left to close on its own thread.
+CLOSE_TIMEOUT = 2.0
 log = logging.getLogger(__name__)
 
 
@@ -29,7 +27,6 @@ def arguments(parser, *, source="device"):
 
 
 def opus(pc):
-    # aiortc's audio jitter buffer prefetches four packets (80 ms at our packet size).
     codecs = [c for c in RTCRtpSender.getCapabilities("audio").codecs if c.mimeType == "audio/opus"]
     for transceiver in pc.getTransceivers():
         if transceiver.kind == "audio":
@@ -161,8 +158,6 @@ class Audio:
         log.info(self.status)
 
     def _play(self, data, flags):
-        # Network delivery is bursty even after RTP reordering. Keep 60 ms ahead of
-        # the device clock, with a hard 100 ms ceiling and re-prime after a gap.
         self.counters["device_underflows"] += int(flags.output_underflow)
         data.fill(0)
         if self.speaker_muted:
@@ -182,7 +177,6 @@ class Audio:
             self.buffering = True
 
     def start(self, *, capture=True, playback=True):
-        """Queue opening the source and sink; await the result to wait for the devices."""
         return self._io(self._open, capture, playback)
 
     def receive(self, track):
@@ -222,12 +216,6 @@ class Audio:
             self.playback.clear()
 
     def _io(self, function, *args):
-        """Device and file I/O run in order on this Audio's own thread.
-
-        PortAudio opens and closes a stream on the same thread, a close always follows the
-        open it undoes, and a device that blocks never stalls the event loop or the
-        executor asyncio.run joins on shutdown.
-        """
         loop = asyncio.get_running_loop()
         future = loop.create_future()
         if self.jobs is None:
@@ -254,15 +242,12 @@ class Audio:
         except TimeoutError:
             diagnostics.event("audio_close_timeout", timeout_s=self.close_timeout)
             log.warning("Audio devices still closing after %.1f s; continuing", self.close_timeout)
-            # sounddevice's exit handler would wait on the same device and keep a closed
-            # Ito running; the operating system releases the device with the process.
             if sd := sys.modules.get("sounddevice"):
                 atexit.unregister(sd._exit_handler)
 
     def _close(self):
         for _, stream in self.streams:
             try:
-                # PortAudio can hang closing a running stream; stop it first.
                 stream.stop()
                 stream.close()
             except Exception as exc:
@@ -293,5 +278,5 @@ def _work(jobs):
             if not future.done():
                 settle(result)
 
-        with contextlib.suppress(RuntimeError):  # The loop may be gone after a timed-out close.
+        with contextlib.suppress(RuntimeError):
             loop.call_soon_threadsafe(done)

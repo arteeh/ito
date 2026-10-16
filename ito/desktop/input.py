@@ -1,9 +1,10 @@
-"""Desktop tracking and input, using SDL's standardized controller mappings."""
-
+import json
 import logging
 import math
+import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 import pygame
@@ -22,9 +23,8 @@ class PilotInput:
     timestamp: float
     head: FloatArray
     movement: tuple[float, float, float]  # right, up, forward; normalized [-1, 1]
-    look: tuple[float, float]  # right/up stick
+    look: tuple[float, float]
     buttons: frozenset[str]
-    # stop, e_stop, resume, focus_stop, rearm (scene click after focus_stop); edge triggered
     commands: tuple[str, ...]
     active: bool
     quit: bool = False
@@ -32,6 +32,68 @@ class PilotInput:
     hands: dict[str, Pose] = field(default_factory=dict)
     trackers: dict[str, Pose] = field(default_factory=dict)
     axes: dict[str, float] = field(default_factory=dict)
+
+
+class PilotScript:
+    """ITO_PILOT_SCRIPT=<file.json>: a list of steps run in order, each held for "for" seconds:
+    {"for": 3, "keys": "w", "turn": 30, "tilt": -10, "do": "resume", "press": "f12",
+    "click": "disconnect", "note": "..."}. keys: held WASD letters; turn/tilt: head rates in
+    degrees/s (positive right, up); do: a pilot command as the step starts (resume, stop,
+    e_stop, recenter, quit); press: a pygame key name tapped once; click: an overlay control
+    (Overlay.layout) clicked once. The script owns the input whatever window has focus."""
+
+    KEYS = {"w": (0, 0, 1), "s": (0, 0, -1), "a": (-1, 0, 0), "d": (1, 0, 0)}
+
+    def __init__(self, steps: list[dict]):
+        self.steps = steps
+        self.started: float | None = None
+        self.index = -1
+        self.controls: dict = {}
+
+    @classmethod
+    def from_env(cls) -> "PilotScript | None":
+        path = os.environ.get("ITO_PILOT_SCRIPT")
+        if not path:
+            return None
+        steps = json.loads(Path(path).read_text())
+        log.info(
+            "Scripted pilot: %d steps, %.0f s, from %s",
+            len(steps),
+            sum(s["for"] for s in steps),
+            path,
+        )
+        return cls(steps)
+
+    def act(self, step: dict) -> None:
+        if step.get("press"):
+            code = pygame.key.key_code(step["press"])
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=code, mod=0, unicode=""))
+            pygame.event.post(pygame.event.Event(pygame.KEYUP, key=code, mod=0))
+        if step.get("click"):
+            position = self.controls.get(step["click"])
+            if position is None:
+                log.warning("Pilot script: no control %r on screen", step["click"])
+                return
+            pygame.event.post(
+                pygame.event.Event(pygame.MOUSEMOTION, pos=position, rel=(0, 0), buttons=(0, 0, 0))
+            )
+            for kind in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP):
+                pygame.event.post(pygame.event.Event(kind, pos=position, button=1))
+
+    def step(self, now: float) -> tuple[dict | None, bool]:
+        if self.started is None:
+            self.started = now
+        elapsed, end = now - self.started, 0.0
+        for index, step in enumerate(self.steps):
+            end += float(step["for"])
+            if elapsed < end:
+                fresh = index != self.index
+                if fresh:
+                    self.index = index
+                    diagnostics.event("pilot_script_step", index=index, note=step.get("note", ""))
+                    log.info("Pilot script step %d t=%.3f: %s", index, now, step.get("note", step))
+                return step, fresh
+        return None, self.index != len(self.steps)
 
 
 class DesktopInput:
@@ -43,15 +105,16 @@ class DesktopInput:
         # the view there, so recentering never swings the robot back to where it started.
         self.heading: Callable[[], float] = lambda: 0.0
         self.captured = False
-        self.grabbing: str | None = None  # "batch", then "baseline": motion not to look with
+        self.grabbing: str | None = None
         self.active = True
-        self.refocus = False  # Focus loss stopped the robot and no safety key followed.
+        self.refocus = False
         self.translate = True
         self.sensitivity = 0.0025
         self.invert_y = False
         self.keys: set[int] = set()
         self.pad = None
         self.pad_buttons: set[str] = set()
+        self.script = PilotScript.from_env()
         controller.init()
         self._connect_pad()
 
@@ -191,8 +254,37 @@ class DesktopInput:
                         self.refocus = False
                         commands.append(command)
             self.pad_buttons = buttons.copy()
-        movement /= max(1, float(np.linalg.norm(movement)))
         dt = min(max(dt, 0), 0.05)  # A window stall must never cause a camera teleport.
+        if self.script is not None:
+            self.active = True
+            commands = [c for c in commands if c != "focus_stop"]
+            step, fresh = self.script.step(clock.now())
+            if step is None:
+                if fresh:
+                    self.script.index = len(self.script.steps)
+                    quit_requested = True
+                    commands.append("stop")
+            else:
+                if fresh:
+                    self.script.act(step)
+                if fresh and step.get("do") == "recenter":
+                    self.recenter()
+                elif fresh and step.get("do") == "quit":
+                    quit_requested = True
+                    commands.append("stop")
+                elif fresh and step.get("do"):
+                    commands.append(step["do"])
+                for key in step.get("keys", ""):
+                    movement += PilotScript.KEYS[key]
+                self.yaw -= math.radians(float(step.get("turn", 0))) * dt
+                self.pitch = float(
+                    np.clip(
+                        self.pitch + math.radians(float(step.get("tilt", 0))) * dt,
+                        -math.pi * 0.49,
+                        math.pi * 0.49,
+                    )
+                )
+        movement /= max(1, float(np.linalg.norm(movement)))
         self.yaw -= look[0] * 1.8 * dt
         self.pitch = float(
             np.clip(self.pitch + look[1] * 1.8 * dt, -math.pi * 0.49, math.pi * 0.49)
@@ -216,7 +308,6 @@ class DesktopInput:
         )
 
     def recenter(self) -> None:
-        """Put the view back on the robot: at its camera, level, looking where it looks now."""
         try:
             heading = float(self.heading())
         except Exception:

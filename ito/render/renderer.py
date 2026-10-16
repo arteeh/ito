@@ -1,5 +1,3 @@
-"""OpenGL 4.3 renderer. No CUDA, CPU sorting, or GPU readback in the draw path."""
-
 from importlib.resources import files
 
 import moderngl
@@ -46,7 +44,6 @@ class GaussianRenderer:
         self.degree = 0
 
     def upload(self, scene: GaussianBuffer) -> None:
-        """Consume a stable published snapshot. The producer may reuse it after return."""
         count, stride, _ = scene.records.shape
         capacity = max(1024, 1 << max(0, count - 1).bit_length())
         limit = self.context.info["GL_MAX_SHADER_STORAGE_BLOCK_SIZE"]
@@ -72,7 +69,6 @@ class GaussianRenderer:
         self.uploaded_bytes += scene.records.nbytes
 
     def _allocate_live(self, capacity, *, keep):
-        """Exactly the producer's slots: it grows them on demand and gives them back."""
         sort_capacity = max(1024, 1 << max(0, capacity - 1).bit_length())
         limit = self.context.info["GL_MAX_SHADER_STORAGE_BLOCK_SIZE"]
         if max(capacity * 64, sort_capacity * 8) > limit:
@@ -102,7 +98,6 @@ class GaussianRenderer:
         self.capacity = max(1024, 1 << max(0, self.draw_count - 1).bit_length())
 
     def apply(self, update) -> bool:
-        """Scatter one packet; False retains it at the caller until staging is free."""
         n = len(update.indices)
         if n > 4096:
             raise ValueError("Splat updates are limited to 4096 records per packet")
@@ -132,16 +127,12 @@ class GaussianRenderer:
             if update.acknowledge is not None:
                 update.acknowledge()
             return True
-        # Slot IDs are already CPU metadata. Bound sorting by the highest resident
-        # slot, not reserved capacity; holes remain valid stable IDs on the GPU.
         self.live[update.indices] = update.records[:, 0, 3] > 0
         self.draw_count = max(self.draw_count, int(update.indices.max()) + 1)
         if not self.live[self.draw_count - 1]:
             occupied = np.flatnonzero(self.live[: self.draw_count])
             self.draw_count = int(occupied[-1]) + 1 if len(occupied) else 0
         self.capacity = max(1024, 1 << max(0, self.draw_count - 1).bit_length())
-        # Reuse fenced staging instead of orphaning storage on each packet:
-        # driver allocation can stall a display frame even for a 256 KB upload.
         changes, slots = self.staging[slot]
         records = update.records.copy()
         retiring = records[:, 3, 3] == 1
@@ -168,11 +159,6 @@ class GaussianRenderer:
         return True
 
     def sort(self, robot_camera: FloatArray, head: FloatArray) -> None:
-        """Order splats back to front for this viewpoint on the GPU.
-
-        Stereo draws sort once from the mid-eye pose and pass sort=False for both eyes:
-        the eyes are centimetres apart, and a full sort per eye doubles the GPU work.
-        """
         if not self.draw_count:
             return
         view = self._view(validate_pose(robot_camera) @ validate_pose(head))

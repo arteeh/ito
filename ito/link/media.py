@@ -1,5 +1,3 @@
-"""Drain decoded media continuously; a slow display never builds a frame backlog."""
-
 import asyncio
 import logging
 

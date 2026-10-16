@@ -1,8 +1,3 @@
-"""Shown when ito starts without an address: a recent robot, a typed address, or the simulator.
-
-A robot that does not know this pilot brings them back here to type its pairing code, once.
-"""
-
 from dataclasses import dataclass
 
 import pygame
@@ -15,17 +10,16 @@ from ito.xr import runtimes
 from . import settings
 from .menu_layout import MenuLayout
 
-# Where the last frame drew each control, so e2e scripts click what the pilot sees.
 layout = {}
 
 
 @dataclass(frozen=True)
 class Choice:
-    address: str | None  # None pilots the bundled simulated robot.
+    address: str | None
     xr: bool = False
-    code: str | None = None  # The robot's pairing code, when the pilot just typed it.
-    credential: Credential | None = None  # What the robot gave this pilot when it paired.
-    menu: bool = False  # Switch the menu between desktop and headset without connecting.
+    code: str | None = None
+    credential: Credential | None = None
+    menu: bool = False
 
 
 def placed(name):
@@ -58,7 +52,7 @@ class Menu:
         if name == "hud":
             choice, self.choice = self.choice, None
             if choice:
-                self.theme.leaving = True  # The outgoing menu is already invisible.
+                self.theme.leaving = True
             return choice
         with self.theme.faded(alpha, leaving):
             with self.layout.window("Settings" if name == "settings" else "Ito", size):
@@ -145,7 +139,6 @@ class Menu:
 
 
 def choose(window, *, xr=False, error=None, pairing=None):
-    """No robot or reconstruction runs while the pilot chooses their next connection."""
     menu = Menu(window, xr=xr, error=error, pairing=pairing)
     window.input.capture(False)
     pygame.display.set_caption("Ito")

@@ -1,5 +1,3 @@
-"""The same ImGui panel can render into the desktop or a headset framebuffer."""
-
 import math
 from dataclasses import dataclass
 
@@ -17,12 +15,11 @@ class PilotStatus:
     latency_ms: float | None = None
     robot: str = "No robot connected"
     e_stop: bool = False  # Reported by the driver, never inferred from a button press.
-    robot_state: str = ""  # The driver's last reported state; "active" means it obeys input.
+    robot_state: str = ""
     detail: str = ""
     input_latency_ms: float | None = None
-    # Logged rates: pilot poses, joined camera frames, backend calls (including pose-only).
     rates: tuple[float | None, float | None, float | None] = (None, None, None)
-    motion_hz: float | None = None  # The robot's own camera motion; None: it sends none.
+    motion_hz: float | None = None
     reconstruction: str = ""
     audio: str = ""
     robot_audio: str = ""
@@ -30,9 +27,9 @@ class PilotStatus:
     speaker_muted: bool = False
     robot_microphone: bool = False
     robot_speaker: bool = False
-    armed: bool = False  # Movement reaches the robot only after an explicit resume.
+    armed: bool = False
     link_lagging: bool = False
-    focus_hold: bool = False  # Stopped only because the window lost focus.
+    focus_hold: bool = False
 
 
 class Overlay:
@@ -49,27 +46,26 @@ class Overlay:
         self.error = None
         self.commands = []
         self._leave = False
-        self.can_leave = self.leave = False  # Disconnect returns to the connect screen.
+        self.can_leave = self.leave = False
         self.simulation = None
         self.captured = False
-        self.layout = {}  # Where the last frame drew each control, so e2e clicks what pilots see.
+        self.layout = {}  # Control centres, for scripted clicks (ITO_PILOT_SCRIPT).
         self.prompt_status = None
-        self.nudged = -math.inf  # When the pilot last tried to move a robot that is stopped.
+        self.nudged = -math.inf
 
     def begin(self, events, size, captured, *, pointer=None):
         io = self.backend.io
         if captured != self.captured:
-            # The hidden cursor must not hover controls; on release it is back where SDL left it.
             io.add_mouse_pos_event(*((-imgui.FLT_MAX,) * 2 if captured else pygame.mouse.get_pos()))
             self.captured = captured
         for event in events:
             if event.type == pygame.VIDEORESIZE:
-                continue  # SDL owns the context; resizing must not recreate it.
+                continue
             if event.type == pygame.TEXTINPUT:
                 self.backend.io.add_input_characters_utf8(event.text)
                 continue
             if event.type == pygame.KEYDOWN:
-                event.unicode = ""  # SDL TEXTINPUT also supports composed keyboard text.
+                event.unicode = ""
             # Releases still reach ImGui: the click that starts mouse-look is released while
             # captured, and a button ImGui believes held swallows every later click.
             if captured and event.type in (pygame.MOUSEMOTION, pygame.MOUSEBUTTONDOWN):
@@ -176,16 +172,12 @@ class Overlay:
             else "E-STOP: unavailable offline"
         )
         if xr_mode:
-            # The VR quad hangs centred ahead of the pilot: centre the window on it. A steady
-            # minimum width keeps the controls from shifting as status text changes length.
             width, height = imgui.get_io().display_size
             maximum_height = height - 36
             stopped = status.link == "CONNECTED" and (
                 not status.armed or status.e_stop or status.detail.startswith("fault")
             )
             if stopped or self.theme.stopped.alpha(self.theme.t) > 0:
-                # Reserve the safety prompt's two display lines and body line. Long status
-                # details scroll within the HUD instead of hiding a safety control.
                 style = imgui.get_style()
                 scale = style.font_scale_main * style.font_scale_dpi
                 prompt_height = (
@@ -230,7 +222,6 @@ class Overlay:
                 text = "--" if value is None else f"{value:.1f}"
                 with self.theme.font("numeric"):
                     imgui.text(f"{label}: {text} {unit}")
-            # Splats in the scene of the limit now: Max splats, or less if VRAM is short.
             used, limit = values.get("slot_count"), values.get("splat_limit")
             splats = "--" if used is None or limit is None else f"{used:,} / {limit:,}"
             vram = values.get("vram")
@@ -270,7 +261,6 @@ class Overlay:
                 self.leave = True
             self._placed("disconnect")
         if status.link == "CONNECTED":
-            # Above the status lines that come and go, so the toggles never move under a click.
             self._audio(status)
         if self.simulation:
             changed, visible = imgui.checkbox("Show simulation", self.simulation.visible)
@@ -298,7 +288,6 @@ class Overlay:
         return selected
 
     def _stopped_prompt(self, status, driving, xr_mode):
-        """Movement is ignored until resume; the pilot must never have to guess why."""
         fault = status.detail.startswith("fault")
         visible = status.link == "CONNECTED" and (not status.armed or status.e_stop or fault)
         alpha = self.theme.stopped.show(visible, self.theme.t)

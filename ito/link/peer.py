@@ -1,14 +1,8 @@
-"""One peer; bounded queues keep network backlog out of the pilot's input path.
+"""One peer; each message kind rides its own data channel ("lane").
 
-Each kind of message rides its own data channel ("lane"). aiortc sends every channel through one
-association-wide FIFO and never interleaves messages, so a lane alone does not keep a large
-message from delaying a small one. Frame metadata (it can carry ~1 MB of depth) is therefore only
-sent once earlier frames are acknowledged: a clock ping, status or safety command waits behind at
-most one frame. Frames sent without that wait piled up in flight on a CPU-starved pilot, lost
-packets and stalled Status behind SCTP's one-second retransmission timeout. Clock pings and pongs
-wait for nothing to be unsent, frames hold back meanwhile, and that wait is kept out of the
-measured round trip.
-"""
+aiortc sends all channels through one association-wide FIFO, so a lane alone does not keep a
+large message (frame metadata with depth, ~1 MB) from delaying a small one: frames wait until
+earlier ones are acknowledged, and clock pings wait for nothing unsent."""
 
 import asyncio
 import logging
@@ -38,6 +32,7 @@ from ito.protocol import (
     Pong,
     ProtocolError,
     RobotDescription,
+    Sensors,
     Status,
     WireMessage,
     decode,
@@ -45,8 +40,6 @@ from ito.protocol import (
 )
 
 CONTROL_BUFFER = 2_000_000
-# Unacknowledged SCTP chunks (1200 bytes each) past which frames hold back: room for a few
-# status, clock and command messages, not for a frame with depth.
 FRAME_IN_FLIGHT = 16
 # aiortc's teardown normally takes ~20 ms. On Windows it has hung for good after a long
 # session (#27), awaiting a transport that never answers; closing is then abandoned so the
@@ -56,7 +49,6 @@ log = logging.getLogger(__name__)
 
 
 def awaiting(task):
-    """The chain of awaits a suspended task sits in, outermost first, as one line."""
     steps = []
     coro = task.get_coro()
     while coro is not None and len(steps) < 16:
@@ -72,23 +64,20 @@ def awaiting(task):
 class Lane:
     ordered: bool
     max_retransmits: int | None
-    backlog: int  # Bytes of this lane that may wait unsent before a new message is dropped.
-    pilot: tuple[type, ...]  # What the pilot sends on this channel.
-    driver: tuple[type, ...]  # What the driver sends on this channel.
-    bulk: bool = False  # Dropped while the association is backed up or a frame is in flight.
+    backlog: int
+    pilot: tuple[type, ...]
+    driver: tuple[type, ...]
+    bulk: bool = False
 
 
 LANES = {
     "control": Lane(
         True, None, CONTROL_BUFFER, (Command, Paired), (RobotDescription, Credential, Status)
     ),
-    # The robot's own motion rides with the frames it places: a driver resends samples the
-    # lane dropped while a frame was in flight, in its next batch.
-    "frames": Lane(False, None, 0, (), (FrameMetadata, Motion), bulk=True),
+    "frames": Lane(False, None, 0, (), (FrameMetadata, Motion, Sensors), bulk=True),
     "clock": Lane(False, 0, 0, (Ping, Pong), (Ping, Pong)),
     "pilot": Lane(False, 0, 0, (PilotState,), ()),
 }
-# The lane that carries each message type, by sender.
 ROUTES = {
     role: {kind: label for label, lane in LANES.items() for kind in getattr(lane, role)}
     for role in ("pilot", "driver")
@@ -97,8 +86,6 @@ ROUTES = {
 
 @dataclass
 class Clock:
-    """Offset is remote minus local monotonic time; lowest RTT limits queueing bias."""
-
     offset: float | None = None
     rtt: float | None = None
 
@@ -128,7 +115,6 @@ class Peer:
         self.on_disconnect = on_disconnect
         self.on_track = on_track
         self.description = description
-        # The driver sends a new pilot its credential; the pilot keeps the one it received.
         self.credential = credential
         self.clock = Clock()
         self.last_received = clock.now()
@@ -313,11 +299,14 @@ class Peer:
                         raise ProtocolError("robot description may not change during a connection")
                     self.description = message
                     self.robot_received.set()
-                if isinstance(message, Motion) and self.description is None:
+                if isinstance(message, (Motion, Sensors)) and self.description is None:
                     self.dropped_messages += 1
                     return
+                if isinstance(message, Sensors) and message.camera not in {
+                    c.name for c in self.description.cameras
+                }:
+                    raise ProtocolError("sensors on an unknown camera")
                 if isinstance(message, FrameMetadata):
-                    # Frames and the description travel on separate channels.
                     if self.description is None:
                         self.dropped_messages += 1
                         return
@@ -370,7 +359,6 @@ class Peer:
         return True
 
     def _idle(self, in_flight: int | None = None) -> bool:
-        """Nothing waits unsent and, if given, at most in_flight chunks wait for the receiver."""
         # aiortc exposes no association-wide queue depth; aiortc is pinned below 2.
         sctp = self.pc.sctp
         if sctp._data_channel_queue or sctp._outbound_queue:
@@ -378,11 +366,6 @@ class Peer:
         return in_flight is None or len(sctp._sent_queue) <= in_flight
 
     async def _send_clock(self, stamp: Callable[[], Ping | Pong]) -> Ping | Pong | None:
-        """Stamp and send a clock message into an idle association, ahead of the next frame.
-
-        Waiting before a ping is stamped, or between receiving a ping and stamping the pong,
-        is not part of the measured round trip, so queueing never biases the offset.
-        """
         self._clock_waiting += 1
         try:
             deadline = clock.now() + 1
@@ -414,7 +397,6 @@ class Peer:
             self.rejected_messages += 1
             return
         rtt = (now - sent) - (message.replied - message.received)
-        # Clock granularity on either end can make a LAN round trip read slightly negative.
         if rtt < -0.001 or rtt > 5:
             self.rejected_messages += 1
             return

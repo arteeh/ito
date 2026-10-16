@@ -1,7 +1,6 @@
-"""Use the robot's own gaze IK and balance policy; never command individual leg servos."""
-
 import asyncio
 import contextlib
+import logging
 import math
 import os
 from collections import deque
@@ -17,14 +16,16 @@ from ito.protocol import (
     MotionSample,
     Pose,
     RobotDescription,
+    Sensors,
 )
 from ito.rates import Rate
 
-from . import frames, gaze
+from . import frames, gaze, sensors
 from .camera import Camera, Track
 from .remote import Remote, RemoteError
 
-# Alpha MJCF travel limits. robot.look applies the robot's own IK and joint limits as well.
+log = logging.getLogger(__name__)
+
 HEAD_LIMITS = {
     "neck_pitch": (-math.pi / 2, math.pi / 3),
     "head_pitch": (-math.pi / 2, math.pi / 2),
@@ -35,29 +36,15 @@ HEAD_LIMITS = {
 # commands within +-1.40 rad (microduck_rl velocity recipe), and robot.look's IK flips the
 # neck through a singular pose at +-90 degrees: past that the head flails and rolls 30 degrees.
 GAZE_PAN = (-1.40, 1.40)
-PAN_LIMIT = 1.50  # The most the pan trim may aim, short of that flip.
+PAN_LIMIT = 1.50
 # mediad's frames reach the driver about 90 ms after robotd reports the head pose they were
 # taken at (encoding, WebRTC, decoding). Measured on the simulated twin by matching
 # MASt3R-SLAM's turns to the robot's: taking the pose from receive time instead puts a
 # brisk turn's frames 5-10 degrees off and makes SLAM restart its map against the robot.
 FRAME_DELAY = 0.09
-# The trunk sways about 1.5 degrees at the gait's ~2.4 Hz. Aiming the head from the
-# instantaneous heading feeds that sway into the pan command, which the head reaches 0.1-0.3 s
-# late, so it adds to the camera's swing instead of cancelling it. The head is aimed from the
-# heading averaged over one gait period, moved on by the turn rate over two.
 GAIT_PERIOD = 0.42
-# robot.look aims the camera at a point; this far out, the camera moving a few centimetres
-# as the head turns changes the aim by a fraction of a degree.
 GAZE_DISTANCE = 10.0
-# Frame metadata keeps the receive-stamped 20 Hz pose it always carried, so the vision-only
-# tracker can still be compared against robot-first tracking on the same build. Motion
-# carries every 50 Hz tick of robotd's loop, stamped when robotd read its sensors.
 METADATA_POSE_INTERVAL = 0.05
-# Head FK on the trunk IMU against MuJoCo truth over 800 poses of a walking drive (#33):
-# p95 1.32 degrees rotation, 1.77 cm per metre walked, both with receive stamps. One sigma is
-# about half a p95; robotd's game-rotation IMU drifts in yaw well under a degree a minute.
-# In a turn the pose is off along the turn, as if read a few milliseconds from its t_ns:
-# against truth, an interquartile spread of 6-9 ms over the sweep180 and tour drives.
 MOTION_NOISE = MotionNoise(
     rotation_deg=0.66,
     rotation_deg_per_s=0.2,
@@ -66,22 +53,14 @@ MOTION_NOISE = MotionNoise(
     gravity_deg=0.66,
     time_s=0.006,
 )
-# robot.look's IK aims with head pitch and yaw and keeps head_roll level. The pilot's head
-# roll goes to head_roll, the last joint, turning about the camera's own axis, so it leaves
-# the aim alone. Rolls within the dead band are the pilot's posture, not a gesture.
 ROLL_DEAD_BAND = math.radians(3)
-# A head-IMU sample this close to a robot.state tick turns the camera at that tick.
+# robotd's idle look-around starts 2 s after the last head intent; hold the head well inside it.
+HEAD_HOLD = 0.5
 HEAD_IMU_MATCH = 0.025
-# Odometry speeds that count as walking or turning in a motion sample's state.
 WALKING_SPEED, TURNING_RATE = 0.02, 0.05
 
 
 def steady_heading(samples):
-    """Body heading now without the gait's sway, from (time, yaw) samples over two periods.
-
-    The mean over the last period cancels the sway but lags a turning body by half a period;
-    the turn rate fitted over both periods brings it up to date.
-    """
     t0, yaw0 = samples[-1]
     times = [t - t0 for t, _ in samples]
     yaws = [math.remainder(yaw - yaw0, math.tau) for _, yaw in samples]
@@ -99,19 +78,12 @@ def steady_heading(samples):
 
 
 def yaw_command(rate):
-    """The robot.move yaw command that turns the body at about this rate, rad/s.
-
-    Velstand v8 (microduck 0.17's policy set) tracks the true command from about 0.5 rad/s up
-    (microduck_rl docs/velstand_policy.md). v7's dead zone needed `0.33 + |rate| / 0.6`, which
-    makes v8 turn about twice as fast as asked.
-    """
     if abs(rate) <= 0.05:
         return 0.0
     return rate
 
 
 def motion_state(data):
-    """What the body is doing this tick, for how far its odometry can be trusted."""
     safety = data.get("safety") or {}
     if safety.get("fallen"):
         return "fallen"
@@ -124,14 +96,6 @@ def motion_state(data):
 
 
 class SourceClock:
-    """robotd's tick time (CLOCK_MONOTONIC, ns) on the driver's clock.
-
-    On the robot and in the simulator perf_counter is the same CLOCK_MONOTONIC, so the time
-    is taken as it is and the link's clock offset carries it to the pilot. A driver running
-    elsewhere sees a different clock: the smallest transport delay over the last ten seconds
-    then stands in for the offset. A robotd without t_ns gets the arrival time.
-    """
-
     def __init__(self):
         self.shared = None
         self.lags = deque(maxlen=500)
@@ -149,7 +113,7 @@ class SourceClock:
 
 
 class MicroduckAdapter(Adapter):
-    def __init__(self, robot="ws://127.0.0.1:8443", input_timeout=0.25, head_imu=False):
+    def __init__(self, robot="ws://127.0.0.1:8443", input_timeout=0.25, head_imu=None, tof=True):
         if not robot.startswith(("ws://", "wss://")):
             raise ValueError("--robot must be mediad's ws://host:8443 address")
         if not math.isfinite(input_timeout) or not 0.02 <= input_timeout <= 0.5:
@@ -157,6 +121,14 @@ class MicroduckAdapter(Adapter):
         self.remote = Remote(robot, self._notification)
         self.input_timeout = input_timeout
         self.head_imu = head_imu
+        self.tof = tof
+        self._imu_chip = None
+        self._tof_chip = None
+        self._tof_fov = None
+        self._imu_pending = deque(maxlen=64)
+        self._ranges_pending = deque(maxlen=8)
+        self._imu_rate = Rate()
+        self._tof_rate = Rate()
         # The policy's trained forward/backward range is +-0.4 m/s and it stands still below
         # about 0.35. It has no usable sideways step (none up to its trained 0.3 m/s), so
         # sideways input steers the body into that direction instead.
@@ -170,34 +142,31 @@ class MicroduckAdapter(Adapter):
         self._telemetry = {}
         self._state_at = 0.0
         self._yaw_origin = None
-        self._origin = None  # Trunk x, y and yaw at startup, in robotd's odometry world.
-        # Recent measured camera poses: (receive time, position, orientation, body yaw).
+        self._origin = None
         self._poses = deque(maxlen=40)
         self._pose_due = 0.0
         self._source_clock = SourceClock()
-        self._motion = deque(maxlen=16)  # Samples not yet sent, oldest first.
-        self._previous_motion = None  # (time, xyzw) of the last motion sample.
+        self._motion = deque(maxlen=16)
+        self._previous_motion = None
         self._motion_rate = Rate()
-        self._head_gyro = deque(maxlen=8)  # (source time, gyro in sensor axes)
-        self._headings = deque()  # (time, body yaw) over the last two gait periods.
-        # (time, world up in the trunk frame) over the last gait period, and the camera's
-        # position in the trunk: where robot.look's levelled gaze starts.
+        self._head_gyro = deque(maxlen=8)
+        self._headings = deque()
         self._ups = deque()
         self._camera_in_trunk = None
         self._trim = gaze.TiltTrim()
-        # The same learned trim for the pan, standing or turning in place (one table): there
-        # robot.look lands a look about 15% short (velstand v8: 51 degrees for 60, 68 for 80;
-        # v7 about 10%). Walking, the trunk's yaw sway would be learned as error.
         self._pan_trim = gaze.TiltTrim()
-        self._looks = Rate()  # robot.look calls answered, and their round trips.
+        self._looks = Rate()
         self._look_ms = deque(maxlen=50)
         self._measured_at = None
         self._neutral_done = asyncio.Event()
-        self._gaze = None  # The joints robot.look chose last, which roll rides on.
+        self._gaze = None
+        self._head_at = 0.0
+        self._held = None
 
     def _exposure(self):
-        """The simulator renders a frame at an instant (or averages --blur renders); the
-        IMX219's auto-exposure time reaches nobody."""
+        told = os.environ.get("ITO_MICRODUCK_EXPOSURE")
+        if told:
+            return float(told)
         if self.camera.source == "sim" and os.environ.get("ITO_MICRODUCK_BLUR", "1") == "1":
             return 0.0
         return None
@@ -217,6 +186,7 @@ class MicroduckAdapter(Adapter):
             if model.get("asset") != "alpha":
                 raise RuntimeError("Microduck driver requires the alpha head model")
             self.joint_names = model["joint_names"]
+            self._tof_fov = math.radians(model.get("tof_fov_deg") or 45.0)
             self.camera = Camera(await self.remote.call("media.video"), self._frame_metadata)
             self._description = RobotDescription(
                 name="Microduck",
@@ -226,7 +196,6 @@ class MicroduckAdapter(Adapter):
                         name="head",
                         track_id="microduck-rgb",
                         intrinsics=self.camera.intrinsics,
-                        # Frames carry their arrival time; mediad dates none at the sensor.
                         capture_delay=FRAME_DELAY,
                         exposure=self._exposure(),
                     ),
@@ -246,22 +215,18 @@ class MicroduckAdapter(Adapter):
                 camera_calibration=self.camera.source, camera_timestamp="driver receive time"
             )
             await self.remote.call("robot.stop")
-            if self.head_imu:
-                try:
-                    await self.remote.call("head_imu.stream")
-                except RemoteError as exc:
-                    raise RuntimeError(
-                        f"Microduck head IMU unavailable ({exc}); enable [head_imu] in tofd "
-                        "on the robot, or run without --head-imu"
-                    ) from exc
-            # Every tick of robotd's 50 Hz loop: robot-first tracking on the pilot PC
-            # interpolates the camera's motion between them.
+            if self.head_imu is not False:
+                self._imu_chip = await self._stream("head_imu.stream", required=self.head_imu)
+            if self.tof:
+                self._tof_chip = await self._stream("tof.stream")
+            self._telemetry.update(head_imu=self._imu_chip or "none", tof=self._tof_chip or "none")
             await self.remote.call("robot.subscribe", {})
             self._tasks = [
                 asyncio.create_task(self._guard(work))
                 for work in (
                     self.camera.receive(self.remote.video),
                     self._commands(),
+                    self._hold_head(),
                     self._health(),
                 )
             ]
@@ -272,6 +237,22 @@ class MicroduckAdapter(Adapter):
         except Exception:
             await self.close()
             raise
+
+    async def _stream(self, method, required=False):
+        try:
+            answer = await self.remote.call(method)
+        except RemoteError as exc:
+            answer = {"unavailable": str(exc)}
+        chip = answer.get("sensor")
+        if chip:
+            log.info("Microduck %s: %s at %s Hz", method, chip, answer.get("hz"))
+            return chip
+        reason = answer.get("unavailable") or "no sensor fitted"
+        log.info("Microduck %s unavailable, carrying on without it: %s", method, reason)
+        if required:
+            raise RuntimeError(f"Microduck {method} unavailable: {reason}")
+        self._telemetry[f"{method.split('.')[0]}_unavailable"] = str(reason)[:256]
+        return None
 
     def _check(self):
         if self._error:
@@ -332,9 +313,6 @@ class MicroduckAdapter(Adapter):
             state = latest[1]
             axes, buttons = state.axes, state.buttons
             move = self.walker(state, steady_heading(self._headings))
-            # The walking policy needs enough command range to enter its stepping gait.
-            # Continuous intents go as notifications: robotd applies the newest on its next
-            # tick, so waiting for an answer to each would only hold the next pose back.
             vyaw = yaw_command(move.turn)
             self.remote.notify("robot.move", {"vx": move.forward, "vy": move.left, "vyaw": vyaw})
             beak = max(0.0, axes.get("right_trigger", 0.0), float(buttons.get("g", False)))
@@ -345,9 +323,6 @@ class MicroduckAdapter(Adapter):
                 self._trim.release()
                 self._pan_trim.release()
                 continue
-            # Levelled by the trunk's lean averaged over a gait period: chasing the gait's
-            # pitch sway with a head that lags it would add to the camera's swing. A robotd
-            # without IMU and head frames in robot.state gets the trunk's own axes.
             up = (
                 tuple(sum(u[i] for _, u in self._ups) for i in range(3))
                 if self._ups
@@ -355,7 +330,6 @@ class MicroduckAdapter(Adapter):
             )
             gait = gaze.gait(move.forward, move.left, vyaw)
             aim = self._trim(move.tilt, clock.now(), gait)
-            # Short of the IK's singular pose at +-90 degrees, where the head flails.
             in_place = "standing" if gait in ("standing", "turning") else gait
             pan = self._pan_trim(move.pan, clock.now(), in_place)
             pan = min(PAN_LIMIT, max(-PAN_LIMIT, pan))
@@ -366,11 +340,6 @@ class MicroduckAdapter(Adapter):
                 self._camera_in_trunk or (0.0, 0.0, 0.0),
                 GAZE_DISTANCE,
             )
-            # robot.look answers with the IK's joints; one in flight at a time, always the
-            # newest gaze. A stop arriving meanwhile is sent as soon as it answers.
-            # robot.look levels head_roll, so a rolled pilot's robot.head goes right behind
-            # it, on the joints the last look chose: robotd applies both in one go, never
-            # a level head between them, and the aim trails by one look at most.
             low, high = HEAD_LIMITS["head_roll"]
             excess = abs(move.roll) - ROLL_DEAD_BAND
             roll = min(high, max(low, math.copysign(excess, move.roll))) if excess > 0 else 0.0
@@ -378,6 +347,7 @@ class MicroduckAdapter(Adapter):
             if roll and self._gaze is not None:
                 rolled = (("robot.head", self._gaze | {"head_roll": roll}),)
             sent = clock.now()
+            self._head_at = sent
             answer = await self.remote.call(
                 "robot.look",
                 {"x": x, "y": y, "z": z, "neck_pitch": 0.0},
@@ -387,10 +357,10 @@ class MicroduckAdapter(Adapter):
             head = answer.get("head") if isinstance(answer, dict) else None
             if isinstance(head, dict) and set(head) >= set(HEAD_LIMITS):
                 self._gaze = {name: float(head[name]) for name in HEAD_LIMITS}
+            if self._gaze is not None:
+                self._held = self._gaze | ({"head_roll": roll} if rolled else {})
             self._looks.tick()
             self._look_ms.append((clock.now() - sent) * 1000)
-            # The gait and the tilt aimed at, trim included, show how the trim follows the
-            # gait's head droop (#28) next to the measured camera, neck and head pitch.
             self._telemetry.update(
                 look_hz=self._looks.hz(),
                 look_ms=sorted(self._look_ms)[len(self._look_ms) // 2],
@@ -402,6 +372,24 @@ class MicroduckAdapter(Adapter):
                 pilot_roll=move.roll,
                 aimed_roll=roll if rolled else 0.0,
             )
+
+    async def _hold_head(self):
+        """Keep the head where the pilot left it.
+
+        robotd (daemon 0.17, robotd/src/idle_head.rs) takes the head over for an idle
+        look-around (glances, gaze nudges, yawns) once the robot stands still and no head
+        intent has arrived for 2 s. Ito sends looks only while the pilot holds the deadman,
+        so a pilot who stops, lets go or has not moved yet saw the duck look around on its
+        own. Re-sending the last aim well inside those 2 s keeps the camera where the
+        pilot pointed it; before the first look that is the head's straight-ahead pose.
+        """
+        while True:
+            await asyncio.sleep(HEAD_HOLD / 2)
+            if clock.now() - self._head_at < HEAD_HOLD:
+                continue
+            held = self._held or dict.fromkeys(HEAD_LIMITS, 0.0)
+            self._head_at = clock.now()
+            self.remote.notify("robot.head", held)
 
     async def _health(self):
         while True:
@@ -420,9 +408,17 @@ class MicroduckAdapter(Adapter):
         if method == "head_imu.frame":
             source, _ = self._source_clock(data.get("t_ns"), clock.now())
             self._head_gyro.append((source, tuple(data["gyro"])))
+            self._imu_pending.append((source, data))
+            self._imu_rate.tick()
+            return
+        if method == "tof.frame":
+            source, _ = self._source_clock(data.get("t_ns"), clock.now())
+            self._ranges_pending.append((source, data))
+            self._tof_rate.tick()
             return
         if method != "robot.state":
             return
+        self._publish_sensors(data.get("frames") or {})
         values = {"policy": data["policy"]}
         for name, angle in zip(self.joint_names, data["joints"], strict=True):
             if name in HEAD_LIMITS or name == "mouth":
@@ -447,7 +443,6 @@ class MicroduckAdapter(Adapter):
         for key, value in data.get("odom", {}).items():
             if type(value) in (float, int, bool):
                 values[f"base_{key}"] = value
-        # robotd's contact odometry supplies IMU heading; keep Ito's startup reference.
         yaw = data["odom"]["yaw"]
         if self._yaw_origin is None:
             self._yaw_origin = yaw
@@ -480,21 +475,40 @@ class MicroduckAdapter(Adapter):
             if self._measured_at is not None:
                 self._trim.measured(values["camera_pitch"], now, now - self._measured_at)
                 if self._pan_trim.gait == "standing":
-                    # The camera's pan off the trunk's heading, as the pilot's pan is measured.
                     pan = math.remainder(values["camera_yaw"] - values["base_yaw"], math.tau)
                     self._pan_trim.measured(pan, now, now - self._measured_at)
             self._measured_at = now
         self._telemetry.update(values)
         self._state_at = clock.now()
 
+    def _publish_sensors(self, mounts):
+        camera = mounts.get("camera")
+        if not camera or not (self._imu_pending or self._ranges_pending):
+            return
+        imu, grids = (), ()
+        if self._imu_pending and mounts.get("head_imu"):
+            imu = (
+                sensors.imu(self._imu_chip, list(self._imu_pending), mounts["head_imu"], camera),
+            )
+        if self._ranges_pending and mounts.get("tof"):
+            grids = tuple(
+                sensors.ranges(self._tof_chip, when, frame, mounts["tof"], camera, self._tof_fov)
+                for when, frame in self._ranges_pending
+            )
+        if not imu and not grids:
+            return
+        if self.publish_sensors(Sensors(camera="head", imu=imu, ranges=grids)):
+            self._imu_pending.clear()
+            self._ranges_pending.clear()
+        self._telemetry.update(head_imu_hz=self._imu_rate.hz(), tof_hz=self._tof_rate.hz())
+
     def _moved(self, data, received, pose, camera):
-        """Queue this tick's camera pose for the pilot, stamped when robotd read its sensors."""
         source, stamp = self._source_clock(data.get("t_ns"), received)
         previous = self._previous_motion
         if previous is not None and source <= previous[0]:
             return
         gyro = None
-        mount = (data.get("frames") or {}).get("head_imu") if self.head_imu else None
+        mount = (data.get("frames") or {}).get("head_imu") if self._imu_chip else None
         if self._head_gyro and mount:
             when, reading = min(self._head_gyro, key=lambda g: abs(g[0] - source))
             if abs(when - source) <= HEAD_IMU_MATCH:
@@ -525,12 +539,6 @@ class MicroduckAdapter(Adapter):
         )
 
     def _frame_metadata(self):
-        """What the robot measured about its camera when the frame arriving now was taken.
-
-        The camera pose is robotd's forward kinematics at the measured head joints on the IMU's
-        trunk orientation: the heading SLAM cannot see on a plain wall, and the roll and pitch
-        that level its map.
-        """
         if not self._poses:
             return {}
         position, orientation, body_yaw = frames.at(self._poses, clock.now() - FRAME_DELAY)

@@ -18,7 +18,6 @@ from ito.link.pairing import generate, normalize, token, valid
 
 NONCE_SECONDS = 30
 MAX_NONCES = 32
-# Wrong codes per minute from one address, then from everyone, before codes are refused.
 MAX_FAILURES = 10
 MAX_FAILURES_TOTAL = 100
 
@@ -31,8 +30,8 @@ class PairingRefused(Exception):
 
 @dataclass(frozen=True)
 class Grant:
-    key: str  # Proves the answer: the code or the pilot's secret.
-    code: str | None  # The code this offer used; the pilot gets a credential for it.
+    key: str
+    code: str | None
 
 
 def default_path() -> Path:
@@ -48,7 +47,6 @@ def pilot_path(path: Path) -> Path:
 
 
 def write(path: Path, text: str) -> None:
-    """Atomic and private: mkstemp creates the file readable by its owner only."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, filename = tempfile.mkstemp(dir=path.parent, prefix=".pairing-")
     temporary = Path(filename)
@@ -68,7 +66,6 @@ def read(path: Path) -> str:
 
 
 def paired_pilot(path: Path) -> dict | None:
-    """{"used": the code they paired with, "pilot": id, "secret": secret}, or None."""
     try:
         state = json.loads(pilot_path(path).read_text())
     except FileNotFoundError:
@@ -83,19 +80,16 @@ def paired_pilot(path: Path) -> dict | None:
 
 
 def armed(path: Path) -> bool:
-    """The code can still pair a pilot."""
     state = paired_pilot(path)
     return state is None or state["used"] != read(path)
 
 
 def ensure(path: Path) -> tuple[str, bool]:
-    """The persisted code, and whether it was generated just now."""
     try:
         return read(path), False
     except FileNotFoundError:
         code = generate()
         write(path, code + "\n")
-        # A new code is a new start: the pilot of a deleted code is not carried over.
         pilot_path(path).unlink(missing_ok=True)
         return code, True
 
@@ -114,12 +108,6 @@ def rotate(path: Path) -> str:
 
 
 class Pairing:
-    """Hands out single-use nonces and checks offer proofs against the files on disk.
-
-    Reading the files per offer means a rotated code applies to the next connection
-    without restarting the driver.
-    """
-
     def __init__(self, path: Path):
         self.path = path
         self._nonces: dict[str, float] = {}
@@ -138,7 +126,6 @@ class Pairing:
     def check(
         self, nonce: str | None, proof: str | None, sdp: str, pilot: str | None, remote: str
     ) -> Grant:
-        """What the offer proved; raises PairingRefused with a reason the pilot reads."""
         now = clock.now()
         if nonce is None or proof is None:
             raise PairingRefused(401, "This robot needs its pairing code")
@@ -151,7 +138,6 @@ class Pairing:
         except (OSError, ValueError) as exc:
             raise PairingRefused(503, f"The robot cannot read its pairing state: {exc}") from None
         if pilot:
-            # A 128-bit secret cannot be guessed, so these offers never count as failures.
             if (
                 state is None
                 or state["pilot"] != pilot
@@ -171,7 +157,6 @@ class Pairing:
         return Grant(code, code)
 
     def _limit(self, remote: str, now: float) -> None:
-        """Count wrong codes per TCP peer address, so one host cannot lock the pilot out."""
         for failures in (*self._failures.values(), self._all_failures):
             while failures and now - failures[0] > 60:
                 failures.popleft()
@@ -184,8 +169,7 @@ class Pairing:
             )
 
     def paired(self, code: str, pilot: str, secret: str) -> None:
-        """Remember the pilot's secret and retire the code it paired with."""
         if read(self.path) != code:
-            return  # Rotated while this pilot was connecting: it must enter the new code.
+            return
         state = {"used": code, "pilot": pilot, "secret": secret}
         write(pilot_path(self.path), json.dumps(state) + "\n")

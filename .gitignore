@@ -4,8 +4,7 @@ __pycache__/
 .ruff_cache/
 *.egg-info/
 /dist/
-/e2e/out/
+/out/
 /models/
 /captures/
 /.slam-build/
-/.slam-e2e-saved/

@@ -49,7 +49,6 @@ def perspective(fov_y: float, aspect: float, near: float = 0.02, far: float = 10
 
 
 def quaternion(matrix: FloatArray) -> tuple[float, float, float, float]:
-    """Extract xyzw without losing roll or precision near a half turn."""
     r = matrix[:3, :3]
     trace = float(np.trace(r))
     if trace > 0:

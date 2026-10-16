@@ -1,5 +1,3 @@
-"""GHOST-RITE drawing: the approved binding circle, phosphor marks and link thread."""
-
 import math
 
 from imgui_bundle import imgui
@@ -10,19 +8,18 @@ def rgba(hex_value, alpha=1.0):
     return tuple(int(h[i : i + 2], 16) / 255 for i in (0, 2, 4)) + (alpha,)
 
 
-# Palette
-VOID = rgba("02070A")  # menu clear colour
-GLASS = rgba("051218")  # window body
-GLASS_DEEP = rgba("030D12")  # fields
-TITLE = rgba("072A33")  # title band
-PHOSPHOR = rgba("C4F7FF")  # body text: pale cyan phosphor
-PHOSPHOR_HI = rgba("00E5FF")  # focus / accents / checkmarks
-PHOSPHOR_DIM = rgba("1F8494")  # borders, separators, engraved lines
-COLD = rgba("8AAFBC")  # secondary / disabled text
-CONTROL = rgba("0A2C36")  # buttons
+VOID = rgba("02070A")
+GLASS = rgba("051218")
+GLASS_DEEP = rgba("030D12")
+TITLE = rgba("072A33")
+PHOSPHOR = rgba("C4F7FF")
+PHOSPHOR_HI = rgba("00E5FF")
+PHOSPHOR_DIM = rgba("1F8494")
+COLD = rgba("8AAFBC")
+CONTROL = rgba("0A2C36")
 CONTROL_HOVER = rgba("10465A")
 CONTROL_ACTIVE = rgba("16627A")
-AMBER = rgba("FFB454")  # warning
+AMBER = rgba("FFB454")
 
 COLORS = {
     "clear": VOID,
@@ -41,7 +38,6 @@ BASE = 18.0
 
 
 def _merge_japanese(io, fonts, destinations):
-    """One merge pass supplies Japanese fallback for all three text roles."""
     for destination in destinations:
         cfg = imgui.ImFontConfig()
         cfg.merge_mode = True
@@ -50,24 +46,18 @@ def _merge_japanese(io, fonts, destinations):
 
 
 def packed(color):
-    """For drawing attached to a panel: fades with the panel (ImGui style alpha)."""
     return imgui.get_color_u32(imgui.ImVec4(*color))
 
 
 def col(hex_value, alpha):
-    """For the background circle: its own alpha, independent of the panel fade."""
     return imgui.color_convert_float4_to_u32(
         imgui.ImVec4(*rgba(hex_value, max(0.0, min(1.0, alpha))))
     )
 
 
-# The intro clock. Ito calls intro(t) at startup and on returning to the main menu after a
-# session. Until it is called everything is drawn settled (so screenshots need no clock).
 RING_TURN_S = 180.0  # the quote ring turns once every three minutes
 
 
-# Every panel (main menu, Settings, HUD, prompts) fades in and out this fast; the theme API
-# does the panels. The menu's own ~2 s intro comes on top of it.
 FADE = 0.1
 
 
@@ -75,7 +65,7 @@ def _ramp(e, start, length):
     return min(1.0, max(0.0, (e - start) / length))
 
 
-def _ease(p):  # ease-out cubic: fast start, soft landing
+def _ease(p):
     return 1 - (1 - p) ** 3
 
 
@@ -101,8 +91,6 @@ def _hex(text):
 
 
 def link_thread(dl, a, b, state, u, t=0.0):
-    """The link drawn as a thread from a to b: "taut" (connected), "slack" (lagging),
-    "cut" (link lost, 糸が切れた)."""
     (ax, ay), (bx, by) = a, b
     if state == "taut":
         c = packed(PHOSPHOR_HI)
@@ -116,7 +104,6 @@ def link_thread(dl, a, b, state, u, t=0.0):
     else:
         c = packed(COLORS["error"])
         mx = (ax + bx) / 2
-        # Two loose ends falling away from the break.
         dl.add_bezier_cubic(
             a, (mx - 40 * u, ay), (mx - 14 * u, ay + 6 * u), (mx - 8 * u, ay + 22 * u), c, 2 * u
         )
@@ -144,8 +131,6 @@ class GhostRite:
         numeric = io.fonts.add_font_from_file_ttf(str(fonts / "UbuntuMono-Regular.ttf"), BASE)
         display = io.fonts.add_font_from_file_ttf(str(fonts / "Michroma-Regular.ttf"), BASE)
         _merge_japanese(io, fonts, (body, numeric, display))
-        # M PLUS 1 Code on its own for the drawn glyphs (糸, 糸操り): same geometric strokes as
-        # Ubuntu Mono and Michroma, and it covers kana and the JIS kanji, so Ito can show Japanese.
         kanji = io.fonts.add_font_from_file_ttf(str(fonts / "MPLUS1Code-wght.ttf"), BASE)
         self.fonts.update(body=body, numeric=numeric, display=display, kanji=kanji)
 
@@ -285,7 +270,6 @@ class GhostRite:
         self.leaving = None
 
     def screen(self, old, new, t):
-        """Off to a session: the circle fades out with the menu. Between menu pages it stays."""
         self.leaving = None if new == "menu" else t
 
     def _since(self, t):
@@ -293,8 +277,6 @@ class GhostRite:
         return 1e9 if t0 is None else max(0.0, t - t0)
 
     def frame_begin(self, draw_list, size, t):
-        # The panel fades in once the circle is half open. Style alpha is plain ImGui: widgets,
-        # title bar and the panel's own marks all follow it. Settled: 1.0 (HUD, prompts).
         imgui.get_style().alpha = _ease(_ramp(self._since(t), 0.45, 0.6))
 
     def prepare_ring(self, size, scale):
@@ -335,7 +317,6 @@ class GhostRite:
         self.seal_glyph = self.seal_baked.find_glyph(ord("糸"))
 
     def _glyph(self, dl, ch, x, y, size, color):
-        """Draw one glyph with its ink box centred on (x, y), not its line box."""
         font = self.fonts["kanji"]
         g = self.seal_glyph
         dl.add_text(font, size, (x - (g.x0 + g.x1) / 2, y - (g.y0 + g.y1) / 2), color, ch)
@@ -359,7 +340,6 @@ class GhostRite:
         return tuple(shaped)
 
     def _arc_text(self, dl, shaped, cx, cy, turn, color, elapsed, step, quote=0, flicker=0):
-        """Rotate cached inscription geometry; glyphs and quad storage are prepared on resize."""
         ca, sa = math.cos(turn), math.sin(turn)
         mid = self.ring_glyphs["0"]
         ymid = (mid.y0 + mid.y1) / 2
@@ -377,7 +357,6 @@ class GhostRite:
                 continue
             x0, x1 = glyph.x0 - advance / 2, glyph.x1 - advance / 2
             y0, y1 = glyph.y0 - ymid, glyph.y1 - ymid
-            # Reuse four positions and UVs. Atlas growth updates the glyph UVs in place.
             lx, ly = px + x0 * rx + y0 * dx, py + x0 * ry + y0 * dy
             p0.x, p0.y = cx + lx * ca - ly * sa, cy + lx * sa + ly * ca
             lx, ly = px + x1 * rx + y0 * dx, py + x1 * ry + y0 * dy
@@ -394,11 +373,9 @@ class GhostRite:
             dl.prim_quad_uv(p0, p1, p2, p3, uv0, uv1, uv2, uv3, ink)
 
     def _seal(self, dl, x, y, r, color, bright, u):
-        """A quiet hanko: one thin ring, 糸 at its heart, a single thread through it."""
         w = 1.5 * u
         dl.add_circle((x, y), r, color, 48, w)
         self._glyph(dl, "糸", x, y, 30 * u, bright)
-        # The thread passes through the seal, broken where the glyph sits.
         dl.add_line((x, y - r - 10 * u), (x, y - r * 0.55), color, w)
         dl.add_line((x, y + r * 0.55), (x, y + r + 10 * u), color, w)
 
@@ -410,8 +387,7 @@ class GhostRite:
         bg = imgui.get_background_draw_list()
         x, y, w, h = pos.x, pos.y, size.x, size.y
         u = imgui.get_font_size() / BASE
-        e = self._since(t)  # seconds into the intro; huge once settled
-        # Leaving for a session the whole circle fades with the panel; between menu pages it stays.
+        e = self._since(t)
         fade = 1.0 if self.leaving is None else 1 - _ramp(t - self.leaving, 0.0, FADE)
         if fade <= 0:
             return
@@ -420,12 +396,9 @@ class GhostRite:
             return col(hex_value, alpha * fade)
 
         panel = imgui.get_style().alpha
-        # The circle belongs to the screen, not the panel: same place and size on every menu
-        # page (Ito, Settings), however tall the panel is. Only the bezel and threads follow it.
         vp = imgui.get_main_viewport()
         cx, cy = vp.pos.x + vp.size.x / 2, vp.pos.y + vp.size.y / 2
         r = 0.47 * vp.size.y
-        # Faint glass bezel right behind the panel, kept from GHOST-LINE; fades with the panel.
         bg.add_rect(
             (x - 10 * u, y - 10 * u),
             (x + w + 10 * u, y + h + 10 * u),
@@ -434,7 +407,6 @@ class GhostRite:
             2 * u,
         )
 
-        # 0.0-1.1 s: the three orbits open from a point at the centre, a beat apart (designer-2).
         seen = _ramp(e, 0.0, 0.15)
         grow = [_ease(_ramp(e, d, 0.9)) for d in (0.0, 0.08, 0.16)]
         for g, rad, a in zip(grow, (r, r + 26 * u, r + 78 * u), (0.65, 0.40, 0.65), strict=True):
@@ -442,7 +414,6 @@ class GhostRite:
                 bg.add_circle((cx, cy), max(1.0, g * rad), c("1F8494", a * seen), 128, 2 * u)
         outer = grow[2]
 
-        # 0.55-1.2 s: twelve divisions tick round clockwise from twelve o'clock, every third a gate.
         for i in range(12):
             p = _ease(_ramp(e, 0.55 + 0.045 * ((i - 9) % 12), 0.15))
             if p <= 0:
@@ -458,7 +429,6 @@ class GhostRite:
                 (3 if gate else 2) * u,
             )
 
-        # 0.9-1.4 s: two read arcs sweep open on the outer orbit, then drift slowly backwards.
         sweep = _ease(_ramp(e, 0.9, 0.5))
         if sweep > 0:
             back = -t * 2 * math.pi / (RING_TURN_S * 1.5)
@@ -469,8 +439,6 @@ class GhostRite:
                 )
                 bg.path_stroke(c("00E5FF", 0.55), 3 * u)
 
-        # The quote ring: one quote per half, "//" at the joins, the whole ring turning slowly.
-        # 0.8-1.8 s: it decodes from the middle of each quote outwards, digits flickering first.
         turn = t * 2 * math.pi / RING_TURN_S
         settled = c("4FD8EA", 0.55)
         flicker = c("00E5FF", 0.85)
@@ -481,16 +449,14 @@ class GhostRite:
         self._arc_text(bg, self.inscriptions[2], cx, cy, turn, joins, e, step)
         self._arc_text(bg, self.inscriptions[3], cx, cy, turn, joins, e, step)
 
-        # 1.15-1.8 s: marionette threads drop from the outer orbit to the panel, knotted at the end.
         for n, (deg, fx) in enumerate(((-120, 0.16), (-90, 0.5), (-60, 0.84))):
             p = _ease(_ramp(e, 1.15 + 0.1 * n, 0.45)) * (panel > 0)
             if p <= 0:
                 continue
-            thread = c("00E5FF", 0.28 * panel)  # threads belong to the panel
+            thread = c("00E5FF", 0.28 * panel)
             a = math.radians(deg)
             top = (cx + math.cos(a) * (r + 78 * u), cy + math.sin(a) * (r + 78 * u))
             end = (x + w * fx, y - 10 * u)
-            # The thread passes behind the inscription: cut it where it crosses the text band.
             dx, dy = end[0] - top[0], end[1] - top[1]
             cuts = []
             for rad in (r + 28 * u, r - 2 * u):
@@ -518,8 +484,6 @@ class GhostRite:
                     c("1F8494", 0.65 * panel),
                 )
 
-        # 1.5-2.15 s: the twin seals fade in on the horizontal axis, left then right, settling
-        # inwards a little. Only when there is room outside the circle.
         sd = r + 78 * u + 70 * u
         if cx - sd - 60 * u < 0:
             return
@@ -541,7 +505,6 @@ class GhostRite:
         u = imgui.get_font_size() / BASE
         draw_list.push_clip_rect((x, y), (x + w, y + h), False)
         if kind == "prompt":
-            # Reticle brackets keep the safety panel edge unmistakable.
             c = packed(COLORS["prompt_border"])
             length = 18 * u
             for xx, yy, sx, sy in (
@@ -559,10 +522,8 @@ class GhostRite:
         else:
             hi = packed(PHOSPHOR_HI)
             th = imgui.get_frame_height()
-            # Phosphor bar on the left of the title band.
             draw_list.add_rect_filled((x, y), (x + 4 * u, y + th), hi)
             if kind == "hud":
-                # The title thread reflects the link without moving the HUD.
                 link_thread(
                     draw_list, (x + 48 * u, y + th / 2), (x + w - 34 * u, y + th / 2), link, u, t
                 )

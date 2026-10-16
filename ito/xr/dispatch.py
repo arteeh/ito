@@ -1,5 +1,3 @@
-"""Sample XR on the session-creation thread, independently of GPU and frame waits."""
-
 from dataclasses import replace
 
 import numpy as np
@@ -17,8 +15,8 @@ class XRDispatch(DisplayDispatch):
         self.was_active = False
         self.recenter = False
         self.pointer = (-10000, -10000, False)
-        self.panel_triggers = set()  # Hands whose trigger press began on a panel control.
-        self.robot_triggers = set()  # Hands whose trigger press began off the panel.
+        self.panel_triggers = set()
+        self.robot_triggers = set()
 
     def poll(self, dt, events, keyboard_ui, commands):
         desktop = super().poll(dt, events, keyboard_ui, commands)
@@ -27,8 +25,6 @@ class XRDispatch(DisplayDispatch):
         timing = owner.clock
         if not owner.running or timing is None:
             return replace(desktop, active=False)
-        # Advance the runtime's clock even when xrWaitFrame or GPU work stalls.
-        # This is a new tracking query, never a re-timestamped cached input sample.
         at = timing[0] + clock.now_ns() - timing[1]
         changed_space = owner.space_changed and at >= owner.space_changed
         keyboard_center = any(e.type == pygame.KEYDOWN and e.key == pygame.K_HOME for e in events)

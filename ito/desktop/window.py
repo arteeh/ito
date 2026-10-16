@@ -1,5 +1,3 @@
-"""Independently paced SDL input and desktop drawing."""
-
 import json
 import logging
 import math
@@ -25,7 +23,7 @@ from ito.render.video import VideoPanel
 from .dispatch import DisplayDispatch
 from .input import DesktopInput, PilotInput
 from .overlay import Overlay, PilotStatus
-from .record import Recorder, from_env, heading
+from .record import Recorder, from_env
 from .settings import load_budget, save_budget
 
 log = logging.getLogger(__name__)
@@ -37,7 +35,7 @@ class DesktopState:
     status: PilotStatus = field(default_factory=PilotStatus)
     video: object | None = field(default=None, repr=False, compare=False)
     video_time: float = 0
-    video_fov: float | None = None  # The camera's horizontal field of view in radians.
+    video_fov: float | None = None
     flat_video: bool = False
     # Fusion's world-from-odometry: the eye is drawn at correction @ robot_camera, eased in.
     correction: FloatArray = field(default_factory=pose)
@@ -97,7 +95,6 @@ class DesktopWindow:
                 for name in ("llvmpipe", "softpipe", "software")
             )
             self.gpu = GPU() if "nvidia" in self.context.info["GL_VENDOR"].lower() else None
-            # Only OpenGL's buffer size is fixed; the worker fits splats to free VRAM live.
             buffer_limit = self.context.info["GL_MAX_SHADER_STORAGE_BLOCK_SIZE"]
             self.splat_limit = 16_384 if software else min(MAX_SLOT_COUNT, buffer_limit // 64)
             self.renderer = GaussianRenderer(self.context)
@@ -110,6 +107,8 @@ class DesktopWindow:
                 self.gpu.start()
             self.overlay = Overlay(self.context, self.max_splats)
             self.input = DesktopInput(speed)
+            if self.input.script is not None:
+                self.input.script.controls = self.overlay.layout
             log.info(
                 "OpenGL %s | %s", self.context.info["GL_VERSION"], self.context.info["GL_RENDERER"]
             )
@@ -145,7 +144,6 @@ class DesktopWindow:
         metrics: TextIO | None = None,
         save_settings: Callable[[int], None] = save_budget,
     ) -> None:
-        """Poll input at 90 Hz while the display draws the latest snapshot."""
         dispatch = DisplayDispatch(self)
         self.input.heading = lambda: state().robot_heading
         dispatch.run(
@@ -163,33 +161,20 @@ class DesktopWindow:
                 source, state, on_input, max_frames, metrics, save_settings, dispatch, recorder
             )
         finally:
-            summary = self.performance.close(metrics)
+            self.performance.close(metrics)
             if recorder is not None:
-                recorder.close(summary)
+                recorder.close()
 
-    def _record(self, recorder: Recorder, now, current, pilot, frame, age, revision):
-        recorder.camera(current.video, current.video_time, now, current.robot_camera)
+    def _record(self, recorder: Recorder, current):
+        recorder.camera(current.video, current.video_time)
+        now = clock.now()
         if not recorder.due(now):
             return
         GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, 0)
         GL.glReadBuffer(GL.GL_BACK)
         GL.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1)
         pixels = GL.glReadPixels(0, 0, *self.size, GL.GL_RGB, GL.GL_UNSIGNED_BYTE)
-        recorder.pilot(
-            now,
-            pixels,
-            self.size,
-            frame=frame,
-            revision=revision,
-            gaussians=self.renderer.count,
-            flat_video=current.flat_video,
-            capture_age_ms=None if age is None else round(age * 1000, 1),
-            yaw=heading(current.robot_camera),
-            head_yaw=heading(pilot.head),
-            move=[round(v, 2) for v in pilot.movement],
-            look=[round(v, 2) for v in pilot.look],
-            performance=self.performance.last,
-        )
+        recorder.screen(now, pixels, self.size)
 
     def _draw_loop(
         self, source, state, on_input, max_frames, metrics, save_settings, dispatch, recorder
@@ -226,7 +211,6 @@ class DesktopWindow:
                 )
                 log.info("Command: %s", pilot.commands[-1])
             applied = []
-            # A bounded drain never lets a fast producer take over the display loop.
             for _ in range(PUBLICATION_PACKETS):
                 frame = pending if pending is not None else source.poll()
                 if frame is None:
@@ -249,8 +233,6 @@ class DesktopWindow:
             self.draw_view(current, pilot.head, projection, self.screen, (0, 0, *self.size))
             visible_time = current.video_time if current.flat_video else captured_at
             age = None if visible_time is None else max(0, now - visible_time)
-            if recorder is not None:
-                self._record(recorder, now, current, pilot, frames, age, revision)
             budget = self.overlay.draw(
                 current.status,
                 pacing.get_fps(),
@@ -273,6 +255,8 @@ class DesktopWindow:
                     save_settings(budget)
                 except OSError as exc:
                     self.overlay.error = f"Could not save setting: {exc}"
+            if recorder is not None:
+                self._record(recorder, current)
             capture = None
             if pilot.screenshot:
                 try:
@@ -355,8 +339,6 @@ class DesktopWindow:
             if remaining > 0:
                 time.sleep(remaining)
             else:
-                # Count the late frame, then skip obsolete starts; don't catch up
-                # by submitting a burst of frames the pilot cannot see.
                 skipped = int(-remaining * self.fps) + 1
                 self.performance.skipped_deadlines(skipped)
                 due += skipped / self.fps
@@ -366,12 +348,10 @@ class DesktopWindow:
             pacing.tick(0)
 
     def glided(self, current, now, head=None):
-        """The eye to draw now: glided between updates, fusion's corrections eased in."""
         anchor = self.glide(current.robot_camera, now)
         return replace(current, robot_camera=self.ease(current.correction, anchor, head, now))
 
     def draw_view(self, current, head, projection, target, viewport, sort=True, center=None):
-        """Draw one eye; center is the pose between both eyes, for a stereo panel."""
         if current.flat_video:
             self.video_panel.draw(
                 current.video,

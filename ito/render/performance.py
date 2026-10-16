@@ -1,5 +1,3 @@
-"""Bounded display statistics. Visibility means the first changed packet completed on GL."""
-
 import json
 import os
 from collections import deque
@@ -153,8 +151,6 @@ class Performance:
         return self.last
 
     def skipped_deadlines(self, count):
-        # Completion already charged late GPU frames. Include additional starts
-        # skipped by logging/readback/CPU delays after that completion too.
         extra = max(0, count - self.last_completion_misses)
         self.misses += extra
         if extra:

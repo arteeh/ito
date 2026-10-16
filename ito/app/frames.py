@@ -1,5 +1,3 @@
-"""Video-to-metadata joins: every frame gets its exposure's pose; only its own depth."""
-
 import bisect
 import math
 
@@ -47,10 +45,6 @@ def _lerp(a, b, f):
 
 
 def between(m0, m1, k0, k1, key):
-    """Metadata for the exposure at `key`, between the exposures at k0 and k1.
-
-    Pose and gaze are interpolated; depth belongs to one exposure only, so there is none.
-    """
     f = (key - k0) / (k1 - k0)
     near = m0 if f < 0.5 else m1
     pose = None
@@ -78,24 +72,14 @@ def between(m0, m1, k0, k1, key):
 
 
 class FrameJoin:
-    """Pairs each decoded video frame with what the robot measured at its exposure.
-
-    Metadata sits in a small pts-sorted ring; a frame looks itself up by bisection. Its own
-    metadata (within a tick) joins whole, depth included. Otherwise its pose comes from the
-    metadata either side, interpolated, or the nearest within one frame; failing that it
-    still reaches the pilot, with its capture time and heading but no measured pose. A frame
-    that arrives before any later metadata waits for one, at most until the next frame.
-    """
-
     def __init__(self):
-        self.keys = []  # sorted metadata pts
-        self.metadata = {}  # pts -> (received, FrameMetadata)
-        self.waiting = None  # (key, frame) for a frame with no later metadata yet
+        self.keys = []
+        self.metadata = {}
+        self.waiting = None
         self.last_capture = -1.0
         self.joins = {"exact": 0, "between": 0, "nearest": 0, "bare": 0, "dropped": 0}
 
     def decoded(self, frame):
-        """Pairs (frame, metadata) now ready, oldest first."""
         if frame.pts is None or frame.time_base is None:
             return []
         key = round(frame.pts * frame.time_base * TICKS)
@@ -153,7 +137,6 @@ class FrameJoin:
             capture_time=metadata.capture_time + (key - near) / TICKS, video_pts=key, depth=None
         )
         if abs(near - key) > NEAREST:
-            # Too far from any measurement to claim its pose; keep heading as SLAM's hint.
             update.update(camera_pose=None, head_angles=None)
             return "bare", frame, metadata.model_copy(update=update), before
         return "nearest", frame, metadata.model_copy(update=update), before
@@ -177,7 +160,6 @@ class FrameJoin:
             **self.joins,
         )
         self.last_capture = metadata.capture_time
-        # Keep the newest metadata at or before this frame: the next frame's "before".
         if used is not None:
             drop = bisect.bisect_left(self.keys, used)
             for old in self.keys[:drop]:

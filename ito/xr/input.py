@@ -1,5 +1,3 @@
-"""Action bindings are shared across both hands; inactive tracking is never sent."""
-
 import logging
 
 import numpy as np
@@ -163,7 +161,7 @@ class Actions:
         self.aims = {}
         self.triggers = {}
         self.panel_held = False
-        self.panel_pinned = False  # The left stick click keeps the panel in view.
+        self.panel_pinned = False
         self.haptic_pulses = 0
         self.haptic_pending = False
 
@@ -239,7 +237,7 @@ class Actions:
                     xr.ActionsSyncInfo(active_action_sets=[xr.ActiveActionSet(self.set)]),
                 )
             except xr.SessionNotFocused:
-                focused = False  # Focus can change between polling events and syncing actions.
+                focused = False
         panel = False
         if focused:
             if self.haptic_pending:

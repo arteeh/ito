@@ -11,22 +11,30 @@ def main():
     parser.add_argument(
         "--robot", default="ws://127.0.0.1:8443", help="robot mediad LAN signalling address"
     )
-    parser.add_argument(
+    imu = parser.add_mutually_exclusive_group()
+    imu.add_argument(
         "--head-imu",
         action="store_true",
-        help="turn the camera by the head IMU's gyro (enable [head_imu] in tofd first)",
+        default=None,
+        help="require the head IMU (read by default when the robot has one, as every beta does)",
     )
+    imu.add_argument(
+        "--no-head-imu", dest="head_imu", action="store_false", help="leave the head IMU alone"
+    )
+    parser.add_argument("--no-tof", action="store_true", help="leave the head ToF alone")
     driver_arguments(parser)
-    # Microduck's console owns port 8080. robotd runs its control loop at 50 Hz, but the
-    # adapter sends only the newest input, so passing every pilot sample on keeps the one each
-    # tick reads fresh.
     parser.set_defaults(port=8081)
     args = parser.parse_args()
     args.prog = parser.prog
     args.audio_source, args.audio_sink = None, "none"
     args.adapter = "drivers.microduck.adapter:MicroduckAdapter"
     args.adapter_args = json.dumps(
-        {"robot": args.robot, "input_timeout": args.input_timeout, "head_imu": args.head_imu}
+        {
+            "robot": args.robot,
+            "input_timeout": args.input_timeout,
+            "head_imu": args.head_imu,
+            "tof": not args.no_tof,
+        }
     )
     logging.basicConfig(level=logging.INFO)
     try:

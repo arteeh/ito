@@ -1,5 +1,3 @@
-"""SDL input stays on the window thread; GL work owns the context on a worker."""
-
 import ctypes
 import sys
 import threading
@@ -49,14 +47,12 @@ class DisplayDispatch:
         if capture and self.window.input.active:
             self.window.input.capture(True)
             if self.window.input.refocus:
-                # Clicking back into the scene asks to undo a stop that only focus loss caused.
                 self.window.input.refocus = False
                 commands.append("rearm")
         value = self.poll(dt, events, keyboard_ui, commands)
         if on_sample:
             on_sample(value)
         with self.lock:
-            # A wedged display must not grow an unbounded event/command queue.
             if len(self.events) + len(events) > 4096 or len(self.commands) > 256:
                 raise RuntimeError("Display stopped consuming pilot input")
             self.events.extend(events)
@@ -127,7 +123,6 @@ class DisplayDispatch:
         finally:
             with self.lock:
                 self.quit = True
-            # Closing input always disarms, including exceptions during polling.
             if on_sample:
                 on_sample(replace(self.value, active=False, commands=("stop",)))
             thread.join()

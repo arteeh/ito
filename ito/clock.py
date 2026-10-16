@@ -54,11 +54,6 @@ def fine_timers():
 
 @contextlib.contextmanager
 def display_priority():
-    """Give the display thread Windows' multimedia CPU scheduling while it draws.
-
-    GPU grants alone do not protect a display thread from CPU scheduling delays.
-    MMCSS retains a CPU allowance for other tasks; no process-wide realtime class.
-    """
     if sys.platform != "win32":
         yield "default"
         return

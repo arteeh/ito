@@ -1,5 +1,3 @@
-"""A passive observer in its own process: closing or stalling it cannot stop the robot."""
-
 import asyncio
 import contextlib
 import json
@@ -40,7 +38,6 @@ async def publish(adapter, path):
 
 def main():
     follow_parent()
-    # The driver's camera may use OSMesa; this independent process owns a GLFW window.
     os.environ["MUJOCO_GL"] = "glfw"
     import mujoco
     import mujoco.viewer
@@ -70,7 +67,6 @@ def main():
                 view.sync()
                 updated += 1
                 last_frame = clock.now()
-                # Report the displayed simulation time without recording poses.
                 temporary = status.with_suffix(".tmp-viewer")
                 temporary.write_text(json.dumps(dict(frames=updated, simulation_time=data.time)))
                 temporary.replace(status)

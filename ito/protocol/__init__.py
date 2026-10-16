@@ -1,4 +1,4 @@
-"""Wire v3: metres, xyzw rotations, and local monotonic seconds for timestamps."""
+"""Wire v4: metres, xyzw rotations, and local monotonic seconds for timestamps."""
 
 import base64
 import zlib
@@ -15,7 +15,7 @@ from pydantic import (
     model_validator,
 )
 
-VERSION = 3
+VERSION = 4
 MAX_MESSAGE_BYTES = 1_500_000
 Number = Annotated[float, Field(allow_inf_nan=False)]
 Time = Annotated[Number, Field(ge=0)]
@@ -92,7 +92,7 @@ class DegreeOfFreedom(Model):
 
 
 class Message(Model):
-    version: Literal[3] = VERSION
+    version: Literal[4] = VERSION
 
     @model_validator(mode="after")
     def wire_version(self, info: ValidationInfo) -> Self:
@@ -217,8 +217,6 @@ class MotionSample(Model):
 
 
 class Motion(Message):
-    """The robot's own camera motion, batched: every sample once, oldest first."""
-
     type: Literal["motion"] = "motion"
     samples: tuple[MotionSample, ...] = Field(min_length=1, max_length=16)
 
@@ -227,6 +225,75 @@ class Motion(Message):
         if any(b.time <= a.time for a, b in zip(self.samples, self.samples[1:], strict=False)):
             raise ValueError("motion samples must be in time order")
         return self
+
+
+class ImuSample(Model):
+    """One inertial reading, in the sensor's own right-handed axes: rad/s and m/s² of specific
+    force (at rest it reads +g, pointing up)."""
+
+    time: Time = Field(description="Driver clock when the sensor sampled, not its arrival")
+    angular_velocity: tuple[Number, Number, Number]
+    specific_force: tuple[Number, Number, Number]
+    orientation: tuple[Number, Number, Number, Number] | None = Field(
+        default=None,
+        description="The sensor's own fusion, sensor-to-world xyzw in a +Y-up world whose yaw "
+        "is arbitrary (no magnetometer); absent if the chip does not fuse",
+    )
+
+    @model_validator(mode="after")
+    def unit(self) -> Self:
+        if self.orientation is not None and abs(sum(v * v for v in self.orientation) - 1) > 0.01:
+            raise ValueError("IMU orientation must be a unit quaternion")
+        return self
+
+
+class Imu(Model):
+    sensor: Name
+    mount: Pose = Field(description="Sensor-to-camera transform")
+    gyro_sigma: Number = Field(gt=0, description="One sigma of each rate, rad/s, bias included")
+    accel_sigma: Number = Field(gt=0, description="One sigma of each axis, m/s², bias included")
+    samples: tuple[ImuSample, ...] = Field(min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def ordered(self) -> Self:
+        if any(b.time <= a.time for a, b in zip(self.samples, self.samples[1:], strict=False)):
+            raise ValueError("IMU samples must be in time order")
+        return self
+
+
+class RangeGrid(Model):
+    """One frame of a multizone time-of-flight sensor: rows x cols zones evenly dividing its
+    field of view, row 0 at the top and column 0 at the left as the sensor looks out along its
+    -Z (+X right, +Y up, like a camera). Each distance is the range along its zone's centre
+    ray, in metres, or None where the zone measured nothing usable."""
+
+    sensor: Name
+    time: Time = Field(description="Driver clock when the sensor ranged, not its arrival")
+    mount: Pose = Field(description="Sensor-to-camera transform")
+    rows: int = Field(ge=1, le=64)
+    cols: int = Field(ge=1, le=64)
+    field_of_view: tuple[Number, Number] = Field(description="Full width and height, radians")
+    distances: tuple[Annotated[Number, Field(gt=0, le=100)] | None, ...]
+    sigma: tuple[Number, Number] = Field(
+        description="Range noise, one sigma: metres plus a fraction of the distance"
+    )
+
+    @model_validator(mode="after")
+    def shape(self) -> Self:
+        if len(self.distances) != self.rows * self.cols:
+            raise ValueError("a range grid has one distance per zone")
+        if any(not 0 < a < 3.1416 for a in self.field_of_view):
+            raise ValueError("range field of view must be within (0, pi)")
+        if self.sigma[0] < 0 or self.sigma[1] < 0:
+            raise ValueError("range noise must be nonnegative")
+        return self
+
+
+class Sensors(Message):
+    type: Literal["sensors"] = "sensors"
+    camera: Name = Field(description="The described camera the mounts are relative to")
+    imu: tuple[Imu, ...] = Field(default=(), max_length=4)
+    ranges: tuple[RangeGrid, ...] = Field(default=(), max_length=8)
 
 
 class PilotState(Message):
@@ -262,8 +329,6 @@ class Credential(Message):
 
 
 class Paired(Message):
-    """The pilot stored its credential; the driver may retire the pairing code."""
-
     type: Literal["paired"] = "paired"
     pilot: Token
 
@@ -307,6 +372,7 @@ WireMessage = Annotated[
     RobotDescription
     | FrameMetadata
     | Motion
+    | Sensors
     | PilotState
     | Command
     | Credential
@@ -337,7 +403,6 @@ def decode(data: str | bytes) -> WireMessage:
 
 
 def encode(message: WireMessage) -> str:
-    # Revalidate instances: nested dictionaries may have been mutated by an adapter.
     data = message.model_dump_json()
     decode(data)
     return data

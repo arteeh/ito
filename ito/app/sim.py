@@ -1,5 +1,3 @@
-"""The bundled MuJoCo robot, so a pilot can try Ito without hardware."""
-
 import os
 import socket
 import subprocess
@@ -20,7 +18,6 @@ class SimulatedRobot:
         self.address = f"127.0.0.1:{port}"
         self.log = settings_path().parent / "simulated-robot.log"
         self.log.parent.mkdir(parents=True, exist_ok=True)
-        # Each launched robot has its own code, including concurrent app instances.
         self._directory = tempfile.TemporaryDirectory(prefix="ito-sim-")
         self.viewer = None
         self.retired_viewers = []
@@ -33,8 +30,6 @@ class SimulatedRobot:
                 [sys.executable, *(["-I"] if sys.flags.isolated else [])]
                 + ["-m", "drivers.mujoco.cli", "--host", "127.0.0.1", "--port", str(port)]
                 + ["--pairing-file", str(code_file), "--viewer-state", str(self.viewer_state)]
-                # It runs on the pilot's own PC: a robot microphone would hear the pilot's
-                # room and its speaker would play the pilot back to themselves.
                 + ["--audio-source", "none", "--audio-sink", "none", "--hide-code"],
                 stdin=subprocess.DEVNULL,
                 stdout=log,
@@ -89,7 +84,6 @@ class SimulatedRobot:
                     viewer.kill()
                     viewer.wait(3)
             self.retired_viewers.clear()
-        # Nothing real moves: a simulation slow to stop is not worth keeping the app open.
         self.process.terminate()
         try:
             self.process.wait(0.5)

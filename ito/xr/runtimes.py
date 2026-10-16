@@ -17,10 +17,9 @@ from ito.app import settings
 @dataclass(frozen=True)
 class Runtime:
     name: str
-    manifest: str | None  # As XR_RUNTIME_JSON takes it; None is the loader's own choice.
+    manifest: str | None
 
 
-# Set when Ito was started: the pilot pinned one runtime, so only that one is asked.
 PINNED = os.environ.get("XR_RUNTIME_JSON")
 
 
@@ -44,7 +43,6 @@ def _windows_manifests():
                 index += 1
     except OSError:
         pass
-    # SteamVR registers itself only when asked to, so look in every Steam library.
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as key:
             steam = Path(winreg.QueryValueEx(key, "SteamPath")[0])
@@ -71,8 +69,6 @@ def _linux_manifests():
 
 
 def installed():
-    """Every runtime to ask for a headset: the one that last had it, then the system's active
-    one, then the rest. Empty when none is installed."""
     if PINNED:
         manifests = [PINNED]
     else:
