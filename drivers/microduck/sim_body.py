@@ -174,9 +174,6 @@ class ThreadedHeadCamera(HeadCamera):
     def render(self, world):
         if self.world is None:
             self.world = world
-            # Installed here, not at import: a HeadCamera made outside the sim never needs it.
-            body_server.mujoco = STEPPING
-            STEPPING.hooks.append(self.before_step)
             self.thread = threading.Thread(target=self.loop, name="head-camera", daemon=True)
             self.thread.start()
 
@@ -209,6 +206,10 @@ class ThreadedHeadCamera(HeadCamera):
 
     def loop(self):
         self.renderer = mujoco.Renderer(self.model, height=self.height, width=self.width)
+        # Hooked in once the renderer is up, so no frames pile up while it starts; here, not at
+        # import, because a HeadCamera made outside the sim never needs it.
+        body_server.mujoco = STEPPING
+        STEPPING.hooks.append(self.before_step)
         try:
             self.frames()
         finally:
