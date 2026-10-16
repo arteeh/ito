@@ -32,9 +32,8 @@ class Camera:
             height=self.height,
             **{key: geometry[key] for key in ("fx", "fy", "cx", "cy")},
         )
-        self.rotation = info["rotate"]
-        if self.rotation not in {0, 90, 180, 270}:
-            raise ValueError("Microduck camera mount must be a quarter turn")
+        if info.get("rotate", 0) != 0:
+            raise RuntimeError("Ito supports the Microduck beta, whose camera is upright")
         matrix = np.array([[k.fx, 0, k.cx], [0, k.fy, k.cy], [0, 0, 1]])
         distortion = np.array(geometry.get("distortion") or [0.0] * 5)
         if distortion.shape not in {(4,), (5,), (8,), (12,), (14,)}:
@@ -53,10 +52,6 @@ class Camera:
             if np.any(distortion)
             else None
         )
-        for _ in range(self.rotation // 90):
-            k = Intrinsics(
-                width=k.height, height=k.width, fx=k.fy, fy=k.fx, cx=k.height - 1 - k.cy, cy=k.cx
-            )
         self.intrinsics = k
         self.source = geometry["source"]
         self.measured = measured
@@ -71,7 +66,7 @@ class Camera:
         rgb = frame.to_ndarray(format="rgb24")
         if self.maps:
             rgb = self.cv.remap(rgb, *self.maps, self.cv.INTER_LINEAR)
-        return np.ascontiguousarray(np.rot90(rgb, -(self.rotation // 90)))
+        return np.ascontiguousarray(rgb)
 
     async def receive(self, track):
         while True:

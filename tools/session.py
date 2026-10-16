@@ -108,7 +108,9 @@ def main():
         help="sim install from drivers/microduck/setup-sim.sh",
     )
     parser.add_argument("--viewer", action="store_true", help="also open the MuJoCo viewer")
-    parser.add_argument("--sim-args", default="", help='extra sim options, e.g. "--board zero3"')
+    parser.add_argument(
+        "--sim-args", default="", help='extra sim options, e.g. "--camera-height 1080"'
+    )
     args = parser.parse_args()
 
     exe = ROOT / "builds" / args.build / "ito" / "ito.exe"

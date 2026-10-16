@@ -66,7 +66,6 @@ def simulation(
     gl=None,
     camera_height=None,
     blur=1,
-    board="beta",
     hfov=None,
     calibrated=True,
     head_imu=None,
@@ -74,13 +73,11 @@ def simulation(
     tof_noise=1.0,
     seed=0,
 ):
-    if board not in lens.MOUNT:
-        raise ValueError(f"unknown Microduck board {board!r}")
-    camera_height = camera_height or lens.DEFAULT_HEIGHT[board]
-    hfov = hfov or lens.HFOV[board]
+    camera_height = camera_height or lens.DEFAULT_HEIGHT
+    hfov = hfov or lens.HFOV_ESTIMATE_DEG
     if not 10 <= hfov <= 170:
         raise ValueError("the camera's field of view must be between 10 and 170 degrees")
-    head_imu = board == "beta" if head_imu is None else head_imu
+    head_imu = True if head_imu is None else head_imu
     upstream, rl, policies_dir = (p.resolve() for p in (upstream, rl, policies_dir))
     logs.mkdir(parents=True, exist_ok=True)
     binaries = upstream / "target/debug"
@@ -141,24 +138,21 @@ def simulation(
         media_config = state / "media.toml"
         media = [
             "[board]",
-            f'version = "{board}"',
+            'version = "beta"',
             "[media]",
             f'quality = "{lens.RESOLUTIONS[camera_height]}"',
         ]
-        sim_hfov = ["--sim-camera-hfov", str(hfov)]
-        if board == "beta":
-            sim_hfov = []
-            if calibrated:
-                focal = lens.focal_px(1920, hfov)
-                media += [
-                    "[media.intrinsics]",
-                    "width = 1920",
-                    "height = 1080",
-                    f"fx = {focal!r}",
-                    f"fy = {focal!r}",
-                    "cx = 960.0",
-                    "cy = 540.0",
-                ]
+        if calibrated:
+            focal = lens.focal_px(1920, hfov)
+            media += [
+                "[media.intrinsics]",
+                "width = 1920",
+                "height = 1080",
+                f"fx = {focal!r}",
+                f"fy = {focal!r}",
+                "cx = 960.0",
+                "cy = 540.0",
+            ]
         media_config.write_text("\n".join(media) + "\n")
         policies = {
             "walk": "velstand",
@@ -169,7 +163,7 @@ def simulation(
             "roulade": "roulade",
         }
         params = state / "robotd.toml"
-        lines = ["[board]", f'version = "{board}"', "[policy]", "enabled = true"]
+        lines = ["[board]", 'version = "beta"', "[policy]", "enabled = true"]
         for name, filename in policies.items():
             path = policies_dir / f"{filename}.onnx"
             if not path.is_file():
@@ -215,7 +209,7 @@ def simulation(
                 "--scene",
                 scene_path,
                 "--board",
-                board,
+                "beta",
                 "--imu-noise",
                 imu_noise,
                 "--tof-noise",
@@ -241,9 +235,9 @@ def simulation(
         body.write('{"op":"hello","protocol":2,"joints":15}\n')
         body.flush()
         hello = json.loads(body.readline())
-        if hello.get("protocol") != 2 or hello.get("board") != board:
+        if hello.get("protocol") != 2 or hello.get("board") != "beta":
             raise RuntimeError(
-                f"the body speaks {hello}, not protocol 2 for a {board}: re-run setup-sim.sh"
+                f"the body speaks {hello}, not protocol 2 for a beta: re-run setup-sim.sh"
             )
         launch(
             "robot",
@@ -299,7 +293,6 @@ def simulation(
                 state / "media.sock",
                 "--config",
                 media_config,
-                *sim_hfov,
                 "--sim-camera",
                 f"127.0.0.1:{camera_port}",
             ],
@@ -346,9 +339,7 @@ def simulation(
                         f"driver did not listen; see {logs / 'driver.log'}"
                     ) from None
                 time.sleep(0.2)
-        yield SimpleNamespace(
-            body=body, board=board, children=children, code=code, port=driver_port
-        )
+        yield SimpleNamespace(body=body, children=children, code=code, port=driver_port)
 
 
 # The head's four servos. Each has gear play between its output, which its encoder reads and
@@ -398,12 +389,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     arguments(parser)
     parser.add_argument(
-        "--board", choices=sorted(lens.MOUNT), default="beta", help="which Microduck to simulate"
-    )
-    parser.add_argument(
         "--beta-hfov",
         type=float,
-        help=f"the beta's lens, degrees across (default: estimate {lens.BETA_HFOV_ESTIMATE_DEG})",
+        help=f"the beta's lens, degrees across (default: estimate {lens.HFOV_ESTIMATE_DEG})",
     )
     parser.add_argument(
         "--uncalibrated",
@@ -426,8 +414,7 @@ def main():
         "--camera-height",
         type=int,
         choices=sorted(lens.RESOLUTIONS),
-        help="head camera frame height in pixels (16:9), mediad's quality rung; default 720 on "
-        "a beta, 360 on a zero3",
+        help="head camera frame height in pixels (16:9), mediad's quality rung; default 720",
     )
     parser.add_argument(
         "--blur",
@@ -444,8 +431,6 @@ def main():
     args = parser.parse_args()
     if args.viewer and args.gl not in (None, "glfw"):
         parser.error("--viewer requires --gl glfw")
-    if args.board != "beta" and (args.beta_hfov or args.uncalibrated):
-        parser.error("--beta-hfov and --uncalibrated describe a beta")
 
     def stop(signum, frame):
         raise KeyboardInterrupt
@@ -465,8 +450,7 @@ def main():
             gl=args.gl,
             camera_height=args.camera_height,
             blur=args.blur,
-            board=args.board,
-            hfov=args.beta_hfov if args.board == "beta" else None,
+            hfov=args.beta_hfov,
             calibrated=not args.uncalibrated,
             head_imu=args.head_imu,
             imu_noise=args.imu_noise,
@@ -476,7 +460,7 @@ def main():
             addresses = [args.host]
             if args.host == "0.0.0.0":
                 addresses = subprocess.check_output(["hostname", "-I"], text=True).split()
-            print(f"Virtual Microduck ({sim.board}) ready. In Ito, connect to:", flush=True)
+            print("Virtual Microduck (beta) ready. In Ito, connect to:", flush=True)
             for address in addresses:
                 if ":" not in address:
                     print(f"  {address}:{args.port}", flush=True)

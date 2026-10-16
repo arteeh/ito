@@ -6,10 +6,8 @@ from . import frames
 
 # One sigma of a reading, bias included: the datasheets' zero-rate and zero-g offsets dominate
 # white noise at these rates. LSM6DSV16X: ST DS13510 rev 4, table 3 (+-1 dps, +-12 mg).
-# BMI088: Bosch BST-BMI088-DS001 rev 1.9, tables 4-6 (+-1 dps, +-20 mg).
 IMU_NOISE = {
     "LSM6DSV16X": (math.radians(1.0), 0.012 * 9.81 + 0.05),
-    "BMI088": (math.radians(1.0), 0.020 * 9.81 + 0.05),
 }
 UNKNOWN_IMU = (math.radians(2.0), 0.5)
 RANGE_SIGMA = (0.003, 0.005)

@@ -16,20 +16,18 @@ from drivers.microduck import lens
 
 
 class HeadCamera(Camera):
-    def __init__(self, model, name, width=None, height=None, mount=90):
-        height = int(os.environ.get("ITO_MICRODUCK_CAMERA_HEIGHT", 360))
+    def __init__(self, model, name, width=None, height=None, mount=0):
+        height = int(os.environ.get("ITO_MICRODUCK_CAMERA_HEIGHT", lens.DEFAULT_HEIGHT))
         width = lens.width_for(height)
-        hfov = float(os.environ.get("ITO_MICRODUCK_CAMERA_HFOV", lens.ZERO3_HFOV_DEG))
+        hfov = float(os.environ.get("ITO_MICRODUCK_CAMERA_HFOV", lens.HFOV_ESTIMATE_DEG))
         # MuJoCo renders no larger than the offscreen buffer, which the scene sizes at 640x480.
         model.vis.global_.offwidth = max(model.vis.global_.offwidth, width)
         model.vis.global_.offheight = max(model.vis.global_.offheight, height)
-        # The frame is rendered unrotated, as the sensor reads out: on a quarter-turn mount
-        # its long side is the camera's vertical, and MuJoCo's fovy is across the height.
+        # MuJoCo's fovy is across the frame's height.
         model.cam_fovy[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, name)] = (
             lens.vertical_fov_deg(width, height, hfov)
         )
         super().__init__(model, name, width, height, mount=mount)
-        self.mount = mount
         self.blur = max(1, int(os.environ.get("ITO_MICRODUCK_BLUR", 1)))
         self.option = mujoco.MjvOption()
         self.option.geomgroup[2] = 0
@@ -84,7 +82,7 @@ class ThreadedHeadCamera(HeadCamera):
     step it is due at (Stepping), not the live world: physics advances in 20 ms batches, so
     reading it on the camera's 33 ms clock spaces frames unevenly."""
 
-    def __init__(self, model, name, width=None, height=None, mount=90):
+    def __init__(self, model, name, width=None, height=None, mount=0):
         super().__init__(model, name, width, height, mount)
         self.renderer.close()
         self.renderer = None
