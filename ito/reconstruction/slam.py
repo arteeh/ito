@@ -217,7 +217,7 @@ class SLAMBackend(GaussianBackend):
             node, pose, self.registration.map_from_estimator @ pose, self.graph.nodes
         )
         self.observe(
-            points * np.asarray(scale)[..., None],
+            points * scale,
             image,
             cloud.valid.detach().cpu().numpy(),
             mapped,
