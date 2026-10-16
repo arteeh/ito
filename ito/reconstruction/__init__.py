@@ -90,6 +90,7 @@ def _run(recon):
         published_slots = len(backend.keys)
         captured = recon.epoch
         published_capture = recon.epoch
+        next_fit = 0.0
         parent = mp.parent_process()
         while not recon.stopped.value and parent.is_alive():
             now = clock.now() - recon.epoch
@@ -166,9 +167,9 @@ def _run(recon):
                                 backend.integrate(*frame, now, measured=measured)
                         else:
                             backend.integrate(*frame, now)
-                except RuntimeError as exc:
+                except Exception as exc:
                     torch = sys.modules.get("torch")
-                    if torch is None or not isinstance(exc, torch.cuda.OutOfMemoryError):
+                    if not _out_of_memory(exc, backend):
                         raise
                     recon.report_oom(exc)
                     dropped = True
@@ -180,7 +181,11 @@ def _run(recon):
                     tracker = getattr(frontend, "tracker", None)
                     if tracker is not None:
                         tracker.reset_idx_f2k()
-                    torch.cuda.empty_cache()
+                    backend.recover()
+                    if torch is not None:
+                        torch.cuda.empty_cache()
+                    if backend.xp is not np:
+                        backend.xp.get_default_memory_pool().free_all_blocks()
                     if timeline:
                         timeline.write(
                             json.dumps(dict(seq=sequence, outcome="out_of_memory")) + "\n"
@@ -304,6 +309,21 @@ def _run(recon):
             recon.oldest_dirty_capture.value = (
                 float(pending_captures.min()) if len(pending_captures) else 0
             )
+            # Publish fresh geometry before spending a bounded unit on appearance.
+            # A full ring retains dirty work; never pile training behind that backlog.
+            if not backend.dirty.any() and clock.now() >= next_fit and recon.admission.available():
+                try:
+                    with recon.admission.integration():
+                        backend.fit()
+                except Exception as exc:
+                    if not _out_of_memory(exc, backend):
+                        raise
+                    backend.recover()
+                    recon.report_oom(exc)
+                    torch = sys.modules.get("torch")
+                    if torch is not None:
+                        torch.cuda.empty_cache()
+                next_fit = clock.now() + 0.05
             if recon.sequence.value == sequence or not recon.admission.available():
                 recon.admission.wake.wait(0.005)
     except InterruptedError:
@@ -322,6 +342,13 @@ def _run(recon):
             vram.close()
         recon.errors.close()
         recon.notes.close()
+
+
+def _out_of_memory(exc, backend):
+    torch = sys.modules.get("torch")
+    return (torch is not None and isinstance(exc, torch.cuda.OutOfMemoryError)) or (
+        backend.xp is not np and isinstance(exc, backend.xp.cuda.memory.OutOfMemoryError)
+    )
 
 
 class Reconstruction:

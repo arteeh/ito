@@ -69,6 +69,32 @@ def launcher(stage, work):
     )  # fmt: skip
 
 
+def gaussian_native(stage, work):
+    import importlib.util
+
+    from torch.utils.cpp_extension import load
+
+    source = Path(importlib.util.find_spec("gsplat").origin).parent / "cuda"
+    build = work / "gsplat"
+    build.mkdir()
+    os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "7.5;8.0;8.6;8.9;9.0+PTX")
+    os.environ.setdefault("MAX_JOBS", "4")
+    module = load(
+        name="csrc",
+        sources=[str(p) for p in sorted((source / "csrc").glob("*.cu"))]
+        + [str(p) for p in sorted((source / "csrc").glob("*.cpp"))]
+        + [str(source / "ext.cpp")],
+        extra_include_paths=[str(source / "include"), str(source / "csrc/third_party/glm")],
+        extra_cflags=["/O2", "/std:c++17"],
+        extra_cuda_cflags=["-O3", "--use_fast_math", "-allow-unsupported-compiler"],
+        build_directory=str(build),
+        verbose=True,
+    )
+    shutil.copy2(
+        module.__file__, stage / "runtime/Lib/site-packages/gsplat" / Path(module.__file__).name
+    )
+
+
 def models(stage, source):
     target = stage / "models"
     if source is None:
@@ -188,6 +214,8 @@ def check(stage):
     run(
         stage / "runtime/python.exe", "-I", "-c",
         "import sys, pathlib, torch, cupy, mujoco, aiortc, xr, imgui_bundle, ito.app.__main__\n"
+        "from gsplat.cuda._backend import _C\n"
+        "assert _C is not None, 'missing Gaussian rasterizer'\n"
         "from ito.reconstruction.mast3r_runtime import MODELS\n"
         "root = pathlib.Path(sys.argv[1])\n"
         "assert MODELS == root / 'models', MODELS\n"
@@ -213,6 +241,7 @@ def main():
         work = Path(work)
         launcher(stage, work)
         runtime(stage, work)
+        gaussian_native(stage, work)
     models(stage, args.models)
     count = notices(
         stage / "runtime/Lib/site-packages",

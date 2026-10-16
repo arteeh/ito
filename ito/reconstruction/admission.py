@@ -18,6 +18,9 @@ GPU_STAGES = (
     "readback",
     "carve",
     "graph",
+    "fit_forward",
+    "fit_backward",
+    "fit_readback",
 )
 
 

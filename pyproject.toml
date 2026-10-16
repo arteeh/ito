@@ -39,6 +39,7 @@ cuda = [
 ]
 
 slam = [
+    "gsplat==1.5.3",
     "torch==2.5.1; python_version < '3.13'",
     "torchvision==0.20.1; python_version < '3.13'",
     "cupy-cuda12x==13.6.0",

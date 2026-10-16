@@ -4,7 +4,6 @@ Estimator nodes are observation provenance, never owners of surface lifetime. An
 are frozen when admitted; forgetting or correcting an estimator node cannot move a room.
 """
 
-from collections import deque
 from dataclasses import dataclass
 
 import numpy as np
@@ -27,16 +26,32 @@ class Observation:
     captured: float
     sequence: int
     steps: int = 0
+    exposure: np.ndarray | None = None
 
 
 class GaussianBackend(GaussianSlots):
     def __init__(self, *args, precision="full", **options):
         super().__init__(*args, **options)
         self.precision = precision
-        self.views = deque(maxlen=MAX_VIEWS)
+        self.views = []
         self.anchors = {}
         self.next_anchor = 0
         self.fit_cursor = 0
+        self.next_key = 0
+        self.fitter = None
+
+    def fit(self):
+        if self.xp is np or not self.views:
+            return
+        if self.fitter is None:
+            from .fitting import LocalFit
+
+            self.fitter = LocalFit(self)
+        self.fitter.step()
+
+    def recover(self):
+        if self.fitter is not None:
+            self.fitter.active = None
 
     def victims(self, candidates, count):
         # Redundant/unsupported records go before useful old surfaces, including when
@@ -99,8 +114,6 @@ class GaussianBackend(GaussianSlots):
             supported = live[agreement]
             self.support[supported] += 1
             self.seen[supported] = now
-            self.captures[supported] = self.source_captured
-            self.sequences[supported] = self.source_sequence
             self.uncertainty[supported] = 0.9 * self.uncertainty[supported] + 0.1 * (
                 np.abs(observed[agreement] - z[agreement]) / np.maximum(z[agreement], 0.01)
             )
@@ -115,7 +128,11 @@ class GaussianBackend(GaussianSlots):
             self.contribution[live] = 0
             self.contribution[winners] = counts
             surface[np.isin(surface, gone)] = -1
-        missing = valid & (surface < 0)
+        covered = surface >= 0
+        mapped_depth = np.zeros_like(depth)
+        centers = self.records[surface[covered], 0, :3] - camera[:3, 3]
+        mapped_depth[covered] = -(centers @ camera[:3, 2])
+        missing = valid & ((surface < 0) | (depth < 0.8 * mapped_depth))
         # A two-pixel lattice has a calibrated footprint; colour edges keep one-pixel
         # samples. Surface tangents follow depth instead of making camera-facing discs.
         edge = np.zeros(depth.shape, bool)
@@ -180,7 +197,8 @@ class GaussianBackend(GaussianSlots):
             records[:, 2] = quat
             records[:, 3, :3] = (color[y, x] - 0.5) / C0
             self.records[slots] = records
-            self.keys[slots] = slots
+            self.keys[slots] = np.arange(self.next_key, self.next_key + count)
+            self.next_key += count
             self.owners[slots] = anchor
             self.support[slots] = 1
             self.uncertainty[slots] = 0.1
@@ -202,5 +220,16 @@ class GaussianBackend(GaussianSlots):
                     self.source_sequence,
                 )
             )
+            if len(self.views) > MAX_VIEWS:
+                # Preserve diverse old evidence instead of retaining only the most
+                # recent seconds. The older of the closest pair makes room.
+                poses = np.array([v.pose for v in self.views])
+                centers = poses[:, :3, 3]
+                distance = np.linalg.norm(centers[:, None] - centers[None], axis=-1)
+                directions = poses[:, :3, 2]
+                distance += 1 - np.clip(directions @ directions.T, -1, 1)
+                distance[np.tril_indices(len(poses))] = np.inf
+                older, _ = np.unravel_index(np.argmin(distance), distance.shape)
+                del self.views[older]
         owners = set(self.owners[self.keys >= 0])
         self.anchors = {k: v for k, v in self.anchors.items() if k in owners}
