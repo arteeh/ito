@@ -95,10 +95,11 @@ class GaussianBackend(GaussianSlots):
         useless = (
             (self.contribution[candidates] < 0.25)
             | ((self.support[candidates] < 2) & (self.contradictions[candidates] > 0))
+            | ((self.support[candidates] < 3) & (self.uncertainty[candidates] > 0.2))
             | (self.records[candidates, 0, 3] < 0.01)
         )
         weak = candidates[useless]
-        order = np.lexsort((self.support[weak], self.contribution[weak]))
+        order = np.lexsort((self.support[weak], -self.uncertainty[weak], self.contribution[weak]))
         first = weak[order[:count]]
         return np.concatenate((first, self.oldest(candidates[~useless], count - len(first))))
 
@@ -169,8 +170,9 @@ class GaussianBackend(GaussianSlots):
             self.captures[gone] = self.source_captured
             self.retire(gone)
             winners, counts = np.unique(surface[surface >= 0], return_counts=True)
-            self.contribution[live] = 0
-            self.contribution[winners] = counts
+            # Keep evidence from other views: an occluded background is useful on
+            # return even when its center loses today's depth buffer.
+            self.contribution[winners] = np.maximum(self.contribution[winners], counts)
             # Contributions guide pressure pruning. Two centers sharing a pixel are
             # not proof of redundancy: their Gaussian footprints can cover different edges.
             peers = surface[v, u]
@@ -182,6 +184,7 @@ class GaussianBackend(GaussianSlots):
             redundant &= np.abs(own[:, 3, :3] - peer[:, 3, :3]).max(-1) * C0 < 0.02
             redundant &= np.abs((own[:, 2] * peer[:, 2]).sum(-1)) > 0.999
             redundant &= (peer[:, 1, :3] >= 0.9 * own[:, 1, :3]).all(-1)
+            self.contribution[live[redundant]] = 0
             self.retire(live[redundant])
             surface[np.isin(surface, gone)] = -1
         covered = surface >= 0
