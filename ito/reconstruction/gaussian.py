@@ -5,6 +5,7 @@ are frozen when admitted; forgetting or correcting an estimator node cannot move
 """
 
 from dataclasses import dataclass
+from importlib.util import find_spec
 
 import numpy as np
 from scipy.ndimage import distance_transform_edt
@@ -41,6 +42,13 @@ class GaussianBackend(GaussianSlots):
         self.fitter = None
         self.refits = 0
         self.pending_fit = None
+        self.can_fit = (
+            self.xp is not np and find_spec("torch") is not None and find_spec("gsplat") is not None
+        )
+        if self.can_fit:
+            import torch  # Register Torch's allocator before the live VRAM manager is created.
+
+            self.can_fit = torch.cuda.is_available()
 
     def revise(self, poses):
         changed = False
@@ -63,7 +71,7 @@ class GaussianBackend(GaussianSlots):
             self.recover()
 
     def fit(self):
-        if self.xp is np or not self.views:
+        if not self.can_fit or not self.views:
             return
         if self.fitter is None:
             from .fitting import LocalFit
