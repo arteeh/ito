@@ -376,7 +376,7 @@ class GaussianBackend(GaussianSlots):
             degenerate = np.abs(np.linalg.det(basis)) < 0.5
             basis[degenerate] = camera[:3, :3]
             quat = Rotation.from_matrix(basis).as_quat()[:, [3, 0, 1, 2]]
-            spacing = np.where(edge[y, x], 0.7, 1.8)
+            spacing = np.where(edge[y, x], 0.7, 2.1)
             scales = np.stack(
                 (
                     np.linalg.norm(dx, axis=1) * spacing,
