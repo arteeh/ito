@@ -165,7 +165,7 @@ class SLAMBackend(GaussianBackend):
             cloud = cloud._replace(points=cloud.points * scale)
         pose = self._publish(node)
         if cloud is not None:
-            self.place(cloud, pose, now + clock.now() - started)
+            self.place(cloud, pose, now + clock.now() - started, node=node)
 
     def pose_at(self, captured):
         pose = self.graph.pose_at(captured)
@@ -187,7 +187,7 @@ class SLAMBackend(GaussianBackend):
         )
         return pose
 
-    def place(self, cloud, pose, when):
+    def place(self, cloud, pose, when, *, node):
         height, width = cloud.shape
         points = cloud.points.detach().float().cpu().numpy().reshape(height, width, 3)
         image = cloud.colors.detach().cpu().numpy().reshape(height, width, 3)
@@ -197,7 +197,7 @@ class SLAMBackend(GaussianBackend):
         )
         self.camera_pose = mapped.astype(np.float32)
         self.correction = (
-            self.registration.map_from_estimator @ self.graph.correction(self.graph.current)
+            self.registration.map_from_estimator @ self.graph.correction(node)
         ).astype(np.float32)
         self.observe(
             points * scale,
@@ -206,7 +206,7 @@ class SLAMBackend(GaussianBackend):
             mapped,
             cloud.intrinsics,
             when,
-            node=self.graph.current,
+            node=node,
             confidence=cloud.confidence.detach().cpu().numpy()
             if cloud.confidence is not None
             else None,

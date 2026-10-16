@@ -63,8 +63,8 @@ class GaussianBackend(GaussianSlots):
             angle = np.arccos(np.clip((np.trace(delta[:3, :3]) - 1) / 2, -1, 1))
             if angle < 1e-5 and np.linalg.norm(delta[:3, 3]) < 1e-5:
                 continue
-            # Estimator corrections change the fitting cameras, never published
-            # anchor transforms. A large correction restarts the affected local fit.
+            # Registered cameras stay in the persistent frame. An estimator revision
+            # invalidates a local fit, not the independently observed anchor pose.
             view.estimated_pose = pose.copy()
             if angle * view.intrinsics[0] > 2 or np.linalg.norm(delta[:3, 3]) > 0.01:
                 view.steps = 0
@@ -161,8 +161,8 @@ class GaussianBackend(GaussianSlots):
             winners, counts = np.unique(surface[surface >= 0], return_counts=True)
             self.contribution[live] = 0
             self.contribution[winners] = counts
-            # Same-pixel, same-depth duplicates provide no additional coverage. Do
-            # not confuse an occluded background with a redundant visible surface.
+            # Contributions guide pressure pruning. Two centers sharing a pixel are
+            # not proof of redundancy: their Gaussian footprints can cover different edges.
             surface[np.isin(surface, gone)] = -1
         covered = surface >= 0
         mapped_depth = np.zeros_like(depth)
