@@ -293,15 +293,18 @@ class GaussianBackend(GaussianSlots):
                 )
             )
             if len(self.views) > MAX_VIEWS:
-                # Preserve diverse old evidence instead of retaining only the most
-                # recent seconds. The older of the closest pair makes room.
-                poses = np.array([v.pose for v in self.views])
+                # Keep three recent observations plus a diverse archive. Among two
+                # redundant archived views retain the one with more fitting evidence;
+                # ties keep the older anchor instead of chaining through recent noise.
+                archived = self.views[:-3]
+                poses = np.array([v.pose for v in archived])
                 centers = poses[:, :3, 3]
                 distance = np.linalg.norm(centers[:, None] - centers[None], axis=-1)
                 directions = poses[:, :3, 2]
                 distance += 1 - np.clip(directions @ directions.T, -1, 1)
                 distance[np.tril_indices(len(poses))] = np.inf
-                older, _ = np.unravel_index(np.argmin(distance), distance.shape)
-                del self.views[older]
+                a, b = np.unravel_index(np.argmin(distance), distance.shape)
+                discard = a if archived[a].steps < archived[b].steps else b
+                del self.views[discard]
         owners = set(self.owners[self.keys >= 0])
         self.anchors = {k: v for k, v in self.anchors.items() if k in owners}
