@@ -31,6 +31,7 @@ class Observation:
     features: tuple | None = None
     estimated_pose: np.ndarray | None = None
     estimated_map_pose: np.ndarray | None = None
+    fitting_pose: np.ndarray | None = None
     refitting: bool = False
 
 
@@ -74,8 +75,8 @@ class GaussianBackend(GaussianSlots):
             view.estimated_map_pose = mapped.copy()
             # Gauge changes cancel in the persistent frame. Relative corrections
             # change the fitting camera, never the published surface or its anchor.
-            view.pose = delta @ view.pose
-            view.features = None
+            fitting = view.pose if view.fitting_pose is None else view.fitting_pose
+            view.fitting_pose = delta @ fitting
             if angle * view.intrinsics[0] > 2 or np.linalg.norm(delta[:3, 3]) > 0.01:
                 view.steps = 0
                 view.refitting = True
@@ -368,6 +369,7 @@ class GaussianBackend(GaussianSlots):
                     self.source_sequence,
                     estimated_pose=getattr(self, "observation_estimate", camera).copy(),
                     estimated_map_pose=getattr(self, "observation_map_estimate", camera).copy(),
+                    fitting_pose=camera.copy(),
                 )
             )
             if len(self.views) > MAX_VIEWS:

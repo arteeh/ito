@@ -42,6 +42,7 @@ class LocalFit:
         recent = list(b.views)[-3:]
         pool = recent if self.serial % 4 else list(b.views)
         view = min(pool, key=lambda v: v.steps)
+        pose = view.pose if view.fitting_pose is None else view.fitting_pose
         h, w = view.image.shape[:2]
         cols = (w + PATCH - 1) // PATCH
         rows = (h + PATCH - 1) // PATCH
@@ -50,7 +51,7 @@ class LocalFit:
         left, top = max(0, x - HALO), max(0, y - HALO)
         right, bottom = min(w, x + PATCH + HALO), min(h, y + PATCH + HALO)
         ids = np.flatnonzero((b.keys >= 0) & ~b.retiring)
-        local = (b.records[ids, 0, :3] - view.pose[:3, 3]) @ view.pose[:3, :3]
+        local = (b.records[ids, 0, :3] - pose[:3, 3]) @ pose[:3, :3]
         z = -local[:, 2]
         fx, fy, cx, cy = view.intrinsics
         u = cx + fx * local[:, 0] / np.maximum(z, 0.01)
@@ -90,12 +91,15 @@ class LocalFit:
         targets = []
         center = np.median(b.records[ids, 0, :3], axis=0)
         for observation in [view] + ([] if other is None else [other]):
+            fitted_camera = (
+                observation.pose if observation.fitting_pose is None else observation.fitting_pose
+            )
             ih, iw = observation.depth.shape
             ox, oy, ocx, ocy = observation.intrinsics
             if observation is view:
                 tx, ty = x, y
             else:
-                local_center = (center - observation.pose[:3, 3]) @ observation.pose[:3, :3]
+                local_center = (center - fitted_camera[:3, 3]) @ fitted_camera[:3, :3]
                 if local_center[2] >= -0.01:
                     continue
                 tx = int(ocx - ox * local_center[0] / local_center[2]) - PATCH // 2
@@ -103,7 +107,7 @@ class LocalFit:
                 tx, ty = np.clip(tx, 0, iw - PATCH), np.clip(ty, 0, ih - PATCH)
             left, top = max(0, tx - HALO), max(0, ty - HALO)
             right, bottom = min(iw, tx + PATCH + HALO), min(ih, ty + PATCH + HALO)
-            camera = np.linalg.inv(observation.pose @ np.diag([1.0, -1.0, -1.0, 1.0]))
+            camera = np.linalg.inv(fitted_camera @ np.diag([1.0, -1.0, -1.0, 1.0]))
             calibration = [[ox, 0, ocx - left], [0, oy, ocy - top], [0, 0, 1]]
             target = self.tensor(observation.image[top:bottom, left:right]) / 255
             depth = self.tensor(observation.depth[top:bottom, left:right])
