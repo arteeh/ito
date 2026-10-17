@@ -1,5 +1,4 @@
 import numpy as np
-from scipy.spatial.transform import Rotation
 
 from .scene import FloatArray
 
@@ -43,8 +42,10 @@ class AnchorGlide:
         return glided
 
 
-# Fusion's corrections are held while the pilot is still and eased during motion.
-CORRECTION_TURN = np.radians(2.0)  # rad/s
+# Fusion's corrections move the eye: held while the pilot is still and eased in during motion.
+# They never turn the view. The pilot's head is the whole view rotation, so a correction's
+# rotation only moves where the eye sits; turning the view by it showed each new correction as
+# a jump of the whole world (#67).
 CORRECTION_SLIDE = 0.05  # m/s
 MOVING_TURN = np.radians(5.0)  # rad/s
 MOVING_SLIDE = 0.02  # m/s
@@ -54,18 +55,9 @@ def _angle(rotation):
     return float(np.arccos(np.clip((np.trace(rotation) - 1) / 2, -1.0, 1.0)))
 
 
-def _toward_identity(rotation, angle):
-    vector = Rotation.from_matrix(rotation).as_rotvec()
-    full = np.linalg.norm(vector)
-    if full <= angle or full < 1e-9:
-        return np.eye(3)
-    return Rotation.from_rotvec(vector * (1 - angle / full)).as_matrix()
-
-
 class CorrectionEase:
     def __init__(self):
         self.correction = None
-        self.turn = np.eye(3)
         self.slide = np.zeros(3)
         self.previous = None
 
@@ -74,8 +66,6 @@ class CorrectionEase:
         robot = np.asarray(anchor[:3, 3], dtype=np.float64)
         eye = correction[:3, :3] @ robot + correction[:3, 3]
         if self.correction is not None and not np.array_equal(correction, self.correction):
-            change = correction[:3, :3] @ self.correction[:3, :3].T
-            self.turn = self.turn @ change.T
             before = self.correction[:3, :3] @ robot + self.correction[:3, 3]
             self.slide = self.slide + before - eye
         self.correction = correction
@@ -88,15 +78,11 @@ class CorrectionEase:
                 turned = _angle(self.previous[1].T @ head_rotation) / dt
             travelled = np.linalg.norm(drawn - self.previous[2]) / dt
             if turned > MOVING_TURN or travelled > MOVING_SLIDE:
-                self.turn = _toward_identity(self.turn, CORRECTION_TURN * dt)
                 distance = np.linalg.norm(self.slide)
                 if distance > 1e-9:
                     self.slide *= max(0.0, 1 - CORRECTION_SLIDE * dt / distance)
         drawn = eye + self.slide
         self.previous = (now, head_rotation, drawn)
-        # The renderer draws world_from_eye = anchor @ head: a turn of the displayed world
-        # about the eye is the inverse turn of the pilot's view.
-        result = np.eye(4, dtype=np.float32)
-        result[:3, :3] = self.turn.T @ np.asarray(anchor[:3, :3], np.float64)
+        result = np.array(anchor, dtype=np.float32)
         result[:3, 3] = drawn
         return result
