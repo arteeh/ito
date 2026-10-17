@@ -192,6 +192,11 @@ def _run(recon):
                                     .copy()
                                     if rows
                                     else None,
+                                    np.frombuffer(recon.truth_reference, np.float64)
+                                    .reshape(4, 4)
+                                    .copy()
+                                    if recon.truth_referenced.value
+                                    else None,
                                 )
                                 if recon.truthful.value
                                 else None
@@ -321,6 +326,7 @@ def _run(recon):
                             input_frames_skipped=max(0, sequence - previous_sequence - 1),
                             blurred=getattr(backend, "blurred", None),
                             depth_scales=getattr(backend, "depth_scales", None),
+                            pose_error=getattr(backend, "pose_error", None),
                             on_map=getattr(backend, "aligned", None),
                             training={
                                 k: getattr(backend.fitter, k)
@@ -584,6 +590,8 @@ class Reconstruction:
         self.captured = context.RawValue("d", 0)
         self.measured = context.RawValue("b", False)
         self.truth = context.RawArray("d", 16)
+        self.truth_reference = context.RawArray("d", 16)
+        self.truth_referenced = context.RawValue("b", False)
         self.truth_time = context.RawValue("d", 0)
         self.truthful = context.RawValue("b", False)
         self.truth_pose = context.RawValue("b", False)
@@ -792,6 +800,10 @@ class Reconstruction:
                     np.frombuffer(self.truth, np.float64)[:] = np.ravel(truth[0])
                 self.truth_time.value = truth[1]
                 self.truth_shape[:] = (0, 0) if truth[2] is None else truth[2].shape
+                reference = truth[3] if len(truth) > 3 else None
+                self.truth_referenced.value = reference is not None
+                if reference is not None:
+                    np.frombuffer(self.truth_reference, np.float64)[:] = np.ravel(reference)
                 if truth[2] is not None:
                     np.frombuffer(self.truth_depth, np.float32)[: truth[2].size] = truth[2].ravel()
             self.sequence.value += 1

@@ -130,6 +130,7 @@ class SLAMBackend(GaussianBackend):
         self.waiting = False
         self.retired_keyframes = 0
         self.truth = None
+        self.pose_error = None
         self.depth = MultiViewDepth() if DEPTH == "da3" else None
         self.mono = MonoGeometry() if DEPTH == "moge" else None
         self.consensus = None
@@ -379,9 +380,21 @@ class SLAMBackend(GaussianBackend):
         pose = graph.pose(node)
         mapping = self.registration.map_from_estimator
         self.camera_pose = (mapping @ pose).astype(np.float32)
+        reference = self.truth[3] if self.truth is not None and len(self.truth) > 3 else None
+        self.pose_error = None
+        if reference is not None:
+            # compare: where this frame's estimate put the camera against where it was, in the
+            # exact camera's frame (cm: right, up, back) and degrees, map frame and estimator's.
+            for name, estimate in (("map", self.camera_pose), ("estimator", pose)):
+                delta = np.linalg.inv(reference) @ estimate
+                angle = np.degrees(np.arccos(np.clip((np.trace(delta[:3, :3]) - 1) / 2, -1, 1)))
+                self.pose_error = (self.pose_error or {}) | {
+                    f"{name}_cm": [round(float(v) * 100, 2) for v in delta[:3, 3]],
+                    f"{name}_deg": round(float(angle), 2),
+                }
         self.correction = (mapping @ graph.correction(node)).astype(np.float32)
         if self.truth is not None and self.truth[0] is not None:
-            pose, exposed, _ = self.truth
+            pose, exposed = self.truth[:2]
             self.camera_pose = pose.astype(np.float32)
             self.correction = (pose @ np.linalg.inv(self.motion.at(exposed))).astype(np.float32)
         self.tracked += 1

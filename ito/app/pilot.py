@@ -314,6 +314,8 @@ class Pilot:
                     camera_matrix(true.camera_pose) if "poses" in TRUTH else None,
                     peer.clock.remote_to_local(true.time),
                     true_depth,
+                    # compare: the exact pose too, only for logging the estimate's error.
+                    camera_matrix(true.camera_pose) if "compare" in TRUTH else None,
                 )
         self.camera_rate.tick()
         try:
