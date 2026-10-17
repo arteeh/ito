@@ -559,6 +559,7 @@ class MicroduckAdapter(Adapter):
         if row is None or self._origin is None:
             return {}
         position, orientation = truth.in_world(row, self._origin)
+        self._compare_kinematics(row["time"], position, orientation)
         depth = None
         if "depth" in row:
             height, width = row["depth_shape"]
@@ -573,6 +574,23 @@ class MicroduckAdapter(Adapter):
                 camera_pose=Pose(position=position, orientation=orientation),
                 depth=depth,
             )
+        )
+
+    def _compare_kinematics(self, when, position, orientation):
+        """A diagnostic: every few seconds, log how far robotd's kinematic camera pose is from
+        the sim's exact one, in the kinematic camera's frame (x right, y up, z back)."""
+        if not self._poses or when < getattr(self, "_kinematics_due", 0):
+            return
+        self._kinematics_due = when + 5
+        fk_position, fk_orientation, _ = frames.at(self._poses, when)
+        x, y, z, w = fk_orientation
+        offset = frames.rotate((w, -x, -y, -z), tuple(np.subtract(position, fk_position)))
+        dot = abs(sum(a * b for a, b in zip(fk_orientation, orientation, strict=True)))
+        angle = math.degrees(2 * math.acos(min(1.0, dot)))
+        log.info(
+            "kinematic camera vs exact: offset %+.1f %+.1f %+.1f cm (right, up, back), %.2f deg",
+            *(100 * v for v in offset),
+            angle,
         )
 
     def telemetry(self):
