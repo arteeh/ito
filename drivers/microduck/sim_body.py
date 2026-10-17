@@ -14,24 +14,154 @@ import zlib
 import mujoco
 import numpy as np
 from mjlab_microduck.sim import body_server
-from mjlab_microduck.sim.camera import Camera, to_uyvy
+from mjlab_microduck.sim.camera import Camera
 
 from drivers.microduck import lens, truth
+
+
+class Fisheye:
+    """The beta's lens (lens.py), drawn from pinhole views, which are all MuJoCo renders: views
+    turned YAWS about the camera's up axis, side by side in one framebuffer, each as dense as the
+    fisheye where it is used (at least one view pixel per fisheye pixel), then remapped."""
+
+    YAWS = (-46.0, 0.0, 46.0)  # degrees to the right
+
+    def __init__(self, width, height, depth_step):
+        try:
+            import cv2
+        except ImportError:
+            raise SystemExit("the sim body needs OpenCV now: re-run setup-sim.sh") from None
+        self.cv = cv2
+        self.width, self.height = width, height
+        u, v = np.meshgrid(np.arange(width, dtype=np.float64), np.arange(height, dtype=np.float64))
+        ray = lens.rays(u, v, width, height)
+        # Half a pixel across and down: the fisheye pixel's footprint, which sizes each view.
+        across, down = lens.rays(u + 0.5, v, width, height), lens.rays(u, v + 0.5, width, height)
+        azimuth = np.degrees(np.arctan2(ray[..., 0], ray[..., 2]))
+        owner = np.argmin(np.abs(azimuth[..., None] - np.array(self.YAWS)), -1)
+        map_x = np.empty((height, width), np.float32)
+        map_y = np.empty((height, width), np.float32)
+        # View-axial depth to the camera's own axial depth, per fisheye pixel.
+        self.axial = np.empty((height, width), np.float32)
+        self.views, x0 = [], 0
+        for i, yaw in enumerate(self.YAWS):
+            a = np.radians(yaw)
+            right = np.array([np.cos(a), 0.0, -np.sin(a)])
+            axis = np.array([np.sin(a), 0.0, np.cos(a)])
+            mine = owner == i
+
+            def plane(r, mine=mine, right=right, axis=axis):
+                z = r[mine] @ axis
+                return (r[mine] @ right) / z, r[mine][:, 1] / z
+
+            x, y = plane(ray)
+            xa, ya = plane(across)
+            xd, yd = plane(down)
+            jacobian = 2 * np.stack(
+                [np.stack([xa - x, xd - x], -1), np.stack([ya - y, yd - y], -1)], -2
+            )
+            focal = 1 / np.linalg.svd(jacobian, compute_uv=False)[:, -1].min()
+            left, top = x.min() - 2 / focal, y.min() - 2 / focal
+            w = int(np.ceil((x.max() - left) * focal + 2))
+            h = int(np.ceil((y.max() - top) * focal + 2))
+            map_x[mine] = x0 + (x - left) * focal - 0.5
+            # OpenGL's rows count up from the bottom of the framebuffer.
+            map_y[mine] = h - 1 - ((y - top) * focal - 0.5)
+            self.axial[mine] = ray[mine][:, 2] / (ray[mine] @ axis)
+            self.views.append((a, left, top, w, h, focal, mujoco.MjrRect(x0, 0, w, h)))
+            x0 += w
+        self.size = (x0, max(view[4] for view in self.views))
+        self.rect = mujoco.MjrRect(0, 0, *self.size)
+        self.maps = cv2.convertMaps(map_x, map_y, cv2.CV_16SC2)
+        # Depth: every depth_step-th fisheye pixel, the nearest rendered sample, never averaged.
+        rows = slice(depth_step // 2, None, depth_step)
+        self.depth_at = (
+            np.rint(map_y[rows, rows.start :: depth_step]).astype(np.intp),
+            np.rint(map_x[rows, rows.start :: depth_step]).astype(np.intp),
+        )
+        self.depth_axial = self.axial[rows, rows.start :: depth_step]
+        self.atlas = np.empty((self.size[1], self.size[0], 3), np.uint8)
+        self.atlas_depth = np.empty((self.size[1], self.size[0]), np.float32)
+
+    def views_drawn(self, renderer):
+        """Draw every view into the framebuffer from the scene's camera."""
+        scene, context = renderer.scene, renderer._mjr_context
+        cameras = scene.camera
+        kept = [
+            (np.array(c.forward), np.array(c.up), c.frustum_center, c.frustum_bottom, c.frustum_top)
+            for c in cameras
+        ]
+        forward, up = kept[0][0].astype(np.float64), kept[0][1].astype(np.float64)
+        right = np.cross(forward, up)
+        near = cameras[0].frustum_near
+        # MuJoCo lights a headlight along each drawn view's own axis, which would light every view
+        # differently and seam the fisheye: fix it along the camera's axis for all of them.
+        heads = [light for light in scene.lights[: scene.nlight] if light.headlight]
+        for light in heads:
+            light.headlight = 0
+            light.type = mujoco.mjtLightType.mjLIGHT_DIRECTIONAL
+            light.pos[:] = (np.array(cameras[0].pos) + np.array(cameras[1].pos)) / 2
+            light.dir[:] = forward
+        try:
+            for yaw, left, top, w, h, focal, rect in self.views:
+                look = np.cos(yaw) * forward + np.sin(yaw) * right
+                # Both eyes: mono rendering draws their average. MuJoCo sets the frustum's left
+                # and right from its centre and the viewport's aspect, which these match.
+                for camera in cameras:
+                    camera.forward[:] = look
+                    camera.frustum_center = near * (left + w / focal / 2)
+                    camera.frustum_top = -near * top
+                    camera.frustum_bottom = -near * (top + h / focal)
+                mujoco.mjr_render(rect, scene, context)
+        finally:
+            for light in heads:
+                light.headlight = 1
+            for camera, (f, _, center, bottom, top) in zip(cameras, kept, strict=True):
+                camera.forward[:] = f
+                camera.frustum_center, camera.frustum_bottom, camera.frustum_top = (
+                    center,
+                    bottom,
+                    top,
+                )
+
+    def rgb(self, renderer):
+        self.views_drawn(renderer)
+        mujoco.mjr_readPixels(self.atlas, None, self.rect, renderer._mjr_context)
+        return self.cv.remap(self.atlas, *self.maps, self.cv.INTER_LINEAR)
+
+    def depth(self, renderer, model):
+        """The scene's axial depth along the camera's own axis, in metres, at every
+        depth_step-th fisheye pixel (0: nothing there)."""
+        flags = renderer.scene.flags
+        original = flags.copy()
+        # As mujoco.Renderer's depth: segmented drawing keeps far depth accurate.
+        flags[mujoco.mjtRndFlag.mjRND_SEGMENT] = True
+        flags[mujoco.mjtRndFlag.mjRND_IDCOLOR] = True
+        try:
+            self.views_drawn(renderer)
+            mujoco.mjr_readPixels(None, self.atlas_depth, self.rect, renderer._mjr_context)
+        finally:
+            np.copyto(flags, original)
+        extent = model.stat.extent
+        near = np.float32(model.vis.map.znear * extent)
+        far = np.float32(model.vis.map.zfar * extent)
+        # mujoco.Renderer's reversed-Z linearisation.
+        c = np.float32(-0.5) * (-(far + near) / (far - near)) - np.float32(0.5)
+        d = np.float32(-0.5) * (-(np.float32(2) * far * near) / (far - near))
+        z = self.atlas_depth[self.depth_at].astype(np.float64)
+        return (d / (z + c)) * self.depth_axial
 
 
 class HeadCamera(Camera):
     def __init__(self, model, name, width=None, height=None, mount=0):
         height = int(os.environ.get("ITO_MICRODUCK_CAMERA_HEIGHT", lens.DEFAULT_HEIGHT))
         width = lens.width_for(height)
-        hfov = float(os.environ.get("ITO_MICRODUCK_CAMERA_HFOV", lens.HFOV_ESTIMATE_DEG))
+        self.fisheye = Fisheye(width, height, max(1, width // 640))
         # MuJoCo renders no larger than the offscreen buffer, which the scene sizes at 640x480.
-        model.vis.global_.offwidth = max(model.vis.global_.offwidth, width)
-        model.vis.global_.offheight = max(model.vis.global_.offheight, height)
-        # MuJoCo's fovy is across the frame's height.
-        model.cam_fovy[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, name)] = (
-            lens.vertical_fov_deg(width, height, hfov)
-        )
-        super().__init__(model, name, width, height, mount=mount)
+        model.vis.global_.offwidth = max(model.vis.global_.offwidth, self.fisheye.size[0])
+        model.vis.global_.offheight = max(model.vis.global_.offheight, self.fisheye.size[1])
+        super().__init__(model, name, *self.fisheye.size, mount=mount)
+        self.width, self.height = width, height
         self.blur = max(1, int(os.environ.get("ITO_MICRODUCK_BLUR", 1)))
         self.option = mujoco.MjvOption()
         self.option.geomgroup[2] = 0
@@ -45,6 +175,18 @@ class HeadCamera(Camera):
             frames.append(self.draw())
         self.publish(frames)
 
+    def uyvy(self, rgb):
+        """mjlab's to_uyvy (BT.601 full range, chroma averaged across each pair) in OpenCV:
+        the same frame to within 2 levels, a fifth of the time, which the fisheye needs."""
+        ycc = self.fisheye.cv.cvtColor(rgb, self.fisheye.cv.COLOR_RGB2YCrCb)
+        pairs = ycc.reshape(ycc.shape[0], -1, 2, 3).astype(np.uint16)
+        packed = np.empty((ycc.shape[0], ycc.shape[1] // 2, 4), np.uint8)
+        packed[..., 0] = (pairs[:, :, 0, 2] + pairs[:, :, 1, 2] + 1) >> 1
+        packed[..., 1] = ycc[:, 0::2, 0]
+        packed[..., 2] = (pairs[:, :, 0, 1] + pairs[:, :, 1, 1] + 1) >> 1
+        packed[..., 3] = ycc[:, 1::2, 0]
+        return packed.tobytes()
+
     def scene(self, data):
         self.renderer.update_scene(data, camera=self.camera, scene_option=self.option)
 
@@ -52,11 +194,11 @@ class HeadCamera(Camera):
         # MuJoCo's shadow pass produces dark floor triangles at this low camera height.
         # Keep the head image clean without changing the viewer or the robot's physics.
         self.renderer.scene.flags[mujoco.mjtRndFlag.mjRND_SHADOW] = False
-        return self.renderer.render().copy()
+        return self.fisheye.rgb(self.renderer)
 
     def publish(self, frames, exposed=None):
         rgb = frames[0] if self.blur == 1 else np.mean(frames, axis=0).astype(np.uint8)
-        packed = to_uyvy(rgb)
+        packed = self.uyvy(rgb)
         with self.lock:
             self.latest = packed
             self.exposed = None if exposed is None else exposed | {"thumb": truth.encode(rgb)}
@@ -141,7 +283,8 @@ class ThreadedHeadCamera(HeadCamera):
             self.thread.join(timeout=2)
 
     def loop(self):
-        self.renderer = mujoco.Renderer(self.model, height=self.height, width=self.width)
+        width, height = self.fisheye.size
+        self.renderer = mujoco.Renderer(self.model, height=height, width=width)
         body_server.mujoco = STEPPING
         STEPPING.hooks.append(self.before_step)
         try:
@@ -230,15 +373,9 @@ class ThreadedHeadCamera(HeadCamera):
             next_frame += period
 
     def depth(self):
-        """The rendered scene's axial depth, about 640 wide, in millimetres (0: none)."""
-        self.renderer.enable_depth_rendering()
-        try:
-            depth = self.renderer.render()
-        finally:
-            self.renderer.disable_depth_rendering()
-        step = max(1, self.width // 640)
-        # Every step-th pixel, never averaged: an average across an edge is no surface.
-        depth = depth[step // 2 :: step, step // 2 :: step]
+        """The rendered scene's axial depth, every width // 640-th fisheye pixel, in millimetres
+        (0: none)."""
+        depth = self.fisheye.depth(self.renderer, self.model)
         return np.where(depth < 30, np.rint(depth * 1000), 0).astype("<u2")
 
     def next_frame(self, seen, timeout=1.0):

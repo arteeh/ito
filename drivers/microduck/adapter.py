@@ -5,6 +5,8 @@ import math
 import os
 from collections import deque
 
+import numpy as np
+
 from ito import clock
 from ito.driver import Adapter
 from ito.driver.walking import Walker
@@ -560,7 +562,11 @@ class MicroduckAdapter(Adapter):
         depth = None
         if "depth" in row:
             height, width = row["depth_shape"]
-            depth = Depth(width=width, height=height, data=row["depth"])
+            sent = Depth(width=width, height=height, data=row["depth"])
+            mm = np.frombuffer(sent.to_bytes(), "<u2").reshape(height, width)
+            depth = Depth.from_bytes(
+                width, height, self.camera.rectify_depth(mm).astype("<u2").tobytes()
+            )
         return dict(
             true_pose=TruePose(
                 time=row["time"],

@@ -65,8 +65,10 @@ for package in mujoco numpy onnxruntime pillow; do
     body_packages="$body_packages $package==$version"
 done
 uv venv --python 3.12 --allow-existing "$prefix/microduck_rl/.venv"
+# OpenCV: the head camera remaps MuJoCo's pinhole renders into the beta's fisheye (sim_body.py).
 # shellcheck disable=SC2086
-uv pip install --python "$prefix/microduck_rl/.venv/bin/python" $body_packages
+uv pip install --python "$prefix/microduck_rl/.venv/bin/python" $body_packages \
+    opencv-python-headless==4.11.0.86
 uv venv --python 3.12 --allow-existing "$prefix/ito-venv"
 uv pip install --python "$prefix/ito-venv/bin/python" --no-cache \
     --reinstall-package ito-driver-microduck "$source/drivers/microduck"
