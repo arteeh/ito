@@ -35,9 +35,6 @@ class Consensus:
         self.kept = 0
         self.dropped = 0
 
-    def _tensor(self, value):
-        return self.torch.as_tensor(np.asarray(value), device=self.device, dtype=self.torch.float32)
-
     def references(self, pose, views):
         chosen = list(self.recent)
         seen = {round(r[3], 4) for r in chosen}
@@ -57,44 +54,53 @@ class Consensus:
     def fuse(self, depth, pose, intrinsics, captured, views):
         """depth (H x W metres, 0: none) of a camera at pose (map-from-camera, Ito axes) ->
         (depth agreed by NEEDED other views, 0 elsewhere; agreeing views per pixel)."""
-        torch = self.torch
         references = self.references(pose, views)
         self.recent.append((depth.copy(), pose.copy(), intrinsics, captured))
-        height, width = depth.shape
-        fx, fy, cx, cy = intrinsics
-        d = self._tensor(depth)
-        v, u = torch.meshgrid(
-            torch.arange(height, device=self.device, dtype=torch.float32),
-            torch.arange(width, device=self.device, dtype=torch.float32),
-            indexing="ij",
-        )
-        local = torch.stack(((u - cx) / fx * d, -(v - cy) / fy * d, -d), -1)
-        rotation, origin = self._tensor(pose[:3, :3]), self._tensor(pose[:3, 3])
-        world = local @ rotation.T + origin
-        total = d.clone()
-        agree = torch.zeros_like(d)
-        against = torch.zeros_like(d)
-        for ref_depth, ref_pose, ref_intrinsics, _ in references:
-            rh, rw = ref_depth.shape
-            rfx, rfy, rcx, rcy = ref_intrinsics
-            seen = (world - self._tensor(ref_pose[:3, 3])) @ self._tensor(ref_pose[:3, :3])
-            z = -seen[..., 2]
-            safe = z.clamp_min(1e-3)
-            ru = torch.round(rcx + rfx * seen[..., 0] / safe).long()
-            rv = torch.round(rcy - rfy * seen[..., 1] / safe).long()
-            inside = (z > 0.01) & (ru >= 0) & (ru < rw) & (rv >= 0) & (rv < rh) & (d > 0)
-            found = torch.zeros_like(d)
-            found[inside] = self._tensor(ref_depth)[rv[inside], ru[inside]]
-            known = inside & (found > 0)
-            relative = (found - z) / safe
-            ok = known & (relative.abs() < AGREE)
-            # The reference's surface, moved along this camera's ray by the same share.
-            total += torch.where(ok, d * found / safe, 0)
-            agree += ok
-            against += known & (relative > AGREE)
-        keep = (agree >= NEEDED) & (against < agree) & (d > 0)
-        fused = torch.where(keep, total / (agree + 1), 0)
-        kept = int(keep.sum())
+        fused, agree = agreed(depth, pose, intrinsics, references, self.torch, self.device)
+        kept = int((fused > 0).sum())
         self.kept += kept
-        self.dropped += int((d > 0).sum()) - kept
-        return fused.cpu().numpy(), agree.cpu().numpy()
+        self.dropped += int((depth > 0).sum()) - kept
+        return fused, agree
+
+
+def agreed(depth, pose, intrinsics, references, torch, device="cuda"):
+    """depth where NEEDED of references (depth, pose, intrinsics, ...) see the same surface,
+    as the mean of the agreeing views' depths (0 elsewhere), and the agreeing count."""
+
+    def tensor(value):
+        return torch.as_tensor(np.asarray(value), device=device, dtype=torch.float32)
+
+    height, width = depth.shape
+    fx, fy, cx, cy = intrinsics
+    d = tensor(depth)
+    v, u = torch.meshgrid(
+        torch.arange(height, device=device, dtype=torch.float32),
+        torch.arange(width, device=device, dtype=torch.float32),
+        indexing="ij",
+    )
+    local = torch.stack(((u - cx) / fx * d, -(v - cy) / fy * d, -d), -1)
+    world = local @ tensor(pose[:3, :3]).T + tensor(pose[:3, 3])
+    total = d.clone()
+    agree = torch.zeros_like(d)
+    against = torch.zeros_like(d)
+    for ref_depth, ref_pose, ref_intrinsics, *_ in references:
+        rh, rw = ref_depth.shape
+        rfx, rfy, rcx, rcy = ref_intrinsics
+        seen = (world - tensor(ref_pose[:3, 3])) @ tensor(ref_pose[:3, :3])
+        z = -seen[..., 2]
+        safe = z.clamp_min(1e-3)
+        ru = torch.round(rcx + rfx * seen[..., 0] / safe).long()
+        rv = torch.round(rcy - rfy * seen[..., 1] / safe).long()
+        inside = (z > 0.01) & (ru >= 0) & (ru < rw) & (rv >= 0) & (rv < rh) & (d > 0)
+        found = torch.zeros_like(d)
+        found[inside] = tensor(ref_depth)[rv[inside], ru[inside]]
+        known = inside & (found > 0)
+        relative = (found - z) / safe
+        ok = known & (relative.abs() < AGREE)
+        # The reference's surface, moved along this camera's ray by the same share.
+        total += torch.where(ok, d * found / safe, 0)
+        agree += ok
+        against += known & (relative > AGREE)
+    keep = (agree >= NEEDED) & (against < agree) & (d > 0)
+    fused = torch.where(keep, total / (agree + 1), 0)
+    return fused.cpu().numpy(), agree.cpu().numpy()

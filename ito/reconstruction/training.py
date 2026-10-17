@@ -36,6 +36,11 @@ ALIGN_STEPS = 25
 ALIGN_RATES = (1.5e-3, 1.5e-3)  # radians, metres per Adam step at first, decaying tenfold
 ALIGN_COVERED = 0.3  # of the view the map must cover to align it
 ALIGN_LIMIT = (math.radians(3), 0.05)  # a larger correction is a mismatch, not an alignment
+# Holes: where the map shows nothing in a view, its own depth from before the views agreed is
+# checked again against every retained view that now faces it (later ones too), and what
+# they agree on is seeded. A first glimpse that the next frame missed is not lost for good.
+FILL_REFERENCES = 6
+FILL_ALPHA = 0.5
 
 
 def ssim(a, b, torch):
@@ -73,6 +78,7 @@ class ViewFit:
         self.grown = 0
         self.pruned = 0
         self.aligned = 0
+        self.filled = 0
 
     def tensor(self, value, dtype=None):
         torch = self.torch
@@ -106,6 +112,8 @@ class ViewFit:
         if not b.views or not b.count:
             return False
         view = self.choose()
+        if view.raw_depth is not None and len(b.views) > view.filled:
+            self.fill(view)
         targets = [view, *self.partners(view)]
         chosen = []
         for observation in targets:
@@ -185,6 +193,50 @@ class ViewFit:
                 ),
             )
         return True
+
+    def fill(self, view):
+        """Seed what the retained views now agree on where the map shows nothing."""
+        from .consensus import agreed
+
+        b, torch = self.backend, self.torch
+        view.filled = len(b.views)
+        pose = view.fitting_pose if view.fitting_pose is not None else view.pose
+        scored = []
+        for other in b.views:
+            if other is view:
+                continue
+            o = other.fitting_pose if other.fitting_pose is not None else other.pose
+            cosine = float(o[:3, 2] @ pose[:3, 2])
+            distance = float(np.linalg.norm(o[:3, 3] - pose[:3, 3]))
+            if cosine > 0.5 and distance < 1.5:
+                scored.append((1 - cosine + 0.2 * distance, other))
+        scored.sort(key=lambda item: item[0])
+        references = [
+            (
+                o.raw_depth if o.raw_depth is not None else o.depth,
+                o.fitting_pose if o.fitting_pose is not None else o.pose,
+                o.intrinsics,
+            )
+            for _, o in scored[:FILL_REFERENCES]
+        ]
+        if not references:
+            return
+        with b.gpu_chunk("consensus"):
+            depth, _ = agreed(view.raw_depth, pose, view.intrinsics, references, torch)
+        shape = depth.shape
+        ids, z, u, v = b.centers(pose, view.intrinsics, shape)
+        alpha, _, _ = b.render(pose, view.intrinsics, shape, ids, z, u, v)
+        holes = (alpha < FILL_ALPHA) & (depth > 0)
+        if not holes.any():
+            return
+        fx, fy, cx, cy = view.intrinsics
+        rows, columns = np.mgrid[: shape[0], : shape[1]]
+        points = np.stack(
+            ((columns - cx) / fx * depth, -(rows - cy) / fy * depth, -depth), -1
+        ).astype(np.float32)
+        before = b.count
+        b.seed(points, view.image, depth, holes, pose, view.intrinsics, view.captured)
+        self.filled += b.count - before
 
     def moved(self, delta):
         """4x4 camera-frame motion of a (rotation vector, translation) delta."""

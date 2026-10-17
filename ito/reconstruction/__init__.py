@@ -295,6 +295,17 @@ def _run(recon):
                         blurred=getattr(backend, "blurred", None),
                         depth_scales=getattr(backend, "depth_scales", None),
                         on_map=getattr(backend, "aligned", None),
+                        training={
+                            k: getattr(backend.fitter, k)
+                            for k in ("units", "grown", "pruned", "aligned", "filled")
+                            if hasattr(backend.fitter, k)
+                        }
+                        if getattr(backend, "fitter", None) is not None
+                        else None,
+                        consensus_kept=getattr(getattr(backend, "consensus", None), "kept", None),
+                        consensus_dropped=getattr(
+                            getattr(backend, "consensus", None), "dropped", None
+                        ),
                         frame_delay_ms=round(backend.graph.td * 1000, 1)
                         if hasattr(backend, "graph")
                         else None,

@@ -59,6 +59,9 @@ class Observation:
     # The camera's own frame at a finer grid than image, for photometric training only.
     photo: np.ndarray | None = None
     photo_intrinsics: tuple | None = None
+    # The network's own depth before views agreed on it: later views may yet confirm it.
+    raw_depth: np.ndarray | None = None
+    filled: int = 0  # retained views there were when training last filled this view's holes
 
 
 class GaussianBackend(GaussianSlots):
@@ -235,6 +238,7 @@ class GaussianBackend(GaussianSlots):
         node=None,
         registered=True,
         photo=None,
+        raw_depth=None,
     ):
         """registered: the camera pose was aligned to retained views (or is given).
         photo: (the camera's frame at a finer grid, its intrinsics) for training."""
@@ -314,7 +318,7 @@ class GaussianBackend(GaussianSlots):
         farthest = maximum_filter(depth, size=3)
         missing &= ~((depth > closest * EDGE) & (depth * EDGE < farthest))
         self.seed(points, image, depth, missing, camera, intrinsics, now)
-        self.keep_view(camera, image, depth, intrinsics, node, photo)
+        self.keep_view(camera, image, depth, intrinsics, node, photo, raw_depth)
 
     def seed(self, points, image, depth, missing, camera, intrinsics, now):
         height, width = depth.shape
@@ -410,7 +414,7 @@ class GaussianBackend(GaussianSlots):
         owners = set(self.owners[self.keys >= 0])
         self.anchors = {k: v for k, v in self.anchors.items() if k in owners}
 
-    def keep_view(self, camera, image, depth, intrinsics, node, photo=None):
+    def keep_view(self, camera, image, depth, intrinsics, node, photo=None, raw_depth=None):
         if self.views and self.source_captured - self.views[-1].captured < 0.5:
             return
         self.views.append(
@@ -427,6 +431,7 @@ class GaussianBackend(GaussianSlots):
                 fitting_pose=camera.copy(),
                 photo=None if photo is None else photo[0],
                 photo_intrinsics=None if photo is None else photo[1],
+                raw_depth=None if raw_depth is None else raw_depth.copy(),
             )
         )
         if len(self.views) > MAX_VIEWS:

@@ -431,6 +431,7 @@ class SLAMBackend(GaussianBackend):
             or self.placed is not None
             or (self.truth is not None and self.truth[0] is not None),
             photo=photo,
+            raw_depth=raw_depth if self.consensus is not None else None,
         )
 
 
