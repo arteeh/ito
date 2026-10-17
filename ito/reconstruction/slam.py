@@ -45,6 +45,10 @@ TRACKER = os.environ.get("ITO_TRACKER", "mast3r")
 DEPTH = "da3" if TRACKER == "map" else os.environ.get("ITO_DEPTH", "mast3r")
 # Map only depth another view agrees on (consensus.py); ITO_CONSENSUS=0 maps every guess.
 CONSENSUS = os.environ.get("ITO_CONSENSUS", "0") != "0"
+# Map at DETAIL times the network's resolution (512 across), colour from the camera's own
+# frame: the network's depth, interpolated within surfaces, carries finer splats.
+DETAIL = float(os.environ.get("ITO_DETAIL", "1"))
+EDGE_RATIO = 1.08  # depth ratio across a 2x2 patch that marks a silhouette, not a surface
 
 
 class SLAMBackend(GaussianBackend):
@@ -242,7 +246,7 @@ class SLAMBackend(GaussianBackend):
                 self.aligned += 1
         pose = self._publish(node)
         if cloud is not None:
-            self.place(cloud, pose, now + clock.now() - started, node=node)
+            self.place(cloud, pose, now + clock.now() - started, node=node, rgb=rgb)
 
     def consistent(self, cloud, pose, exposure):
         """The cloud with depth seen together with the retained views nearest it. Its scale
@@ -333,28 +337,70 @@ class SLAMBackend(GaussianBackend):
         )
         return pose
 
-    def place(self, cloud, pose, when, *, node):
+    def finer(self, points, valid, rgb, intrinsics):
+        """points (camera frame), valid, the camera's frame and the intrinsics of the
+        network's grid -> the same at DETAIL times its resolution, colour from the frame."""
+        import cv2
+
+        height, width = valid.shape
+        rows, columns = round(height * DETAIL), round(width * DETAIL)
+        fx, fy, cx, cy = intrinsics
+        fine = (fx * DETAIL, fy * DETAIL, (cx + 0.5) * DETAIL - 0.5, (cy + 0.5) * DETAIL - 0.5)
+        key = (rows, columns, intrinsics, rgb.shape)
+        if getattr(self, "_finer_key", None) != key:
+            i = self.intrinsics
+            v, u = np.mgrid[:rows, :columns].astype(np.float32)
+            self._finer_maps = (
+                ((u - fine[2]) / fine[0] * i.fx + i.cx).astype(np.float32),
+                ((v - fine[3]) / fine[1] * i.fy + i.cy).astype(np.float32),
+            )
+            self._finer_key = key
+        image = cv2.remap(rgb, *self._finer_maps, cv2.INTER_LINEAR)
+        depth = np.where(valid, -points[..., 2], 0).astype(np.float32)
+        smooth = cv2.resize(depth, (columns, rows), interpolation=cv2.INTER_LINEAR)
+        nearest = cv2.resize(depth, (columns, rows), interpolation=cv2.INTER_NEAREST)
+        top = cv2.resize(
+            cv2.dilate(depth, np.ones((2, 2), np.uint8)), (columns, rows), cv2.INTER_NEAREST
+        )
+        low = np.where(depth > 0, depth, np.inf)
+        bottom = cv2.resize(
+            cv2.erode(low, np.ones((2, 2), np.uint8)), (columns, rows), cv2.INTER_NEAREST
+        )
+        # Interpolate within a surface; across a silhouette keep the nearest sample's depth.
+        within = np.isfinite(bottom) & (top <= bottom * EDGE_RATIO)
+        depth = np.where(within, smooth, nearest)
+        fine_valid = depth > 0
+        v, u = np.mgrid[:rows, :columns].astype(np.float32)
+        points = np.stack(
+            ((u - fine[2]) / fine[0] * depth, -(v - fine[3]) / fine[1] * depth, -depth), -1
+        )
+        return points, image, fine_valid, fine
+
+    def place(self, cloud, pose, when, *, node, rgb=None):
         height, width = cloud.shape
         points = cloud.points.detach().float().cpu().numpy().reshape(height, width, 3)
         image = cloud.colors.detach().cpu().numpy().reshape(height, width, 3)
+        valid = cloud.valid.detach().cpu().numpy().reshape(height, width)
+        intrinsics = cloud.intrinsics
+        if DETAIL > 1 and rgb is not None:
+            points, image, valid, intrinsics = self.finer(points, valid, rgb, intrinsics)
         self.observation_estimate = pose
         self.observation_map_estimate = self.registration.map_from_estimator @ pose
         mapped, scale = self.registration.align(
-            image, -points[..., 2], pose, cloud.intrinsics, self.views
+            image, -points[..., 2], pose, intrinsics, self.views
         )
         if self.truth is not None and self.truth[0] is not None:
             # Registration only rescales a true pose's depth; it never moves it.
             mapped = pose
         elif self.placed is not None:
             mapped, scale = self.placed, 1.0
-        valid = cloud.valid.detach().cpu().numpy().reshape(height, width)
         if self.truth is not None and self.truth[2] is not None:
             scale = 1.0
         elif self.consensus is not None:
             depth = np.where(valid, -points[..., 2] * scale, 0).astype(np.float32)
             with self.gpu_chunk("consensus"):
                 agreed, _ = self.consensus.fuse(
-                    depth, mapped, cloud.intrinsics, self.source_captured, self.views
+                    depth, mapped, intrinsics, self.source_captured, self.views
                 )
             points = points * (agreed / np.maximum(-points[..., 2], 1e-6))[..., None]
             valid, scale = agreed > 0, 1.0
@@ -366,7 +412,7 @@ class SLAMBackend(GaussianBackend):
             image,
             valid,
             mapped,
-            cloud.intrinsics,
+            intrinsics,
             when,
             node=node,
             registered=self.registration.matched
