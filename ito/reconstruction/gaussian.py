@@ -2,19 +2,32 @@
 
 Estimator nodes are observation provenance, never owners of surface lifetime. Anchors
 are frozen when admitted; forgetting or correcting an estimator node cannot move a room.
+
+A new observation only adds Gaussians where the map, rendered from that view, does not
+already explain it: an uncovered pixel, or a surface clearly in front of the map's. Map
+Gaussians the view sees through gather contradictions and retire after repeated
+evidence; Gaussians at the observed surface gather support. A revisit therefore refines
+the room it finds instead of laying a second one over it.
 """
 
 from dataclasses import dataclass
 from importlib.util import find_spec
 
 import numpy as np
-from scipy.ndimage import distance_transform_edt, median_filter
+from scipy.ndimage import binary_opening, distance_transform_edt, median_filter, minimum_filter
 from scipy.spatial.transform import Rotation
 
 from .slots import KEEP, GaussianSlots
 
 C0 = 0.28209479177387814
 MAX_VIEWS = 24
+DEPTH_TOLERANCE = 0.08  # Of depth: two estimates closer than this are one surface.
+COVERED = 0.85  # Rendered opacity above which a pixel is explained by the map.
+BLEND = 0.2  # Colour difference below which a view's light refines a surface's colour.
+BLENDED = 8192  # At most this many colour refinements per observation.
+MAX_ELONGATION = 10.0  # Longest seed axis over its pixel footprint (grazing floors).
+COARSE = 4.5  # Pixels: a mapped Gaussian this large is refined by the view (seeds are ~2).
+AXES = np.diag([1.0, -1.0, -1.0, 1.0])  # Ito camera (-Z forward, +Y up) to OpenCV.
 
 
 @dataclass
@@ -27,12 +40,12 @@ class Observation:
     captured: float
     sequence: int
     steps: int = 0
-    exposure: np.ndarray | None = None
     features: tuple | None = None
     estimated_pose: np.ndarray | None = None
     estimated_map_pose: np.ndarray | None = None
     fitting_pose: np.ndarray | None = None
     refitting: bool = False
+    tile_steps: np.ndarray | None = None
 
 
 class GaussianBackend(GaussianSlots):
@@ -47,7 +60,6 @@ class GaussianBackend(GaussianSlots):
         self.fitter = None
         self.refits = 0
         self.pending_fit = None
-        self.fusion_cursor = 0
         self.can_fit = (
             self.xp is not np and find_spec("torch") is not None and find_spec("gsplat") is not None
         )
@@ -79,6 +91,7 @@ class GaussianBackend(GaussianSlots):
             view.fitting_pose = delta @ fitting
             if angle * view.intrinsics[0] > 2 or np.linalg.norm(delta[:3, 3]) > 0.01:
                 view.steps = 0
+                view.tile_steps = None
                 view.refitting = True
                 self.refits += 1
             changed = True
@@ -86,31 +99,29 @@ class GaussianBackend(GaussianSlots):
             self.recover()
 
     def fit(self):
+        """One bounded training step; False when there was nothing to train."""
         if not self.can_fit or not self.views:
-            return
+            return False
         if self.fitter is None:
             from .fitting import LocalFit
 
             self.fitter = LocalFit(self)
-        self.fitter.step()
-        if self.pending_fit is not None and self.fitter.active is not None:
-            self.fitter.step()
+        return self.fitter.step()
 
     def recover(self):
         if self.fitter is not None:
             self.fitter.active = None
 
     def victims(self, candidates, count):
-        # Redundant/unsupported records go before useful old surfaces, including when
-        # the redundant record was just admitted. Age breaks ties only in useful data.
+        # Surfaces no view has shown in front, or that the views keep contradicting, go
+        # before useful old ones, however new they are. Age orders only useful data.
         useless = (
-            (self.contribution[candidates] < 0.25)
-            | ((self.support[candidates] < 2) & (self.contradictions[candidates] > 0))
-            | ((self.support[candidates] < 3) & (self.uncertainty[candidates] > 0.2))
-            | (self.records[candidates, 0, 3] < 0.01)
+            ((self.contribution[candidates] < 2) & (self.support[candidates] < 2))
+            | (self.contradictions[candidates] > self.support[candidates])
+            | (self.records[candidates, 0, 3] < 0.02)
         )
         weak = candidates[useless]
-        order = np.lexsort((self.support[weak], -self.uncertainty[weak], self.contribution[weak]))
+        order = np.lexsort((self.seen[weak], self.support[weak]))
         first = weak[order[:count]]
         return np.concatenate((first, self.oldest(candidates[~useless], count - len(first))))
 
@@ -122,65 +133,79 @@ class GaussianBackend(GaussianSlots):
             points, rgb, np.isfinite(depth) & (depth > 0), camera, (i.fx, i.fy, i.cx, i.cy), now
         )
 
-    def project(self, camera, intrinsics, shape):
+    def centers(self, camera, intrinsics, shape):
+        """Live Gaussians whose footprint reaches this view: ids, depth, pixel."""
         fx, fy, cx, cy = intrinsics
         height, width = shape
         live = np.flatnonzero((self.keys >= 0) & ~self.retiring)
         local = (self.records[live, 0, :3] - camera[:3, 3]) @ camera[:3, :3]
         z = -local[:, 2]
         safe = np.maximum(z, 0.01)
-        u = np.rint(cx + fx * local[:, 0] / safe).astype(int)
-        v = np.rint(cy - fy * local[:, 1] / safe).astype(int)
-        inside = (z > 0.01) & (u >= 0) & (u < width) & (v >= 0) & (v < height)
-        live, z, u, v = live[inside], z[inside], u[inside], v[inside]
-        local = local[inside]
-        pixels = v * width + u
-        nearest_depth = np.full(height * width, np.inf, z.dtype)
-        np.minimum.at(nearest_depth, pixels, z)
-        winners = np.flatnonzero(z == nearest_depth[pixels])
-        surface = np.full(height * width, -1, np.int64)
-        surface[pixels[winners]] = live[winners]
-        surface = surface.reshape(height, width)
-        if len(winners):
-            records = self.records[live[winners]]
-            centers = local[winners]
-            depths = z[winners]
-            jacobian = (
-                np.stack(
-                    (
-                        (camera[:3, 0] + centers[:, 0:1] / depths[:, None] * camera[:3, 2]) * fx,
-                        (camera[:3, 1] + centers[:, 1:2] / depths[:, None] * camera[:3, 2]) * fy,
-                    ),
-                    1,
-                )
-                / depths[:, None, None]
-            )
-            rotations = Rotation.from_quat(records[:, 2, [1, 2, 3, 0]]).as_matrix()
-            projected = (jacobian @ rotations) * records[:, None, 1, :3]
-            covariance = projected @ projected.transpose(0, 2, 1)
-            a, b, c = covariance[:, 0, 0], covariance[:, 0, 1], covariance[:, 1, 1]
-            minor = np.maximum(0, (a + c - np.sqrt((a - c) ** 2 + 4 * b * b)) / 2)
-            radius = np.zeros(height * width, np.float32)
-            radius[pixels[winners]] = np.clip(1.5 * np.sqrt(minor), 1.5, 3)
-            radius = radius.reshape(height, width)
-            distance, nearest = distance_transform_edt(surface < 0, return_indices=True)
-            surface = surface[tuple(nearest)]
-            surface[distance > radius[tuple(nearest)]] = -1
-        return surface, live, z, u, v
+        u = cx + fx * local[:, 0] / safe
+        v = cy - fy * local[:, 1] / safe
+        reach = 3 * fx * self.records[live, 1, :3].max(-1) / safe
+        inside = (z > 0.01) & (u > -reach) & (u < width + reach)
+        inside &= (v > -reach) & (v < height + reach)
+        return live[inside], z[inside], u[inside], v[inside]
 
-    def observe(
-        self,
-        points,
-        image,
-        valid,
-        camera,
-        intrinsics,
-        now,
-        *,
-        node=None,
-        confidence=None,
-        registered=True,
-    ):
+    def render(self, camera, intrinsics, shape, ids, z, u, v):
+        """The map's opacity, depth and Gaussian width (shorter axis) in this view's pixels."""
+        height, width = shape
+        size = intrinsics[0] * self.records[ids, 1, :2].min(-1) / z
+        if self.can_fit and len(ids):
+            import torch
+            from gsplat import rasterization
+
+            fx, fy, cx, cy = intrinsics
+            with self.gpu_chunk("coverage"), torch.no_grad():
+                records = torch.as_tensor(self.records[ids], device="cuda")
+                view = torch.as_tensor(np.linalg.inv(camera @ AXES), device="cuda")
+                calibration = torch.tensor(
+                    [[fx, 0, cx], [0, fy, cy], [0, 0, 1]], device="cuda", dtype=torch.float32
+                )
+                image, alpha, _ = rasterization(
+                    means=records[:, 0, :3],
+                    quats=records[:, 2],
+                    scales=records[:, 1, :3],
+                    opacities=records[:, 0, 3],
+                    colors=torch.as_tensor(size, device="cuda", dtype=torch.float32)[:, None],
+                    viewmats=view.float()[None],
+                    Ks=calibration[None],
+                    width=width,
+                    height=height,
+                    near_plane=0.01,
+                    far_plane=1000,
+                    render_mode="RGB+ED",
+                )
+                alpha = alpha[0, ..., 0].cpu().numpy()
+                image = image[0].cpu().numpy()
+            seen = alpha > 0.01
+            pixels = np.where(seen, image[..., 0] / np.maximum(alpha, 0.01), 0)
+            return alpha, np.where(seen, image[..., 1], 0), pixels
+        if not len(ids):
+            return (np.zeros(shape, np.float32),) * 3
+        # Without CUDA: nearest centre per pixel, spread over its projected footprint.
+        u, v = np.rint(u).astype(int), np.rint(v).astype(int)
+        inside = (u >= 0) & (u < width) & (v >= 0) & (v < height)
+        ids, z, u, v, size = ids[inside], z[inside], u[inside], v[inside], size[inside]
+        pixels = v * width + u
+        nearest = np.full(height * width, np.inf, np.float32)
+        np.minimum.at(nearest, pixels, z)
+        front = z == nearest[pixels]
+        pixels, size = pixels[front], size[front]
+        sizes = np.zeros(height * width, np.float32)
+        sizes[pixels] = size
+        nearest, sizes = nearest.reshape(shape), sizes.reshape(shape)
+        distance, index = distance_transform_edt(~np.isfinite(nearest), return_indices=True)
+        index = tuple(index)
+        covered = distance <= np.clip(sizes[index], 1, 3)
+        return (
+            covered.astype(np.float32),
+            np.where(covered, nearest[index], 0),
+            np.where(covered, sizes[index], 0),
+        )
+
+    def observe(self, points, image, valid, camera, intrinsics, now, *, node=None):
         points = np.asarray(points, np.float32)
         height, width = image.shape[:2]
         points = points.reshape(height, width, 3)
@@ -188,137 +213,72 @@ class GaussianBackend(GaussianSlots):
             valid.reshape(height, width) & np.isfinite(points).all(-1) & (points[..., 2] < -0.01)
         )
         depth = np.where(valid, -points[..., 2], 0)
-        surface, live, z, u, v = self.project(camera, intrinsics, depth.shape)
-        if len(live):
-            observed = depth[v, u]
-            tolerance = np.maximum(0.05 * z, 2 * self.records[live, 1, :3].max(-1))
-            depth_agreement = (observed > 0) & (np.abs(observed - z) <= tolerance)
-            agreement = depth_agreement.copy()
-            peers = surface[v, u]
-            agreement &= peers == live
-            color_error = np.abs(
-                self.records[live, 3, :3] * C0 + 0.5 - image[v, u].astype(np.float32) / 255
-            ).max(-1)
-            agreement &= color_error < 0.15
-            supported = live[agreement]
-            self.support[supported] += 1
+        ids, z, u, v = self.centers(camera, intrinsics, depth.shape)
+        alpha, mapped, size = self.render(camera, intrinsics, depth.shape, ids, z, u, v)
+        # The same surface drawn with Gaussians much larger than this view's pixels: a
+        # closer view replaces them with finer ones. Resolution only ever increases.
+        coarse = (alpha >= COVERED) & (size > COARSE)
+        coarse &= valid & (np.abs(depth - mapped) <= DEPTH_TOLERANCE * mapped)
+        if len(ids):
+            pu, pv = np.rint(u).astype(int), np.rint(v).astype(int)
+            on = (pu >= 0) & (pu < width) & (pv >= 0) & (pv < height)
+            ids, z, pu, pv = ids[on], z[on], pu[on], pv[on]
+            tolerance = DEPTH_TOLERANCE * z + 2 * self.records[ids, 1, :3].max(-1)
+            observed = depth[pv, pu]
+            front = mapped[pv, pu]
+            # In front of or at the map's rendered surface: this view shows it.
+            shown = (front <= 0) | (z <= front + tolerance)
+            agree = shown & (observed > 0) & (np.abs(observed - z) <= tolerance)
+            # Seen through only if no pixel around its centre sees it: a silhouette a
+            # pixel off is not free space.
+            nearest = minimum_filter(np.where(valid, depth, np.inf), size=3)[pv, pu]
+            through = np.isfinite(nearest) & (nearest > z + tolerance)
+            supported = ids[agree]
+            self.support[supported] = np.minimum(self.support[supported] + 1, 1000)
             self.seen[supported] = now
-            self.uncertainty[supported] = 0.9 * self.uncertainty[supported] + 0.1 * (
-                np.maximum(
-                    np.abs(observed[agreement] - z[agreement]) / np.maximum(z[agreement], 0.01),
-                    color_error[agreement],
-                )
-            )
-            self.contradictions[live[depth_agreement]] = 0
-            contradicted = live[
-                (observed > z + tolerance * np.where(self.support[live] >= 20, 2, 1))
-                & (observed > 0)
-            ]
+            self.contradictions[supported] = 0
+            error = np.abs(observed[agree] - z[agree]) / z[agree]
+            self.uncertainty[supported] += 0.1 * (error - self.uncertainty[supported])
+            self.contribution[ids[shown & (observed > 0)]] += 1
+            # Light differs between views (exposure, a lamp on the camera): average it
+            # into surfaces that already match, never across texture a view misplaces.
+            seen = image[pv[agree], pu[agree]].astype(np.float32) / 255
+            color = self.records[supported, 3, :3] * C0 + 0.5
+            change = np.abs(seen - color).max(-1)
+            near = np.flatnonzero((change < BLEND) & (change > 0.01))
+            near = near[np.argsort(-change[near])[:BLENDED]]
+            blended = supported[near]
+            weight = 1 / np.minimum(self.support[blended], 10)[:, None]
+            color = color[near] + weight * (seen[near] - color[near])
+            self.records[blended, 3, :3] = (color - 0.5) / C0
+            self.dirty[blended] = True
+            self.captures[blended] = self.source_captured
+            self.sequences[blended] = self.source_sequence
+            contradicted = ids[through]
             self.contradictions[contradicted] = np.minimum(
                 self.contradictions[contradicted].astype(int) + 1, 255
             )
-            gone = contradicted[self.contradictions[contradicted] >= 4]
-            if registered:
-                exposed = depth_agreement & (peers == live)
-                visible_ids = live[exposed]
-                self.uncertainty[visible_ids] = (
-                    0.9 * self.uncertainty[visible_ids] + 0.1 * color_error[exposed]
-                )
-                wrong = live[exposed & (color_error > 0.25)]
-                self.photo_contradictions[wrong] = np.minimum(
-                    self.photo_contradictions[wrong].astype(int) + 1, 255
-                )
-                self.photo_contradictions[live[exposed & (color_error < 0.15)]] = 0
-                rejected = live[
-                    self.photo_contradictions[live] >= np.where(self.support[live] >= 20, 8, 4)
-                ]
-                self.contribution[rejected] = 0
-                gone = np.union1d(gone, rejected)
-            self.captures[gone] = self.source_captured
-            self.retire(gone)
-            winners, counts = np.unique(surface[surface >= 0], return_counts=True)
-            # Keep evidence from other views: an occluded background is useful on
-            # return even when its center loses today's depth buffer.
-            self.contribution[winners] = np.maximum(self.contribution[winners], counts)
-            # Contributions guide pressure pruning. Two centers sharing a pixel are
-            # not proof of redundancy: their Gaussian footprints can cover different edges.
-            own, peer = self.records[live], self.records[peers]
-            peer_local = (peer[:, 0, :3] - camera[:3, 3]) @ camera[:3, :3]
-            peer_z = np.maximum(-peer_local[:, 2], 0.01)
-            own_local = (own[:, 0, :3] - camera[:3, 3]) @ camera[:3, :3]
-            fx, fy, _, _ = intrinsics
-            separation = own_local[:, :2] / z[:, None] - peer_local[:, :2] / peer_z[:, None]
-            separation *= [fx, fy]
-            redundant = (peers != live) & (peers >= 0)
-            redundant &= np.linalg.norm(separation, axis=1) < 0.5
-            redundant &= (np.abs(z - peer_z) < 0.05 * z) & depth_agreement
-            redundant &= np.abs(own[:, 3, :3] - peer[:, 3, :3]).max(-1) * C0 < 0.02
-            redundant &= (peer[:, 0, 3] > 0.9) & (own[:, 0, 3] > 0.9)
-            redundant &= (
-                peer[:, 1, :2] / peer_z[:, None] >= 0.95 * own[:, 1, :2] / z[:, None]
-            ).all(-1)
-            duplicates = live[redundant]
-            self.redundancy[duplicates] = np.minimum(
-                self.redundancy[duplicates].astype(int) + 1, 255
-            )
-            self.redundancy[live[peers == live]] = 0
-            duplicates = live[self.redundancy[live] >= 4]
-            self.contribution[duplicates] = 0
-            self.captures[duplicates] = self.source_captured
-            self.retire(duplicates)
-            surface[np.isin(surface, gone)] = -1
-            # Fuse only the frontmost matched surface. A bounded radial correction
-            # refines depth without sliding a sample across the current image. Colour
-            # updates fit the observed radiance; occluded background keeps its evidence.
-            visible = (peers == live) & (observed > 0) & ~self.retiring[live]
-            visible &= np.abs(observed - z) <= 3 * tolerance
-            visible &= color_error < 0.15
-            selected = np.flatnonzero(visible)
-            if len(selected) > 4096:
-                selected = selected[(np.arange(4096) + self.fusion_cursor) % len(selected)]
-                self.fusion_cursor += len(selected)
-            matched = live[selected]
-            if len(matched):
-                fx, fy, cx, cy = intrinsics
-                local = (self.records[matched, 0, :3] - camera[:3, 3]) @ camera[:3, :3]
-                mz = -local[:, 2]
-                pu = cx + fx * local[:, 0] / mz
-                pv = cy - fy * local[:, 1] / mz
-                from scipy.ndimage import map_coordinates
+            limit = np.where(self.support[contradicted] >= 10, 6, 3)
+            gone = contradicted[self.contradictions[contradicted] >= limit]
+            own = intrinsics[0] * self.records[ids, 1, :2].min(-1) / z
+            # Only a Gaussian whose whole footprint this view refines; a larger one
+            # would leave a hole where it reached beyond the refined pixels.
+            if coarse.any():
+                inner = distance_transform_edt(coarse)[pv, pu] > 2 * own
+                gone = np.union1d(gone, ids[agree & inner & (own > COARSE)])
+            if len(gone):
+                self.captures[gone] = self.source_captured
+                self.retire(gone)
+        tolerance = DEPTH_TOLERANCE * mapped
+        ahead = valid & (alpha >= COVERED) & (depth < mapped - tolerance)
+        # A sliver beside a silhouette is misalignment, not a new surface in front.
+        ahead = binary_opening(ahead, np.ones((3, 3), bool))
+        missing = valid & ((alpha < COVERED) | ahead | coarse)
+        self.seed(points, image, depth, missing, camera, intrinsics, now)
+        self.keep_view(camera, image, depth, intrinsics, node)
 
-                rgb = (
-                    np.stack(
-                        [
-                            map_coordinates(
-                                image[..., channel].astype(np.float32),
-                                [pv, pu],
-                                order=1,
-                                mode="nearest",
-                                prefilter=False,
-                            )
-                            for channel in range(3)
-                        ],
-                        -1,
-                    )
-                    / 255
-                )
-                weight = 1 / np.minimum(self.support[matched] + 1, 12)
-                self.records[matched, 3, :3] += weight[:, None] * (
-                    (rgb - 0.5) / C0 - self.records[matched, 3, :3]
-                )
-                offset = np.clip((observed[selected] - mz) * 0.05, -mz / fx * 0.1, mz / fx * 0.1)
-                ray = self.records[matched, 0, :3] - camera[:3, 3]
-                self.records[matched, 0, :3] += ray * (offset / mz)[:, None]
-                self.dirty[matched] = True
-                self.captures[matched] = self.source_captured
-                self.sequences[matched] = self.source_sequence
-                # Cancel a private fit whose base records have just received evidence.
-                self.recover()
-        covered = surface >= 0
-        mapped_depth = np.zeros_like(depth)
-        centers = self.records[surface[covered], 0, :3] - camera[:3, 3]
-        mapped_depth[covered] = -(centers @ camera[:3, 2])
-        missing = valid & ((surface < 0) | (depth < 0.8 * mapped_depth))
+    def seed(self, points, image, depth, missing, camera, intrinsics, now):
+        height, width = depth.shape
         # A three-pixel lattice has a calibrated footprint; colour edges keep one-pixel
         # samples. Surface tangents follow depth instead of making camera-facing discs.
         edge = np.zeros(depth.shape, bool)
@@ -336,106 +296,109 @@ class GaussianBackend(GaussianSlots):
             candidates = np.flatnonzero((self.keys >= 0) & ~self.retiring)
             self.retire(self.victims(candidates, len(seeds) - count), pressure=True)
             seeds = seeds[np.linspace(0, len(seeds) - 1, count, dtype=int)]
+        if not count:
+            return
         slots = free[:count]
-        if count:
-            anchor = self.next_anchor
-            self.next_anchor += 1
-            self.anchors[anchor] = camera.copy()
-            x, y = xx.ravel()[seeds], yy.ravel()[seeds]
-            p = points[y, x]
-            fx, fy, _, _ = intrinsics
-            d = -p[:, 2]
-            # Learned depth has pixel noise; differentiating it directly makes long,
-            # nearly edge-on splats. Filter only the tangent estimate, not the centers.
-            filtered = median_filter(depth, size=5)
-            tangent_points = points * (filtered / np.maximum(depth, 1e-6))[..., None]
-            dx = (
-                tangent_points[y, np.minimum(x + 2, width - 1)]
-                - tangent_points[y, np.maximum(x - 2, 0)]
-            ) / 4
-            dy = (
-                tangent_points[np.minimum(y + 2, height - 1), x]
-                - tangent_points[np.maximum(y - 2, 0), x]
-            ) / 4
-            smooth = np.isfinite(dx).all(-1) & np.isfinite(dy).all(-1)
-            smooth &= (np.linalg.norm(dx, axis=1) < d * 0.04) & (
-                np.linalg.norm(dy, axis=1) < d * 0.04
-            )
-            dx[~smooth] = np.stack(
-                (d[~smooth] / fx, np.zeros((~smooth).sum()), np.zeros((~smooth).sum())), -1
-            )
-            dy[~smooth] = np.stack(
-                (np.zeros((~smooth).sum()), -d[~smooth] / fy, np.zeros((~smooth).sum())), -1
-            )
-            axis = dx / np.maximum(np.linalg.norm(dx, axis=1, keepdims=True), 1e-8)
-            normal = np.cross(dx, dy)
-            normal /= np.maximum(np.linalg.norm(normal, axis=1, keepdims=True), 1e-8)
-            normal = np.where(normal[:, 2:3] < 0, -normal, normal)
-            tangent = np.cross(normal, axis)
-            basis = camera[:3, :3] @ np.stack((axis, tangent, normal), -1)
-            degenerate = np.abs(np.linalg.det(basis)) < 0.5
-            basis[degenerate] = camera[:3, :3]
-            quat = Rotation.from_matrix(basis).as_quat()[:, [3, 0, 1, 2]]
-            spacing = np.where(edge[y, x], 0.7, 2.1)
-            scales = np.stack(
-                (
-                    np.linalg.norm(dx, axis=1) * spacing,
-                    np.abs((dy * tangent).sum(-1)) * spacing,
-                    d / fx * 0.4,
-                ),
-                -1,
-            )
-            records = np.zeros((count, 4, 4), np.float32)
-            records[:, 0, :3] = p @ camera[:3, :3].T + camera[:3, 3]
-            records[:, 0, 3] = 0.995
-            records[:, 1, :3] = np.maximum(scales, 0.0001)
-            records[:, 1, 3] = KEEP
-            records[:, 2] = quat
-            records[:, 3, :3] = (color[y, x] - 0.5) / C0
-            self.records[slots] = records
-            self.keys[slots] = np.arange(self.next_key, self.next_key + count)
-            self.next_key += count
-            self.owners[slots] = anchor
-            self.support[slots] = 1
-            self.uncertainty[slots] = (
-                0.1 if confidence is None else (1 - np.asarray(confidence).reshape(-1)[seeds])
-            )
-            self.contribution[slots] = 1
-            self.contradictions[slots] = 0
-            self.redundancy[slots] = 0
-            self.photo_contradictions[slots] = 0
-            self.seen[slots] = now
-            self.captures[slots] = self.source_captured
-            self.sequences[slots] = self.source_sequence
-            self.dirty[slots] = True
-        if not self.views or self.source_captured - self.views[-1].captured >= 0.5:
-            self.views.append(
-                Observation(
-                    self.source_sequence if node is None else node,
-                    camera.copy(),
-                    image.copy(),
-                    depth.copy(),
-                    intrinsics,
-                    self.source_captured,
-                    self.source_sequence,
-                    estimated_pose=getattr(self, "observation_estimate", camera).copy(),
-                    estimated_map_pose=getattr(self, "observation_map_estimate", camera).copy(),
-                    fitting_pose=camera.copy(),
-                )
-            )
-            if len(self.views) > MAX_VIEWS:
-                # Keep three recent observations plus a diverse archive. Among two
-                # redundant archived views retain the one with more fitting evidence;
-                # ties keep the older anchor instead of chaining through recent noise.
-                archived = self.views[:-3]
-                poses = np.array([v.pose for v in archived])
-                centers = poses[:, :3, 3]
-                distance = np.linalg.norm(centers[:, None] - centers[None], axis=-1)
-                directions = poses[:, :3, 2]
-                distance += 1 - np.clip(directions @ directions.T, -1, 1)
-                distance[np.tril_indices(len(poses))] = np.inf
-                a, b = np.unravel_index(np.argmin(distance), distance.shape)
-                discard = a if archived[a].steps < archived[b].steps else b
-                del self.views[discard]
+        anchor = self.next_anchor
+        self.next_anchor += 1
+        self.anchors[anchor] = camera.copy()
+        x, y = xx.ravel()[seeds], yy.ravel()[seeds]
+        p = points[y, x]
+        fx, fy, _, _ = intrinsics
+        d = -p[:, 2]
+        # Learned depth has pixel noise; differentiating it directly makes long,
+        # nearly edge-on splats. Filter only the tangent estimate, not the centers.
+        filtered = median_filter(depth, size=3)
+        tangent_points = points * (filtered / np.maximum(depth, 1e-6))[..., None]
+
+        def tangent(dx, dy):
+            # The shorter one-sided difference: never across a depth edge.
+            here = tangent_points[y, x]
+            after = tangent_points[
+                np.minimum(y + 2 * dy, height - 1), np.minimum(x + 2 * dx, width - 1)
+            ]
+            before = tangent_points[np.maximum(y - 2 * dy, 0), np.maximum(x - 2 * dx, 0)]
+            forward, backward = (after - here) / 2, (here - before) / 2
+            shorter = np.linalg.norm(forward, axis=1) < np.linalg.norm(backward, axis=1)
+            return np.where(shorter[:, None], forward, backward)
+
+        dx, dy = tangent(1, 0), tangent(0, 1)
+        footprint = d / fx
+        smooth = np.isfinite(dx).all(-1) & np.isfinite(dy).all(-1)
+        smooth &= np.linalg.norm(dx, axis=1) < MAX_ELONGATION * footprint
+        smooth &= np.linalg.norm(dy, axis=1) < MAX_ELONGATION * footprint
+        flat = ~smooth
+        dx[flat] = np.stack((footprint[flat], 0 * d[flat], 0 * d[flat]), -1)
+        dy[flat] = np.stack((0 * d[flat], -d[flat] / fy, 0 * d[flat]), -1)
+        axis = dx / np.maximum(np.linalg.norm(dx, axis=1, keepdims=True), 1e-8)
+        normal = np.cross(dx, dy)
+        normal /= np.maximum(np.linalg.norm(normal, axis=1, keepdims=True), 1e-8)
+        normal = np.where(normal[:, 2:3] < 0, -normal, normal)
+        side = np.cross(normal, axis)
+        basis = camera[:3, :3] @ np.stack((axis, side, normal), -1)
+        degenerate = np.abs(np.linalg.det(basis)) < 0.5
+        basis[degenerate] = camera[:3, :3]
+        quat = Rotation.from_matrix(basis).as_quat()[:, [3, 0, 1, 2]]
+        spacing = np.where(edge[y, x], 0.7, 2.1)
+        scales = np.stack(
+            (
+                np.linalg.norm(dx, axis=1) * spacing,
+                np.abs((dy * side).sum(-1)) * spacing,
+                footprint * 0.4,
+            ),
+            -1,
+        )
+        scales[:, :2] = np.maximum(scales[:, :2], footprint[:, None] * 0.5)
+        records = np.zeros((count, 4, 4), np.float32)
+        records[:, 0, :3] = p @ camera[:3, :3].T + camera[:3, 3]
+        records[:, 0, 3] = 0.995
+        records[:, 1, :3] = np.maximum(scales, 0.0001)
+        records[:, 1, 3] = KEEP
+        records[:, 2] = quat
+        records[:, 3, :3] = (color[y, x] - 0.5) / C0
+        self.records[slots] = records
+        self.keys[slots] = np.arange(self.next_key, self.next_key + count)
+        self.next_key += count
+        self.owners[slots] = anchor
+        self.support[slots] = 1
+        self.uncertainty[slots] = 0.1
+        self.contribution[slots] = 1
+        self.contradictions[slots] = 0
+        self.seen[slots] = now
+        self.captures[slots] = self.source_captured
+        self.sequences[slots] = self.source_sequence
+        self.dirty[slots] = True
         owners = set(self.owners[self.keys >= 0])
         self.anchors = {k: v for k, v in self.anchors.items() if k in owners}
+
+    def keep_view(self, camera, image, depth, intrinsics, node):
+        if self.views and self.source_captured - self.views[-1].captured < 0.5:
+            return
+        self.views.append(
+            Observation(
+                self.source_sequence if node is None else node,
+                camera.copy(),
+                image.copy(),
+                depth.copy(),
+                intrinsics,
+                self.source_captured,
+                self.source_sequence,
+                estimated_pose=getattr(self, "observation_estimate", camera).copy(),
+                estimated_map_pose=getattr(self, "observation_map_estimate", camera).copy(),
+                fitting_pose=camera.copy(),
+            )
+        )
+        if len(self.views) > MAX_VIEWS:
+            # Keep three recent observations plus a diverse archive. Among two
+            # redundant archived views retain the one with more fitting evidence;
+            # ties keep the older anchor instead of chaining through recent noise.
+            archived = self.views[:-3]
+            poses = np.array([v.pose for v in archived])
+            centers = poses[:, :3, 3]
+            distance = np.linalg.norm(centers[:, None] - centers[None], axis=-1)
+            directions = poses[:, :3, 2]
+            distance += 1 - np.clip(directions @ directions.T, -1, 1)
+            distance[np.tril_indices(len(poses))] = np.inf
+            a, b = np.unravel_index(np.argmin(distance), distance.shape)
+            discard = a if archived[a].steps < archived[b].steps else b
+            del self.views[discard]

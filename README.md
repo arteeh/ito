@@ -82,8 +82,14 @@ changing the saved setting.
 `submit(rgb_uint8, depth_float32_metres, world_from_camera, capture_time)` frames and is a live
 source for `DesktopWindow.run()`. Capture times use the pilot clock (`ito.clock.now`); poses use +Y up,
 -Z forward. Use it as a context manager to own its worker process. Input drops when busy;
-changed slots coalesce in a bounded shared-memory ring. `uv sync --extra cuda` enables CUDA
-projection/voxelization on NVIDIA; the default automatically falls back to NumPy on CPU.
+changed slots coalesce in a bounded shared-memory ring. The map is one persistent set of
+Gaussians in the connection's odometry frame; tracking keyframes come and go without it.
+An observation adds Gaussians only where the map, rendered from that view, leaves pixels
+uncovered, shows a surface clearly in front, or draws it much coarser than the view's pixels;
+Gaussians a view repeatedly sees through retire, and matching ones gather support and the
+view's light. With CUDA and the `slam` dependencies, patches of up to 24 retained views are
+refined photometrically (gsplat) in a bounded share of the worker's time. Under Max splats or
+VRAM pressure, unsupported and contradicted Gaussians go before the least recently seen.
 
 Monocular SLAM needs an NVIDIA GPU. Models and their licence notices are included in
 `models/` beside the app. Missing or damaged models keep the live flat camera feed usable.

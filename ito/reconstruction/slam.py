@@ -224,10 +224,6 @@ class SLAMBackend(GaussianBackend):
             cloud.intrinsics,
             when,
             node=node,
-            registered=self.registration.matched,
-            confidence=cloud.confidence.detach().cpu().numpy()
-            if cloud.confidence is not None
-            else None,
         )
 
 

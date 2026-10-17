@@ -19,6 +19,8 @@ from .gaussian import GaussianBackend
 from .ring import MotionRing, SplatUpdate, UpdateRing
 from .slam_vision import RESTART_CAUSES
 
+FIT_SHARE = 0.1  # Of the worker's tracking time, given to local training.
+
 __all__ = ["Reconstruction", "SplatUpdate", "default_budget"]
 
 log = logging.getLogger(__name__)
@@ -99,7 +101,7 @@ def _run(recon):
         published_slots = len(backend.keys)
         captured = recon.epoch
         published_capture = recon.epoch
-        next_fit = 0.0
+        fit_credit = 0.0
         parent = mp.parent_process()
         while not recon.stopped.value and parent.is_alive():
             now = clock.now() - recon.epoch
@@ -205,6 +207,9 @@ def _run(recon):
                         )
                     continue
                 recon.work_seconds.value = clock.now() - began
+                # Training gets a bounded share of the worker beside tracking, or a busy
+                # tracker would leave it none.
+                fit_credit = min(fit_credit + FIT_SHARE * recon.work_seconds.value, 0.25)
                 recon.work_total.value += recon.work_seconds.value
                 recon.integrated.value += 1
                 recon.matched.value = getattr(backend, "matched", getattr(backend, "tracked", 0))
@@ -358,10 +363,17 @@ def _run(recon):
             )
             # Publish fresh geometry before spending a bounded unit on appearance.
             # A full ring retains dirty work; never pile training behind that backlog.
-            if not backend.dirty.any() and clock.now() >= next_fit and recon.admission.available():
+            idle = recon.sequence.value == sequence
+            while (
+                (idle or fit_credit > 0)
+                and np.count_nonzero(backend.dirty) < recon.ring.batch
+                and backend.pending_fit is None
+                and recon.admission.available()
+            ):
+                started = clock.now()
                 try:
                     with recon.admission.integration():
-                        backend.fit()
+                        trained = backend.fit()
                 except Exception as exc:
                     if not _out_of_memory(exc, backend):
                         raise
@@ -370,7 +382,10 @@ def _run(recon):
                     torch = sys.modules.get("torch")
                     if torch is not None:
                         torch.cuda.empty_cache()
-                next_fit = clock.now() + 0.05
+                    trained = False
+                fit_credit -= clock.now() - started
+                if not trained or idle:
+                    break
             if recon.sequence.value == sequence or not recon.admission.available():
                 recon.admission.wake.wait(0.005)
     except InterruptedError:
