@@ -43,6 +43,9 @@ COMPARE = os.environ.get("ITO_TRUTH") == "compare"
 # also drops the MASt3R tracker: frames are placed by the robot's motion and the map alone.
 TRACKER = os.environ.get("ITO_TRACKER", "mast3r")
 DEPTH = "da3" if TRACKER == "map" else os.environ.get("ITO_DEPTH", "mast3r")
+# ITO_ALIGN=1 lays each frame's depth onto the map's surfaces (align.py) with MASt3R's depth too,
+# not only DA3's: where it was placed tells fusion where the camera was.
+ALIGN = DEPTH == "da3" or os.environ.get("ITO_ALIGN", "0") != "0"
 # Map only depth another view agrees on (consensus.py); ITO_CONSENSUS=0 maps every guess.
 CONSENSUS = os.environ.get("ITO_CONSENSUS", "0") != "0"
 # ITO_DUMP=<dir> (a diagnostic): each mapped frame's image, depth as estimated and as agreed,
@@ -231,7 +234,7 @@ class SLAMBackend(GaussianBackend):
                 valid = cloud.valid.reshape(cloud.shape).cpu().numpy()
                 self.depth_scales["true"] = scale_to(truth[2], np.where(valid, depth, 0))
         self.placed = None
-        if cloud is not None and self.depth is not None and (truth is None or truth[0] is None):
+        if cloud is not None and ALIGN and (truth is None or truth[0] is None):
             rows, columns = cloud.shape
             mapping = self.registration.map_from_estimator
             self.placed = to_map(
