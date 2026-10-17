@@ -49,12 +49,17 @@ FRAME_DELAY = 0.09
 GAIT_PERIOD = 0.42
 GAZE_DISTANCE = 10.0
 METADATA_POSE_INTERVAL = 0.05
+# The head's four servos each have about a degree of gear play each way (microduck_rl's
+# add_backlash.py, modelled in the sim): the camera rides past what the encoders, and so the
+# kinematics, say by up to about two degrees, and by a different amount after the head turns
+# the other way. The head IMU on the far side of the play sees its tilt (TILT_SIGMA, 1 degree);
+# measured in the sim, the kinematic camera was 1.4-2.9 degrees off the exact one.
 MOTION_NOISE = MotionNoise(
-    rotation_deg=0.66,
+    rotation_deg=1.5,
     rotation_deg_per_s=0.2,
     translation_m=0.005,
     translation_fraction=0.018,
-    gravity_deg=0.66,
+    gravity_deg=2.0,
     time_s=0.006,
 )
 ROLL_DEAD_BAND = math.radians(3)
