@@ -29,6 +29,7 @@ import imageio_ffmpeg
 
 HERE = Path(__file__).resolve().parents[1]
 ROOT = Path("/mnt/c/Users/me/Projects/ito")
+WSLG = Path("/tmp/.X11-unix/X0")
 
 
 def windows(path: Path) -> str:
@@ -243,6 +244,9 @@ def main():
             "--pairing-file",
             str(out / "pairing-code"),
             *(["--viewer"] if args.viewer else []),
+            # The head camera's fisheye is several pinhole renders a frame: llvmpipe, on a CPU
+            # shared with the physics and the encoder, held it near 20 fps. WSLg's GPU keeps 30.
+            *(["--gl", "glfw"] if not args.viewer and WSLG.exists() else []),
             *args.sim_args.split(),
         ],
         cwd=args.sim_source,
@@ -250,6 +254,7 @@ def main():
         stderr=subprocess.STDOUT,
         start_new_session=True,
         env=os.environ
+        | ({"DISPLAY": os.environ.get("DISPLAY", ":0")} if WSLG.exists() else {})
         | ({"ITO_MICRODUCK_TRUTH_DEPTH": "3"} if args.truth and args.truth != "poses" else {})
         | {
             "PYTHONPATH": str(args.sim_source),
