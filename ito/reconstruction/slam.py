@@ -84,6 +84,7 @@ class SLAMBackend(GaussianBackend):
         self.recalls = 0
         self.waiting = False
         self.retired_keyframes = 0
+        self.truth = None
         from .registration import Registration
 
         self.registration = Registration()
@@ -100,9 +101,13 @@ class SLAMBackend(GaussianBackend):
     def add_motion(self, rows):
         self.motion.extend(rows)
 
-    def integrate(self, rgb, depth, camera, now, measured=False, *, captured):
-        """captured: the frame's stamp on the pilot clock, the clock motion samples are on."""
+    def integrate(self, rgb, depth, camera, now, measured=False, *, captured, truth=None):
+        """captured: the frame's stamp on the pilot clock, the clock motion samples are on.
+        truth: (world-from-camera or None, exposure on the pilot clock, axial depth or None)
+        to publish and map this frame by instead of the estimates; the estimator still runs,
+        unchanged, beside them."""
         started = clock.now()
+        self.truth = truth
         graph = self.graph
         exposure = captured - graph.td
         if not self.motion.covers(exposure):
@@ -172,7 +177,8 @@ class SLAMBackend(GaussianBackend):
         if poses or abs(graph.log_scale) > SCALE_STEP:
             scale = graph.fold_scale()
             self.frontend.correct(poses, scale)
-        self.revise(poses)
+        if truth is None or truth[0] is None:
+            self.revise(poses)
         if dropped:
             self.retired_keyframes += len(dropped)
             self.frontend.forget(dropped)
@@ -180,9 +186,32 @@ class SLAMBackend(GaussianBackend):
             cloud = cloud._replace(
                 points=cloud.points * (scale if measured_scale is None else measured_scale)
             )
+        if cloud is not None and truth is not None and truth[2] is not None:
+            cloud = self.true_cloud(cloud, truth[2])
         pose = self._publish(node)
         if cloud is not None:
             self.place(cloud, pose, now + clock.now() - started, node=node)
+
+    def true_cloud(self, cloud, depth):
+        """The cloud with a simulator's exact axial depth (metres, the whole frame at any size)
+        in place of the network's, sampled at the cloud's pixels."""
+        height, width = cloud.shape
+        fx, fy, cx, cy = cloud.intrinsics
+        i = self.intrinsics
+        v, u = np.mgrid[:height, :width].astype(np.float64)
+        rows, columns = depth.shape
+        x = ((u - cx) / fx * i.fx + i.cx + 0.5) * columns / i.width - 0.5
+        y = ((v - cy) / fy * i.fy + i.cy + 0.5) * rows / i.height - 0.5
+        x = np.clip(np.rint(x).astype(int), 0, columns - 1)
+        y = np.clip(np.rint(y).astype(int), 0, rows - 1)
+        d = depth[y, x].astype(np.float32)
+        points = np.stack(((u - cx) / fx * d, -(v - cy) / fy * d, -d), -1).astype(np.float32)
+        torch = _torch()
+        device = cloud.points.device
+        return cloud._replace(
+            points=torch.as_tensor(points.reshape(-1, 3), device=device),
+            valid=torch.as_tensor((d > 0).ravel(), device=device),
+        )
 
     def pose_at(self, captured):
         pose = self.graph.pose_at(captured)
@@ -195,6 +224,10 @@ class SLAMBackend(GaussianBackend):
         mapping = self.registration.map_from_estimator
         self.camera_pose = (mapping @ pose).astype(np.float32)
         self.correction = (mapping @ graph.correction(node)).astype(np.float32)
+        if self.truth is not None and self.truth[0] is not None:
+            pose, exposed, _ = self.truth
+            self.camera_pose = pose.astype(np.float32)
+            self.correction = (pose @ np.linalg.inv(self.motion.at(exposed))).astype(np.float32)
         self.tracked += 1
         self.report(
             f"Robot-first tracking | {self.tracked} frames, "
@@ -213,6 +246,11 @@ class SLAMBackend(GaussianBackend):
         mapped, scale = self.registration.align(
             image, -points[..., 2], pose, cloud.intrinsics, self.views
         )
+        if self.truth is not None and self.truth[0] is not None:
+            # Registration only rescales a true pose's depth; it never moves it.
+            mapped = pose
+        if self.truth is not None and self.truth[2] is not None:
+            scale = 1.0
         self.registration.remember(
             node, pose, self.registration.map_from_estimator @ pose, self.graph.nodes
         )
@@ -224,7 +262,8 @@ class SLAMBackend(GaussianBackend):
             cloud.intrinsics,
             when,
             node=node,
-            registered=self.registration.matched,
+            registered=self.registration.matched
+            or (self.truth is not None and self.truth[0] is not None),
         )
 
 

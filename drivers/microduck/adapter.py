@@ -11,16 +11,18 @@ from ito.driver.walking import Walker
 from ito.protocol import Camera as CameraDescription
 from ito.protocol import (
     DegreeOfFreedom,
+    Depth,
     Motion,
     MotionNoise,
     MotionSample,
     Pose,
     RobotDescription,
     Sensors,
+    TruePose,
 )
 from ito.rates import Rate
 
-from . import frames, gaze, sensors
+from . import frames, gaze, sensors, truth
 from .camera import Camera, Track
 from .remote import Remote, RemoteError
 
@@ -187,7 +189,13 @@ class MicroduckAdapter(Adapter):
                 raise RuntimeError("Microduck driver requires the alpha head model")
             self.joint_names = model["joint_names"]
             self._tof_fov = math.radians(model.get("tof_fov_deg") or 45.0)
-            self.camera = Camera(await self.remote.call("media.video"), self._frame_metadata)
+            address = os.environ.get("ITO_MICRODUCK_TRUTH")
+            self._truth = truth.SimTruth(address) if address else None
+            self.camera = Camera(
+                await self.remote.call("media.video"),
+                self._frame_metadata,
+                truth=self._true_pose if self._truth else None,
+            )
             self._description = RobotDescription(
                 name="Microduck",
                 motion_noise=MOTION_NOISE,
@@ -543,6 +551,23 @@ class MicroduckAdapter(Adapter):
             return {}
         position, orientation, body_yaw = frames.at(self._poses, clock.now() - FRAME_DELAY)
         return dict(camera_pose=Pose(position=position, orientation=orientation), body_yaw=body_yaw)
+
+    def _true_pose(self, rgb, rtp):
+        row = self._truth.match(rgb, rtp)
+        if row is None or self._origin is None:
+            return {}
+        position, orientation = truth.in_world(row, self._origin)
+        depth = None
+        if "depth" in row:
+            height, width = row["depth_shape"]
+            depth = Depth(width=width, height=height, data=row["depth"])
+        return dict(
+            true_pose=TruePose(
+                time=row["time"],
+                camera_pose=Pose(position=position, orientation=orientation),
+                depth=depth,
+            )
+        )
 
     def telemetry(self):
         self._check()

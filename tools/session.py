@@ -5,7 +5,8 @@ record videos of it. Run in WSL on the Windows PC:
 
 BUILD is a folder under C:\\Users\\me\\Projects\\ito\\builds (release.ps1 -Branch ...).
 Output goes to C:\\Users\\me\\Projects\\ito\\out\\sessions\\NAME: screen.mp4 (the Ito window),
-camera.mp4 (the robot camera frames Ito received), steps.txt (when each script step
+camera.mp4 (the robot camera frames Ito received), map.mp4 (each frame reconstruction
+mapped, beside the map drawn from the pose it mapped it by), steps.txt (when each script step
 started, in seconds and as frame numbers of both videos), ito.log, sim.log and the sim's
 own logs. Script steps are described in ito/desktop/input.py (PilotScript). Look at frames
 with tools/frame.py.
@@ -115,17 +116,18 @@ def frame_times(stream: Path) -> list[float]:
     return [json.loads(line)["t"] for line in index.read_text().splitlines()]
 
 
-def step_times(log: Path, screen: list[float], camera: list[float]) -> str:
+def step_times(log: Path, screen: list[float], camera: list[float], mapped: list[float]) -> str:
     """When each script step started (from ito.log): seconds into screen.mp4, and the first
-    frame number of screen.mp4 and camera.mp4 at or after it, for tools/frame.py."""
-    lines = ["seconds  screen  camera  step"]
+    frame number of screen.mp4, camera.mp4 and map.mp4 at or after it, for tools/frame.py."""
+    lines = ["seconds  screen  camera     map  step"]
     for found in re.finditer(
         r"Pilot script step (\d+) t=([\d.]+): (.*)", log.read_text("utf-8", "replace")
     ):
         t = float(found[2])
-        frames = [bisect.bisect_left(times, t) for times in (screen, camera)]
+        frames = [bisect.bisect_left(times, t) for times in (screen, camera, mapped)]
         lines.append(
-            f"{t - screen[0]:7.2f}  {frames[0]:6d}  {frames[1]:6d}  {found[1]}: {found[3].strip()}"
+            f"{t - screen[0]:7.2f}  {frames[0]:6d}  {frames[1]:6d}  {frames[2]:6d}"
+            f"  {found[1]}: {found[3].strip()}"
         )
     return "\n".join(lines) + "\n"
 
@@ -162,6 +164,12 @@ def main():
         "--oom-after",
         type=float,
         help="inject one CUDA allocation failure after N seconds; inspect warning and precision",
+    )
+    parser.add_argument(
+        "--truth",
+        choices=("poses", "depth", "poses,depth"),
+        help="map by the sim's exact camera poses and/or depth instead of the estimates"
+        " (ITO_TRUTH, a diagnostic)",
     )
     parser.add_argument(
         "--sim-args", default="", help='extra sim options, e.g. "--camera-height 1080"'
@@ -240,6 +248,7 @@ def main():
         stderr=subprocess.STDOUT,
         start_new_session=True,
         env=os.environ
+        | ({"ITO_MICRODUCK_TRUTH_DEPTH": "3"} if "depth" in (args.truth or "") else {})
         | {
             "PYTHONPATH": str(args.sim_source),
             "GST_PLUGIN_PATH": str(prefix / "gst-plugins-rs/target/debug"),
@@ -268,6 +277,10 @@ def main():
             correction_env += f"&& set ITO_MANUAL_OOM_AFTER={args.oom_after}"
             with (out / "about.txt").open("a") as about:
                 about.write(f"manual CUDA allocation failure after {args.oom_after} s\n")
+        if args.truth:
+            correction_env += f"&& set ITO_TRUTH={args.truth}"
+            with (out / "about.txt").open("a") as about:
+                about.write(f"ITO_TRUTH={args.truth}\n")
         command = (
             f"set APPDATA={windows(profile)}&& set ITO_RECORD={windows(rec)}"
             f"&& set ITO_PILOT_SCRIPT={windows(out / 'script.json')}"
@@ -289,13 +302,17 @@ def main():
         (out / "pairing-code").unlink(missing_ok=True)
         shutil.rmtree(profile, ignore_errors=True)
 
-    for name in ("screen", "camera"):
+    for name in ("screen", "camera", "map"):
         if (rec / name / "frames.jsonl").exists():
             count = encode(rec / name, out / f"{name}.mp4")
             print(f"{name}.mp4: {count} frames", flush=True)
+    if (rec / "screen/frames.jsonl").exists():
+        shutil.copy(rec / "screen/frames.jsonl", out / "screen.jsonl")
     screen = frame_times(rec / "screen")
     if screen:
-        steps = step_times(out / "ito.log", screen, frame_times(rec / "camera"))
+        steps = step_times(
+            out / "ito.log", screen, frame_times(rec / "camera"), frame_times(rec / "map")
+        )
         (out / "steps.txt").write_text(steps)
     shutil.rmtree(rec, ignore_errors=True)
     print(f"done: {out}")

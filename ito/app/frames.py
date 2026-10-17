@@ -67,6 +67,7 @@ def between(m0, m1, k0, k1, key):
             head_angles=head,
             body_yaw=math.remainder(yaw, math.tau),
             depth=None,
+            true_pose=None,
         )
     )
 
@@ -134,7 +135,10 @@ class FrameJoin:
             return "dropped", frame, None, None
         metadata = self.metadata[near][1]
         update = dict(
-            capture_time=metadata.capture_time + (key - near) / TICKS, video_pts=key, depth=None
+            capture_time=metadata.capture_time + (key - near) / TICKS,
+            video_pts=key,
+            depth=None,
+            true_pose=None,
         )
         if abs(near - key) > NEAREST:
             update.update(camera_pose=None, head_angles=None)

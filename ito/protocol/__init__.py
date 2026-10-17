@@ -183,6 +183,12 @@ class Depth(Model):
         )
 
 
+class TruePose(Model):
+    time: Time = Field(description="When the frame was exposed, driver clock")
+    camera_pose: Pose = Field(description="Camera-to-world, in camera_pose's world")
+    depth: Depth | None = Field(default=None, description="Axial depth of the whole frame")
+
+
 class FrameMetadata(Message):
     type: Literal["frame"] = "frame"
     camera: Name
@@ -199,6 +205,9 @@ class FrameMetadata(Message):
     body_yaw: Number = Field(default=0, description="Startup-relative body yaw at exposure")
     head_angles: tuple[Number, Number] | None = Field(
         default=None, description="Measured pan and tilt in radians from this exposure"
+    )
+    true_pose: TruePose | None = Field(
+        default=None, description="Simulators only, for diagnostics: the exact camera pose"
     )
 
 

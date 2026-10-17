@@ -157,6 +157,22 @@ def _run(recon):
                         )
                         captured = recon.captured.value
                         measured = bool(recon.measured.value)
+                        rows, columns = recon.truth_shape
+                        truth = (
+                            (
+                                np.frombuffer(recon.truth, np.float64).reshape(4, 4).copy()
+                                if recon.truth_pose.value
+                                else None,
+                                recon.truth_time.value,
+                                np.frombuffer(recon.truth_depth, np.float32)[: rows * columns]
+                                .reshape(rows, columns)
+                                .copy()
+                                if rows
+                                else None,
+                            )
+                            if recon.truthful.value
+                            else None
+                        )
                 finally:
                     recon.input_lock.release()
             if frame is not None:
@@ -177,7 +193,7 @@ def _run(recon):
                     with recon.admission.integration():
                         if recon.backend == "slam":
                             if robot_first:
-                                backend.integrate(*frame, now, captured=captured)
+                                backend.integrate(*frame, now, captured=captured, truth=truth)
                             else:
                                 backend.integrate(*frame, now, measured=measured)
                         else:
@@ -505,6 +521,12 @@ class Reconstruction:
         self.camera = context.RawArray("f", 16)
         self.captured = context.RawValue("d", 0)
         self.measured = context.RawValue("b", False)
+        self.truth = context.RawArray("d", 16)
+        self.truth_time = context.RawValue("d", 0)
+        self.truthful = context.RawValue("b", False)
+        self.truth_pose = context.RawValue("b", False)
+        self.truth_depth = context.RawArray("f", intrinsics.width * intrinsics.height)
+        self.truth_shape = context.RawArray("i", 2)
         self.sequence = context.RawValue("Q", 0)
         self.budget = context.RawValue("I", max_splats)
         self.splat_limit = context.RawValue("I", max_splats)
@@ -661,7 +683,7 @@ class Reconstruction:
         finally:
             self.output_lock.release()
 
-    def submit(self, rgb, depth=None, camera=None, captured_at=None, *, measured=False):
+    def submit(self, rgb, depth=None, camera=None, captured_at=None, *, measured=False, truth=None):
         """Depth is axial metres; pose is world-from-camera (+Y up, -Z forward).
 
         SLAM needs no depth, and takes the pose only as the robot's own estimate: its
@@ -669,6 +691,9 @@ class Reconstruction:
         (the robot reports its body heading and head pan), keeps the map's heading honest.
         RGB and depth must be synchronized and registered to these intrinsics.
         Capture time must already be corrected to the pilot monotonic clock.
+        truth: (world-from-camera or None, exposure time, axial depth or None) a simulator
+        gives exactly, which robot-first tracking then maps by in place of its estimates
+        (ITO_TRUTH, a diagnostic).
         A busy mailbox drops the incoming frame; the caller never waits.
         """
         if self.closed:
@@ -698,6 +723,15 @@ class Reconstruction:
                 np.frombuffer(self.depth, np.float32)[:] = depth.ravel()
             self.captured.value = captured_at
             self.measured.value = measured
+            self.truthful.value = truth is not None
+            if truth is not None:
+                self.truth_pose.value = truth[0] is not None
+                if truth[0] is not None:
+                    np.frombuffer(self.truth, np.float64)[:] = np.ravel(truth[0])
+                self.truth_time.value = truth[1]
+                self.truth_shape[:] = (0, 0) if truth[2] is None else truth[2].shape
+                if truth[2] is not None:
+                    np.frombuffer(self.truth_depth, np.float32)[: truth[2].size] = truth[2].ravel()
             self.sequence.value += 1
             self.admission.wake.notify()
             return True

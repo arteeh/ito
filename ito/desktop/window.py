@@ -42,6 +42,9 @@ class DesktopState:
     # Yaw of the robot camera's view in its odometry world, positive to the left: where
     # recentering turns the pilot's view, so the robot keeps looking where it looks.
     robot_heading: float = 0.0
+    # Reconstruction's world-from-camera of the latest frame it mapped, and that frame's
+    # capture time: the recorder draws the map from it beside the frame (record.py).
+    mapped: tuple | None = field(default=None, repr=False, compare=False)
 
 
 class DesktopWindow:
@@ -97,6 +100,7 @@ class DesktopWindow:
             self.gpu = GPU() if "nvidia" in self.context.info["GL_VENDOR"].lower() else None
             buffer_limit = self.context.info["GL_MAX_SHADER_STORAGE_BLOCK_SIZE"]
             self.splat_limit = 16_384 if software else min(MAX_SLOT_COUNT, buffer_limit // 64)
+            self.map_target = None
             self.renderer = GaussianRenderer(self.context)
             self.video_panel = VideoPanel(self.context)
             self.max_splats = min(
@@ -165,8 +169,24 @@ class DesktopWindow:
             if recorder is not None:
                 recorder.close()
 
-    def _record(self, recorder: Recorder, current):
+    def _record(self, recorder: Recorder, current, head):
         recorder.camera(current.video, current.video_time)
+        if current.mapped is not None and current.video_fov and recorder.wants_map(current.mapped):
+            camera = recorder.video_at(current.mapped[1])
+            if camera is not None:
+                height, width = camera.shape[:2]
+                width, height = 640, round(640 * height / width)
+                if self.map_target is None or self.map_target.size != (width, height):
+                    if self.map_target is not None:
+                        self.map_target.release()
+                    self.map_target = self.context.simple_framebuffer((width, height))
+                fov = 2 * math.atan(math.tan(current.video_fov / 2) * height / width)
+                self.renderer.draw(
+                    current.mapped[0], pose(), perspective(fov, width / height), self.map_target
+                )
+                pixels = self.map_target.read(components=3, alignment=1)
+                recorder.map(camera, pixels, (width, height), current.mapped[1])
+                self.screen.use()
         now = clock.now()
         if not recorder.due(now):
             return
@@ -174,7 +194,7 @@ class DesktopWindow:
         GL.glReadBuffer(GL.GL_BACK)
         GL.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1)
         pixels = GL.glReadPixels(0, 0, *self.size, GL.GL_RGB, GL.GL_UNSIGNED_BYTE)
-        recorder.screen(now, pixels, self.size)
+        recorder.screen(now, pixels, self.size, current.robot_camera @ head)
 
     def _draw_loop(
         self, source, state, on_input, max_frames, metrics, save_settings, dispatch, recorder
@@ -262,7 +282,7 @@ class DesktopWindow:
                 except OSError as exc:
                     self.overlay.error = f"Could not save setting: {exc}"
             if recorder is not None:
-                self._record(recorder, current)
+                self._record(recorder, current, pilot.head)
             capture = None
             if pilot.screenshot:
                 try:

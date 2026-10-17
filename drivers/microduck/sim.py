@@ -81,7 +81,7 @@ def simulation(
     upstream, rl, policies_dir = (p.resolve() for p in (upstream, rl, policies_dir))
     logs.mkdir(parents=True, exist_ok=True)
     binaries = upstream / "target/debug"
-    body_port, camera_port, media_port, web_port = [port() for _ in range(4)]
+    body_port, camera_port, media_port, web_port, truth_port = [port() for _ in range(5)]
     sim_env = os.environ | {
         "PYTHONPATH": os.pathsep.join([str(Path(__file__).resolve().parents[2]), str(rl / "src")]),
         "MUJOCO_GL": gl or ("glfw" if viewer else "osmesa"),
@@ -90,6 +90,7 @@ def simulation(
         "ITO_MICRODUCK_CAMERA_HEIGHT": str(camera_height),
         "ITO_MICRODUCK_CAMERA_HFOV": str(hfov),
         "ITO_MICRODUCK_CAMERA_FPS": "30",
+        "ITO_MICRODUCK_TRUTH_PORT": truth_port,
     }
     sim_env["ITO_MICRODUCK_BLUR"] = str(blur)
     on_screen = sim_env["MUJOCO_GL"] == "glfw"
@@ -324,7 +325,7 @@ def simulation(
                 f"ws://127.0.0.1:{media_port}",
             ],
             os.environ
-            | {"ITO_MICRODUCK_BLUR": str(blur)}
+            | {"ITO_MICRODUCK_BLUR": str(blur), "ITO_MICRODUCK_TRUTH": f"127.0.0.1:{truth_port}"}
             | ({"ITO_MICRODUCK_EXPOSURE": "0"} if blur == 1 else {}),
         )
         deadline = time.monotonic() + 30

@@ -11,7 +11,7 @@ from ito.protocol import FrameMetadata, Intrinsics
 
 
 class Camera:
-    def __init__(self, info, measured=dict):
+    def __init__(self, info, measured=dict, truth=None):
         import cv2
 
         self.cv = cv2
@@ -55,6 +55,7 @@ class Camera:
         self.intrinsics = k
         self.source = geometry["source"]
         self.measured = measured
+        self.truth = truth
         self.latest = None
         self.revision = 0
         self.changed = asyncio.Event()
@@ -80,6 +81,8 @@ class Camera:
             received = clock.now()
             measured = self.measured()
             rgb = await asyncio.to_thread(self.rectify, frame)
+            if self.truth is not None and frame.pts is not None:
+                measured = measured | self.truth(rgb, float(frame.pts * frame.time_base))
             self.latest = (rgb, received, measured)
             self.revision += 1
             self.changed.set()

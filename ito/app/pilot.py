@@ -2,11 +2,14 @@ import asyncio
 import contextlib
 import logging
 import math
+import os
 import sys
 import threading
 import traceback
 from collections import deque
 from dataclasses import replace
+
+import numpy as np
 
 from ito import clock, diagnostics
 from ito.desktop import DesktopState, PilotStatus
@@ -23,6 +26,11 @@ from . import settings
 from .frames import FrameJoin, camera_matrix
 
 log = logging.getLogger(__name__)
+# A developer diagnostic, never a setting: ITO_TRUTH=poses maps and places the eye by the
+# exact camera poses a simulator sends (FrameMetadata.true_pose) instead of the estimator's,
+# ITO_TRUTH=depth maps the simulator's exact depth instead of the network's, and
+# ITO_TRUTH=poses,depth does both. Frames without them are not mapped.
+TRUTH = set(filter(None, os.environ.get("ITO_TRUTH", "").split(",")))
 TRACKING_LOST = 2.0
 TRACKING_STEADY = 1.0
 TRACKING_GAP = 0.5
@@ -287,12 +295,30 @@ class Pilot:
         if self.backend == "rgbd" and (depth is None or camera is None):
             return
         measured = False
+        truth = None
         if self.backend == "slam":
             measured = camera is not None or pair[1].head_angles is not None
             camera = self._prior(camera, pair[1])
+            if TRUTH and self.robot_first:
+                true = pair[1].true_pose
+                if true is None or ("depth" in TRUTH and true.depth is None):
+                    diagnostics.event("truth_missing", interval=1, sequence=pair[1].sequence)
+                    return
+                true_depth = None
+                if "depth" in TRUTH:
+                    true_depth = np.frombuffer(true.depth.to_bytes(), "<u2").reshape(
+                        true.depth.height, true.depth.width
+                    ) * np.float32(0.001)
+                truth = (
+                    camera_matrix(true.camera_pose) if "poses" in TRUTH else None,
+                    peer.clock.remote_to_local(true.time),
+                    true_depth,
+                )
         self.camera_rate.tick()
         try:
-            accepted = self.worker.submit(rgb, depth, camera, captured, measured=measured)
+            accepted = self.worker.submit(
+                rgb, depth, camera, captured, measured=measured, truth=truth
+            )
         except ValueError as exc:
             self.failure = str(exc)
             self.reconstruction_status = str(exc) + "; showing flat camera feed"
@@ -532,8 +558,9 @@ class Pilot:
                     if self.backend == "slam":
                         tracked = self.worker.pose()
                         if tracked:
-                            transform, count, self.tracking, _ = tracked
+                            transform, count, self.tracking, mapped_at = tracked
                             if count != self.tracked_frames:
+                                self.state = replace(self.state, mapped=(transform, mapped_at))
                                 if now - self.last_tracking > TRACKING_GAP:
                                     self.tracking_steady_since = now
                                 self.last_tracking = now

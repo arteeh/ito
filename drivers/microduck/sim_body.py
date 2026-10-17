@@ -1,18 +1,22 @@
 import atexit
+import base64
 import collections
+import json
 import os
 import socket
+import socketserver
 import struct
 import sys
 import threading
 import time
+import zlib
 
 import mujoco
 import numpy as np
 from mjlab_microduck.sim import body_server
 from mjlab_microduck.sim.camera import Camera, to_uyvy
 
-from drivers.microduck import lens
+from drivers.microduck import lens, truth
 
 
 class HeadCamera(Camera):
@@ -50,11 +54,12 @@ class HeadCamera(Camera):
         self.renderer.scene.flags[mujoco.mjtRndFlag.mjRND_SHADOW] = False
         return self.renderer.render().copy()
 
-    def publish(self, frames):
+    def publish(self, frames, exposed=None):
         rgb = frames[0] if self.blur == 1 else np.mean(frames, axis=0).astype(np.uint8)
         packed = to_uyvy(rgb)
         with self.lock:
             self.latest = packed
+            self.exposed = None if exposed is None else exposed | {"thumb": truth.encode(rgb)}
 
 
 class Stepping:
@@ -93,6 +98,8 @@ class ThreadedHeadCamera(HeadCamera):
         self.thread = None
         self.stopping = threading.Event()
         self.shots = collections.deque()
+        self.exposed_at = collections.deque()
+        self.exposed = None
         self.taking = []
         self.due = None
         # Before GLFW goes: rendering on after the viewer closed and GLFW terminated
@@ -115,6 +122,9 @@ class ThreadedHeadCamera(HeadCamera):
         self.taking.append(
             (data.time, data.qpos.copy(), data.mocap_pos.copy(), data.mocap_quat.copy())
         )
+        if len(self.taking) == (self.blur + 1) // 2:
+            # The middle of a blurred frame's span, on CLOCK_MONOTONIC (the driver's clock).
+            self.exposed_at.append(self.world.epoch_ns / 1e9 + data.time)
         if len(self.taking) < self.blur:
             return
         with self.fresh:
@@ -162,8 +172,10 @@ class ThreadedHeadCamera(HeadCamera):
                     continue
                 while len(self.shots) > 2:
                     self.shots.popleft()
+                    self.exposed_at.popleft()
                     dropped += 1
                 states = self.shots.popleft()
+                exposed_at = self.exposed_at.popleft()
             now = time.perf_counter()
             if next_frame is None or now - next_frame > period:
                 late += next_frame is not None
@@ -172,11 +184,20 @@ class ThreadedHeadCamera(HeadCamera):
                 time.sleep(next_frame - now)
             start = time.perf_counter()
             frames = []
-            for state in states:
+            for i, state in enumerate(states):
                 self.pose(kept, state)
+                if i == (len(states) - 1) // 2:
+                    # MuJoCo's camera frame is Ito's: +X right, +Y up, looking down -Z.
+                    exposed = dict(
+                        time=exposed_at,
+                        position=kept.cam_xpos[self.camera].tolist(),
+                        orientation=truth.quaternion(kept.cam_xmat[self.camera].reshape(3, 3)),
+                    )
                 self.scene(kept)
                 frames.append(self.draw())
-            self.publish(frames)
+                if i == (len(states) - 1) // 2 and TRUTH_DEPTH and self.seq % TRUTH_DEPTH == 0:
+                    exposed |= self.depth()
+            self.publish(frames, exposed)
             with self.lock:
                 self.seq += 1
                 self.fresh.notify_all()
@@ -194,11 +215,67 @@ class ThreadedHeadCamera(HeadCamera):
                 costs, late, dropped, window = [], 0, 0, done
             next_frame += period
 
+    def depth(self):
+        """The rendered scene's axial depth, about 640 wide, as truth.py's depth fields."""
+        self.renderer.enable_depth_rendering()
+        try:
+            depth = self.renderer.render()
+        finally:
+            self.renderer.disable_depth_rendering()
+        step = max(1, self.width // 640)
+        # Every step-th pixel, never averaged: an average across an edge is no surface.
+        depth = depth[step // 2 :: step, step // 2 :: step]
+        mm = np.where(depth < 30, np.rint(depth * 1000), 0).astype("<u2")
+        return dict(
+            depth_shape=list(mm.shape),
+            depth=base64.b64encode(zlib.compress(mm.tobytes(), 1)).decode(),
+        )
+
     def next_frame(self, seen, timeout=1.0):
         with self.fresh:
             if not self.fresh.wait_for(lambda: self.seq != seen, timeout):
-                return seen, None
-            return self.seq, self.latest
+                return seen, None, None
+            return self.seq, self.latest, self.exposed
+
+
+class TruthServer(socketserver.ThreadingTCPServer):
+    """ITO_MICRODUCK_TRUTH_PORT: for each frame handed to mediad, one JSON line to every
+    reader: when it was sent and exposed (CLOCK_MONOTONIC seconds), the camera's pose in
+    MuJoCo's world and a thumbnail (drivers/microduck/truth.py). Diagnostics only."""
+
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(self, port):
+        self.readers = []
+        self.readers_lock = threading.Lock()
+        super().__init__(("127.0.0.1", port), TruthHandler)
+        threading.Thread(target=self.serve_forever, name="truth", daemon=True).start()
+
+    def send(self, row):
+        line = (json.dumps(row) + "\n").encode()
+        with self.readers_lock:
+            for reader in list(self.readers):
+                try:
+                    reader.sendall(line)
+                except OSError:
+                    self.readers.remove(reader)
+
+
+class TruthHandler(socketserver.BaseRequestHandler):
+    def handle(self):
+        with self.server.readers_lock:
+            self.server.readers.append(self.request)
+        try:
+            while self.request.recv(1):
+                pass
+        except OSError:
+            pass
+
+
+TRUTH = None
+# ITO_MICRODUCK_TRUTH_DEPTH=N: every Nth frame's truth also carries its rendered depth.
+TRUTH_DEPTH = int(os.environ.get("ITO_MICRODUCK_TRUTH_DEPTH", 0))
 
 
 class FrameHandler(body_server.FrameHandler):
@@ -209,9 +286,11 @@ class FrameHandler(body_server.FrameHandler):
         seen = 0
         try:
             while True:
-                seen, frame = camera.next_frame(seen)
+                seen, frame, exposed = camera.next_frame(seen)
                 if frame is not None:
                     self.request.sendall(struct.pack("<I", len(frame)) + frame)
+                    if TRUTH is not None and exposed is not None:
+                        TRUTH.send(exposed | {"sent": time.perf_counter()})
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
         print("== camera: the reader went away", flush=True)
@@ -241,6 +320,8 @@ if __name__ == "__main__":
                 raise SystemExit(f"MuJoCo viewer unavailable: {exc}") from exc
 
         mujoco.viewer.launch_passive = visible_viewer
+    if os.environ.get("ITO_MICRODUCK_TRUTH_PORT"):
+        TRUTH = TruthServer(int(os.environ["ITO_MICRODUCK_TRUTH_PORT"]))
     body_server.Camera = ThreadedHeadCamera
     body_server.FrameHandler = FrameHandler
     body_server.main()
