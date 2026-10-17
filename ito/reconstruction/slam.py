@@ -45,6 +45,9 @@ TRACKER = os.environ.get("ITO_TRACKER", "mast3r")
 DEPTH = "da3" if TRACKER == "map" else os.environ.get("ITO_DEPTH", "mast3r")
 # Map only depth another view agrees on (consensus.py); ITO_CONSENSUS=0 maps every guess.
 CONSENSUS = os.environ.get("ITO_CONSENSUS", "0") != "0"
+# ITO_DUMP=<dir> (a diagnostic): each mapped frame's image, depth as estimated and as agreed,
+# the sim's exact depth when ITO_TRUTH gives it, and its pose, one npz per frame.
+DUMP = os.environ.get("ITO_DUMP")
 # Retained views keep the camera's own frame at DETAIL times the network's grid (512 across)
 # for photometric training, which then refines splats finer than the network sees.
 DETAIL = float(os.environ.get("ITO_DETAIL", "1"))
@@ -356,6 +359,31 @@ class SLAMBackend(GaussianBackend):
             self._photo_key = key
         return cv2.remap(rgb, *self._photo_maps, cv2.INTER_LINEAR), fine
 
+    def dump(self, cloud, raw_depth, points, valid, image, pose, rgb):
+        from pathlib import Path
+
+        from .depth import resample
+
+        folder = Path(DUMP)
+        folder.mkdir(parents=True, exist_ok=True)
+        truth = None
+        if self.truth is not None and self.truth[2] is not None:
+            truth = resample(self.truth[2], raw_depth.shape).astype(np.float32)
+        np.savez_compressed(
+            folder / f"{self.source_sequence:06d}.npz",
+            image=image,
+            camera=rgb if rgb is not None else np.zeros((0,)),
+            estimated=raw_depth,
+            mapped=np.where(valid, -points[..., 2], 0).astype(np.float32),
+            truth=np.zeros((0,)) if truth is None else truth,
+            pose=pose,
+            intrinsics=np.array(cloud.intrinsics),
+            camera_intrinsics=np.array(
+                [self.intrinsics.fx, self.intrinsics.fy, self.intrinsics.cx, self.intrinsics.cy]
+            ),
+            captured=self.source_captured,
+        )
+
     def place(self, cloud, pose, when, *, node, rgb=None):
         height, width = cloud.shape
         points = cloud.points.detach().float().cpu().numpy().reshape(height, width, 3)
@@ -375,7 +403,8 @@ class SLAMBackend(GaussianBackend):
             mapped = pose
         elif self.placed is not None:
             mapped, scale = self.placed, 1.0
-        if self.truth is not None and self.truth[2] is not None:
+        raw_depth = np.where(valid, -points[..., 2] * scale, 0).astype(np.float32)
+        if self.truth is not None and self.truth[2] is not None and not COMPARE:
             scale = 1.0
         elif self.consensus is not None:
             depth = np.where(valid, -points[..., 2] * scale, 0).astype(np.float32)
@@ -385,6 +414,8 @@ class SLAMBackend(GaussianBackend):
                 )
             points = points * (agreed / np.maximum(-points[..., 2], 1e-6))[..., None]
             valid, scale = agreed > 0, 1.0
+        if DUMP:
+            self.dump(cloud, raw_depth, points * scale, valid, image, mapped, rgb)
         self.registration.remember(
             node, pose, self.registration.map_from_estimator @ pose, self.graph.nodes
         )
