@@ -37,9 +37,35 @@ def windows(path: Path) -> str:
 
 
 def stop_sim(sim):
-    if sim.poll() is None:
-        sim.send_signal(signal.SIGINT)
-    sim.wait(timeout=30)
+    """Ctrl+C the sim this run started; if it hangs, end it and the daemons it spawned
+    (each runs in its own session), never anything else."""
+    if sim.poll() is not None:
+        return
+    tree, parents = [], [sim.pid]
+    while parents:
+        found = subprocess.run(
+            ["ps", "-o", "pid=", "--ppid", ",".join(map(str, parents))],
+            capture_output=True,
+            text=True,
+        ).stdout.split()
+        parents = [int(pid) for pid in found]
+        tree += parents
+    sim.send_signal(signal.SIGINT)
+    try:
+        sim.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        print("sim ignored Ctrl+C; terminating it", flush=True)
+        sim.terminate()
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        alive = [pid for pid in tree if Path(f"/proc/{pid}").exists()]
+        for pid in alive:
+            try:
+                os.kill(pid, sig)
+            except ProcessLookupError:
+                pass
+        if alive:
+            time.sleep(3)
+    sim.wait(timeout=10)
 
 
 def encode(stream: Path, video: Path, fps: int = 30) -> int:
