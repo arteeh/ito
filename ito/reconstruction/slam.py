@@ -45,10 +45,9 @@ TRACKER = os.environ.get("ITO_TRACKER", "mast3r")
 DEPTH = "da3" if TRACKER == "map" else os.environ.get("ITO_DEPTH", "mast3r")
 # Map only depth another view agrees on (consensus.py); ITO_CONSENSUS=0 maps every guess.
 CONSENSUS = os.environ.get("ITO_CONSENSUS", "0") != "0"
-# Map at DETAIL times the network's resolution (512 across), colour from the camera's own
-# frame: the network's depth, interpolated within surfaces, carries finer splats.
+# Retained views keep the camera's own frame at DETAIL times the network's grid (512 across)
+# for photometric training, which then refines splats finer than the network sees.
 DETAIL = float(os.environ.get("ITO_DETAIL", "1"))
-EDGE_RATIO = 1.08  # depth ratio across a 2x2 patch that marks a silhouette, not a surface
 
 
 class SLAMBackend(GaussianBackend):
@@ -337,44 +336,25 @@ class SLAMBackend(GaussianBackend):
         )
         return pose
 
-    def finer(self, points, valid, rgb, intrinsics):
-        """points (camera frame), valid, the camera's frame and the intrinsics of the
-        network's grid -> the same at DETAIL times its resolution, colour from the frame."""
+    def photo(self, rgb, intrinsics, shape):
+        """The camera's frame resampled to DETAIL times the network's grid (shape, with
+        intrinsics), and that grid's intrinsics."""
         import cv2
 
-        height, width = valid.shape
+        height, width = shape
         rows, columns = round(height * DETAIL), round(width * DETAIL)
         fx, fy, cx, cy = intrinsics
         fine = (fx * DETAIL, fy * DETAIL, (cx + 0.5) * DETAIL - 0.5, (cy + 0.5) * DETAIL - 0.5)
         key = (rows, columns, intrinsics, rgb.shape)
-        if getattr(self, "_finer_key", None) != key:
+        if getattr(self, "_photo_key", None) != key:
             i = self.intrinsics
             v, u = np.mgrid[:rows, :columns].astype(np.float32)
-            self._finer_maps = (
+            self._photo_maps = (
                 ((u - fine[2]) / fine[0] * i.fx + i.cx).astype(np.float32),
                 ((v - fine[3]) / fine[1] * i.fy + i.cy).astype(np.float32),
             )
-            self._finer_key = key
-        image = cv2.remap(rgb, *self._finer_maps, cv2.INTER_LINEAR)
-        depth = np.where(valid, -points[..., 2], 0).astype(np.float32)
-        smooth = cv2.resize(depth, (columns, rows), interpolation=cv2.INTER_LINEAR)
-        nearest = cv2.resize(depth, (columns, rows), interpolation=cv2.INTER_NEAREST)
-        top = cv2.resize(
-            cv2.dilate(depth, np.ones((2, 2), np.uint8)), (columns, rows), cv2.INTER_NEAREST
-        )
-        low = np.where(depth > 0, depth, np.inf)
-        bottom = cv2.resize(
-            cv2.erode(low, np.ones((2, 2), np.uint8)), (columns, rows), cv2.INTER_NEAREST
-        )
-        # Interpolate within a surface; across a silhouette keep the nearest sample's depth.
-        within = np.isfinite(bottom) & (top <= bottom * EDGE_RATIO)
-        depth = np.where(within, smooth, nearest)
-        fine_valid = depth > 0
-        v, u = np.mgrid[:rows, :columns].astype(np.float32)
-        points = np.stack(
-            ((u - fine[2]) / fine[0] * depth, -(v - fine[3]) / fine[1] * depth, -depth), -1
-        )
-        return points, image, fine_valid, fine
+            self._photo_key = key
+        return cv2.remap(rgb, *self._photo_maps, cv2.INTER_LINEAR), fine
 
     def place(self, cloud, pose, when, *, node, rgb=None):
         height, width = cloud.shape
@@ -382,8 +362,9 @@ class SLAMBackend(GaussianBackend):
         image = cloud.colors.detach().cpu().numpy().reshape(height, width, 3)
         valid = cloud.valid.detach().cpu().numpy().reshape(height, width)
         intrinsics = cloud.intrinsics
+        photo = None
         if DETAIL > 1 and rgb is not None:
-            points, image, valid, intrinsics = self.finer(points, valid, rgb, intrinsics)
+            photo = self.photo(rgb, intrinsics, (height, width))
         self.observation_estimate = pose
         self.observation_map_estimate = self.registration.map_from_estimator @ pose
         mapped, scale = self.registration.align(
@@ -418,6 +399,7 @@ class SLAMBackend(GaussianBackend):
             registered=self.registration.matched
             or self.placed is not None
             or (self.truth is not None and self.truth[0] is not None),
+            photo=photo,
         )
 
 

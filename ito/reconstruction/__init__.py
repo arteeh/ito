@@ -324,6 +324,9 @@ def _run(recon):
                 ]
                 if backend.pending_fit is not None:
                     indices = backend.pending_fit
+                elif not len(indices):
+                    # Refinement publishes only once fresh geometry has gone out.
+                    indices = np.flatnonzero(backend.refined)[: recon.ring.batch]
                 if not len(indices) and len(backend.keys) == published_slots:
                     break
                 contributing = backend.sequences[indices] > 0
@@ -370,6 +373,7 @@ def _run(recon):
                 if len(indices):
                     cursor = (int(indices[-1]) + 1) % len(backend.keys)
                 backend.dirty[indices] = False
+                backend.refined[indices] = False
                 backend.pending_fit = None
                 revision += 1
             recon.scene_slots.value = backend.count

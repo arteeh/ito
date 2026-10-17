@@ -10,6 +10,9 @@ The CPU map stays the source of truth: a unit uploads its Gaussians, trains them
 writes back only those still live and visibly changed, which then publish like any update.
 """
 
+import math
+import os
+
 import numpy as np
 
 from .gaussian import AXES, C0
@@ -26,6 +29,12 @@ GROW_SHARE = 0.05  # at most this share of a unit's Gaussians is cloned or split
 SPLIT_PIXELS = 6.0  # a Gaussian larger than this in its view splits; smaller ones clone
 PRUNE_OPACITY = 0.01
 CHANGED = (1e-4, 1 / 255)  # metres, colour: smaller changes are not worth publishing
+# ITO_FIT_POSES=1: before training, align the unit's chosen view to the map photometrically
+# (the map held still) and train from that pose: the view stops pulling surfaces off-place.
+POSES = os.environ.get("ITO_FIT_POSES", "0") != "0"
+ALIGN_STEPS = 12
+ALIGN_RATES = (3e-4, 2e-4)  # radians, metres per Adam step
+ALIGN_LIMIT = (math.radians(3), 0.05)  # a larger correction is a mismatch, not an alignment
 
 
 def ssim(a, b, torch):
@@ -62,6 +71,7 @@ class ViewFit:
         self.units = 0
         self.grown = 0
         self.pruned = 0
+        self.aligned = 0
 
     def tensor(self, value, dtype=None):
         torch = self.torch
@@ -130,15 +140,20 @@ class ViewFit:
                 if observation.fitting_pose is not None
                 else observation.pose
             )
-            h, w = observation.depth.shape
-            fx, fy, cx, cy = observation.intrinsics
+            fine = observation.photo is not None
+            image = observation.photo if fine else observation.image
+            fx, fy, cx, cy = observation.photo_intrinsics if fine else observation.intrinsics
+            h, w = image.shape[:2]
+            depth = self.tensor(observation.depth)
+            if depth.shape != (h, w):
+                depth = torch.nn.functional.interpolate(depth[None, None], (h, w))[0, 0]
             prepared.append(
                 dict(
                     view=observation,
                     camera=self.tensor(np.linalg.inv(pose @ AXES))[None],
                     calibration=self.tensor([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])[None],
-                    target=self.tensor(observation.image).permute(2, 0, 1) / 255,
-                    depth=self.tensor(observation.depth),
+                    target=self.tensor(image).permute(2, 0, 1) / 255,
+                    depth=depth,
                     size=(w, h),
                     focal=fx,
                 )
@@ -155,7 +170,87 @@ class ViewFit:
             seen=torch.zeros(len(ids), device="cuda"),
             pixels=torch.zeros(len(ids), device="cuda"),
         )
+        if POSES and view.steps > 0:
+            rotation = torch.nn.Parameter(torch.zeros(3, device="cuda"))
+            translation = torch.nn.Parameter(torch.zeros(3, device="cuda"))
+            self.active |= dict(
+                align=ALIGN_STEPS,
+                delta=(rotation, translation),
+                pose_optimizer=torch.optim.Adam(
+                    [
+                        {"params": [rotation], "lr": ALIGN_RATES[0]},
+                        {"params": [translation], "lr": ALIGN_RATES[1]},
+                    ]
+                ),
+            )
         return True
+
+    def moved(self, delta):
+        """4x4 camera-frame motion of a (rotation vector, translation) delta."""
+        torch = self.torch
+        w, t = delta
+        zero = torch.zeros((), device="cuda")
+        skew = torch.stack(
+            (
+                torch.stack((zero, -w[2], w[1])),
+                torch.stack((w[2], zero, -w[0])),
+                torch.stack((-w[1], w[0], zero)),
+            )
+        )
+        top = torch.cat((torch.linalg.matrix_exp(skew), t[:, None]), 1)
+        return torch.cat((top, torch.tensor([[0.0, 0.0, 0.0, 1.0]], device="cuda")), 0)
+
+    def align(self, a):
+        """One step of the chosen view's pose against the map as it stands."""
+        b, torch = self.backend, self.torch
+        p, target = a["p"], a["targets"][0]
+        w, h = target["size"]
+        with b.gpu_chunk("fit_forward"):
+            camera = self.moved(a["delta"]) @ target["camera"][0]
+            rendered, alpha, _ = self.rasterize(
+                means=p["means"].detach(),
+                quats=p["quats"].detach(),
+                scales=p["scales"].detach().exp(),
+                opacities=p["opacity"].detach().sigmoid(),
+                colors=p["color"].detach()[:, None],
+                sh_degree=0,
+                viewmats=camera[None],
+                Ks=target["calibration"],
+                width=w,
+                height=h,
+                packed=False,
+                near_plane=0.01,
+                far_plane=1000,
+                render_mode="RGB+ED",
+            )
+            rgb = rendered[0, ..., :3].permute(2, 0, 1)
+            observed = target["target"]
+            covered = alpha[0, ..., 0].detach() > 0.9
+            loss = ((rgb - observed).abs().mean(0) * covered).sum() / covered.sum().clamp_min(1)
+            known = target["depth"]
+            mask = covered & (known > 0)
+            if mask.any():
+                drawn = rendered[0, ..., 3]
+                loss = (
+                    loss + DEPTH_WEIGHT * ((drawn[mask] - known[mask]).abs() / known[mask]).mean()
+                )
+        with b.gpu_chunk("fit_backward"):
+            loss.backward()
+            a["pose_optimizer"].step()
+            a["pose_optimizer"].zero_grad(set_to_none=True)
+        a["align"] -= 1
+        if a["align"]:
+            return
+        with torch.no_grad():
+            rotation, translation = a["delta"]
+            angle, shift = float(rotation.norm()), float(translation.norm())
+            if angle > ALIGN_LIMIT[0] or shift > ALIGN_LIMIT[1]:
+                return
+            camera = self.moved(a["delta"]) @ target["camera"][0]
+            target["camera"] = camera[None]
+            view = target["view"]
+            view.fitting_pose = np.linalg.inv(camera.double().cpu().numpy()) @ AXES
+            self.aligned += 1
 
     def step(self):
         b, torch = self.backend, self.torch
@@ -166,6 +261,9 @@ class ViewFit:
         if ids.max() >= len(b.keys):
             self.active = None
             return False
+        if a.get("align"):
+            self.align(a)
+            return True
         target = a["targets"][a["steps"] % len(a["targets"])]
         w, h = target["size"]
         with b.gpu_chunk("fit_forward"):
@@ -262,7 +360,7 @@ class ViewFit:
         records[:, 3, 3] = old[:, 3, 3]
         written = ids[changed]
         b.records[written] = records[changed]
-        b.dirty[written] = True
+        b.refined[written] = True
         for target in a["targets"]:
             view = target["view"]
             older = b.captures[written] > view.captured
@@ -306,7 +404,7 @@ class ViewFit:
             parent_records[:, 0, :3] -= 0.5 * offset
             parent_records[:, 1, :3] /= 1.6
             b.records[parents[split]] = parent_records
-            b.dirty[parents[split]] = True
+            b.refined[parents[split]] = True
             children[split, 0, :3] += 0.5 * offset
             children[split, 1, :3] /= 1.6
         slots = free[:room]
@@ -321,5 +419,5 @@ class ViewFit:
         b.seen[slots] = b.seen[parents]
         b.captures[slots] = b.captures[parents]
         b.sequences[slots] = b.sequences[parents]
-        b.dirty[slots] = True
+        b.refined[slots] = True
         self.grown += room

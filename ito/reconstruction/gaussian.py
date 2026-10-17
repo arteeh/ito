@@ -56,6 +56,9 @@ class Observation:
     fitting_pose: np.ndarray | None = None
     refitting: bool = False
     tile_steps: np.ndarray | None = None
+    # The camera's own frame at a finer grid than image, for photometric training only.
+    photo: np.ndarray | None = None
+    photo_intrinsics: tuple | None = None
 
 
 class GaussianBackend(GaussianSlots):
@@ -220,8 +223,21 @@ class GaussianBackend(GaussianSlots):
             np.where(covered, sizes[index], 0),
         )
 
-    def observe(self, points, image, valid, camera, intrinsics, now, *, node=None, registered=True):
-        """registered: the camera pose was aligned to retained views (or is given)."""
+    def observe(
+        self,
+        points,
+        image,
+        valid,
+        camera,
+        intrinsics,
+        now,
+        *,
+        node=None,
+        registered=True,
+        photo=None,
+    ):
+        """registered: the camera pose was aligned to retained views (or is given).
+        photo: (the camera's frame at a finer grid, its intrinsics) for training."""
         points = np.asarray(points, np.float32)
         height, width = image.shape[:2]
         points = points.reshape(height, width, 3)
@@ -298,7 +314,7 @@ class GaussianBackend(GaussianSlots):
         farthest = maximum_filter(depth, size=3)
         missing &= ~((depth > closest * EDGE) & (depth * EDGE < farthest))
         self.seed(points, image, depth, missing, camera, intrinsics, now)
-        self.keep_view(camera, image, depth, intrinsics, node)
+        self.keep_view(camera, image, depth, intrinsics, node, photo)
 
     def seed(self, points, image, depth, missing, camera, intrinsics, now):
         height, width = depth.shape
@@ -394,7 +410,7 @@ class GaussianBackend(GaussianSlots):
         owners = set(self.owners[self.keys >= 0])
         self.anchors = {k: v for k, v in self.anchors.items() if k in owners}
 
-    def keep_view(self, camera, image, depth, intrinsics, node):
+    def keep_view(self, camera, image, depth, intrinsics, node, photo=None):
         if self.views and self.source_captured - self.views[-1].captured < 0.5:
             return
         self.views.append(
@@ -409,6 +425,8 @@ class GaussianBackend(GaussianSlots):
                 estimated_pose=getattr(self, "observation_estimate", camera).copy(),
                 estimated_map_pose=getattr(self, "observation_map_estimate", camera).copy(),
                 fitting_pose=camera.copy(),
+                photo=None if photo is None else photo[0],
+                photo_intrinsics=None if photo is None else photo[1],
             )
         )
         if len(self.views) > MAX_VIEWS:

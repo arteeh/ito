@@ -15,6 +15,7 @@ SLOT_FIELDS = {
     "retiring": (bool, False, ()),
     "pressure_victims": (bool, False, ()),
     "dirty": (bool, False, ()),
+    "refined": (bool, False, ()),  # changed by training: publishes after dirty slots
     "retire_revision": (np.float64, np.inf, ()),
     "release_after": (np.float64, np.inf, ()),
     "sequences": (np.uint64, 0, ()),
@@ -143,6 +144,7 @@ class GaussianSlots:
             self.release_after[accepted], now + self.fade + 0.05
         )
         expired = (self.keys >= 0) & self.retiring & (self.release_after <= now)
+        self.refined[expired] = False
         self.keys[expired] = -1
         self.sequences[expired] = 0
         self.records[expired] = 0
