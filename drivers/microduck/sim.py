@@ -71,6 +71,7 @@ def simulation(
     imu_noise=1.0,
     tof_noise=1.0,
     seed=0,
+    idle=True,
 ):
     camera_height = camera_height or lens.DEFAULT_HEIGHT
     head_imu = True if head_imu is None else head_imu
@@ -167,6 +168,9 @@ def simulation(
                 raise FileNotFoundError(path)
             lines.append(f"{name} = {json.dumps(str(path))}")
         lines += ["[head_imu]", f"enabled = {str(head_imu).lower()}"]
+        # robotd's idle look-around glances at random: off, a scripted session's camera
+        # starts where it was put.
+        lines += ["[idle]", f"enabled = {str(idle).lower()}"]
         params.write_text("\n".join(lines) + "\n")
         source_scene = rl / "src/mjlab_microduck/robot/microduck/scene.xml"
         for asset in source_scene.parent.iterdir():
@@ -400,6 +404,12 @@ def main():
         "--tof-noise", type=float, default=1.0, help="ToF datasheet noise ratio (0: exact)"
     )
     parser.add_argument("--seed", type=int, default=0, help="sensor noise seed")
+    parser.add_argument(
+        "--no-idle",
+        dest="idle",
+        action="store_false",
+        help="no idle look-around: the head stays put until someone steers it",
+    )
     parser.add_argument("--viewer", action="store_true", help="open Pollen's MuJoCo viewer")
     parser.add_argument("--gl", choices=("osmesa", "egl", "glfw"))
     parser.add_argument(
@@ -447,6 +457,7 @@ def main():
             imu_noise=args.imu_noise,
             tof_noise=args.tof_noise,
             seed=args.seed,
+            idle=args.idle,
         ) as sim:
             addresses = [args.host]
             if args.host == "0.0.0.0":

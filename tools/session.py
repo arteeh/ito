@@ -251,6 +251,8 @@ def main():
             "--pairing-file",
             str(out / "pairing-code"),
             *(["--viewer"] if args.viewer else []),
+            # Idle glances are random: a scripted run starts with the head where it was put.
+            "--no-idle",
             # The head camera's fisheye is several pinhole renders a frame: llvmpipe, on a CPU
             # shared with the physics and the encoder, held it near 20 fps. WSLg's GPU keeps 30.
             *(["--gl", "glfw"] if not args.viewer and WSLG.exists() else []),
