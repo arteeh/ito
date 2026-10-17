@@ -224,6 +224,7 @@ class SLAMBackend(GaussianBackend):
             cloud.intrinsics,
             when,
             node=node,
+            registered=self.registration.matched,
         )
 
 

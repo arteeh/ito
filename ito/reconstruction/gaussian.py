@@ -14,7 +14,13 @@ from dataclasses import dataclass
 from importlib.util import find_spec
 
 import numpy as np
-from scipy.ndimage import binary_opening, distance_transform_edt, median_filter, minimum_filter
+from scipy.ndimage import (
+    binary_opening,
+    distance_transform_edt,
+    maximum_filter,
+    median_filter,
+    minimum_filter,
+)
 from scipy.spatial.transform import Rotation
 
 from .slots import KEEP, GaussianSlots
@@ -26,6 +32,7 @@ COVERED = 0.85  # Rendered opacity above which a pixel is explained by the map.
 BLEND = 0.2  # Colour difference below which a view's light refines a surface's colour.
 BLENDED = 8192  # At most this many colour refinements per observation.
 MAX_ELONGATION = 10.0  # Longest seed axis over its pixel footprint (grazing floors).
+EDGE = 1.08  # Depth ratio to both neighbours that marks a pixel as between two surfaces.
 COARSE = 4.5  # Pixels: a mapped Gaussian this large is refined by the view (seeds are ~2).
 AXES = np.diag([1.0, -1.0, -1.0, 1.0])  # Ito camera (-Z forward, +Y up) to OpenCV.
 
@@ -205,7 +212,8 @@ class GaussianBackend(GaussianSlots):
             np.where(covered, sizes[index], 0),
         )
 
-    def observe(self, points, image, valid, camera, intrinsics, now, *, node=None):
+    def observe(self, points, image, valid, camera, intrinsics, now, *, node=None, registered=True):
+        """registered: the camera pose was aligned to retained views (or is given)."""
         points = np.asarray(points, np.float32)
         height, width = image.shape[:2]
         points = points.reshape(height, width, 3)
@@ -215,6 +223,7 @@ class GaussianBackend(GaussianSlots):
         depth = np.where(valid, -points[..., 2], 0)
         ids, z, u, v = self.centers(camera, intrinsics, depth.shape)
         alpha, mapped, size = self.render(camera, intrinsics, depth.shape, ids, z, u, v)
+        closest = minimum_filter(np.where(valid, depth, np.inf), size=3)
         # The same surface drawn with Gaussians much larger than this view's pixels: a
         # closer view replaces them with finer ones. Resolution only ever increases.
         coarse = (alpha >= COVERED) & (size > COARSE)
@@ -231,7 +240,7 @@ class GaussianBackend(GaussianSlots):
             agree = shown & (observed > 0) & (np.abs(observed - z) <= tolerance)
             # Seen through only if no pixel around its centre sees it: a silhouette a
             # pixel off is not free space.
-            nearest = minimum_filter(np.where(valid, depth, np.inf), size=3)[pv, pu]
+            nearest = closest[pv, pu]
             through = np.isfinite(nearest) & (nearest > z + tolerance)
             supported = ids[agree]
             self.support[supported] = np.minimum(self.support[supported] + 1, 1000)
@@ -271,9 +280,15 @@ class GaussianBackend(GaussianSlots):
                 self.retire(gone)
         tolerance = DEPTH_TOLERANCE * mapped
         ahead = valid & (alpha >= COVERED) & (depth < mapped - tolerance)
-        # A sliver beside a silhouette is misalignment, not a new surface in front.
-        ahead = binary_opening(ahead, np.ones((3, 3), bool))
+        # A sliver beside a silhouette is misalignment, not a new surface in front. An
+        # observation not aligned to the map may place a known object beside itself:
+        # it fills holes but lays nothing over mapped surfaces.
+        ahead = binary_opening(ahead, np.ones((3, 3), bool)) & registered
         missing = valid & ((alpha < COVERED) | ahead | coarse)
+        # Learned depth ramps across a silhouette; a pixel between its neighbours'
+        # nearest and farthest surface belongs to neither and would seed a streak.
+        farthest = maximum_filter(depth, size=3)
+        missing &= ~((depth > closest * EDGE) & (depth * EDGE < farthest))
         self.seed(points, image, depth, missing, camera, intrinsics, now)
         self.keep_view(camera, image, depth, intrinsics, node)
 
