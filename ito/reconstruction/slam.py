@@ -198,6 +198,13 @@ class SLAMBackend(GaussianBackend):
             ranged = self.sensors.range_scale(cloud, exposure, self.motion)
             if ranged is not None:
                 seen.append((math.log(ranged), RANGE_SIGMA))
+            if COMPARE:
+                # Each scale source beside the one exact depth would give, metres per unit.
+                self.depth_scales = dict(floor=below, tof=ranged)
+                if truth is not None and truth[2] is not None:
+                    unscaled = -cloud.points[:, 2].reshape(cloud.shape).float().cpu().numpy()
+                    valid = cloud.valid.reshape(cloud.shape).cpu().numpy()
+                    self.depth_scales["exact"] = scale_to(truth[2], np.where(valid, unscaled, 0))
             for value, sigma in seen:
                 graph.add_scale(value, sigma)
             if seen:
