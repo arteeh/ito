@@ -7,7 +7,14 @@ from scipy.ndimage import maximum_filter, minimum_filter
 from ito import clock
 
 from .align import to_map
-from .depth import MapFrontend, MultiViewDepth, nearest_views, scale_to
+from .depth import (
+    MapFrontend,
+    MonoGeometry,
+    MultiViewDepth,
+    nearest_views,
+    resample,
+    scale_to,
+)
 from .fusion import UP, PoseGraph
 from .gaussian import GaussianBackend
 from .motion import MotionBuffer
@@ -38,6 +45,8 @@ SILHOUETTE = 0.1  # depth span over 5x5 pixels, of depth, that marks a silhouett
 # ITO_TRUTH=compare (a diagnostic): map the network's depth, but log its scale against the
 # simulator's exact depth in the timeline.
 COMPARE = os.environ.get("ITO_TRUTH") == "compare"
+# ITO_DEPTH=moge maps MoGe-2's single-image depth (depth.py MonoGeometry) at MASt3R's metric
+# scale for the frame: its walls and silhouettes, MASt3R's scale and tracking.
 # Experiments, developer-only: ITO_DEPTH=da3 maps depth.py's multi-view depth, each frame
 # laid onto the map's surfaces (align.py), instead of MASt3R's pairwise depth. ITO_TRACKER=map
 # also drops the MASt3R tracker: frames are placed by the robot's motion and the map alone.
@@ -122,6 +131,7 @@ class SLAMBackend(GaussianBackend):
         self.retired_keyframes = 0
         self.truth = None
         self.depth = MultiViewDepth() if DEPTH == "da3" else None
+        self.mono = MonoGeometry() if DEPTH == "moge" else None
         self.consensus = None
         if CONSENSUS:
             from .consensus import Consensus
@@ -242,6 +252,8 @@ class SLAMBackend(GaussianBackend):
                 cloud = self.with_depth(cloud, truth[2])
             elif self.depth is not None:
                 cloud = self.consistent(cloud, graph.pose(node), exposure)
+            elif self.mono is not None:
+                cloud = self.monocular(cloud, rgb)
             if COMPARE and truth is not None and truth[2] is not None:
                 depth = -cloud.points[:, 2].reshape(cloud.shape).float().cpu().numpy()
                 valid = cloud.valid.reshape(cloud.shape).cpu().numpy()
@@ -309,6 +321,32 @@ class SLAMBackend(GaussianBackend):
         )
         self.depth_scales = found | dict(scale=scale)
         return self.with_depth(cloud, depth * scale)
+
+    def monocular(self, cloud, rgb):
+        """The cloud with MoGe-2's depth for the frame, at the scale MASt3R's depth has (the
+        median ratio over pixels both have)."""
+        rows, columns = cloud.shape
+        valid = cloud.valid.reshape(rows, columns).cpu().numpy()
+        mast3r = np.where(
+            valid, -cloud.points[:, 2].reshape(rows, columns).float().cpu().numpy(), 0
+        )
+        i = self.intrinsics
+        fov = math.degrees(2 * math.atan(i.width / 2 / i.fx))
+        with self.gpu_chunk("depth"):
+            depth = self.mono(rgb, fov, (2 * columns, 2 * rows))
+        both = (mast3r > 0) & (resample(depth, mast3r.shape) > 0)
+        if both.sum() < 0.2 * both.size:
+            return cloud
+        scale = scale_to(mast3r, resample(depth, mast3r.shape))
+        if scale is None:
+            return cloud
+        depth = depth * scale
+        # Even sharp single-image depth ramps over a pixel or two at a silhouette.
+        span = maximum_filter(depth, size=3) - minimum_filter(depth, size=3)
+        depth = np.where(span > SILHOUETTE * depth, 0, depth)
+        if COMPARE:
+            self.depth_scales["mono"] = scale
+        return self.with_depth(cloud, depth)
 
     def with_depth(self, cloud, depth):
         """The cloud with this axial depth (metres, covering the whole frame at any size) in

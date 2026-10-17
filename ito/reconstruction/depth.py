@@ -62,6 +62,43 @@ class MultiViewDepth:
         return output.depth[0].float().cpu().numpy()
 
 
+MOGE = MODELS / "moge"  # MoGe-2 source, utils3d-moge and ViT-B weights, from ito.build
+MOGE_TOKENS = 1800  # the ViT's patch tokens: about 1024 x 576 for a 16:9 frame
+
+
+class MonoGeometry:
+    """One frame's depth from MoGe-2 (ViT-B, MIT): a single-image geometry network whose
+    surfaces stay put across low-texture walls and stop at silhouettes, where a pairwise
+    matcher smears. Its metric scale is a guess; callers scale it to theirs."""
+
+    def __init__(self):
+        import torch
+
+        if not (MOGE / "model.pt").is_file():
+            raise RuntimeError(
+                f"MoGe-2 missing from {MOGE}: rebuild the models with python -m ito.build"
+            )
+        if str(MOGE) not in sys.path:
+            sys.path.insert(0, str(MOGE))
+        from moge.model.v2 import MoGeModel
+
+        self.torch = torch
+        self.net = MoGeModel.from_pretrained(str(MOGE / "model.pt")).to("cuda").eval()
+
+    def __call__(self, rgb, fov_x, size):
+        """Depth (size[1] x size[0], metres up to an unknown scale, 0: none) of an RGB frame
+        whose horizontal field of view is fov_x degrees."""
+        import cv2
+
+        torch = self.torch
+        image = cv2.resize(rgb, size, interpolation=cv2.INTER_AREA)
+        x = torch.as_tensor(image, device="cuda").permute(2, 0, 1).float() / 255
+        with torch.inference_mode():
+            out = self.net.infer(x, fov_x=fov_x, num_tokens=MOGE_TOKENS, use_fp16=True)
+        depth = out["depth"].float()
+        return torch.nan_to_num(depth, nan=0, posinf=0, neginf=0).cpu().numpy()
+
+
 def nearest_views(views, pose, count):
     """Retained views facing most like pose, and nearest it."""
     scored = []

@@ -26,6 +26,11 @@ DEPTH_FILES = {
     "model.safetensors": "e01067dc1659613083d9145a9a2547ccdbe6ccbbf83c4fe7b3e8a4e2bdae78b5",
     "config.json": "5e34115ebc17bd2d8d43033c5f72e9446ac8833fd61d3fa160b7e67e0bb5b7b5",
 }
+MOGE_REV = "74fbce054ebed49800de42d0ad0e83495065719a"
+UTILS3D_REV = "62f09d58509485564e24d5d9f6aac9ee9ebc0c37"
+MOGE_MODEL = "Ruicheng/moge-2-vitb-normal"
+MOGE_MODEL_REV = "ca5f0e07ff01d3e5a364c1d954ed12ee1814b368"
+MOGE_FILES = {"model.pt": "16b8110e86d5dc5a849db120ca96ef3a223fd30b0c9146d1d81db504073da5f6"}
 
 
 def report(message, progress=-1):
@@ -305,19 +310,80 @@ def depth_bundle(cache, work):
     )
 
 
+def moge_bundle(cache, work):
+    """models/moge (ito/reconstruction/depth.py, MonoGeometry): MoGe-2's model code and
+    utils3d-moge (both MIT) and the MoGe-2 ViT-B weights (MIT)."""
+    root = source(
+        cache,
+        work,
+        "moge-source",
+        f"https://codeload.github.com/microsoft/MoGe/tar.gz/{MOGE_REV}",
+        "cc6f3525cec7694b97d6d9af7d8854f546cda082f3abc944be17dfb6ad892309",
+        report,
+    )
+    utils = source(
+        cache,
+        work,
+        "utils3d-source",
+        f"https://codeload.github.com/EasternJournalist/utils3d-moge/tar.gz/{UTILS3D_REV}",
+        "a6917f2e641b1221daf2e2df06f4605e1754defa07abf4059fc514ddbebffc68",
+        report,
+    )
+    moge = cache / "moge"
+    if moge.exists():
+        shutil.rmtree(moge)
+    shutil.copytree(
+        root / "moge",
+        moge / "moge",
+        ignore=shutil.ignore_patterns(
+            "scripts", "train", "test", "gradio_3d_viewer", "__pycache__"
+        ),
+    )
+    shutil.copytree(
+        utils / "utils3d_moge", moge / "utils3d_moge", ignore=shutil.ignore_patterns("__pycache__")
+    )
+    shutil.copy2(root / "LICENSE", moge / "LICENSE")
+    shutil.copy2(utils / "LICENSE", moge / "LICENSE-utils3d")
+    shutil.rmtree(root)
+    shutil.rmtree(utils)
+    for name, digest in MOGE_FILES.items():
+        download(
+            f"https://huggingface.co/{MOGE_MODEL}/resolve/{MOGE_MODEL_REV}/{name}",
+            moge / name,
+            report,
+            f"MoGe-2 ViT-B {name} (MIT)",
+            digest,
+        )
+    (moge / "ATTRIBUTION.txt").write_text(
+        f"MoGe, Microsoft. Code revision {MOGE_REV}, https://github.com/microsoft/MoGe (MIT;\n"
+        "its DINOv2 code, moge/model/dinov2, Apache-2.0).\n"
+        f"utils3d-moge revision {UTILS3D_REV}, https://github.com/EasternJournalist/utils3d-moge"
+        " (MIT).\n"
+        f"{MOGE_MODEL} revision {MOGE_MODEL_REV}, "
+        f"https://huggingface.co/{MOGE_MODEL}/tree/{MOGE_MODEL_REV} (MIT).\n",
+        encoding="utf-8",
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=MODELS, help="release models directory")
     parser.add_argument(
         "--depth-only", action="store_true", help="only (re)fetch the depth model into it"
     )
+    parser.add_argument(
+        "--moge-only", action="store_true", help="only (re)fetch the MoGe-2 model into it"
+    )
     args = parser.parse_args()
     cache = args.output.resolve()
     work = Path(__file__).resolve().parents[1] / ".slam-build"
     cache.mkdir(parents=True, exist_ok=True)
     work.mkdir(parents=True, exist_ok=True)
-    if args.depth_only:
-        depth_bundle(cache, work)
+    if args.depth_only or args.moge_only:
+        if args.depth_only:
+            depth_bundle(cache, work)
+        if args.moge_only:
+            moge_bundle(cache, work)
         return
     manifest = cache / "manifest.json"
     manifest.unlink(missing_ok=True)
@@ -397,6 +463,7 @@ def main():
         encoding="utf-8",
     )
     depth_bundle(cache, work)
+    moge_bundle(cache, work)
     if (cache / "native").exists():
         shutil.rmtree(cache / "native")
     native, torch_version = compile_extensions(cache, work)
