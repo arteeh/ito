@@ -68,6 +68,9 @@ GRAPH_SCALE = os.environ.get("ITO_SCALE", "frame") == "graph"
 # from ToF and floor scatters by several percent, and a pot seen at 2.4 m from one frame and
 # again later lands twice, 15 cm apart; the map's own scale stays one scale.
 MAPSCALE = os.environ.get("ITO_MAPSCALE", "0") != "0"
+# Nothing is mapped until fusion has this many ToF or floor scale readings: the first seconds'
+# scale swung from 7% short to 10% long in the sim, and what they mapped stays.
+SCALE_SETTLED = int(os.environ.get("ITO_SCALE_SETTLED", "0"))
 MAPSCALE_COVERED = 0.3
 MAPSCALE_RANGE = (0.85, 1.15)
 # ITO_REFINE=1 lays each frame onto the map photometrically before mapping it (training.py
@@ -144,6 +147,7 @@ class SLAMBackend(GaussianBackend):
         self.retired_keyframes = 0
         self.truth = None
         self.pose_error = None
+        self.scale_readings = 0
         self.depth = MultiViewDepth() if DEPTH == "da3" else None
         self.mono = MonoGeometry() if DEPTH == "moge" else None
         self.refine = None
@@ -236,6 +240,7 @@ class SLAMBackend(GaussianBackend):
                     self.depth_scales["exact"] = scale_to(truth[2], np.where(valid, unscaled, 0))
             for value, sigma in seen:
                 graph.add_scale(value, sigma)
+                self.scale_readings += 1
             if seen:
                 graph.solve_scale()
                 weights = [sigma**-2 for _, sigma in seen]
@@ -294,7 +299,9 @@ class SLAMBackend(GaussianBackend):
                 graph.solve_frame()
                 self.aligned += 1
         pose = self._publish(node)
-        if cloud is not None:
+        settled = self.scale_readings >= SCALE_SETTLED or self.tracked > 4 * SCALE_SETTLED
+        exact = truth is not None and truth[2] is not None and not COMPARE
+        if cloud is not None and (settled or exact):
             self.place(cloud, pose, now + clock.now() - started, node=node, rgb=rgb)
 
     def consistent(self, cloud, pose, exposure):
