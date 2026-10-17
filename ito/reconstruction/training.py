@@ -12,6 +12,7 @@ writes back only those still live and visibly changed, which then publish like a
 
 import math
 import os
+import time
 
 import numpy as np
 
@@ -79,6 +80,7 @@ class ViewFit:
         self.pruned = 0
         self.aligned = 0
         self.filled = 0
+        self.seconds = dict(prepare=0.0, finish=0.0)  # CPU time outside the Adam steps
 
     def tensor(self, value, dtype=None):
         torch = self.torch
@@ -313,8 +315,12 @@ class ViewFit:
 
     def step(self):
         b, torch = self.backend, self.torch
-        if self.active is None and not self.prepare():
-            return False
+        if self.active is None:
+            began = time.perf_counter()
+            prepared = self.prepare()
+            self.seconds["prepare"] += time.perf_counter() - began
+            if not prepared:
+                return False
         a = self.active
         ids, p = a["ids"], a["p"]
         if ids.max() >= len(b.keys):
@@ -386,7 +392,9 @@ class ViewFit:
         if a["steps"] < STEPS:
             return True
         self.active = None
+        began = time.perf_counter()
         self.finish(a)
+        self.seconds["finish"] += time.perf_counter() - began
         return True
 
     def finish(self, a):

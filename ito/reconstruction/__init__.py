@@ -297,7 +297,7 @@ def _run(recon):
                         on_map=getattr(backend, "aligned", None),
                         training={
                             k: getattr(backend.fitter, k)
-                            for k in ("units", "grown", "pruned", "aligned", "filled")
+                            for k in ("units", "grown", "pruned", "aligned", "filled", "seconds")
                             if hasattr(backend.fitter, k)
                         }
                         if getattr(backend, "fitter", None) is not None
