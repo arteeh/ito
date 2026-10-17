@@ -32,8 +32,9 @@ CHANGED = (1e-4, 1 / 255)  # metres, colour: smaller changes are not worth publi
 # ITO_FIT_POSES=1: before training, align the unit's chosen view to the map photometrically
 # (the map held still) and train from that pose: the view stops pulling surfaces off-place.
 POSES = os.environ.get("ITO_FIT_POSES", "0") != "0"
-ALIGN_STEPS = 12
-ALIGN_RATES = (3e-4, 2e-4)  # radians, metres per Adam step
+ALIGN_STEPS = 25
+ALIGN_RATES = (1.5e-3, 1.5e-3)  # radians, metres per Adam step at first, decaying tenfold
+ALIGN_COVERED = 0.3  # of the view the map must cover to align it
 ALIGN_LIMIT = (math.radians(3), 0.05)  # a larger correction is a mismatch, not an alignment
 
 
@@ -170,7 +171,7 @@ class ViewFit:
             seen=torch.zeros(len(ids), device="cuda"),
             pixels=torch.zeros(len(ids), device="cuda"),
         )
-        if POSES and view.steps > 0:
+        if POSES:
             rotation = torch.nn.Parameter(torch.zeros(3, device="cuda"))
             translation = torch.nn.Parameter(torch.zeros(3, device="cuda"))
             self.active |= dict(
@@ -226,6 +227,9 @@ class ViewFit:
             rgb = rendered[0, ..., :3].permute(2, 0, 1)
             observed = target["target"]
             covered = alpha[0, ..., 0].detach() > 0.9
+            if a["align"] == ALIGN_STEPS and float(covered.float().mean()) < ALIGN_COVERED:
+                a["align"] = 0
+                return
             loss = ((rgb - observed).abs().mean(0) * covered).sum() / covered.sum().clamp_min(1)
             known = target["depth"]
             mask = covered & (known > 0)
@@ -236,6 +240,9 @@ class ViewFit:
                 )
         with b.gpu_chunk("fit_backward"):
             loss.backward()
+            done = 1 - a["align"] / ALIGN_STEPS
+            for group, rate in zip(a["pose_optimizer"].param_groups, ALIGN_RATES, strict=True):
+                group["lr"] = rate * 0.1**done
             a["pose_optimizer"].step()
             a["pose_optimizer"].zero_grad(set_to_none=True)
         a["align"] -= 1
