@@ -49,7 +49,9 @@ SILHOUETTE = 0.1  # depth span over 5x5 pixels, of depth, that marks a silhouett
 # simulator's exact depth in the timeline.
 COMPARE = os.environ.get("ITO_TRUTH") == "compare"
 # ITO_DEPTH=moge maps MoGe-2's single-image depth (depth.py MonoGeometry) at MASt3R's metric
-# scale for the frame: its walls and silhouettes, MASt3R's scale and tracking.
+# scale for the frame: its walls and silhouettes, MASt3R's scale and tracking. ITO_DEPTH=hybrid
+# keeps MASt3R's depth wherever it is within HYBRID_AGREE of MoGe-2's, MoGe-2's elsewhere.
+HYBRID_AGREE = 0.08
 # Experiments, developer-only: ITO_DEPTH=da3 maps depth.py's multi-view depth, each frame
 # laid onto the map's surfaces (align.py), instead of MASt3R's pairwise depth. ITO_TRACKER=map
 # also drops the MASt3R tracker: frames are placed by the robot's motion and the map alone.
@@ -149,7 +151,7 @@ class SLAMBackend(GaussianBackend):
         self.pose_error = None
         self.scale_readings = 0
         self.depth = MultiViewDepth() if DEPTH == "da3" else None
-        self.mono = MonoGeometry() if DEPTH == "moge" else None
+        self.mono = MonoGeometry() if DEPTH in ("moge", "hybrid") else None
         self.refine = None
         if REFINE:
             from .training import FrameAlign
@@ -367,6 +369,12 @@ class SLAMBackend(GaussianBackend):
         if scale is None:
             return cloud
         depth = depth * scale
+        if DEPTH == "hybrid":
+            # MASt3R's own depth where the two agree (its detail up close, where it is sharper),
+            # MoGe-2's where they do not (walls, far surfaces, the bleed around silhouettes).
+            mast3r_fine = resample(mast3r, depth.shape)
+            agree = (mast3r_fine > 0) & (np.abs(mast3r_fine - depth) < HYBRID_AGREE * depth)
+            depth = np.where(agree, mast3r_fine, depth)
         # Even sharp single-image depth ramps over a pixel or two at a silhouette.
         span = maximum_filter(depth, size=3) - minimum_filter(depth, size=3)
         depth = np.where(span > SILHOUETTE * depth, 0, depth)
