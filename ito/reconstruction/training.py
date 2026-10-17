@@ -161,31 +161,57 @@ class ViewFit:
         scored.sort(key=lambda item: item[0])
         return [other for _, other in scored[:PARTNERS]]
 
+    def visible(self, centers, reach, pose, intrinsics, shape):
+        """Mask of centers (N x 3, map frame, on CUDA) whose footprint (reach, metres) falls in
+        a camera's frame."""
+        fx, fy, cx, cy = intrinsics
+        height, width = shape
+        local = (centers - self.tensor(pose[:3, 3])) @ self.tensor(pose[:3, :3])
+        z = -local[:, 2]
+        safe = z.clamp_min(0.01)
+        u = cx + fx * local[:, 0] / safe
+        v = cy - fy * local[:, 1] / safe
+        r = 3 * fx * reach / safe
+        inside = (z > 0.01) & (u > -r) & (u < width + r) & (v > -r) & (v < height + r)
+        return inside
+
     def prepare(self):
-        b = self.backend
-        if not b.views or not b.count:
+        """Pick a view and its partners and copy the Gaussians they see. The map's lock is held
+        only to copy; projecting, uploading and filling holes run beside tracking."""
+        b, torch = self.backend, self.torch
+        with b.lock:
+            if not b.views or not b.count:
+                return False
+            view = self.choose()
+            targets = [view, *self.partners(view)]
+            live = np.flatnonzero((b.keys >= 0) & ~b.retiring)
+            snapshot = b.records[live].copy()
+            keys = b.keys[live].copy()
+        if not len(live):
             return False
-        view = self.choose()
+        centers = self.tensor(snapshot[:, 0, :3])
+        reach = self.tensor(snapshot[:, 1, :3].max(-1))
         if view.raw_depth is not None and len(b.views) > view.filled:
-            self.fill(view)
-        targets = [view, *self.partners(view)]
-        chosen = []
+            self.fill(view, snapshot, centers, reach)
+        seen = torch.zeros(len(live), dtype=torch.bool, device="cuda")
         for observation in targets:
             pose = (
                 observation.fitting_pose
                 if observation.fitting_pose is not None
                 else observation.pose
             )
-            ids, *_ = b.centers(pose, observation.intrinsics, observation.depth.shape)
-            chosen.append(ids)
-        ids = np.unique(np.concatenate(chosen))
-        if not len(ids):
+            seen |= self.visible(
+                centers, reach, pose, observation.intrinsics, observation.depth.shape
+            )
+        chosen = torch.nonzero(seen)[:, 0].cpu().numpy()
+        if not len(chosen):
             view.steps += STEPS
             return False
-        if len(ids) > MAX_UNIT:
-            ids = np.sort(np.random.default_rng(self.serial).choice(ids, MAX_UNIT, replace=False))
-        torch = self.torch
-        original = self.tensor(b.records[ids].copy())
+        if len(chosen) > MAX_UNIT:
+            rng = np.random.default_rng(self.serial)
+            chosen = np.sort(rng.choice(chosen, MAX_UNIT, replace=False))
+        ids = live[chosen]
+        original = self.tensor(snapshot[chosen])
         p = {
             "means": torch.nn.Parameter(original[:, 0, :3].clone()),
             "scales": torch.nn.Parameter(original[:, 1, :3].clamp_min(1e-6).log()),
@@ -223,8 +249,9 @@ class ViewFit:
             )
         self.active = dict(
             ids=ids,
-            keys=b.keys[ids].copy(),
+            keys=keys[chosen],
             original=original,
+            snapshot=snapshot[chosen],
             p=p,
             optimizer=optimizer,
             targets=prepared,
@@ -248,49 +275,66 @@ class ViewFit:
             )
         return True
 
-    def fill(self, view):
+    def fill(self, view, snapshot, centers, reach):
         """Seed what the retained views now agree on where the map shows nothing."""
         from .consensus import agreed
 
         b, torch = self.backend, self.torch
-        view.filled = len(b.views)
-        pose = view.fitting_pose if view.fitting_pose is not None else view.pose
-        scored = []
-        for other in b.views:
-            if other is view:
-                continue
-            o = other.fitting_pose if other.fitting_pose is not None else other.pose
-            cosine = float(o[:3, 2] @ pose[:3, 2])
-            distance = float(np.linalg.norm(o[:3, 3] - pose[:3, 3]))
-            if cosine > 0.5 and distance < 1.5:
-                scored.append((1 - cosine + 0.2 * distance, other))
-        scored.sort(key=lambda item: item[0])
-        references = [
-            (
-                o.raw_depth if o.raw_depth is not None else o.depth,
-                o.fitting_pose if o.fitting_pose is not None else o.pose,
-                o.intrinsics,
-            )
-            for _, o in scored[:FILL_REFERENCES]
-        ]
+        with b.lock:
+            view.filled = len(b.views)
+            pose = view.fitting_pose if view.fitting_pose is not None else view.pose
+            scored = []
+            for other in b.views:
+                if other is view:
+                    continue
+                o = other.fitting_pose if other.fitting_pose is not None else other.pose
+                cosine = float(o[:3, 2] @ pose[:3, 2])
+                distance = float(np.linalg.norm(o[:3, 3] - pose[:3, 3]))
+                if cosine > 0.5 and distance < 1.5:
+                    scored.append((1 - cosine + 0.2 * distance, other))
+            scored.sort(key=lambda item: item[0])
+            references = [
+                (
+                    o.raw_depth if o.raw_depth is not None else o.depth,
+                    o.fitting_pose if o.fitting_pose is not None else o.pose,
+                    o.intrinsics,
+                )
+                for _, o in scored[:FILL_REFERENCES]
+            ]
         if not references:
             return
         with self.chunk("consensus"):
             depth, _ = agreed(view.raw_depth, pose, view.intrinsics, references, torch)
         shape = depth.shape
-        ids, z, u, v = b.centers(pose, view.intrinsics, shape)
-        alpha, _, _ = b.render(pose, view.intrinsics, shape, ids, z, u, v)
-        holes = (alpha < FILL_ALPHA) & (depth > 0)
+        inside = self.visible(centers, reach, pose, view.intrinsics, shape)
+        drawn = torch.as_tensor(snapshot, device="cuda")[inside]
+        fx, fy, cx, cy = view.intrinsics
+        with torch.no_grad():
+            _, alpha, _ = self.rasterize(
+                means=drawn[:, 0, :3],
+                quats=drawn[:, 2],
+                scales=drawn[:, 1, :3],
+                opacities=drawn[:, 0, 3],
+                colors=drawn[:, 3, :3][:, None],
+                sh_degree=0,
+                viewmats=self.tensor(np.linalg.inv(pose @ AXES))[None],
+                Ks=self.tensor([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])[None],
+                width=shape[1],
+                height=shape[0],
+                near_plane=0.01,
+                far_plane=1000,
+            )
+        holes = (alpha[0, ..., 0].cpu().numpy() < FILL_ALPHA) & (depth > 0)
         if not holes.any():
             return
-        fx, fy, cx, cy = view.intrinsics
         rows, columns = np.mgrid[: shape[0], : shape[1]]
         points = np.stack(
             ((columns - cx) / fx * depth, -(rows - cy) / fy * depth, -depth), -1
         ).astype(np.float32)
-        before = b.count
-        b.seed(points, view.image, depth, holes, pose, view.intrinsics, view.captured)
-        self.filled += b.count - before
+        with b.lock:
+            before = b.count
+            b.seed(points, view.image, depth, holes, pose, view.intrinsics, view.captured)
+            self.filled += b.count - before
 
     def moved(self, delta):
         """4x4 camera-frame motion of a (rotation vector, translation) delta."""
@@ -369,8 +413,7 @@ class ViewFit:
         b, torch = self.backend, self.torch
         if self.active is None:
             began = time.perf_counter()
-            with b.lock:
-                prepared = self.prepare()
+            prepared = self.prepare()
             self.seconds["prepare"] += time.perf_counter() - began
             if not prepared:
                 return False
@@ -445,16 +488,17 @@ class ViewFit:
         if a["steps"] < STEPS:
             return True
         began = time.perf_counter()
-        with b.lock:
-            # A pose correction (recover()) dropped this unit while it trained: its views
-            # moved, so what it learned from them is not written back.
-            if self.active is a:
-                self.active = None
-                self.finish(a)
+        # A pose correction (recover()) dropped this unit while it trained: its views moved,
+        # so what it learned from them is not written back.
+        if self.active is a:
+            self.active = None
+            self.finish(a)
         self.seconds["finish"] += time.perf_counter() - began
         return True
 
     def finish(self, a):
+        """Write back what training changed, retire what faded, grow where the photos asked;
+        the map's lock only for the writing."""
         b, torch = self.backend, self.torch
         ids, p = a["ids"], a["p"]
         with self.chunk("fit_readback"), torch.no_grad():
@@ -468,69 +512,78 @@ class ViewFit:
             pixels = a["pixels"].cpu().numpy()
             records = records.cpu().numpy()
         self.units += 1
-        live = (ids < len(b.keys)) & ~b.retiring[np.minimum(ids, len(b.keys) - 1)]
-        live &= b.keys[np.minimum(ids, len(b.keys) - 1)] == a["keys"]
-        live &= np.isfinite(records).all(axis=(1, 2))
-        old = b.records[ids]
+        old = a["snapshot"]
+        records[:, 1, 3] = old[:, 1, 3]
+        records[:, 3, 3] = old[:, 3, 3]
+        finite = np.isfinite(records).all(axis=(1, 2))
         moved = np.linalg.norm(records[:, 0, :3] - old[:, 0, :3], axis=1) > CHANGED[0]
         recoloured = np.abs(records[:, 3, :3] - old[:, 3, :3]).max(-1) * C0 > CHANGED[1]
         reshaped = (
             np.abs(np.log(records[:, 1, :3] / np.maximum(old[:, 1, :3], 1e-9))).max(-1) > 0.02
         )
         refaded = np.abs(records[:, 0, 3] - old[:, 0, 3]) > 0.02
-        changed = live & (moved | recoloured | reshaped | refaded)
-        keep = old[:, 1, 3]
-        records[:, 1, 3] = keep
-        records[:, 3, 3] = old[:, 3, 3]
-        written = ids[changed]
-        b.records[written] = records[changed]
-        b.refined[written] = True
-        for target in a["targets"]:
-            view = target["view"]
-            older = b.captures[written] > view.captured
-            b.captures[written[older]] = view.captured
-            b.sequences[written[older]] = view.sequence
-        faded = ids[live & (records[:, 0, 3] < PRUNE_OPACITY)]
-        if len(faded):
-            b.retire(faded)
-            self.pruned += len(faded)
-        self.grow(ids[live], records[live], gradient[live], pixels[live])
+        changed = finite & (moved | recoloured | reshaped | refaded)
+        faded = finite & (records[:, 0, 3] < PRUNE_OPACITY)
+        children, parents, split_parents = self.children(records, gradient, pixels, finite)
+        with b.lock:
+            safe = np.minimum(ids, len(b.keys) - 1)
+            live = (ids < len(b.keys)) & ~b.retiring[safe] & (b.keys[safe] == a["keys"])
+            written = ids[changed & live]
+            b.records[written] = records[changed & live]
+            b.refined[written] = True
+            for target in a["targets"]:
+                view = target["view"]
+                older = b.captures[written] > view.captured
+                b.captures[written[older]] = view.captured
+                b.sequences[written[older]] = view.sequence
+            gone = ids[faded & live]
+            if len(gone):
+                b.retire(gone)
+                self.pruned += len(gone)
+            if children is not None:
+                self.grow(ids, live, records, children, parents, split_parents)
 
-    def grow(self, ids, records, gradient, pixels):
-        """Clone small Gaussians the photos keep pulling at; split large ones in two."""
-        b = self.backend
-        wanted = np.flatnonzero((gradient > GROW_GRADIENT) & (records[:, 0, 3] > 0.05))
+    def children(self, records, gradient, pixels, finite):
+        """New Gaussians where the photos kept pulling: a clone of a small one, half of a large
+        one (split along its longest axis, both halves at 1/1.6 the size). (children, parent
+        indices into the unit, which parents shrink to the other half) or Nones."""
+        wanted = np.flatnonzero(finite & (gradient > GROW_GRADIENT) & (records[:, 0, 3] > 0.05))
         if not len(wanted):
-            return
-        limit = max(1, int(GROW_SHARE * len(ids)))
+            return None, None, None
+        limit = max(1, int(GROW_SHARE * len(records)))
         wanted = wanted[np.argsort(-gradient[wanted])[:limit]]
-        free = np.flatnonzero(b.keys[: b.budget] < 0)
-        room = min(len(wanted), len(free), max(0, b.budget - b.count))
-        if room <= 0:
-            return
-        wanted = wanted[:room]
-        parents = ids[wanted]
         children = records[wanted].copy()
         split = pixels[wanted] > SPLIT_PIXELS
         if split.any():
-            # Two halves of the parent along its longest axis, each at 1/1.6 the size.
             from scipy.spatial.transform import Rotation
 
             quat = children[split, 2]
             rotation = Rotation.from_quat(quat[:, [1, 2, 3, 0]]).as_matrix()
             scales = children[split, 1, :3]
             axis = np.argmax(scales, axis=1)
-            offset = (
-                rotation[np.arange(len(axis)), :, axis]
-                * scales[np.arange(len(axis)), axis][:, None]
-            )
-            parent_records = b.records[parents[split]]
-            parent_records[:, 0, :3] -= 0.5 * offset
-            parent_records[:, 1, :3] /= 1.6
-            b.records[parents[split]] = parent_records
-            b.refined[parents[split]] = True
+            rows = np.arange(len(axis))
+            offset = rotation[rows, :, axis] * scales[rows, axis][:, None]
+            records[wanted[split], 0, :3] -= 0.5 * offset
+            records[wanted[split], 1, :3] /= 1.6
             children[split, 0, :3] += 0.5 * offset
             children[split, 1, :3] /= 1.6
+        return children, wanted, split
+
+    def grow(self, ids, live, records, children, wanted, split):
+        """Under the map's lock: add children of parents still live, and write split parents
+        as the other half (records: the unit's, where children() shrank them)."""
+        b = self.backend
+        keep = live[wanted]
+        children, wanted, split = children[keep], wanted[keep], split[keep]
+        free = np.flatnonzero(b.keys[: b.budget] < 0)
+        room = min(len(wanted), len(free), max(0, b.budget - b.count))
+        if room <= 0:
+            return
+        children, wanted, split = children[:room], wanted[:room], split[:room]
+        parents = ids[wanted]
+        if split.any():
+            b.records[parents[split]] = records[wanted[split]]
+            b.refined[parents[split]] = True
         slots = free[:room]
         b.records[slots] = children
         b.keys[slots] = np.arange(b.next_key, b.next_key + room)
