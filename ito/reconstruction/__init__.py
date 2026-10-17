@@ -293,6 +293,8 @@ def _run(recon):
                         render_backoffs=recon.admission.overruns.value,
                         input_frames_skipped=max(0, sequence - previous_sequence - 1),
                         blurred=getattr(backend, "blurred", None),
+                        depth_scales=getattr(backend, "depth_scales", None),
+                        on_map=getattr(backend, "aligned", None),
                         frame_delay_ms=round(backend.graph.td * 1000, 1)
                         if hasattr(backend, "graph")
                         else None,

@@ -29,7 +29,8 @@ log = logging.getLogger(__name__)
 # A developer diagnostic, never a setting: ITO_TRUTH=poses maps and places the eye by the
 # exact camera poses a simulator sends (FrameMetadata.true_pose) instead of the estimator's,
 # ITO_TRUTH=depth maps the simulator's exact depth instead of the network's, and
-# ITO_TRUTH=poses,depth does both. Frames without them are not mapped.
+# ITO_TRUTH=poses,depth does both. Frames without them are not mapped. ITO_TRUTH=compare
+# passes the exact depth only to be compared with the network's (slam.py).
 TRUTH = set(filter(None, os.environ.get("ITO_TRUTH", "").split(",")))
 TRACKING_LOST = 2.0
 TRACKING_STEADY = 1.0
@@ -301,11 +302,11 @@ class Pilot:
             camera = self._prior(camera, pair[1])
             if TRUTH and self.robot_first:
                 true = pair[1].true_pose
-                if true is None or ("depth" in TRUTH and true.depth is None):
+                if true is None or (TRUTH & {"depth", "compare"} and true.depth is None):
                     diagnostics.event("truth_missing", interval=1, sequence=pair[1].sequence)
                     return
                 true_depth = None
-                if "depth" in TRUTH:
+                if TRUTH & {"depth", "compare"}:
                     true_depth = np.frombuffer(true.depth.to_bytes(), "<u2").reshape(
                         true.depth.height, true.depth.width
                     ) * np.float32(0.001)

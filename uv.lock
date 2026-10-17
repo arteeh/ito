@@ -21,6 +21,15 @@ wheels = [
 ]
 
 [[package]]
+name = "addict"
+version = "2.4.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/85/ef/fd7649da8af11d93979831e8f1f8097e85e82d5bfeabc8c68b39175d8e75/addict-2.4.0.tar.gz", hash = "sha256:b3b2210e0e067a281f5646c8c5db92e99b7231ea8b0eb5f74dbdf9e259d4e494", size = 9186, upload-time = "2020-11-21T16:21:31.416Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6a/00/b08f23b7d7e1e14ce01419a467b583edbb93c6cdb8654e54a9cc579cd61f/addict-2.4.0-py3-none-any.whl", hash = "sha256:249bb56bbfd3cdc2a004ea0ff4c2b6ddc84d53bc2194761636eb314d5cfa5dfc", size = 3832, upload-time = "2020-11-21T16:21:29.588Z" },
+]
+
+[[package]]
 name = "aiohappyeyeballs"
 version = "2.7.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1012,6 +1021,7 @@ microduck = [
     { name = "opencv-python-headless" },
 ]
 slam = [
+    { name = "addict" },
     { name = "cupy-cuda12x", version = "13.6.0", source = { registry = "https://pypi.org/simple" } },
     { name = "einops" },
     { name = "filelock" },
@@ -1019,6 +1029,7 @@ slam = [
     { name = "huggingface-hub" },
     { name = "ninja" },
     { name = "nvidia-cuda-runtime-cu12", version = "12.4.127", source = { registry = "https://pypi.org/simple" } },
+    { name = "omegaconf" },
     { name = "opencv-python-headless" },
     { name = "platformdirs" },
     { name = "psutil", version = "7.1.3", source = { registry = "https://pypi.org/simple" } },
@@ -1042,6 +1053,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "addict", marker = "extra == 'slam'", specifier = "==2.4.0" },
     { name = "aiohttp", specifier = ">=3.12,<4" },
     { name = "aiortc", specifier = ">=1.14,<2" },
     { name = "cupy-cuda12x", marker = "extra == 'slam'", specifier = "==13.6.0" },
@@ -1056,6 +1068,7 @@ requires-dist = [
     { name = "ninja", marker = "extra == 'slam'", specifier = "==1.11.1.4" },
     { name = "numpy", specifier = ">=2,<3" },
     { name = "nvidia-cuda-runtime-cu12", marker = "extra == 'slam'", specifier = "==12.4.127" },
+    { name = "omegaconf", marker = "extra == 'slam'", specifier = "==2.4.0" },
     { name = "opencv-python-headless", marker = "extra == 'microduck'", specifier = "==4.11.0.86" },
     { name = "opencv-python-headless", marker = "extra == 'slam'", specifier = "==4.11.0.86" },
     { name = "platformdirs", marker = "extra == 'slam'", specifier = "==4.3.8" },
@@ -1831,6 +1844,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/06/39/471f581edbb7804b39e8063d92fc8305bdc7a80ae5c07dbe6ea5c50d14a5/nvidia_nvtx_cu12-12.4.127-py3-none-manylinux2014_aarch64.whl", hash = "sha256:7959ad635db13edf4fc65c06a6e9f9e55fc2f92596db928d169c0bb031e88ef3", size = 100417, upload-time = "2024-06-18T20:16:22.484Z" },
     { url = "https://files.pythonhosted.org/packages/87/20/199b8713428322a2f22b722c62b8cc278cc53dffa9705d744484b5035ee9/nvidia_nvtx_cu12-12.4.127-py3-none-manylinux2014_x86_64.whl", hash = "sha256:781e950d9b9f60d8241ccea575b32f5105a5baf4c2351cab5256a24869f12a1a", size = 99144, upload-time = "2024-04-03T20:56:12.406Z" },
     { url = "https://files.pythonhosted.org/packages/54/1b/f77674fbb73af98843be25803bbd3b9a4f0a96c75b8d33a2854a5c7d2d77/nvidia_nvtx_cu12-12.4.127-py3-none-win_amd64.whl", hash = "sha256:641dccaaa1139f3ffb0d3164b4b84f9d253397e38246a4f2f36728b48566d485", size = 66307, upload-time = "2024-04-03T21:02:01.959Z" },
+]
+
+[[package]]
+name = "omegaconf"
+version = "2.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pyyaml" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/cc/10/1cabf3188a4d9684a06568c7fd76f9536eede625733c8399cf1f5337b83e/omegaconf-2.4.0.tar.gz", hash = "sha256:7e219a70bea371da250285b9c01c7db027bc421722799c2cc4ff14bc4a2a753b", size = 3544508, upload-time = "2026-10-09T12:44:02.326Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4f/bd/0d9f8247b0819385213d09564eda5c52d3673313c2414d51f72883ec24cd/omegaconf-2.4.0-py3-none-any.whl", hash = "sha256:f141a664c777582405e3cc6e0545ecc79429e79f844995b1a6e71c35946a025c", size = 254152, upload-time = "2026-10-09T12:43:59.764Z" },
 ]
 
 [[package]]

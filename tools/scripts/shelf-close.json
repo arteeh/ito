@@ -1,0 +1,18 @@
+[
+  {"for": 20, "note": "connect and settle"},
+  {"for": 2, "do": "resume", "note": "resume"},
+  {"for": 6, "note": "first look at the bookshelf from the start"},
+  {"for": 7, "keys": "w", "note": "walk up to the bookshelf"},
+  {"for": 10, "note": "hold close to the books"},
+  {"for": 1, "turn": -15, "note": "look a little left along the shelf"},
+  {"for": 8, "note": "hold"},
+  {"for": 2, "turn": 15, "note": "look a little right along the shelf"},
+  {"for": 8, "note": "hold"},
+  {"for": 1, "turn": -15, "note": "back to the middle"},
+  {"for": 1, "tilt": 15, "note": "look up at the top shelf"},
+  {"for": 8, "note": "hold up"},
+  {"for": 1, "tilt": -15, "note": "level again"},
+  {"for": 20, "note": "stand still close to the books, hands off"},
+  {"for": 2, "do": "stop", "note": "stop the robot"},
+  {"for": 3, "note": "end"}
+]

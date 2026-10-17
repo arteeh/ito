@@ -1,9 +1,13 @@
 import math
+import os
 
 import numpy as np
+from scipy.ndimage import maximum_filter, minimum_filter
 
 from ito import clock
 
+from .align import to_map
+from .depth import MapFrontend, MultiViewDepth, nearest_views, scale_to
 from .fusion import UP, PoseGraph
 from .gaussian import GaussianBackend
 from .motion import MotionBuffer
@@ -25,6 +29,20 @@ FLOOR_LEVEL = 0.05
 FLOOR_SIGMA = 0.15
 RANGE_SIGMA = 0.05
 SCALE_STEP = 0.01
+REFERENCES = 2  # retained views seen together with each new frame for its depth
+VIEWS_SIGMA = 0.05  # log-scale: a retained view's metric depth, seen in the same call
+SCALE_SIGMAS = dict(tof=RANGE_SIGMA, floor=FLOOR_SIGMA)
+# A frame laid onto the map's surfaces (align.py) tells fusion where the camera was this well.
+MAP_SIGMA = np.repeat((math.radians(0.5), 0.01), 3)
+SILHOUETTE = 0.1  # depth span over 5x5 pixels, of depth, that marks a silhouette's ramp
+# ITO_TRUTH=compare (a diagnostic): map the network's depth, but log its scale against the
+# simulator's exact depth in the timeline.
+COMPARE = os.environ.get("ITO_TRUTH") == "compare"
+# Experiments, developer-only: ITO_DEPTH=da3 maps depth.py's multi-view depth, each frame
+# laid onto the map's surfaces (align.py), instead of MASt3R's pairwise depth. ITO_TRACKER=map
+# also drops the MASt3R tracker: frames are placed by the robot's motion and the map alone.
+TRACKER = os.environ.get("ITO_TRACKER", "mast3r")
+DEPTH = "da3" if TRACKER == "map" else os.environ.get("ITO_DEPTH", "mast3r")
 
 
 class SLAMBackend(GaussianBackend):
@@ -48,6 +66,8 @@ class SLAMBackend(GaussianBackend):
         aligner=None,
         **options,
     ):
+        if frontend is None and TRACKER == "map":
+            frontend = MapFrontend(intrinsics, input_resolution)
         if frontend is None:
             from .mast3r_frontend import MASt3RFrontend
 
@@ -85,6 +105,9 @@ class SLAMBackend(GaussianBackend):
         self.waiting = False
         self.retired_keyframes = 0
         self.truth = None
+        self.depth = MultiViewDepth() if DEPTH == "da3" else None
+        self.depth_scales = {}
+        self.placed = None
         from .registration import Registration
 
         self.registration = Registration()
@@ -186,15 +209,81 @@ class SLAMBackend(GaussianBackend):
             cloud = cloud._replace(
                 points=cloud.points * (scale if measured_scale is None else measured_scale)
             )
-        if cloud is not None and truth is not None and truth[2] is not None:
-            cloud = self.true_cloud(cloud, truth[2])
+            if truth is not None and truth[2] is not None and not COMPARE:
+                cloud = self.with_depth(cloud, truth[2])
+            elif self.depth is not None:
+                cloud = self.consistent(cloud, graph.pose(node), exposure)
+            if COMPARE and truth is not None and truth[2] is not None:
+                depth = -cloud.points[:, 2].reshape(cloud.shape).float().cpu().numpy()
+                valid = cloud.valid.reshape(cloud.shape).cpu().numpy()
+                self.depth_scales["true"] = scale_to(truth[2], np.where(valid, depth, 0))
+        self.placed = None
+        if cloud is not None and self.depth is not None and (truth is None or truth[0] is None):
+            rows, columns = cloud.shape
+            mapping = self.registration.map_from_estimator
+            self.placed = to_map(
+                self,
+                cloud.points.reshape(rows, columns, 3).float().cpu().numpy(),
+                cloud.valid.reshape(rows, columns).cpu().numpy(),
+                mapping @ graph.pose(node),
+                cloud.intrinsics,
+            )
+            if self.placed is not None and graph.add_map(
+                node, np.linalg.inv(mapping) @ self.placed, MAP_SIGMA
+            ):
+                graph.solve_frame()
+                self.aligned += 1
         pose = self._publish(node)
         if cloud is not None:
             self.place(cloud, pose, now + clock.now() - started, node=node)
 
-    def true_cloud(self, cloud, depth):
-        """The cloud with a simulator's exact axial depth (metres, the whole frame at any size)
-        in place of the network's, sampled at the cloud's pixels."""
+    def consistent(self, cloud, pose, exposure):
+        """The cloud with depth seen together with the retained views nearest it. Its scale
+        weighs their metric depth with the ToF's ranges and the floor below the robot's camera,
+        so the map stays metric; with none of them, MASt3R's."""
+        self.depth_scales = {}
+        rows, columns = cloud.shape
+        image = cloud.colors.reshape(rows, columns, 3).cpu().numpy()
+        references = nearest_views(
+            self.views, self.registration.map_from_estimator @ pose, REFERENCES
+        )
+        with self.gpu_chunk("depth"):
+            depths = self.depth([image] + [view.image for view in references])
+        depth = depths[0]
+        # Learned depth ramps across a silhouette; what lies on the ramp is neither surface.
+        span = maximum_filter(depth, size=5) - minimum_filter(depth, size=5)
+        depth = np.where(span > SILHOUETTE * depth, 0, depth)
+        unit = self.with_depth(cloud, depth)
+        robot = self.motion.at(exposure)
+        found = dict(
+            views=[
+                s
+                for view, d in zip(references, depths[1:], strict=True)
+                if (s := scale_to(view.depth, d)) is not None
+            ],
+            tof=self.sensors.range_scale(unit, exposure, self.motion),
+            floor=floor_scale(unit, robot[:3, :3].T @ UP, float(robot[1, 3])),
+        )
+        evidence = [(math.log(s), VIEWS_SIGMA) for s in found["views"]]
+        evidence += [(math.log(found[k]), s) for k, s in SCALE_SIGMAS.items() if found[k]]
+        if not evidence:
+            mast3r = -cloud.points[:, 2].reshape(rows, columns).float().cpu().numpy()
+            fallback = scale_to(
+                np.where(cloud.valid.reshape(rows, columns).cpu().numpy(), mast3r, 0), depths[0]
+            )
+            evidence = [(math.log(fallback), 1.0)] if fallback else []
+        if not evidence:
+            return cloud
+        weights = [sigma**-2 for _, sigma in evidence]
+        scale = math.exp(
+            sum(w * v for w, (v, _) in zip(weights, evidence, strict=True)) / sum(weights)
+        )
+        self.depth_scales = found | dict(scale=scale)
+        return self.with_depth(cloud, depth * scale)
+
+    def with_depth(self, cloud, depth):
+        """The cloud with this axial depth (metres, covering the whole frame at any size) in
+        place of the network's, sampled at the cloud's pixels."""
         height, width = cloud.shape
         fx, fy, cx, cy = cloud.intrinsics
         i = self.intrinsics
@@ -249,6 +338,8 @@ class SLAMBackend(GaussianBackend):
         if self.truth is not None and self.truth[0] is not None:
             # Registration only rescales a true pose's depth; it never moves it.
             mapped = pose
+        elif self.placed is not None:
+            mapped, scale = self.placed, 1.0
         if self.truth is not None and self.truth[2] is not None:
             scale = 1.0
         self.registration.remember(
@@ -263,6 +354,7 @@ class SLAMBackend(GaussianBackend):
             when,
             node=node,
             registered=self.registration.matched
+            or self.placed is not None
             or (self.truth is not None and self.truth[0] is not None),
         )
 

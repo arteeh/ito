@@ -196,7 +196,21 @@ class ThreadedHeadCamera(HeadCamera):
                 self.scene(kept)
                 frames.append(self.draw())
                 if i == (len(states) - 1) // 2 and TRUTH_DEPTH and self.seq % TRUTH_DEPTH == 0:
-                    exposed |= self.depth()
+                    mm = self.depth()
+                    exposed |= dict(
+                        depth_shape=list(mm.shape),
+                        depth=base64.b64encode(zlib.compress(mm.tobytes(), 1)).decode(),
+                    )
+                    if TRUTH_DUMP:
+                        np.savez(
+                            f"{TRUTH_DUMP}/{self.seq:06d}.npz",
+                            rgb=frames[-1],
+                            depth_mm=mm,
+                            **{
+                                k: np.asarray(exposed[k])
+                                for k in ("time", "position", "orientation")
+                            },
+                        )
             self.publish(frames, exposed)
             with self.lock:
                 self.seq += 1
@@ -216,7 +230,7 @@ class ThreadedHeadCamera(HeadCamera):
             next_frame += period
 
     def depth(self):
-        """The rendered scene's axial depth, about 640 wide, as truth.py's depth fields."""
+        """The rendered scene's axial depth, about 640 wide, in millimetres (0: none)."""
         self.renderer.enable_depth_rendering()
         try:
             depth = self.renderer.render()
@@ -225,11 +239,7 @@ class ThreadedHeadCamera(HeadCamera):
         step = max(1, self.width // 640)
         # Every step-th pixel, never averaged: an average across an edge is no surface.
         depth = depth[step // 2 :: step, step // 2 :: step]
-        mm = np.where(depth < 30, np.rint(depth * 1000), 0).astype("<u2")
-        return dict(
-            depth_shape=list(mm.shape),
-            depth=base64.b64encode(zlib.compress(mm.tobytes(), 1)).decode(),
-        )
+        return np.where(depth < 30, np.rint(depth * 1000), 0).astype("<u2")
 
     def next_frame(self, seen, timeout=1.0):
         with self.fresh:
@@ -276,6 +286,9 @@ class TruthHandler(socketserver.BaseRequestHandler):
 TRUTH = None
 # ITO_MICRODUCK_TRUTH_DEPTH=N: every Nth frame's truth also carries its rendered depth.
 TRUTH_DEPTH = int(os.environ.get("ITO_MICRODUCK_TRUTH_DEPTH", 0))
+# ITO_MICRODUCK_TRUTH_DUMP=DIR also saves those frames, depths and poses there (npz), for
+# judging a depth estimator offline against the exact scene.
+TRUTH_DUMP = os.environ.get("ITO_MICRODUCK_TRUTH_DUMP")
 
 
 class FrameHandler(body_server.FrameHandler):

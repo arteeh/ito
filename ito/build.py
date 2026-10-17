@@ -19,6 +19,13 @@ LIE_REV = "e7df86554156b36846008d8ddbcc4d8521a16554"
 EIGEN_REV = "bddaa99e151244402c6e804e01b970288650da6b"
 MODEL_REV = "06e7259f34c3060f322df5cb0c7b9094f57e41fc"
 MODEL = "naver/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric"
+DEPTH_REV = "3d835ec1a5802d64a8b8b15f817a1ab54809bfe4"
+DEPTH_MODEL = "depth-anything/DA3-BASE"
+DEPTH_MODEL_REV = "f4a6c9b3c95e41c82048423d3493a81ec3fa810e"
+DEPTH_FILES = {
+    "model.safetensors": "e01067dc1659613083d9145a9a2547ccdbe6ccbbf83c4fe7b3e8a4e2bdae78b5",
+    "config.json": "5e34115ebc17bd2d8d43033c5f72e9446ac8833fd61d3fa160b7e67e0bb5b7b5",
+}
 
 
 def report(message, progress=-1):
@@ -259,14 +266,59 @@ def compile_extensions(cache, work):
     return native, str(torch.__version__)
 
 
+def depth_bundle(cache, work):
+    """models/depth (ito/reconstruction/depth.py): Depth Anything 3's model code and the
+    DA3-BASE weights, both Apache-2.0."""
+    root = source(
+        cache,
+        work,
+        "depth-source",
+        f"https://codeload.github.com/ByteDance-Seed/Depth-Anything-3/tar.gz/{DEPTH_REV}",
+        "98aa2dd53ab44b96cef5190ae4841c6ae51797d099b784e08e12a1a55bd3a69b",
+        report,
+    )
+    depth = cache / "depth"
+    if depth.exists():
+        shutil.rmtree(depth)
+    shutil.copytree(
+        root / "src/depth_anything_3",
+        depth / "depth_anything_3",
+        ignore=shutil.ignore_patterns("app", "services", "bench", "__pycache__"),
+    )
+    shutil.copy2(root / "LICENSE", depth / "LICENSE")
+    shutil.rmtree(root)
+    for name, digest in DEPTH_FILES.items():
+        download(
+            f"https://huggingface.co/{DEPTH_MODEL}/resolve/{DEPTH_MODEL_REV}/{name}",
+            depth / name,
+            report,
+            f"DA3-BASE {name} (Apache-2.0)",
+            digest,
+        )
+    (depth / "ATTRIBUTION.txt").write_text(
+        f"Depth Anything 3, ByteDance Seed. Code revision {DEPTH_REV}, "
+        f"https://github.com/ByteDance-Seed/Depth-Anything-3\n"
+        f"{DEPTH_MODEL} revision {DEPTH_MODEL_REV}, "
+        f"https://huggingface.co/{DEPTH_MODEL}/tree/{DEPTH_MODEL_REV}\n"
+        "Unmodified source and safetensors weights, Apache-2.0; see LICENSE.\n",
+        encoding="utf-8",
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=MODELS, help="release models directory")
+    parser.add_argument(
+        "--depth-only", action="store_true", help="only (re)fetch the depth model into it"
+    )
     args = parser.parse_args()
     cache = args.output.resolve()
     work = Path(__file__).resolve().parents[1] / ".slam-build"
     cache.mkdir(parents=True, exist_ok=True)
     work.mkdir(parents=True, exist_ok=True)
+    if args.depth_only:
+        depth_bundle(cache, work)
+        return
     manifest = cache / "manifest.json"
     manifest.unlink(missing_ok=True)
     slam = source(
@@ -344,6 +396,7 @@ def main():
         "and a pose prior in the frame tracker.\n",
         encoding="utf-8",
     )
+    depth_bundle(cache, work)
     if (cache / "native").exists():
         shutil.rmtree(cache / "native")
     native, torch_version = compile_extensions(cache, work)

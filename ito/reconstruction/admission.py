@@ -22,6 +22,7 @@ GPU_STAGES = (
     "fit_backward",
     "fit_readback",
     "coverage",
+    "depth",
 )
 
 

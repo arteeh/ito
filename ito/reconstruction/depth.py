@@ -1,0 +1,133 @@
+"""Depth that agrees across views: Depth Anything 3 (DA3-BASE, Apache-2.0) over the new frame
+and the retained views around it.
+
+One network call sees all of them together, so their depths agree with each other up to one
+scale per call. That scale is taken from the retained views' own metric depth: the new frame's
+surfaces land where the map already holds them, instead of where a pairwise guess put them.
+"""
+
+import sys
+
+import numpy as np
+
+from .mast3r_runtime import MODELS
+
+ROOT = MODELS / "depth"  # depth_anything_3 source and DA3-BASE weights, from ito.build
+SIZE = (504, 280)  # width, height the network sees: multiples of its 14-pixel patches
+MEAN = np.array((0.485, 0.456, 0.406), np.float32)
+STD = np.array((0.229, 0.224, 0.225), np.float32)
+
+
+class MultiViewDepth:
+    def __init__(self):
+        import torch
+        from safetensors.torch import load_file
+
+        if not (ROOT / "model.safetensors").is_file():
+            raise RuntimeError(
+                f"Depth model missing from {ROOT}: rebuild the models with python -m ito.build"
+            )
+        if str(ROOT) not in sys.path:
+            sys.path.insert(0, str(ROOT))
+        from depth_anything_3.cfg import create_object, load_config
+        from depth_anything_3.registry import MODEL_REGISTRY
+
+        net = create_object(load_config(MODEL_REGISTRY["da3-base"]))
+        weights = load_file(ROOT / "model.safetensors")
+        loaded = net.load_state_dict(
+            {k.removeprefix("model."): v for k, v in weights.items()}, strict=False
+        )
+        # The release weights leave out an auxiliary head that inference never runs.
+        if loaded.unexpected_keys or any("_aux" not in k for k in loaded.missing_keys):
+            raise RuntimeError(f"Depth model weights do not fit DA3-BASE: {loaded}")
+        self.net = net.to("cuda").eval()
+        self.torch = torch
+        self.dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+
+    def __call__(self, images):
+        """Depths (N, SIZE[1], SIZE[0]) of uint8 RGB images seen together, one unknown scale."""
+        import cv2
+
+        torch = self.torch
+        batch = np.stack(
+            [
+                (cv2.resize(image, SIZE, interpolation=cv2.INTER_AREA) / np.float32(255) - MEAN)
+                / STD
+                for image in images
+            ]
+        )
+        x = torch.as_tensor(batch, device="cuda").permute(0, 3, 1, 2)[None]
+        with torch.inference_mode(), torch.autocast("cuda", dtype=self.dtype):
+            output = self.net(x, None, None, [], False, False)
+        return output.depth[0].float().cpu().numpy()
+
+
+def nearest_views(views, pose, count):
+    """Retained views facing most like pose, and nearest it."""
+    scored = []
+    for view in views:
+        cosine = float(view.pose[:3, 2] @ pose[:3, 2])
+        distance = float(np.linalg.norm(view.pose[:3, 3] - pose[:3, 3]))
+        if cosine > 0.5:
+            scored.append((1 - cosine + 0.2 * distance, view))
+    scored.sort(key=lambda item: item[0])
+    return [view for _, view in scored[:count]]
+
+
+def resample(depth, shape):
+    """Nearest-pixel resample of a depth map covering the whole frame."""
+    rows, columns = depth.shape
+    y = ((np.arange(shape[0]) + 0.5) * rows / shape[0]).astype(int)
+    x = ((np.arange(shape[1]) + 0.5) * columns / shape[1]).astype(int)
+    return depth[y][:, x]
+
+
+def scale_to(known, estimated):
+    """Median known/estimated over pixels both have, or None if they share too few."""
+    known = resample(known, estimated.shape)
+    both = (known > 0) & (estimated > 0)
+    if both.sum() < 0.2 * both.size:
+        return None
+    return float(np.median(known[both] / estimated[both]))
+
+
+class MapFrontend:
+    """A frontend without a visual tracker (ITO_TRACKER=map): each frame's pose comes from the
+    robot's motion and from laying its depth onto the map (align.py), not from MASt3R."""
+
+    KEYFRAME_EVERY = 3  # frames: about a second at the worker's rate
+
+    def __init__(self, intrinsics, input_resolution):
+        import torch  # noqa: F401  CuPy compiles with torch's NVRTC: load it first, as MASt3R does
+
+        from .slam_image import SLAMImage
+
+        self.image = SLAMImage(intrinsics, input_resolution)
+        k = self.image.calibration
+        self.intrinsics = (float(k[0, 0]), float(k[1, 1]), float(k[0, 2]), float(k[1, 2]))
+        self.frames = 0
+
+    def track(self, rgb, node, predicted, prior_sigma):
+        import cv2
+        import torch
+
+        from .tracking import Cloud, VisualResult
+
+        width, height = self.image.width, self.image.height
+        image = cv2.resize(rgb, (width, height), interpolation=cv2.INTER_AREA)
+        cloud = Cloud(
+            torch.zeros((width * height, 3), device="cuda"),
+            torch.as_tensor(image.reshape(-1, 3), device="cuda"),
+            torch.ones(width * height, dtype=torch.bool, device="cuda"),
+            (height, width),
+            self.intrinsics,
+        )
+        keyframe = self.frames % self.KEYFRAME_EVERY == 0
+        self.frames += 1
+        return VisualResult(None, None, np.full(6, np.inf), 0.0, cloud, keyframe)
+
+    def correct(self, keyframe_poses, scale):
+        pass
+
+    def forget(self, nodes):
+        pass

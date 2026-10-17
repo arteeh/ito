@@ -47,6 +47,9 @@ slam = [
     # CuPy compiles with torch's NVRTC; these CUDA headers spare pilots the CUDA Toolkit.
     "nvidia-cuda-runtime-cu12==12.4.127",
     "einops==0.8.1",
+    # Depth Anything 3's model code (models/depth) builds its network with these.
+    "omegaconf==2.4.0",
+    "addict==2.4.0",
     "huggingface-hub==0.30.2",
     "safetensors==0.5.3",
     "opencv-python-headless==4.11.0.86",

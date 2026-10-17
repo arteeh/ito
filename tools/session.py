@@ -167,10 +167,12 @@ def main():
     )
     parser.add_argument(
         "--truth",
-        choices=("poses", "depth", "poses,depth"),
+        choices=("poses", "depth", "poses,depth", "compare"),
         help="map by the sim's exact camera poses and/or depth instead of the estimates"
         " (ITO_TRUTH, a diagnostic)",
     )
+    parser.add_argument("--depth", choices=("mast3r", "da3"), help="ITO_DEPTH, an experiment")
+    parser.add_argument("--tracker", choices=("mast3r", "map"), help="ITO_TRACKER, an experiment")
     parser.add_argument(
         "--sim-args", default="", help='extra sim options, e.g. "--camera-height 1080"'
     )
@@ -248,7 +250,7 @@ def main():
         stderr=subprocess.STDOUT,
         start_new_session=True,
         env=os.environ
-        | ({"ITO_MICRODUCK_TRUTH_DEPTH": "3"} if "depth" in (args.truth or "") else {})
+        | ({"ITO_MICRODUCK_TRUTH_DEPTH": "3"} if args.truth and args.truth != "poses" else {})
         | {
             "PYTHONPATH": str(args.sim_source),
             "GST_PLUGIN_PATH": str(prefix / "gst-plugins-rs/target/debug"),
@@ -277,6 +279,11 @@ def main():
             correction_env += f"&& set ITO_MANUAL_OOM_AFTER={args.oom_after}"
             with (out / "about.txt").open("a") as about:
                 about.write(f"manual CUDA allocation failure after {args.oom_after} s\n")
+        for name in ("depth", "tracker"):
+            if getattr(args, name):
+                correction_env += f"&& set ITO_{name.upper()}={getattr(args, name)}"
+                with (out / "about.txt").open("a") as about:
+                    about.write(f"ITO_{name.upper()}={getattr(args, name)}\n")
         if args.truth:
             correction_env += f"&& set ITO_TRUTH={args.truth}"
             with (out / "about.txt").open("a") as about:
