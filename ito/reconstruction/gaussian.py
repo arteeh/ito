@@ -10,6 +10,7 @@ evidence; Gaussians at the observed surface gather support. A revisit therefore 
 the room it finds instead of laying a second one over it.
 """
 
+import os
 from dataclasses import dataclass
 from importlib.util import find_spec
 
@@ -35,6 +36,8 @@ MAX_ELONGATION = 10.0  # Longest seed axis over its pixel footprint (grazing flo
 EDGE = 1.08  # Depth ratio to both neighbours that marks a pixel as between two surfaces.
 COARSE = 4.5  # Pixels: a mapped Gaussian this large is refined by the view (seeds are ~2).
 AXES = np.diag([1.0, -1.0, -1.0, 1.0])  # Ito camera (-Z forward, +Y up) to OpenCV.
+# ITO_FIT=view trains whole retained views (training.py) instead of patches (fitting.py).
+FIT = os.environ.get("ITO_FIT", "local")
 
 
 @dataclass
@@ -110,9 +113,14 @@ class GaussianBackend(GaussianSlots):
         if not self.can_fit or not self.views:
             return False
         if self.fitter is None:
-            from .fitting import LocalFit
+            if FIT == "view":
+                from .training import ViewFit
 
-            self.fitter = LocalFit(self)
+                self.fitter = ViewFit(self)
+            else:
+                from .fitting import LocalFit
+
+                self.fitter = LocalFit(self)
         return self.fitter.step()
 
     def recover(self):
