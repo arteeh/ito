@@ -26,7 +26,14 @@ PARTNERS = 2  # overlapping views trained beside the chosen one
 MAX_UNIT = 400_000
 SSIM_WEIGHT = 0.2
 DEPTH_WEIGHT = 0.1
-SCALE_WEIGHT = 0.01  # flatness: a surface's Gaussians stay thin across it
+SCALE_WEIGHT = 0.01  # flatness: a surface's Gaussians stay thin across it, discs not balls
+NEEDLE_WEIGHT = 0.1  # and no axis grows past NEEDLE times the next: no needles
+NEEDLE = 3.0
+# A Gaussian grows to at most GROWTH times its size when the unit began, and to at most
+# WIDEST pixels in the unit's own view: seen from one side, photos happily stretch splats into
+# needles and sheets that streak across every other view.
+GROWTH = 3.0
+WIDEST = 12.0
 RATES = dict(means=2e-4, scales=5e-3, quats=1e-3, opacity=5e-2, color=2.5e-3)
 GROW_GRADIENT = 8e-4  # mean absolute screen-space gradient (normalised) asking for detail
 GROW_SHARE = 0.05  # at most this share of a unit's Gaussians is cloned or split per unit
@@ -212,6 +219,15 @@ class ViewFit:
             chosen = np.sort(rng.choice(chosen, MAX_UNIT, replace=False))
         ids = live[chosen]
         original = self.tensor(snapshot[chosen])
+        first = view.fitting_pose if view.fitting_pose is not None else view.pose
+        distance = (-(original[:, 0, :3] - self.tensor(first[:3, 3])) @ self.tensor(first[:3, :3]))[
+            :, 2
+        ].clamp_min(0.05)
+        widest = WIDEST * distance / view.intrinsics[0]
+        largest = torch.minimum(
+            original[:, 1, :3].clamp_min(1e-6) * GROWTH,
+            torch.maximum(widest[:, None], original[:, 1, :3]),
+        ).log()
         p = {
             "means": torch.nn.Parameter(original[:, 0, :3].clone()),
             "scales": torch.nn.Parameter(original[:, 1, :3].clamp_min(1e-6).log()),
@@ -259,6 +275,7 @@ class ViewFit:
             gradient=torch.zeros(len(ids), device="cuda"),
             seen=torch.zeros(len(ids), device="cuda"),
             pixels=torch.zeros(len(ids), device="cuda"),
+            largest=largest,
         )
         if POSES:
             rotation = torch.nn.Parameter(torch.zeros(3, device="cuda"))
@@ -456,9 +473,10 @@ class ViewFit:
             if mask.any():
                 error = (drawn[mask] - known[mask]).abs() / known[mask]
                 loss = loss + DEPTH_WEIGHT * error.mean()
-            scales = p["scales"].exp()
-            thinnest = scales.min(-1).values
-            loss = loss + SCALE_WEIGHT * (thinnest / scales.max(-1).values.clamp_min(1e-6)).mean()
+            axes = p["scales"].exp().sort(-1).values
+            loss = loss + SCALE_WEIGHT * (axes[:, 0] / axes[:, 1].clamp_min(1e-6)).mean()
+            needle = (axes[:, 2] / axes[:, 1].clamp_min(1e-6) - NEEDLE).clamp_min(0)
+            loss = loss + NEEDLE_WEIGHT * needle.mean()
         with self.chunk("fit_backward"):
             loss.backward()
             with torch.no_grad():
@@ -482,6 +500,7 @@ class ViewFit:
                 p["quats"].copy_(torch.nn.functional.normalize(p["quats"], dim=-1))
                 p["opacity"].clamp_(-7, 7)
                 p["color"].clamp_(-0.5 / C0, 0.5 / C0)
+                p["scales"].copy_(torch.minimum(p["scales"], a["largest"]))
         target["view"].steps += 1
         b.fit_steps += 1
         a["steps"] += 1
