@@ -327,6 +327,9 @@ def _run(recon):
                             blurred=getattr(backend, "blurred", None),
                             depth_scales=getattr(backend, "depth_scales", None),
                             pose_error=getattr(backend, "pose_error", None),
+                            frame_align=[backend.refine.aligned, backend.refine.refused]
+                            if getattr(backend, "refine", None) is not None
+                            else None,
                             on_map=getattr(backend, "aligned", None),
                             training={
                                 k: getattr(backend.fitter, k)

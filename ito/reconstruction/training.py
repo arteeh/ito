@@ -617,3 +617,98 @@ class ViewFit:
         b.sequences[slots] = b.sequences[parents]
         b.refined[slots] = True
         self.grown += room
+
+
+class FrameAlign:
+    """A new frame laid onto the map photometrically before it is mapped (ITO_REFINE=1): the
+    map held still, the frame's pose moved to where its photo and depth agree with what the
+    map draws there. The robot's kinematic camera pose is off by its gear play (about two
+    degrees in the sim); a frame seeded where it was not doubles every edge it sees."""
+
+    STEPS = 20
+    RATES = (2e-3, 2e-3)  # radians, metres per Adam step at first, decaying tenfold
+    LIMIT = (math.radians(3), 0.05)
+    COVERED = 0.5  # of the frame the map must cover
+
+    def __init__(self, backend):
+        import torch
+        from gsplat import rasterization
+
+        self.torch = torch
+        self.rasterize = rasterization
+        self.backend = backend
+        self.aligned = 0
+        self.refused = 0
+        self.fit = ViewFit(backend)
+
+    def __call__(self, image, depth, pose, intrinsics):
+        """The refined map-from-camera pose of a frame (image H x W x 3 uint8, depth metres
+        at intrinsics), or None when the map does not cover it or the move is implausible."""
+        b, torch = self.backend, self.torch
+        live = np.flatnonzero((b.keys >= 0) & ~b.retiring)
+        if len(live) < 1000:
+            return None
+        snapshot = torch.as_tensor(b.records[live], device="cuda")
+        centers = snapshot[:, 0, :3]
+        reach = snapshot[:, 1, :3].max(-1).values
+        inside = self.fit.visible(centers, reach, pose, intrinsics, depth.shape)
+        drawn = snapshot[inside]
+        if len(drawn) < 1000:
+            return None
+        height, width = depth.shape
+        fx, fy, cx, cy = intrinsics
+        camera = torch.as_tensor(np.linalg.inv(pose @ AXES), device="cuda", dtype=torch.float32)
+        K = torch.tensor([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], device="cuda")
+        target = torch.as_tensor(image, device="cuda").permute(2, 0, 1).float() / 255
+        known = torch.as_tensor(depth, device="cuda", dtype=torch.float32)
+        rotation = torch.nn.Parameter(torch.zeros(3, device="cuda"))
+        translation = torch.nn.Parameter(torch.zeros(3, device="cuda"))
+        optimizer = torch.optim.Adam(
+            [
+                {"params": [rotation], "lr": self.RATES[0]},
+                {"params": [translation], "lr": self.RATES[1]},
+            ]
+        )
+        for step in range(self.STEPS):
+            moved = self.fit.moved((rotation, translation)) @ camera
+            rendered, alpha, _ = self.rasterize(
+                means=drawn[:, 0, :3],
+                quats=drawn[:, 2],
+                scales=drawn[:, 1, :3],
+                opacities=drawn[:, 0, 3],
+                colors=drawn[:, 3, :3][:, None],
+                sh_degree=0,
+                viewmats=moved[None],
+                Ks=K[None],
+                width=width,
+                height=height,
+                packed=False,
+                near_plane=0.01,
+                far_plane=1000,
+                render_mode="RGB+ED",
+            )
+            covered = alpha[0, ..., 0].detach() > 0.9
+            if step == 0 and float(covered.float().mean()) < self.COVERED:
+                self.refused += 1
+                return None
+            rgb = rendered[0, ..., :3].permute(2, 0, 1)
+            loss = ((rgb - target).abs().mean(0) * covered).sum() / covered.sum().clamp_min(1)
+            mask = covered & (known > 0)
+            if mask.any():
+                drawn_depth = rendered[0, ..., 3]
+                loss = (
+                    loss
+                    + DEPTH_WEIGHT * ((drawn_depth[mask] - known[mask]).abs() / known[mask]).mean()
+                )
+            loss.backward()
+            for group, rate in zip(optimizer.param_groups, self.RATES, strict=True):
+                group["lr"] = rate * 0.1 ** (step / self.STEPS)
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+        with torch.no_grad():
+            if float(rotation.norm()) > self.LIMIT[0] or float(translation.norm()) > self.LIMIT[1]:
+                self.refused += 1
+                return None
+            moved = self.fit.moved((rotation, translation)) @ camera
+        self.aligned += 1
+        return np.linalg.inv(moved.double().cpu().numpy()) @ AXES

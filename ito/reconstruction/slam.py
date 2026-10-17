@@ -60,6 +60,9 @@ ALIGN = DEPTH == "da3" or os.environ.get("ITO_ALIGN", "0") != "0"
 # with it, registration lays a frame onto retained views without rescaling it to them, so
 # the first views' one-frame scale stops setting the whole map's.
 GRAPH_SCALE = os.environ.get("ITO_SCALE", "frame") == "graph"
+# ITO_REFINE=1 lays each frame onto the map photometrically before mapping it (training.py
+# FrameAlign) and tells fusion where it landed.
+REFINE = os.environ.get("ITO_REFINE", "0") != "0"
 # Map only depth another view agrees on (consensus.py); ITO_CONSENSUS=0 maps every guess.
 CONSENSUS = os.environ.get("ITO_CONSENSUS", "0") != "0"
 # ITO_DUMP=<dir> (a diagnostic): each mapped frame's image, depth as estimated and as agreed,
@@ -133,6 +136,11 @@ class SLAMBackend(GaussianBackend):
         self.pose_error = None
         self.depth = MultiViewDepth() if DEPTH == "da3" else None
         self.mono = MonoGeometry() if DEPTH == "moge" else None
+        self.refine = None
+        if REFINE:
+            from .training import FrameAlign
+
+            self.refine = FrameAlign(self)
         self.consensus = None
         if CONSENSUS:
             from .consensus import Consensus
@@ -473,6 +481,14 @@ class SLAMBackend(GaussianBackend):
         elif self.placed is not None:
             mapped, scale = self.placed, 1.0
         raw_depth = np.where(valid, -points[..., 2] * scale, 0).astype(np.float32)
+        if self.refine is not None and not (self.truth is not None and self.truth[0] is not None):
+            with self.gpu_chunk("map"):
+                refined = self.refine(image, raw_depth, mapped, intrinsics)
+            if refined is not None:
+                mapped = refined
+                estimator = np.linalg.inv(self.registration.map_from_estimator) @ refined
+                if self.graph.add_map(node, estimator, MAP_SIGMA):
+                    self.graph.solve_frame()
         if self.truth is not None and self.truth[2] is not None and not COMPARE:
             scale = 1.0
         elif self.consensus is not None:
