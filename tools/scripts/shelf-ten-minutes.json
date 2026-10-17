@@ -1,12 +1,26 @@
 [
   {
-    "for": 20,
-    "note": "connect and settle; identical settings for both builds"
+    "for": 19,
+    "note": "connect and settle"
+  },
+  {
+    "for": 1,
+    "do": "recenter",
+    "note": "view on the robot's heading: resume then keeps the robot's heading instead of turning it"
   },
   {
     "for": 2,
     "do": "resume",
     "note": "resume"
+  },
+  {
+    "for": 2,
+    "turn": 77.5,
+    "note": "look right 155 degrees, toward the bookshelf"
+  },
+  {
+    "for": 8,
+    "note": "hold: the body turns after the gaze"
   },
   {
     "for": 12,
