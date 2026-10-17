@@ -91,6 +91,13 @@ class DesktopWindow:
                     f"under xvfb-run is supported. {exc}"
                 ) from exc
             pygame.display.set_caption("Ito — Desktop pilot")
+            refresh = getattr(pygame.display, "get_current_refresh_rate", lambda: 0)()
+            if 0 < refresh < self.fps:
+                # A window presents at most once per display refresh, whatever the pacing
+                # asks: paced faster, every frame counts as a missed deadline and the
+                # reconstruction worker backs off for each.
+                log.info("Display refreshes at %d Hz: pacing the window to it", refresh)
+                self.fps = refresh
             self.screen = self.context.screen
             self.size = size
             software = any(
