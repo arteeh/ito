@@ -413,9 +413,14 @@ class SLAMBackend(GaussianBackend):
             for name, estimate in (("map", self.camera_pose), ("estimator", pose)):
                 delta = np.linalg.inv(reference) @ estimate
                 angle = np.degrees(np.arccos(np.clip((np.trace(delta[:3, :3]) - 1) / 2, -1, 1)))
+                from scipy.spatial.transform import Rotation
+
+                axis = Rotation.from_matrix(delta[:3, :3]).as_rotvec(degrees=True)
                 self.pose_error = (self.pose_error or {}) | {
                     f"{name}_cm": [round(float(v) * 100, 2) for v in delta[:3, 3]],
                     f"{name}_deg": round(float(angle), 2),
+                    # about the camera's x (pitch), y (yaw) and z (roll) axes
+                    f"{name}_axes_deg": [round(float(v), 2) for v in axis],
                 }
         self.correction = (mapping @ graph.correction(node)).astype(np.float32)
         if self.truth is not None and self.truth[0] is not None:
