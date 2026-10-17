@@ -129,6 +129,9 @@ def models(stage, source):
     else:
         print(f"Copying models from {source}", flush=True)
         shutil.copytree(source, target, ignore=shutil.ignore_patterns("__pycache__"))
+        if not (target / "depth/model.safetensors").is_file():
+            # A bundle from before models/depth: fetch that part into this release.
+            run(sys.executable, "-m", "ito.build", "--depth-only", "--output", target, cwd=ROOT)
     manifest = json.loads((target / "manifest.json").read_text(encoding="utf-8"))
     if manifest["version"] != BUNDLE_VERSION or manifest["abi"] != abi() or not manifest["native"]:
         raise SystemExit(f"{target} is not a complete bundle {BUNDLE_VERSION} for {abi()}")
