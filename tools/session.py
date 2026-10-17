@@ -177,6 +177,13 @@ def main():
     parser.add_argument(
         "--sim-args", default="", help='extra sim options, e.g. "--camera-height 1080"'
     )
+    parser.add_argument(
+        "--env",
+        action="append",
+        default=[],
+        metavar="NAME=VALUE",
+        help="an environment variable for Ito, e.g. ITO_CONSENSUS=1 (an experiment); repeatable",
+    )
     args = parser.parse_args()
 
     exe = ROOT / "builds" / args.build / "ito" / "ito.exe"
@@ -289,6 +296,10 @@ def main():
                 correction_env += f"&& set ITO_{name.upper()}={getattr(args, name)}"
                 with (out / "about.txt").open("a") as about:
                     about.write(f"ITO_{name.upper()}={getattr(args, name)}\n")
+        for pair in args.env:
+            correction_env += f"&& set {pair}"
+            with (out / "about.txt").open("a") as about:
+                about.write(f"{pair}\n")
         if args.truth:
             correction_env += f"&& set ITO_TRUTH={args.truth}"
             with (out / "about.txt").open("a") as about:

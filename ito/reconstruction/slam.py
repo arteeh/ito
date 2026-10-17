@@ -43,6 +43,8 @@ COMPARE = os.environ.get("ITO_TRUTH") == "compare"
 # also drops the MASt3R tracker: frames are placed by the robot's motion and the map alone.
 TRACKER = os.environ.get("ITO_TRACKER", "mast3r")
 DEPTH = "da3" if TRACKER == "map" else os.environ.get("ITO_DEPTH", "mast3r")
+# Map only depth another view agrees on (consensus.py); ITO_CONSENSUS=0 maps every guess.
+CONSENSUS = os.environ.get("ITO_CONSENSUS", "0") != "0"
 
 
 class SLAMBackend(GaussianBackend):
@@ -106,6 +108,11 @@ class SLAMBackend(GaussianBackend):
         self.retired_keyframes = 0
         self.truth = None
         self.depth = MultiViewDepth() if DEPTH == "da3" else None
+        self.consensus = None
+        if CONSENSUS:
+            from .consensus import Consensus
+
+            self.consensus = Consensus()
         self.depth_scales = {}
         self.placed = None
         from .registration import Registration
@@ -340,15 +347,24 @@ class SLAMBackend(GaussianBackend):
             mapped = pose
         elif self.placed is not None:
             mapped, scale = self.placed, 1.0
+        valid = cloud.valid.detach().cpu().numpy().reshape(height, width)
         if self.truth is not None and self.truth[2] is not None:
             scale = 1.0
+        elif self.consensus is not None:
+            depth = np.where(valid, -points[..., 2] * scale, 0).astype(np.float32)
+            with self.gpu_chunk("consensus"):
+                agreed, _ = self.consensus.fuse(
+                    depth, mapped, cloud.intrinsics, self.source_captured, self.views
+                )
+            points = points * (agreed / np.maximum(-points[..., 2], 1e-6))[..., None]
+            valid, scale = agreed > 0, 1.0
         self.registration.remember(
             node, pose, self.registration.map_from_estimator @ pose, self.graph.nodes
         )
         self.observe(
             points * scale,
             image,
-            cloud.valid.detach().cpu().numpy(),
+            valid,
             mapped,
             cloud.intrinsics,
             when,
