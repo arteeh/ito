@@ -46,6 +46,11 @@ DEPTH = "da3" if TRACKER == "map" else os.environ.get("ITO_DEPTH", "mast3r")
 # ITO_ALIGN=1 lays each frame's depth onto the map's surfaces (align.py) with MASt3R's depth too,
 # not only DA3's: where it was placed tells fusion where the camera was.
 ALIGN = DEPTH == "da3" or os.environ.get("ITO_ALIGN", "0") != "0"
+# ITO_SCALE=graph: a frame's depth in metres by the scale fusion keeps over many ToF and floor
+# readings, not by the one this frame read (about 7% apart from frame to frame in the sim);
+# with it, registration lays a frame onto retained views without rescaling it to them, so
+# the first views' one-frame scale stops setting the whole map's.
+GRAPH_SCALE = os.environ.get("ITO_SCALE", "frame") == "graph"
 # Map only depth another view agrees on (consensus.py); ITO_CONSENSUS=0 maps every guess.
 CONSENSUS = os.environ.get("ITO_CONSENSUS", "0") != "0"
 # ITO_DUMP=<dir> (a diagnostic): each mapped frame's image, depth as estimated and as agreed,
@@ -223,7 +228,8 @@ class SLAMBackend(GaussianBackend):
             self.frontend.forget(dropped)
         if cloud is not None:
             cloud = cloud._replace(
-                points=cloud.points * (scale if measured_scale is None else measured_scale)
+                points=cloud.points
+                * (scale if measured_scale is None or GRAPH_SCALE else measured_scale)
             )
             if truth is not None and truth[2] is not None and not COMPARE:
                 cloud = self.with_depth(cloud, truth[2])
@@ -401,6 +407,8 @@ class SLAMBackend(GaussianBackend):
         mapped, scale = self.registration.align(
             image, -points[..., 2], pose, intrinsics, self.views
         )
+        if GRAPH_SCALE:
+            scale = 1.0
         if self.truth is not None and self.truth[0] is not None:
             # Registration only rescales a true pose's depth; it never moves it.
             mapped = pose
