@@ -55,7 +55,7 @@ def draw(records, camera):
     focal = WIDTH / 2 / math.tan(math.radians(HFOV / 2))
     K = torch.tensor([[focal, 0, WIDTH / 2], [0, focal, HEIGHT / 2], [0, 0, 1]], device="cuda")
     view = torch.as_tensor(np.linalg.inv(camera @ AXES), device="cuda", dtype=torch.float32)
-    image, _, _ = rasterization(
+    image, alpha, _ = rasterization(
         means=r[:, 0, :3],
         quats=r[:, 2],
         scales=r[:, 1, :3],
@@ -67,9 +67,10 @@ def draw(records, camera):
         width=WIDTH,
         height=HEIGHT,
         near_plane=0.02,
-        backgrounds=torch.tensor([[0.04, 0.04, 0.06]], device="cuda"),
     )
-    rgb = (image[0].clamp(0, 1) * 255).byte().cpu().numpy()
+    background = torch.tensor([0.04, 0.04, 0.06], device="cuda")
+    image = image[0] + (1 - alpha[0]) * background
+    rgb = (image.clamp(0, 1) * 255).byte().cpu().numpy()
     return np.ascontiguousarray(rgb[..., ::-1])
 
 
