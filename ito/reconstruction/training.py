@@ -625,8 +625,8 @@ class FrameAlign:
     map draws there. The robot's kinematic camera pose is off by its gear play (about two
     degrees in the sim); a frame seeded where it was not doubles every edge it sees."""
 
-    STEPS = 20
-    RATES = (2e-3, 2e-3)  # radians, metres per Adam step at first, decaying tenfold
+    LEVELS = ((0.5, 24), (1.0, 8))  # (resolution, Adam steps): coarse first, wider reach
+    RATES = (4e-3, 4e-3)  # radians, metres per Adam step at first, decaying tenfold
     LIMIT = (math.radians(3), 0.05)
     COVERED = 0.5  # of the frame the map must cover
 
@@ -649,18 +649,16 @@ class FrameAlign:
         if len(live) < 1000:
             return None
         snapshot = torch.as_tensor(b.records[live], device="cuda")
-        centers = snapshot[:, 0, :3]
         reach = snapshot[:, 1, :3].max(-1).values
-        inside = self.fit.visible(centers, reach, pose, intrinsics, depth.shape)
+        inside = self.fit.visible(snapshot[:, 0, :3], reach, pose, intrinsics, depth.shape)
         drawn = snapshot[inside]
         if len(drawn) < 1000:
             return None
         height, width = depth.shape
         fx, fy, cx, cy = intrinsics
         camera = torch.as_tensor(np.linalg.inv(pose @ AXES), device="cuda", dtype=torch.float32)
-        K = torch.tensor([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], device="cuda")
-        target = torch.as_tensor(image, device="cuda").permute(2, 0, 1).float() / 255
-        known = torch.as_tensor(depth, device="cuda", dtype=torch.float32)
+        full = torch.as_tensor(image, device="cuda").permute(2, 0, 1).float() / 255
+        known_full = torch.as_tensor(depth, device="cuda", dtype=torch.float32)
         rotation = torch.nn.Parameter(torch.zeros(3, device="cuda"))
         translation = torch.nn.Parameter(torch.zeros(3, device="cuda"))
         optimizer = torch.optim.Adam(
@@ -669,42 +667,61 @@ class FrameAlign:
                 {"params": [translation], "lr": self.RATES[1]},
             ]
         )
-        for step in range(self.STEPS):
-            moved = self.fit.moved((rotation, translation)) @ camera
-            rendered, alpha, _ = self.rasterize(
-                means=drawn[:, 0, :3],
-                quats=drawn[:, 2],
-                scales=drawn[:, 1, :3],
-                opacities=drawn[:, 0, 3],
-                colors=drawn[:, 3, :3][:, None],
-                sh_degree=0,
-                viewmats=moved[None],
-                Ks=K[None],
-                width=width,
-                height=height,
-                packed=False,
-                near_plane=0.01,
-                far_plane=1000,
-                render_mode="RGB+ED",
+        total = sum(steps for _, steps in self.LEVELS)
+        done = 0
+        for share, steps in self.LEVELS:
+            w, h = round(width * share), round(height * share)
+            K = torch.tensor(
+                [
+                    [fx * share, 0, (cx + 0.5) * share - 0.5],
+                    [0, fy * share, (cy + 0.5) * share - 0.5],
+                    [0, 0, 1],
+                ],
+                device="cuda",
             )
-            covered = alpha[0, ..., 0].detach() > 0.9
-            if step == 0 and float(covered.float().mean()) < self.COVERED:
-                self.refused += 1
-                return None
-            rgb = rendered[0, ..., :3].permute(2, 0, 1)
-            loss = ((rgb - target).abs().mean(0) * covered).sum() / covered.sum().clamp_min(1)
-            mask = covered & (known > 0)
-            if mask.any():
-                drawn_depth = rendered[0, ..., 3]
-                loss = (
-                    loss
-                    + DEPTH_WEIGHT * ((drawn_depth[mask] - known[mask]).abs() / known[mask]).mean()
+            if share == 1.0:
+                target, known = full, known_full
+            else:
+                target = torch.nn.functional.interpolate(full[None], (h, w), mode="area")[0]
+                known = torch.nn.functional.interpolate(known_full[None, None], (h, w))[0, 0]
+            for _ in range(steps):
+                moved = self.fit.moved((rotation, translation)) @ camera
+                rendered, alpha, _ = self.rasterize(
+                    means=drawn[:, 0, :3],
+                    quats=drawn[:, 2],
+                    scales=drawn[:, 1, :3],
+                    opacities=drawn[:, 0, 3],
+                    colors=drawn[:, 3, :3][:, None],
+                    sh_degree=0,
+                    viewmats=moved[None],
+                    Ks=K[None],
+                    width=w,
+                    height=h,
+                    packed=False,
+                    near_plane=0.01,
+                    far_plane=1000,
+                    render_mode="RGB+ED",
                 )
-            loss.backward()
-            for group, rate in zip(optimizer.param_groups, self.RATES, strict=True):
-                group["lr"] = rate * 0.1 ** (step / self.STEPS)
-            optimizer.step()
-            optimizer.zero_grad(set_to_none=True)
+                covered = alpha[0, ..., 0].detach() > 0.9
+                if done == 0 and float(covered.float().mean()) < self.COVERED:
+                    self.refused += 1
+                    return None
+                rgb = rendered[0, ..., :3].permute(2, 0, 1)
+                loss = ((rgb - target).abs().mean(0) * covered).sum() / covered.sum().clamp_min(1)
+                mask = covered & (known > 0)
+                if mask.any():
+                    drawn_depth = rendered[0, ..., 3]
+                    loss = (
+                        loss
+                        + DEPTH_WEIGHT
+                        * ((drawn_depth[mask] - known[mask]).abs() / known[mask]).mean()
+                    )
+                loss.backward()
+                for group, rate in zip(optimizer.param_groups, self.RATES, strict=True):
+                    group["lr"] = rate * 0.1 ** (done / total)
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                done += 1
         with torch.no_grad():
             if float(rotation.norm()) > self.LIMIT[0] or float(translation.norm()) > self.LIMIT[1]:
                 self.refused += 1
