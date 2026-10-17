@@ -33,7 +33,10 @@ FLOOR_RAY = math.radians(10)
 FLOOR_SHARE = 0.1
 FLOOR_HEIGHT = 0.05
 FLOOR_LEVEL = 0.05
-FLOOR_SIGMA = 0.15
+# The camera rides ~20 cm up and sees the floor far off: a degree of tilt error in the
+# kinematic up (the head's gear play is two in the sim) moves far floor points centimetres
+# and the floor's scale by percent (about 6% high, measured); the ToF reads range directly.
+FLOOR_SIGMA = 0.4
 RANGE_SIGMA = 0.05
 SCALE_STEP = 0.01
 REFERENCES = 2  # retained views seen together with each new frame for its depth
