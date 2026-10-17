@@ -97,7 +97,8 @@ class Admission:
         torch = sys.modules.get("torch")
         if torch is not None:
             torch.cuda.synchronize()
-            self.torch_stream = torch.cuda.Stream(priority=0)
+            # Above the trainer thread's stream (training.py): tracking's kernels go first.
+            self.torch_stream = torch.cuda.Stream(priority=-1)
             self.stream = xp.cuda.ExternalStream(self.torch_stream.cuda_stream)
         else:
             self.stream = xp.cuda.Stream(non_blocking=True)

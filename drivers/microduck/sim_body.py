@@ -446,7 +446,28 @@ class FrameHandler(body_server.FrameHandler):
         print("== camera: the reader went away", flush=True)
 
 
+# Seconds the hand that holds a new duck keeps holding it after robotd turns torque on: robotd
+# ramps to the home pose over two, and a duck let go at once sometimes fell during the ramp and
+# got up facing anywhere, so no two runs of one script walked the same path.
+HOLD_AFTER_TORQUE = 3.0
+
+
+def held_through_ramp(set_torque):
+    def held(body, on):
+        first = on and not getattr(body, "ever_torqued", False)
+        set_torque(body, on)
+        if first:
+            body.ever_torqued = True
+            body.released = False
+            release = threading.Timer(HOLD_AFTER_TORQUE, setattr, (body, "released", True))
+            release.daemon = True
+            release.start()
+
+    return held
+
+
 if __name__ == "__main__":
+    body_server.Body.set_torque = held_through_ramp(body_server.Body.set_torque)
     if "--headless" not in sys.argv:
         import mujoco.viewer
 

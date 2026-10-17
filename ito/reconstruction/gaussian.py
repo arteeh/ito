@@ -11,6 +11,7 @@ the room it finds instead of laying a second one over it.
 """
 
 import os
+import threading
 from dataclasses import dataclass
 from importlib.util import find_spec
 
@@ -68,6 +69,8 @@ class GaussianBackend(GaussianSlots):
     def __init__(self, *args, precision="full", **options):
         super().__init__(*args, **options)
         self.precision = precision
+        # Held by whatever changes the map; a trainer thread takes it between its steps.
+        self.lock = threading.RLock()
         self.views = []
         self.anchors = {}
         self.next_anchor = 0
@@ -128,6 +131,16 @@ class GaussianBackend(GaussianSlots):
 
                 self.fitter = LocalFit(self)
         return self.fitter.step()
+
+    def start_training(self, available, stopped, failed):
+        """With ITO_FIT=view, train on a thread of its own beside tracking; the thread, or
+        None when training stays inline (fit())."""
+        if FIT != "view" or not self.can_fit or os.environ.get("ITO_FIT_THREAD", "1") == "0":
+            return None
+        from .training import ViewFit
+
+        self.fitter = ViewFit(self)
+        return self.fitter.start(available, stopped, failed)
 
     def recover(self):
         if self.fitter is not None:

@@ -240,6 +240,21 @@ def simulation(
             raise RuntimeError(
                 f"the body speaks {hello}, not protocol 2 for a beta: re-run setup-sim.sh"
             )
+        # The head camera's first frame before robotd: its renderer starting up stalled the
+        # physics while the robot stood up, and it fell, getting up facing anywhere.
+        deadline = time.monotonic() + 60
+        while True:
+            try:
+                with socket.create_connection(("127.0.0.1", int(camera_port)), timeout=5) as eye:
+                    eye.settimeout(5)
+                    if len(eye.recv(4)) == 4:
+                        break
+            except OSError:
+                pass
+            check(children, logs)
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"the head camera sent no frame; see {logs / 'body.log'}")
+            time.sleep(0.2)
         launch(
             "robot",
             [

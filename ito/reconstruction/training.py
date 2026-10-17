@@ -10,6 +10,7 @@ The CPU map stays the source of truth: a unit uploads its Gaussians, trains them
 writes back only those still live and visibly changed, which then publish like any update.
 """
 
+import logging
 import math
 import os
 import time
@@ -17,6 +18,8 @@ import time
 import numpy as np
 
 from .gaussian import AXES, C0
+
+log = logging.getLogger(__name__)
 
 STEPS = 30
 PARTNERS = 2  # overlapping views trained beside the chosen one
@@ -81,6 +84,55 @@ class ViewFit:
         self.aligned = 0
         self.filled = 0
         self.seconds = dict(prepare=0.0, finish=0.0)  # CPU time outside the Adam steps
+        self.threaded = False
+
+    def start(self, available, stopped, failed):
+        """Train on a thread: GPU steps on a stream of their own while tracking runs, the map's
+        lock only to start and finish a unit. available(): the renderer has not asked the
+        GPU to back off; stopped(): end; failed(exc): an out-of-memory to report."""
+        import threading
+
+        self.threaded = True
+
+        def run():
+            torch = self.torch
+            stream = torch.cuda.Stream(priority=0)
+            errors = 0
+            with torch.cuda.stream(stream):
+                while not stopped():
+                    if not available():
+                        time.sleep(0.002)
+                        continue
+                    try:
+                        progressed = self.step()
+                        errors = 0
+                    except torch.cuda.OutOfMemoryError as exc:
+                        self.active = None
+                        failed(exc)
+                        torch.cuda.empty_cache()
+                        time.sleep(1.0)
+                        continue
+                    except Exception:
+                        self.active = None
+                        errors += 1
+                        log.exception("Training unit failed")
+                        if errors >= 5:
+                            log.error("Training stopped after repeated failures")
+                            return
+                        time.sleep(0.5)
+                        continue
+                    if not progressed:
+                        time.sleep(0.05)
+
+        thread = threading.Thread(target=run, name="map-training", daemon=True)
+        thread.start()
+        return thread
+
+    def chunk(self, kind):
+        """GPU accounting for the worker's admission; a trainer thread keeps out of it."""
+        from contextlib import nullcontext
+
+        return nullcontext() if self.threaded else self.backend.gpu_chunk(kind)
 
     def tensor(self, value, dtype=None):
         torch = self.torch
@@ -223,7 +275,7 @@ class ViewFit:
         ]
         if not references:
             return
-        with b.gpu_chunk("consensus"):
+        with self.chunk("consensus"):
             depth, _ = agreed(view.raw_depth, pose, view.intrinsics, references, torch)
         shape = depth.shape
         ids, z, u, v = b.centers(pose, view.intrinsics, shape)
@@ -257,10 +309,10 @@ class ViewFit:
 
     def align(self, a):
         """One step of the chosen view's pose against the map as it stands."""
-        b, torch = self.backend, self.torch
+        torch = self.torch
         p, target = a["p"], a["targets"][0]
         w, h = target["size"]
-        with b.gpu_chunk("fit_forward"):
+        with self.chunk("fit_forward"):
             camera = self.moved(a["delta"]) @ target["camera"][0]
             rendered, alpha, _ = self.rasterize(
                 means=p["means"].detach(),
@@ -292,7 +344,7 @@ class ViewFit:
                 loss = (
                     loss + DEPTH_WEIGHT * ((drawn[mask] - known[mask]).abs() / known[mask]).mean()
                 )
-        with b.gpu_chunk("fit_backward"):
+        with self.chunk("fit_backward"):
             loss.backward()
             done = 1 - a["align"] / ALIGN_STEPS
             for group, rate in zip(a["pose_optimizer"].param_groups, ALIGN_RATES, strict=True):
@@ -317,7 +369,8 @@ class ViewFit:
         b, torch = self.backend, self.torch
         if self.active is None:
             began = time.perf_counter()
-            prepared = self.prepare()
+            with b.lock:
+                prepared = self.prepare()
             self.seconds["prepare"] += time.perf_counter() - began
             if not prepared:
                 return False
@@ -331,7 +384,7 @@ class ViewFit:
             return True
         target = a["targets"][a["steps"] % len(a["targets"])]
         w, h = target["size"]
-        with b.gpu_chunk("fit_forward"):
+        with self.chunk("fit_forward"):
             rendered, alpha, info = self.rasterize(
                 means=p["means"],
                 quats=p["quats"],
@@ -363,7 +416,7 @@ class ViewFit:
             scales = p["scales"].exp()
             thinnest = scales.min(-1).values
             loss = loss + SCALE_WEIGHT * (thinnest / scales.max(-1).values.clamp_min(1e-6)).mean()
-        with b.gpu_chunk("fit_backward"):
+        with self.chunk("fit_backward"):
             loss.backward()
             with torch.no_grad():
                 grad = info["means2d"].absgrad[0] if hasattr(info["means2d"], "absgrad") else None
@@ -391,16 +444,20 @@ class ViewFit:
         a["steps"] += 1
         if a["steps"] < STEPS:
             return True
-        self.active = None
         began = time.perf_counter()
-        self.finish(a)
+        with b.lock:
+            # A pose correction (recover()) dropped this unit while it trained: its views
+            # moved, so what it learned from them is not written back.
+            if self.active is a:
+                self.active = None
+                self.finish(a)
         self.seconds["finish"] += time.perf_counter() - began
         return True
 
     def finish(self, a):
         b, torch = self.backend, self.torch
         ids, p = a["ids"], a["p"]
-        with b.gpu_chunk("fit_readback"), torch.no_grad():
+        with self.chunk("fit_readback"), torch.no_grad():
             records = a["original"].clone()
             records[:, 0, :3] = p["means"]
             records[:, 0, 3] = p["opacity"].sigmoid()

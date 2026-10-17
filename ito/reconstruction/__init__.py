@@ -20,6 +20,18 @@ from .ring import MotionRing, SplatUpdate, UpdateRing
 from .slam_vision import RESTART_CAUSES
 
 FIT_SHARE = 0.1  # Of the worker's tracking time, given to local training.
+# ITO_DUMP_MAP=<dir> (a diagnostic): the live map's records every MAP_DUMP_EVERY seconds and
+# when the worker stops, to look at one map from fixed viewpoints afterwards (tools/mapview.py).
+MAP_DUMP = os.environ.get("ITO_DUMP_MAP")
+MAP_DUMP_EVERY = 30.0
+
+
+def dump_map(backend, now):
+    folder = Path(MAP_DUMP)
+    folder.mkdir(parents=True, exist_ok=True)
+    live = np.flatnonzero((backend.keys >= 0) & ~backend.retiring)
+    np.savez(folder / f"map-{now:07.1f}.npz", records=backend.records[live], seconds=now)
+
 
 __all__ = ["Reconstruction", "SplatUpdate", "default_budget"]
 
@@ -103,324 +115,357 @@ def _run(recon):
         published_capture = recon.epoch
         fit_credit = 0.0
         parent = mp.parent_process()
+        trainer = backend.start_training(
+            recon.admission.available, lambda: bool(recon.stopped.value), recon.report_oom
+        )
+        next_map_dump = MAP_DUMP_EVERY
         while not recon.stopped.value and parent.is_alive():
-            now = clock.now() - recon.epoch
-            if network is not None and now >= next_network_stats:
-                next_network_stats = now + 1
-                count = network.statistics()
-                if count > recon.nonfinite_points.value:
-                    recon.notes.send(dict(event="network_nonfinite", count=count))
-                    recon.nonfinite_points.value = count
-            backend.expire(now, recon.ring.last_acknowledged())
-            limit = recon.budget.value
-            if vram is not None:
-                fit = vram.check(len(backend.keys), len(backend.keys) <= backend.budget)
-                limit = limit if fit is None else min(limit, fit)
-                recon.admission.memory_pressure.value = vram.pressure
-                recon.admission.gpu_busy.value = -1 if vram.gpu.busy is None else vram.gpu.busy
-                recon.vram_free.value = vram.free_bytes
-                recon.vram_cached.value = vram.cached_bytes
-                recon.cache_releases.value = vram.releases
-            if limit != backend.budget:
-                retired = backend.resize(limit, now)
-                recon.splat_limit.value = limit
-                if retired:
-                    recon.notes.send(
-                        f"Splat limit {limit:,}: {retired:,} redundant or unseen splats fade out"
-                    )
-            if len(backend.keys) > backend.budget and backend.compact():
-                recon.notes.send(f"Splat slots shrunk to {len(backend.keys):,}")
-            recon.slot_capacity.value = len(backend.keys)
-            if robot_first:
-                rows, motion_cursor = recon.motion_ring.read(motion_cursor)
-                backend.add_motion(rows)
-                while True:
+            # The trainer thread (training.py) takes the map's lock only between its
+            # steps; everything this loop does to the map holds it.
+            backend.lock.acquire()
+            try:
+                now = clock.now() - recon.epoch
+                if network is not None and now >= next_network_stats:
+                    next_network_stats = now + 1
+                    count = network.statistics()
+                    if count > recon.nonfinite_points.value:
+                        recon.notes.send(dict(event="network_nonfinite", count=count))
+                        recon.nonfinite_points.value = count
+                backend.expire(now, recon.ring.last_acknowledged())
+                limit = recon.budget.value
+                if vram is not None:
+                    fit = vram.check(len(backend.keys), len(backend.keys) <= backend.budget)
+                    limit = limit if fit is None else min(limit, fit)
+                    recon.admission.memory_pressure.value = vram.pressure
+                    recon.admission.gpu_busy.value = -1 if vram.gpu.busy is None else vram.gpu.busy
+                    recon.vram_free.value = vram.free_bytes
+                    recon.vram_cached.value = vram.cached_bytes
+                    recon.cache_releases.value = vram.releases
+                if limit != backend.budget:
+                    retired = backend.resize(limit, now)
+                    recon.splat_limit.value = limit
+                    if retired:
+                        recon.notes.send(
+                            f"Splat limit {limit:,}: {retired:,} redundant or unseen splats"
+                            " fade out"
+                        )
+                if len(backend.keys) > backend.budget and backend.compact():
+                    recon.notes.send(f"Splat slots shrunk to {len(backend.keys):,}")
+                recon.slot_capacity.value = len(backend.keys)
+                if robot_first:
+                    rows, motion_cursor = recon.motion_ring.read(motion_cursor)
+                    backend.add_motion(rows)
+                    while True:
+                        try:
+                            backend.add_sensors(*recon.sensor_queue.get_nowait())
+                        except queue.Empty:
+                            break
+                frame = None
+                take = (
+                    recon.sequence.value != sequence
+                    and recon.admission.available()
+                    and backend.pending_fit is None
+                )
+                if take and recon.input_lock.acquire(False):
                     try:
-                        backend.add_sensors(*recon.sensor_queue.get_nowait())
-                    except queue.Empty:
-                        break
-            frame = None
-            take = (
-                recon.sequence.value != sequence
-                and recon.admission.available()
-                and backend.pending_fit is None
-            )
-            if take and recon.input_lock.acquire(False):
-                try:
-                    if recon.sequence.value != sequence:
-                        previous_sequence = sequence
-                        sequence = recon.sequence.value
-                        frame = (
-                            np.frombuffer(recon.rgb, np.uint8).reshape(recon.shape + (3,)).copy(),
-                            np.frombuffer(recon.depth, np.float32).reshape(recon.shape).copy(),
-                            np.frombuffer(recon.camera, np.float32).reshape(4, 4).copy(),
-                        )
-                        captured = recon.captured.value
-                        measured = bool(recon.measured.value)
-                        rows, columns = recon.truth_shape
-                        truth = (
-                            (
-                                np.frombuffer(recon.truth, np.float64).reshape(4, 4).copy()
-                                if recon.truth_pose.value
-                                else None,
-                                recon.truth_time.value,
-                                np.frombuffer(recon.truth_depth, np.float32)[: rows * columns]
-                                .reshape(rows, columns)
-                                .copy()
-                                if rows
-                                else None,
+                        if recon.sequence.value != sequence:
+                            previous_sequence = sequence
+                            sequence = recon.sequence.value
+                            frame = (
+                                np.frombuffer(recon.rgb, np.uint8)
+                                .reshape(recon.shape + (3,))
+                                .copy(),
+                                np.frombuffer(recon.depth, np.float32).reshape(recon.shape).copy(),
+                                np.frombuffer(recon.camera, np.float32).reshape(4, 4).copy(),
                             )
-                            if recon.truthful.value
-                            else None
-                        )
-                finally:
-                    recon.input_lock.release()
-            if frame is not None:
-                began = clock.now()
-                recon.input_age_seconds.value = max(0, began - captured)
-                recon.skipped_inputs.value += max(0, sequence - previous_sequence - 1)
-                if timeline:
-                    before = (
-                        getattr(backend, "tracked", 0),
-                        sum(getattr(backend, "restarts", {}).values()),
-                        backend.count,
-                    )
+                            captured = recon.captured.value
+                            measured = bool(recon.measured.value)
+                            rows, columns = recon.truth_shape
+                            truth = (
+                                (
+                                    np.frombuffer(recon.truth, np.float64).reshape(4, 4).copy()
+                                    if recon.truth_pose.value
+                                    else None,
+                                    recon.truth_time.value,
+                                    np.frombuffer(recon.truth_depth, np.float32)[: rows * columns]
+                                    .reshape(rows, columns)
+                                    .copy()
+                                    if rows
+                                    else None,
+                                )
+                                if recon.truthful.value
+                                else None
+                            )
+                    finally:
+                        recon.input_lock.release()
+                if frame is not None:
                     began = clock.now()
-                backend.source_sequence = sequence
-                backend.source_captured = captured
-                dropped = False
-                try:
-                    with recon.admission.integration():
-                        if recon.backend == "slam":
-                            if robot_first:
-                                backend.integrate(*frame, now, captured=captured, truth=truth)
-                            else:
-                                backend.integrate(*frame, now, measured=measured)
-                        else:
-                            backend.integrate(*frame, now)
-                except Exception as exc:
-                    torch = sys.modules.get("torch")
-                    if not _out_of_memory(exc, backend):
-                        raise
-                    recon.report_oom(exc)
-                    dropped = True
-                if dropped:
-                    if robot_first:
-                        node = backend.graph.current
-                        if node is not None and node not in backend.graph.keyframes:
-                            frontend.forget([node])
-                    tracker = getattr(frontend, "tracker", None)
-                    if tracker is not None:
-                        tracker.reset_idx_f2k()
-                    backend.recover()
-                    if torch is not None:
-                        torch.cuda.empty_cache()
-                    if backend.xp is not np:
-                        backend.xp.get_default_memory_pool().free_all_blocks()
+                    recon.input_age_seconds.value = max(0, began - captured)
+                    recon.skipped_inputs.value += max(0, sequence - previous_sequence - 1)
                     if timeline:
-                        timeline.write(
-                            json.dumps(dict(seq=sequence, outcome="out_of_memory")) + "\n"
+                        before = (
+                            getattr(backend, "tracked", 0),
+                            sum(getattr(backend, "restarts", {}).values()),
+                            backend.count,
                         )
-                    continue
-                recon.work_seconds.value = clock.now() - began
-                # Training gets a bounded share of the worker beside tracking, or a busy
-                # tracker would leave it none.
-                fit_credit = min(fit_credit + FIT_SHARE * recon.work_seconds.value, 0.25)
-                recon.work_total.value += recon.work_seconds.value
-                recon.integrated.value += 1
-                recon.matched.value = getattr(backend, "matched", getattr(backend, "tracked", 0))
-                recon.blurred.value = getattr(backend, "blurred", 0)
+                        began = clock.now()
+                    backend.source_sequence = sequence
+                    backend.source_captured = captured
+                    dropped = False
+                    try:
+                        with recon.admission.integration():
+                            if recon.backend == "slam":
+                                if robot_first:
+                                    backend.integrate(*frame, now, captured=captured, truth=truth)
+                                else:
+                                    backend.integrate(*frame, now, measured=measured)
+                            else:
+                                backend.integrate(*frame, now)
+                    except Exception as exc:
+                        torch = sys.modules.get("torch")
+                        if not _out_of_memory(exc, backend):
+                            raise
+                        recon.report_oom(exc)
+                        dropped = True
+                    if dropped:
+                        if robot_first:
+                            node = backend.graph.current
+                            if node is not None and node not in backend.graph.keyframes:
+                                frontend.forget([node])
+                        tracker = getattr(frontend, "tracker", None)
+                        if tracker is not None:
+                            tracker.reset_idx_f2k()
+                        backend.recover()
+                        if torch is not None:
+                            torch.cuda.empty_cache()
+                        if backend.xp is not np:
+                            backend.xp.get_default_memory_pool().free_all_blocks()
+                        if timeline:
+                            timeline.write(
+                                json.dumps(dict(seq=sequence, outcome="out_of_memory")) + "\n"
+                            )
+                        continue
+                    recon.work_seconds.value = clock.now() - began
+                    # Training gets a bounded share of the worker beside tracking, or a busy
+                    # tracker would leave it none.
+                    fit_credit = min(fit_credit + FIT_SHARE * recon.work_seconds.value, 0.25)
+                    recon.work_total.value += recon.work_seconds.value
+                    recon.integrated.value += 1
+                    recon.matched.value = getattr(
+                        backend, "matched", getattr(backend, "tracked", 0)
+                    )
+                    recon.blurred.value = getattr(backend, "blurred", 0)
+                    recon.scene_slots.value = backend.count
+                    recon.retiring_slots.value = int(backend.retiring.sum())
+                    recon.dirty_slots.value = int(backend.dirty.sum())
+                    if timeline:
+                        done = clock.now()
+                        restarted = sum(getattr(backend, "restarts", {}).values()) - before[1]
+                        tracked = getattr(backend, "tracked", 0) - before[0]
+                        since = getattr(backend, "unmatched_since", None)
+                        row = dict(
+                            event="backend_frame",
+                            worker_epoch=recon.epoch,
+                            seq=sequence,
+                            captured=round(captured, 4),
+                            began=round(began, 4),
+                            age_ms=round((began - captured) * 1000, 1),
+                            work_ms=round((done - began) * 1000, 1),
+                            measured=measured if recon.backend == "slam" else None,
+                            outcome="integrated"
+                            if recon.backend != "slam"
+                            else "restart"
+                            if restarted
+                            else "tracked"
+                            if tracked
+                            else "lost"
+                            if getattr(backend, "lost", False)
+                            else "unmatched"
+                            if since is not None
+                            else "skipped",
+                            splats=int(backend.count),
+                            splats_delta=int(backend.count) - before[2],
+                            map_anchors=len(backend.anchors),
+                            retained_views=len(backend.views),
+                            local_refits=backend.refits,
+                            fit_steps=backend.fit_steps,
+                            registered_observations=getattr(
+                                getattr(backend, "registration", None), "accepted", 0
+                            ),
+                            estimator_keyframes=len(backend.graph.keyframes)
+                            if robot_first
+                            else None,
+                            retired_keyframes=getattr(backend, "retired_keyframes", 0),
+                            oldest_surface_capture=float(backend.captures[backend.keys >= 0].min())
+                            if backend.count
+                            else None,
+                            recalls=getattr(backend, "recalls", None),
+                            matched=getattr(backend, "matched", None),
+                            backend_calls=recon.integrated.value,
+                            dirty_slots=recon.dirty_slots.value,
+                            retiring_slots=recon.retiring_slots.value,
+                            slot_capacity=len(backend.keys),
+                            splat_limit=backend.budget,
+                            cuda_scope_seconds=recon.admission.active_seconds.value,
+                            cuda_stages={
+                                name: dict(
+                                    seconds=recon.admission.stage_seconds[i],
+                                    calls=recon.admission.stage_calls[i],
+                                )
+                                for i, name in enumerate(GPU_STAGES)
+                            },
+                            cuda_memory_peak_bytes=recon.admission.memory_peak.value,
+                            gpu_busy_pct=recon.admission.gpu_busy.value,
+                            memory_pressure=bool(recon.admission.memory_pressure.value),
+                            render_backoffs=recon.admission.overruns.value,
+                            input_frames_skipped=max(0, sequence - previous_sequence - 1),
+                            blurred=getattr(backend, "blurred", None),
+                            depth_scales=getattr(backend, "depth_scales", None),
+                            on_map=getattr(backend, "aligned", None),
+                            training={
+                                k: getattr(backend.fitter, k)
+                                for k in (
+                                    "units",
+                                    "grown",
+                                    "pruned",
+                                    "aligned",
+                                    "filled",
+                                    "seconds",
+                                )
+                                if hasattr(backend.fitter, k)
+                            }
+                            if getattr(backend, "fitter", None) is not None
+                            else None,
+                            consensus_kept=getattr(
+                                getattr(backend, "consensus", None), "kept", None
+                            ),
+                            consensus_dropped=getattr(
+                                getattr(backend, "consensus", None), "dropped", None
+                            ),
+                            frame_delay_ms=round(backend.graph.td * 1000, 1)
+                            if hasattr(backend, "graph")
+                            else None,
+                        )
+                        timeline.write(json.dumps(row) + "\n")
+                    if recon.backend == "slam" and recon.output_lock.acquire(False):
+                        try:
+                            np.frombuffer(recon.output_camera, np.float32)[:] = (
+                                backend.camera_pose.ravel()
+                            )
+                            np.frombuffer(recon.output_correction, np.float32)[:] = (
+                                backend.correction.ravel() if robot_first else np.eye(4).ravel()
+                            )
+                            recon.output_captured.value = captured
+                            recon.tracked.value = backend.tracked
+                            recon.tracking.value = not backend.lost and backend.tracked > 0
+                            recon.restart_counts[:] = [backend.restarts[c] for c in RESTART_CAUSES]
+                        finally:
+                            recon.output_lock.release()
+                for _ in range(recon.ring.slots):
+                    dirty = np.flatnonzero(backend.dirty)
+                    start = np.searchsorted(dirty, cursor)
+                    ordered = np.concatenate((dirty[start:], dirty[:start]))
+                    eviction = backend.sequences[ordered] == 0
+                    indices = np.concatenate((ordered[eviction], ordered[~eviction]))[
+                        : recon.ring.batch
+                    ]
+                    if backend.pending_fit is not None:
+                        indices = backend.pending_fit
+                    elif not len(indices):
+                        # Refinement publishes only once fresh geometry has gone out.
+                        indices = np.flatnonzero(backend.refined)[: recon.ring.batch]
+                    if not len(indices) and len(backend.keys) == published_slots:
+                        break
+                    contributing = backend.sequences[indices] > 0
+                    packet_capture = max(
+                        published_capture,
+                        float(backend.captures[indices[contributing]].max())
+                        if contributing.any()
+                        else published_capture,
+                    )
+                    if not recon.ring.publish(
+                        indices,
+                        backend.records[indices],
+                        len(backend.keys),
+                        backend.count,
+                        revision,
+                        packet_capture,
+                        backend.sequences[indices],
+                        backend.captures[indices],
+                    ):
+                        break
+                    if timeline:
+                        ages = backend.captures[indices]
+                        timeline.write(
+                            json.dumps(
+                                dict(
+                                    event="scene_revision",
+                                    worker_epoch=recon.epoch,
+                                    revision=revision,
+                                    coordinate_frame=recon.ring.coordinate_frame,
+                                    anchor=0,
+                                    published=clock.now(),
+                                    slots=len(indices),
+                                    oldest_observation=float(ages.min()) if len(ages) else None,
+                                    newest_observation=float(ages.max()) if len(ages) else None,
+                                    local_fit=backend.pending_fit is not None,
+                                )
+                            )
+                            + "\n"
+                        )
+                    published_slots = len(backend.keys)
+                    published_capture = packet_capture
+                    retiring = indices[backend.retiring[indices]]
+                    backend.retire_revision[retiring] = revision
+                    if len(indices):
+                        cursor = (int(indices[-1]) + 1) % len(backend.keys)
+                    backend.dirty[indices] = False
+                    backend.refined[indices] = False
+                    backend.pending_fit = None
+                    revision += 1
                 recon.scene_slots.value = backend.count
                 recon.retiring_slots.value = int(backend.retiring.sum())
                 recon.dirty_slots.value = int(backend.dirty.sum())
-                if timeline:
-                    done = clock.now()
-                    restarted = sum(getattr(backend, "restarts", {}).values()) - before[1]
-                    tracked = getattr(backend, "tracked", 0) - before[0]
-                    since = getattr(backend, "unmatched_since", None)
-                    row = dict(
-                        event="backend_frame",
-                        worker_epoch=recon.epoch,
-                        seq=sequence,
-                        captured=round(captured, 4),
-                        began=round(began, 4),
-                        age_ms=round((began - captured) * 1000, 1),
-                        work_ms=round((done - began) * 1000, 1),
-                        measured=measured if recon.backend == "slam" else None,
-                        outcome="integrated"
-                        if recon.backend != "slam"
-                        else "restart"
-                        if restarted
-                        else "tracked"
-                        if tracked
-                        else "lost"
-                        if getattr(backend, "lost", False)
-                        else "unmatched"
-                        if since is not None
-                        else "skipped",
-                        splats=int(backend.count),
-                        splats_delta=int(backend.count) - before[2],
-                        map_anchors=len(backend.anchors),
-                        retained_views=len(backend.views),
-                        local_refits=backend.refits,
-                        fit_steps=backend.fit_steps,
-                        registered_observations=getattr(
-                            getattr(backend, "registration", None), "accepted", 0
-                        ),
-                        estimator_keyframes=len(backend.graph.keyframes) if robot_first else None,
-                        retired_keyframes=getattr(backend, "retired_keyframes", 0),
-                        oldest_surface_capture=float(backend.captures[backend.keys >= 0].min())
-                        if backend.count
-                        else None,
-                        recalls=getattr(backend, "recalls", None),
-                        matched=getattr(backend, "matched", None),
-                        backend_calls=recon.integrated.value,
-                        dirty_slots=recon.dirty_slots.value,
-                        retiring_slots=recon.retiring_slots.value,
-                        slot_capacity=len(backend.keys),
-                        splat_limit=backend.budget,
-                        cuda_scope_seconds=recon.admission.active_seconds.value,
-                        cuda_stages={
-                            name: dict(
-                                seconds=recon.admission.stage_seconds[i],
-                                calls=recon.admission.stage_calls[i],
-                            )
-                            for i, name in enumerate(GPU_STAGES)
-                        },
-                        cuda_memory_peak_bytes=recon.admission.memory_peak.value,
-                        gpu_busy_pct=recon.admission.gpu_busy.value,
-                        memory_pressure=bool(recon.admission.memory_pressure.value),
-                        render_backoffs=recon.admission.overruns.value,
-                        input_frames_skipped=max(0, sequence - previous_sequence - 1),
-                        blurred=getattr(backend, "blurred", None),
-                        depth_scales=getattr(backend, "depth_scales", None),
-                        on_map=getattr(backend, "aligned", None),
-                        training={
-                            k: getattr(backend.fitter, k)
-                            for k in ("units", "grown", "pruned", "aligned", "filled", "seconds")
-                            if hasattr(backend.fitter, k)
-                        }
-                        if getattr(backend, "fitter", None) is not None
-                        else None,
-                        consensus_kept=getattr(getattr(backend, "consensus", None), "kept", None),
-                        consensus_dropped=getattr(
-                            getattr(backend, "consensus", None), "dropped", None
-                        ),
-                        frame_delay_ms=round(backend.graph.td * 1000, 1)
-                        if hasattr(backend, "graph")
-                        else None,
-                    )
-                    timeline.write(json.dumps(row) + "\n")
-                if recon.backend == "slam" and recon.output_lock.acquire(False):
-                    try:
-                        np.frombuffer(recon.output_camera, np.float32)[:] = (
-                            backend.camera_pose.ravel()
-                        )
-                        np.frombuffer(recon.output_correction, np.float32)[:] = (
-                            backend.correction.ravel() if robot_first else np.eye(4).ravel()
-                        )
-                        recon.output_captured.value = captured
-                        recon.tracked.value = backend.tracked
-                        recon.tracking.value = not backend.lost and backend.tracked > 0
-                        recon.restart_counts[:] = [backend.restarts[c] for c in RESTART_CAUSES]
-                    finally:
-                        recon.output_lock.release()
-            for _ in range(recon.ring.slots):
-                dirty = np.flatnonzero(backend.dirty)
-                start = np.searchsorted(dirty, cursor)
-                ordered = np.concatenate((dirty[start:], dirty[:start]))
-                eviction = backend.sequences[ordered] == 0
-                indices = np.concatenate((ordered[eviction], ordered[~eviction]))[
-                    : recon.ring.batch
-                ]
-                if backend.pending_fit is not None:
-                    indices = backend.pending_fit
-                elif not len(indices):
-                    # Refinement publishes only once fresh geometry has gone out.
-                    indices = np.flatnonzero(backend.refined)[: recon.ring.batch]
-                if not len(indices) and len(backend.keys) == published_slots:
-                    break
-                contributing = backend.sequences[indices] > 0
-                packet_capture = max(
-                    published_capture,
-                    float(backend.captures[indices[contributing]].max())
-                    if contributing.any()
-                    else published_capture,
+                pending_captures = backend.captures[backend.dirty & (backend.sequences > 0)]
+                recon.oldest_dirty_capture.value = (
+                    float(pending_captures.min()) if len(pending_captures) else 0
                 )
-                if not recon.ring.publish(
-                    indices,
-                    backend.records[indices],
-                    len(backend.keys),
-                    backend.count,
-                    revision,
-                    packet_capture,
-                    backend.sequences[indices],
-                    backend.captures[indices],
+                # Publish fresh geometry before spending a bounded unit on appearance.
+                # A full ring retains dirty work; never pile training behind that backlog.
+                idle = recon.sequence.value == sequence
+                while (
+                    trainer is None
+                    and (idle or fit_credit > 0)
+                    and np.count_nonzero(backend.dirty) < recon.ring.batch
+                    and backend.pending_fit is None
+                    and recon.admission.available()
                 ):
-                    break
-                if timeline:
-                    ages = backend.captures[indices]
-                    timeline.write(
-                        json.dumps(
-                            dict(
-                                event="scene_revision",
-                                worker_epoch=recon.epoch,
-                                revision=revision,
-                                coordinate_frame=recon.ring.coordinate_frame,
-                                anchor=0,
-                                published=clock.now(),
-                                slots=len(indices),
-                                oldest_observation=float(ages.min()) if len(ages) else None,
-                                newest_observation=float(ages.max()) if len(ages) else None,
-                                local_fit=backend.pending_fit is not None,
-                            )
-                        )
-                        + "\n"
-                    )
-                published_slots = len(backend.keys)
-                published_capture = packet_capture
-                retiring = indices[backend.retiring[indices]]
-                backend.retire_revision[retiring] = revision
-                if len(indices):
-                    cursor = (int(indices[-1]) + 1) % len(backend.keys)
-                backend.dirty[indices] = False
-                backend.refined[indices] = False
-                backend.pending_fit = None
-                revision += 1
-            recon.scene_slots.value = backend.count
-            recon.retiring_slots.value = int(backend.retiring.sum())
-            recon.dirty_slots.value = int(backend.dirty.sum())
-            pending_captures = backend.captures[backend.dirty & (backend.sequences > 0)]
-            recon.oldest_dirty_capture.value = (
-                float(pending_captures.min()) if len(pending_captures) else 0
-            )
-            # Publish fresh geometry before spending a bounded unit on appearance.
-            # A full ring retains dirty work; never pile training behind that backlog.
-            idle = recon.sequence.value == sequence
-            while (
-                (idle or fit_credit > 0)
-                and np.count_nonzero(backend.dirty) < recon.ring.batch
-                and backend.pending_fit is None
-                and recon.admission.available()
-            ):
-                started = clock.now()
-                try:
-                    with recon.admission.integration():
-                        trained = backend.fit()
-                except Exception as exc:
-                    if not _out_of_memory(exc, backend):
-                        raise
-                    backend.recover()
-                    recon.report_oom(exc)
-                    torch = sys.modules.get("torch")
-                    if torch is not None:
-                        torch.cuda.empty_cache()
-                    trained = False
-                fit_credit -= clock.now() - started
-                if not trained or idle:
-                    break
+                    started = clock.now()
+                    try:
+                        with recon.admission.integration():
+                            trained = backend.fit()
+                    except Exception as exc:
+                        if not _out_of_memory(exc, backend):
+                            raise
+                        backend.recover()
+                        recon.report_oom(exc)
+                        torch = sys.modules.get("torch")
+                        if torch is not None:
+                            torch.cuda.empty_cache()
+                        trained = False
+                    fit_credit -= clock.now() - started
+                    if not trained or idle:
+                        break
+                if MAP_DUMP and now >= next_map_dump:
+                    next_map_dump = now + MAP_DUMP_EVERY
+                    dump_map(backend, now)
+            finally:
+                backend.lock.release()
             if recon.sequence.value == sequence or not recon.admission.available():
                 recon.admission.wake.wait(0.005)
+        if MAP_DUMP:
+            with backend.lock:
+                dump_map(backend, clock.now() - recon.epoch)
     except InterruptedError:
         if not recon.stopped.value:
             recon.errors.send("GPU admission stopped")
