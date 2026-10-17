@@ -63,6 +63,13 @@ ALIGN = DEPTH == "da3" or os.environ.get("ITO_ALIGN", "0") != "0"
 # with it, registration lays a frame onto retained views without rescaling it to them, so
 # the first views' one-frame scale stops setting the whole map's.
 GRAPH_SCALE = os.environ.get("ITO_SCALE", "frame") == "graph"
+# ITO_MAPSCALE=1: a frame whose view the map already covers takes the map's scale: its depth
+# is scaled by the median of the map's drawn depth over its own there. A frame's metric scale
+# from ToF and floor scatters by several percent, and a pot seen at 2.4 m from one frame and
+# again later lands twice, 15 cm apart; the map's own scale stays one scale.
+MAPSCALE = os.environ.get("ITO_MAPSCALE", "0") != "0"
+MAPSCALE_COVERED = 0.3
+MAPSCALE_RANGE = (0.85, 1.15)
 # ITO_REFINE=1 lays each frame onto the map photometrically before mapping it (training.py
 # FrameAlign) and tells fusion where it landed.
 REFINE = os.environ.get("ITO_REFINE", "0") != "0"
@@ -484,6 +491,18 @@ class SLAMBackend(GaussianBackend):
         elif self.placed is not None:
             mapped, scale = self.placed, 1.0
         raw_depth = np.where(valid, -points[..., 2] * scale, 0).astype(np.float32)
+        if MAPSCALE and not (self.truth is not None and self.truth[2] is not None and not COMPARE):
+            ids, z, u, v = self.centers(mapped, intrinsics, raw_depth.shape)
+            if len(ids) > 1000:
+                alpha, drawn, _ = self.render(mapped, intrinsics, raw_depth.shape, ids, z, u, v)
+                both = (alpha > 0.9) & (drawn > 0) & (raw_depth > 0)
+                if both.mean() > MAPSCALE_COVERED:
+                    ratio = float(np.median(drawn[both] / raw_depth[both]))
+                    if MAPSCALE_RANGE[0] < ratio < MAPSCALE_RANGE[1]:
+                        scale *= ratio
+                        raw_depth *= ratio
+                        if COMPARE:
+                            self.depth_scales["map"] = ratio
         if self.refine is not None and not (self.truth is not None and self.truth[0] is not None):
             with self.gpu_chunk("map"):
                 refined = self.refine(image, raw_depth, mapped, intrinsics)
