@@ -24,13 +24,12 @@ RETAINED = 4  # and retained views facing most like it
 NEEDED = 1  # other views that must agree (the frame itself is one more)
 FACING = math.cos(math.radians(60))
 NEAREST = 1.5  # metres: retained views further than this from the camera are not asked
-# ITO_WITNESSES=N: also up to N retained views that look at the frame's surfaces from elsewhere
-# (any heading, within WITNESS_RANGE of them). A point WITNESS_NEEDED of them see well past
+# ITO_WITNESSES=N: also the N retained views (not references, any heading) that see most of the
+# frame's points within WITNESS_RANGE. A point WITNESS_NEEDED of them see well past
 # (WITNESS_MARGIN of depth) lies in space they saw empty. From the bookshelf, the plant pot
 # at the edge of view landed beside itself; the views from the start had seen the wall there.
 WITNESSES = int(os.environ.get("ITO_WITNESSES", "0"))
 WITNESS_RANGE = 4.0
-WITNESS_FACING = math.cos(math.radians(40))
 WITNESS_MARGIN = 0.1
 WITNESS_NEEDED = 2
 
@@ -62,28 +61,35 @@ class Consensus:
         return chosen
 
     def witnesses(self, depth, pose, intrinsics, views, references):
-        """Retained views that see this frame's middle surface from furthest off its heading."""
-        if not WITNESSES or not (depth > 0).any():
+        """Retained views, not among the references, that see most of this frame's points."""
+        if not WITNESSES:
             return []
         height, width = depth.shape
-        middle = depth[height // 4 : 3 * height // 4, width // 4 : 3 * width // 4]
-        middle = middle[middle > 0]
-        if not len(middle):
+        step = max(1, height // 12)
+        rows, columns = np.mgrid[step // 2 : height : step, step // 2 : width : step]
+        d = depth[rows, columns]
+        rows, columns, d = rows[d > 0], columns[d > 0], d[d > 0]
+        if len(d) < 20:
             return []
-        point = pose[:3, 3] - pose[:3, 2] * float(np.median(middle))
+        fx, fy, cx, cy = intrinsics
+        local = np.stack(((columns - cx) / fx * d, -(rows - cy) / fy * d, -d), -1)
+        world = local @ pose[:3, :3].T + pose[:3, 3]
         taken = {round(r[3], 4) for r in references}
         scored = []
         for view in views:
             if round(view.captured, 4) in taken or view.depth is None:
                 continue
-            toward = point - view.pose[:3, 3]
-            distance = float(np.linalg.norm(toward))
-            if not 0.2 < distance < WITNESS_RANGE:
-                continue
-            if float(-view.pose[:3, 2] @ toward) / distance < WITNESS_FACING:
-                continue
-            scored.append((float(view.pose[:3, 2] @ pose[:3, 2]), view))
-        scored.sort(key=lambda item: item[0])
+            seen = (world - view.pose[:3, 3]) @ view.pose[:3, :3]
+            z = -seen[:, 2]
+            vh, vw = view.depth.shape
+            vfx, vfy, vcx, vcy = view.intrinsics
+            safe = np.maximum(z, 1e-3)
+            u = vcx + vfx * seen[:, 0] / safe
+            v = vcy - vfy * seen[:, 1] / safe
+            inside = (z > 0.1) & (z < WITNESS_RANGE) & (u >= 0) & (u < vw) & (v >= 0) & (v < vh)
+            if inside.mean() > 0.05:
+                scored.append((int(inside.sum()), view))
+        scored.sort(key=lambda item: -item[0])
         return [
             (view.depth, view.pose, view.intrinsics, view.captured)
             for _, view in scored[:WITNESSES]
