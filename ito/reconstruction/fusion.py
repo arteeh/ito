@@ -29,6 +29,11 @@ DELAY_STEP = 0.001
 UP = np.array([0.0, 1.0, 0.0])
 MAP_FLOOR = np.repeat((math.radians(0.05), 0.005), 3)
 PUBLISHED = 600
+# The robot's kinematic camera height over the floor holds absolutely, not only from one sample
+# to the next: with relative motion alone, a degree of pitch error turned a 1.5 m walk into a
+# 3 cm drop of the camera (in the sim), and everything mapped after it sat 3 cm low. Robots
+# whose world's Y is height over the floor (the wire contract) can say so this well.
+HEIGHT_SIGMA = 0.01
 
 
 @dataclass
@@ -297,6 +302,9 @@ class PoseGraph:
             ]
         ).reshape(-1, 6)
         gravity_sigma = np.array([self.motion.gravity_sigma(times[i] - td) for i in rows])
+        height_sigma = np.array(
+            [self.motion.height_sigma(times[i] - td, HEIGHT_SIGMA) for i in rows]
+        )
         turns, ups = self._inertial(times - td, chain, rows)
         if turns:
             ti, tj = (np.array([t[k] for t in turns], dtype=int) for k in (0, 1))
@@ -347,6 +355,7 @@ class PoseGraph:
             if len(rows):
                 error = (rotations[rows] * robot_r[rows].inv()).as_rotvec()
                 blocks.append((error[:, [0, 2]] / gravity_sigma[:, None]).ravel())
+                blocks.append((positions[rows, 1] - robot_p[rows, 1]) / height_sigma)
             if turns:
                 error = (turn_inv * rotations[ti].inv() * rotations[tj]).as_rotvec()
                 blocks.append(_cauchy(error / turn_sigma).ravel())
@@ -443,6 +452,8 @@ class PoseGraph:
             block(6, (a, b))
         for node in free_index:
             block(2, (node,))
+        for node in free_index:
+            block(1, (node,))
         for a, b in turns:
             block(3, (a, b))
         for node in ups:

@@ -124,6 +124,10 @@ class MotionBuffer:
         sigma = np.repeat((rotation * scale, translation * scale), 3)
         return relative, np.diag(sigma**2)
 
+    def height_sigma(self, t, sigma):
+        """sigma (metres) for the robot's camera height over the floor, unless held or fallen."""
+        return sigma * (UNRELIABLE if self._unreliable(t, t) else 1.0)
+
     def gravity_sigma(self, t):
         scale = UNRELIABLE if self._unreliable(t, t) else 1.0
         return math.hypot(math.radians(self.noise.gravity_deg), self._timing(t)) * scale
