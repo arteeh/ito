@@ -132,6 +132,57 @@ class MonoGeometry:
         return torch.nan_to_num(depth, nan=0, posinf=0, neginf=0).cpu().numpy()
 
 
+class PromptedDepth:
+    """A frame's dense metric depth from dToF-DMDC (CVPR 2026, MIT): MoGe-2 with a direct-ToF's
+    sparse metric readings as a prompt. ITO_DMDC names a folder holding its source
+    (dtof-dmdc-src) and weights (dtof_dmdc_<ITO_DMDC_VARIANT>.pt, default vitb); not bundled."""
+
+    def __init__(self):
+        import torch
+
+        root = Path(os.environ["ITO_DMDC"])
+        for path in (str(MOGE), str(root / "dtof-dmdc-src")):
+            if path not in sys.path:
+                sys.path.insert(0, path)
+        import utils3d_moge
+
+        # dToF-DMDC imports MoGe's geometry helpers by their upstream name.
+        sys.modules.setdefault("utils3d", utils3d_moge)
+        from dtof_dmdc.model.dmdc import MoGeModel
+
+        variant = os.environ.get("ITO_DMDC_VARIANT", "vitb")
+        self.torch = torch
+        self.net = (
+            MoGeModel.from_pretrained(str(root / f"dtof_dmdc_{variant}.pt")).to("cuda").eval()
+        )
+
+    def __call__(self, rgb, fov_x, size, readings):
+        """Depth (size[1] x size[0], metres, 0: none) of an RGB frame whose horizontal field of
+        view is fov_x degrees; readings: (row, column, axial metres) on that size."""
+        import cv2
+
+        torch = self.torch
+        width, height = size
+        image = cv2.resize(rgb, size, interpolation=cv2.INTER_AREA)
+        sparse = np.zeros((height, width), np.float32)
+        mask = np.zeros((height, width), bool)
+        for row, column, depth in readings:
+            if 0 <= row < height and 0 <= column < width and depth > 0:
+                sparse[row, column], mask[row, column] = depth, True
+        x = torch.as_tensor(image, device="cuda").permute(2, 0, 1).float() / 255
+        with torch.inference_mode():
+            out = self.net.infer(
+                x,
+                torch.as_tensor(sparse, device="cuda"),
+                torch.as_tensor(mask, device="cuda"),
+                fov_x=fov_x,
+                use_fp16=True,
+            )
+        depth = out.get("metric_depth", out.get("depth"))
+        depth = torch.nan_to_num(depth.float(), nan=0, posinf=0, neginf=0)
+        return depth.cpu().numpy()
+
+
 def _stub_evo():
     """DA3-GIANT's Gaussian head imports evo's trajectory alignment at load; depth never uses it,
     and evo is not bundled."""

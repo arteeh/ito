@@ -115,6 +115,46 @@ class HeadSensors:
                 hits.append((int(round(y)), int(round(x)), float(-point[2])))
         return hits
 
+    def zone_footprints(self, t, motion, intrinsics, shape, samples=8):
+        """Each valid zone of the ToF grid nearest t, as a real VL53 reads it (the nearest
+        target anywhere in the zone): (pixels (k x 2 rows, columns) its footprint covers on a
+        grid of shape with intrinsics, its reading in metres from the sensor, the sensor's
+        origin in the camera at t (3,))."""
+        if not self.grids:
+            return []
+        grid = min(self.grids, key=lambda g: abs(g["time"] - t))
+        if abs(grid["time"] - t) > RANGE_MATCH:
+            return []
+        mount = grid["mount"]
+        if motion.covers(t) and motion.covers(grid["time"]):
+            mount = np.linalg.inv(motion.at(t)) @ motion.at(grid["time"]) @ mount
+        rows, cols = grid["shape"]
+        width, height = grid["field_of_view"]
+        fx, fy, cx, cy = intrinsics
+        image_h, image_w = shape
+        steps = (np.arange(samples) + 0.5) / samples - 0.5
+        out = []
+        for zone, distance in enumerate(grid["distances"]):
+            if not math.isfinite(distance):
+                continue
+            row, col = divmod(zone, cols)
+            a, u = np.meshgrid(
+                ((col + 0.5) / cols - 0.5) * width + steps * width / cols,
+                (0.5 - (row + 0.5) / rows) * height + steps * height / rows,
+            )
+            rays = np.stack(ray(a.ravel(), u.ravel()), axis=-1) @ mount[:3, :3].T
+            ahead = rays[:, 2] < -0.05
+            x = fx * rays[ahead, 0] / -rays[ahead, 2] + cx
+            y = cy - fy * rays[ahead, 1] / -rays[ahead, 2]
+            inside = (x >= 0) & (x <= image_w - 1) & (y >= 0) & (y <= image_h - 1)
+            if inside.sum() < samples:
+                continue
+            pixels = np.unique(
+                np.stack((np.rint(y[inside]), np.rint(x[inside])), -1).astype(int), axis=0
+            )
+            out.append((pixels, float(distance), mount[:3, 3].copy()))
+        return out
+
     def range_scale(self, cloud, t, motion):
         if not self.grids:
             return None
