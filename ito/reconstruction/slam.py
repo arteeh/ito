@@ -168,7 +168,14 @@ FLIP = np.diag([1.0, -1.0, -1.0])  # Ito axes <-> MASt3R's (OpenCV), for the glo
 # tracker's rotation prior (the kinematic one rides up to 2 degrees past the servos' play), and
 # with ITO_SLAM=full its turns and tilt join the global graph. Unset: as before.
 HEAD_IMU = os.environ.get("ITO_HEAD_IMU", "0") != "0"
-MAP_MOVE = (0.002, 0.05, 0.002)  # metres, degrees, log-scale: a keyframe's move the map follows
+# metres, degrees, log-scale: a keyframe's move the map follows (smaller ones add up until then).
+# ITO_SLAM_MAP_MOVE="cm,deg" raises it: with the pose graph a keyframe moves ~0.7 deg per solve.
+_MOVE = os.environ.get("ITO_SLAM_MAP_MOVE")
+MAP_MOVE = (
+    (0.002, 0.05, 0.002)
+    if not _MOVE
+    else (float(_MOVE.split(",")[0]) / 100, float(_MOVE.split(",")[1]), 0.01)
+)
 
 
 class SLAMBackend(GaussianBackend):
