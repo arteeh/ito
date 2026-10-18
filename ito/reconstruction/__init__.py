@@ -31,7 +31,10 @@ def dump_map(backend, now):
     folder = Path(MAP_DUMP)
     folder.mkdir(parents=True, exist_ok=True)
     live = np.flatnonzero((backend.keys >= 0) & ~backend.retiring)
-    np.savez(folder / f"map-{now:07.1f}.npz", records=backend.records[live], seconds=now)
+    # ITO_SLAM=full: the world the map was drawn in, back to the robot's starting frame.
+    world = getattr(backend, "world_alignment", lambda: None)()
+    extra = {} if world is None else dict(world=world)
+    np.savez(folder / f"map-{now:07.1f}.npz", records=backend.records[live], seconds=now, **extra)
 
 
 __all__ = ["Reconstruction", "SplatUpdate", "default_budget"]

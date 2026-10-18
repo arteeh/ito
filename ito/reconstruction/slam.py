@@ -257,6 +257,7 @@ class SLAMBackend(GaussianBackend):
         self.global_applied = 0
         self.global_change = (0.0, 0.0)
         self.map_poses = {}  # full: keyframe -> its pose (Ito axes) its surfaces were placed by
+        self.first_pose = None  # full: keyframe 0's rigid pose when it was made
         # Full with ITO_FUSE: every fused frame's input, by keyframe, to fuse the field afresh
         # where the global graph moved keyframes (rebuild_volume) instead of keeping its old room.
         self.fused_frames = []
@@ -284,6 +285,21 @@ class SLAMBackend(GaussianBackend):
                 admission.torch_stream,
             )
             self.frontend.global_graph = self.global_graph
+
+    def world_alignment(self):
+        """Full SLAM: the rigid move taking today's world (the gauge follows the keyframe the
+        pilot looks from) back to the robot's starting frame, as keyframe 0 was placed in it."""
+        if self.global_graph is None or not self.frontend.frames or 0 not in self.map_poses:
+            return None
+        from .mast3r_global import sim3_matrix, to_ito
+
+        if self.first_pose is None:
+            return None
+        now = to_ito(
+            sim3_matrix(self.frontend.frames[0].T_WC.data.reshape(8).double().cpu().numpy())[0]
+        )
+        now[:3, :3] /= np.cbrt(np.linalg.det(now[:3, :3]))
+        return self.first_pose @ np.linalg.inv(now)
 
     def global_statistics(self):
         if self.global_graph is None:
@@ -456,6 +472,12 @@ class SLAMBackend(GaussianBackend):
             )
         from .mast3r_global import sim3_matrix, to_ito
 
+        if index == 0:
+            first = to_ito(
+                sim3_matrix(frontend.frames[0].T_WC.data.reshape(8).double().cpu().numpy())[0]
+            )
+            first[:3, :3] /= np.cbrt(np.linalg.det(first[:3, :3]))
+            self.first_pose = first
         self.map_poses[index] = to_ito(
             sim3_matrix(frontend.frames[index].T_WC.data.reshape(8).double().cpu().numpy())[0]
         )

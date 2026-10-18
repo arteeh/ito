@@ -50,6 +50,22 @@ def pose(position, target):
     return m
 
 
+def aligned(dump):
+    """A dump's splats in the robot's starting frame: an ITO_SLAM=full map holds its world
+    where the pilot's keyframe is (dump "world" takes it back)."""
+    records = dump["records"].copy()
+    if "world" not in dump:
+        return records
+    from scipy.spatial.transform import Rotation
+
+    world = dump["world"]
+    records[:, 0, :3] = records[:, 0, :3] @ world[:3, :3].T + world[:3, 3]
+    turn = Rotation.from_matrix(world[:3, :3])
+    quats = Rotation.from_quat(records[:, 2][:, [1, 2, 3, 0]])
+    records[:, 2] = (turn * quats).as_quat()[:, [3, 0, 1, 2]]
+    return records
+
+
 def draw(records, camera):
     r = torch.as_tensor(records, device="cuda", dtype=torch.float32)
     focal = WIDTH / 2 / math.tan(math.radians(HFOV / 2))
@@ -81,7 +97,7 @@ def main():
     p.add_argument("--labels", nargs="+")
     a = p.parse_args()
     labels = a.labels or [m.parent.name for m in a.maps]
-    maps = [np.load(m)["records"] for m in a.maps]
+    maps = [aligned(np.load(m)) for m in a.maps]
     rows = []
     for name, position, target in VIEWS:
         camera = pose(position, target)
