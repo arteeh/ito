@@ -46,6 +46,9 @@ FIT = os.environ.get("ITO_FIT", "view")
 # is divided out before it seeds or blends colour, and training keeps refining each retained
 # view's gain and offset beside the map instead of baking them into surfaces.
 EXPOSURE = os.environ.get("ITO_EXPOSURE", "0") != "0"
+# ITO_EXPOSURE=input: also divide the gain known so far out of each whole frame as it arrives,
+# before depth, tracking and mapping see it, so they compare frames at one exposure.
+EXPOSURE_INPUT = os.environ.get("ITO_EXPOSURE") == "input"
 EXPOSURE_SAMPLES = 300
 EXPOSURE_LIMIT = 0.7  # log gain: a camera's exposure swing between neighbouring frames
 # The map keeps the colours of the frames it began with; the pilot draws it at the camera's
@@ -57,7 +60,14 @@ def exposed(image, log_gain):
     """uint8 image with a per-channel log gain divided out."""
     if log_gain is None or not np.any(log_gain):
         return image
-    return np.clip(image * np.exp(-np.asarray(log_gain, np.float32)), 0, 255).astype(np.uint8)
+    scale = np.exp(-np.asarray(log_gain, np.float32))
+    table = np.clip(np.arange(256, dtype=np.float32)[:, None] * scale, 0, 255).astype(np.uint8)
+    try:
+        import cv2
+
+        return cv2.LUT(np.ascontiguousarray(image), table[:, None, :])
+    except ImportError:
+        return np.stack([table[image[..., c], c] for c in range(3)], -1)
 
 
 @dataclass
@@ -323,11 +333,13 @@ class GaussianBackend(GaussianSlots):
                         np.median(ratio, axis=0), -EXPOSURE_LIMIT, EXPOSURE_LIMIT
                     )
                     seen = np.clip(seen * np.exp(-self.frame_exposure), 0, 1)
+                    total = self.frame_exposure.copy()
+                    if EXPOSURE_INPUT:
+                        total += self.input_exposure_used
+                        self.input_exposure = np.clip(total, -1.5, 1.5)
                     usual = getattr(self, "exposure_mean", None)
                     self.exposure_mean = (
-                        self.frame_exposure.copy()
-                        if usual is None
-                        else usual + (self.frame_exposure - usual) / EXPOSURE_MEMORY
+                        total if usual is None else usual + (total - usual) / EXPOSURE_MEMORY
                     )
             change = np.abs(seen - color).max(-1)
             near = np.flatnonzero((change < BLEND) & (change > 0.01))
