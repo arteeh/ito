@@ -107,7 +107,9 @@ class Pi3Depth:
         from safetensors.torch import load_file
 
         root = Path(os.environ["ITO_PI3"])
-        source = next((p for p in (root / "Pi3", root / "src" / "Pi3") if p.is_dir()), root)
+        # Windows paths ignore case: root/Pi3 may be the weights' root/pi3; look for the package.
+        candidates = (root / "src" / "Pi3", root / "Pi3", root)
+        source = next((p for p in candidates if (p / "pi3" / "models").is_dir()), root)
         if str(source) not in sys.path:
             sys.path.insert(0, str(source))
         from pi3.models.pi3 import Pi3
