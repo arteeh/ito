@@ -1,5 +1,7 @@
+import logging
 import math
 import os
+import time
 
 import numpy as np
 from scipy.ndimage import maximum_filter, minimum_filter
@@ -23,6 +25,8 @@ from .sensors import HeadSensors
 from .slam_vision import RESTART_CAUSES
 
 __all__ = ["RESTART_CAUSES", "SLAMBackend"]
+
+log = logging.getLogger(__name__)
 
 # A frame smeared further than this by the camera's turn during its exposure still gets a
 # pose, from the robot, but neither a visual factor nor splats: no tracker matches through
@@ -253,6 +257,13 @@ class SLAMBackend(GaussianBackend):
         self.global_applied = 0
         self.global_change = (0.0, 0.0)
         self.map_poses = {}  # full: keyframe -> its pose (Ito axes) its surfaces were placed by
+        # Full with ITO_FUSE: every fused frame's input, by keyframe, to fuse the field afresh
+        # where the global graph moved keyframes (rebuild_volume) instead of keeping its old room.
+        self.fused_frames = []
+        self.rebuilding = None  # the thread fusing a new field
+        self.rebuilt = None  # a new field and how many fused_frames it holds
+        self.volume_rebuilds = 0
+        self.rebuild_seconds = 0.0
         from .registration import Registration
 
         self.registration = Registration()
@@ -282,6 +293,9 @@ class SLAMBackend(GaussianBackend):
             applied=self.global_applied,
             change=[round(v, 4) for v in self.global_change],
             frontend_relocalised=getattr(self.frontend, "relocalisations", 0),
+            field_rebuilds=self.volume_rebuilds,
+            field_rebuild_ms=round(self.rebuild_seconds * 1000),
+            fused_frames=len(self.fused_frames),
         )
         return stats
 
@@ -340,6 +354,85 @@ class SLAMBackend(GaussianBackend):
             self.global_applied += 1
             if deltas:
                 self.repose(deltas, self.node_keyframe)
+                if self.volume is not None:
+                    self.move_fused(deltas)
+                    self.rebuild_volume()
+
+    def remember_fused(self, depth, trust, pose, intrinsics, node):
+        self.fused_frames.append(
+            dict(
+                depth=depth.astype(np.float16),
+                trust=None if trust is None else np.asarray(trust, np.float16),
+                pose=np.array(pose, np.float64),
+                intrinsics=intrinsics,
+                keyframe=self.node_keyframe.get(node),
+            )
+        )
+
+    def move_fused(self, deltas):
+        from .gaussian import _moved_camera
+
+        for frame in self.fused_frames:
+            delta = deltas.get(frame["keyframe"])
+            if delta is None:
+                continue
+            frame["pose"] = _moved_camera(delta, frame["pose"])
+            scale = float(np.cbrt(np.linalg.det(delta[:3, :3])))
+            if abs(scale - 1) > 1e-6:
+                frame["depth"] = (frame["depth"].astype(np.float32) * scale).astype(np.float16)
+
+    def rebuild_volume(self):
+        """Fuse every remembered frame at its pose now into a new field, on a thread of its own
+        beside tracking; frames fused meanwhile are added before it replaces the old one."""
+        import threading
+
+        from .volume import Volume
+
+        if self.rebuilding is not None:
+            self.rebuild_again = True
+            return
+        self.rebuild_again = False
+        frames = list(self.fused_frames)
+        torch = _torch()
+        available = self.admission.available
+        stopped = self.global_graph.stopped
+        tracking = self.admission.torch_stream
+
+        def run():
+            began = time.perf_counter()
+            stream = torch.cuda.Stream(priority=0)
+            try:
+                with torch.cuda.stream(stream), torch.inference_mode():
+                    if tracking is not None:
+                        stream.wait_stream(tracking)
+                    volume = Volume()
+                    for frame in frames:
+                        while not available():
+                            if stopped():
+                                return
+                            time.sleep(0.002)
+                        _fuse_remembered(volume, frame)
+                    stream.synchronize()
+                self.rebuilt = (volume, len(frames))
+                self.rebuild_seconds = time.perf_counter() - began
+            except Exception:
+                log.exception("Field rebuild failed")
+                self.rebuilding = None
+
+        self.rebuilding = threading.Thread(target=run, name="field-rebuild", daemon=True)
+        self.rebuilding.start()
+
+    def swap_volume(self):
+        volume, count = self.rebuilt
+        for frame in self.fused_frames[count:]:
+            _fuse_remembered(volume, frame)
+        for name in ("filled", "agreed", "refuted", "carved", "cleared"):
+            setattr(volume, name, getattr(self.volume, name))
+        self.volume = volume
+        self.rebuilt = self.rebuilding = None
+        self.volume_rebuilds += 1
+        if self.rebuild_again:
+            self.rebuild_volume()
 
     def queue_keyframe(self, node, exposure):
         """Full SLAM: hand the keyframe just kept to the global graph with the robot's factors."""
@@ -958,8 +1051,14 @@ class SLAMBackend(GaussianBackend):
                     trust = np.full(depth.shape, TRUST_UNREAD, np.float32)
                 if self.from_da3 and DA3_EVERY > 1:
                     trust = DA3_TRUST * (1 if trust is None else trust)
+                if self.rebuilt is not None:
+                    self.swap_volume()
                 fused = self.volume.fuse(depth, mapped, intrinsics, trust)
-                if self.volume.frames % 2 == 0:
+                if self.global_graph is not None:
+                    self.remember_fused(depth, trust, mapped, intrinsics, node)
+                # A field being rebuilt for moved keyframes holds them where they were: carving
+                # by it would retire the surfaces that moved.
+                if self.volume.frames % 2 == 0 and self.rebuilding is None:
                     self.carve(mapped, intrinsics, depth.shape)
             fx, fy, cx, cy = intrinsics
             v, u = np.mgrid[:height, :width].astype(np.float32)
@@ -996,6 +1095,13 @@ class SLAMBackend(GaussianBackend):
             raw_depth=raw_depth if self.consensus is not None else None,
             keyframe=self.node_keyframe.get(node) if self.global_graph is not None else None,
         )
+
+
+def _fuse_remembered(volume, frame):
+    depth = frame["depth"].astype(np.float32)
+    trust = None if frame["trust"] is None else frame["trust"].astype(np.float32)
+    weights = volume.weights(depth, frame["intrinsics"], trust)
+    volume.integrate(depth, frame["pose"], frame["intrinsics"], weights)
 
 
 def floor_scale(cloud, up, height):

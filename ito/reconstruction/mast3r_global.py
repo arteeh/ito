@@ -12,7 +12,7 @@ RetrievalDatabase and its calib_proj_kernel; what Ito adds goes into the same no
   height over the floor, and the ToF's metres per unit of the keyframe's pointmap (so the Sim(3)
   graph cannot drift its scale away from the sensors);
 - a gauge that keeps the keyframe the pilot is looking from where it was: a solve moves the rest
-  of the room to it, never the view (yaw and position only; gravity stays the graph's own);
+  of the room to it, never the view;
 - results go back to the tracking thread as per-keyframe corrections, applied there to the
   keyframes, the pose graph's window and every surface anchored to them (slam.py).
 
@@ -513,18 +513,14 @@ class GlobalGraph:
 
 
 def gauge_correction(before, after):
-    """The yaw-and-position similarity D (MASt3R axes) with D @ after ~ before at the gauge
-    keyframe: the camera centre exactly, the heading about the vertical."""
+    """The rigid D (MASt3R axes) with D @ after == before at the gauge keyframe, up to its
+    scale: the camera the pilot looks from keeps its place and orientation; the ToF's say on
+    its scale still applies."""
     _, rb, tb = split(before)
     _, ra, ta = split(after)
-    turn = rb @ ra.T
-    # Heading about MASt3R's vertical (y): the turn's yaw.
-    yaw = math.atan2(turn[0, 2] - turn[2, 0], turn[0, 0] + turn[2, 2])
-    c, s = math.cos(yaw), math.sin(yaw)
-    rotation = np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
     d = np.eye(4)
-    d[:3, :3] = rotation
-    d[:3, 3] = tb - rotation @ ta
+    d[:3, :3] = rb @ ra.T
+    d[:3, 3] = tb - d[:3, :3] @ ta
     return d
 
 
