@@ -35,9 +35,13 @@ DISTANCE = float(os.environ.get("ITO_FUSE_DISTANCE", "2"))
 # there it keeps its own (a surface the field does not hold yet, or one it holds wrongly:
 # mapped, it contradicts what lies in front of it).
 SNAP = float(os.environ.get("ITO_FUSE_SNAP", "0.08"))
-# Space the field holds empty this surely (normalised distance, weight) refutes a pixel that
-# would put a surface there, and a mapped splat sitting there.
-FREE = (0.5, float(os.environ.get("ITO_FUSE_FREE_WEIGHT", "3")))
+# Space the field holds empty (normalised distance above FREE) with FREE_AGAINST times the weight
+# of a pixel that would put a surface there refutes the pixel; a mapped splat sitting in
+# space held empty with weight FREE_SPLAT retires. Relative, since weights fall with depth:
+# a far look clears space with little weight, and a rim pixel's guess weighs less still.
+FREE = 0.5
+FREE_AGAINST = float(os.environ.get("ITO_FUSE_FREE_AGAINST", "2"))
+FREE_SPLAT = float(os.environ.get("ITO_FUSE_FREE_WEIGHT", "2"))
 # ITO_FUSE_CONFIRM=T: a pixel trusted less than T (rim, no ToF zone near) that finds no field
 # surface near its depth waits for the field to confirm it instead of mapping its own guess.
 CONFIRM = float(os.environ.get("ITO_FUSE_CONFIRM", "0"))
@@ -155,19 +159,24 @@ class Volume:
     def truncation(depth):
         return (depth * TRUNCATION).clamp(*TRUNCATION_RANGE)
 
-    def integrate(self, depth, pose, intrinsics, trust=None):
+    def weights(self, depth, intrinsics, trust=None):
+        """Each pixel's weight (H x W tensor): RADIAL, DISTANCE and trust (H x W factor)."""
+        rays = self.rays(intrinsics, depth.shape)
+        cosine = 1 / self.torch.linalg.norm(rays, dim=-1)
+        weights = cosine**RADIAL * self.tensor(depth).clamp_min(0.3).reciprocal() ** DISTANCE
+        if trust is not None:
+            weights = weights * self.tensor(trust)
+        return weights
+
+    def integrate(self, depth, pose, intrinsics, weights):
         """depth: H x W axial metres (0: none) of a camera at pose (map-from-camera, Ito axes:
-        x right, y up, looking down -z); trust: H x W factor on each pixel's weight."""
+        x right, y up, looking down -z); weights: each pixel's (weights())."""
         torch = self.torch
         height, width = depth.shape
         fx, fy, cx, cy = intrinsics
         d = self.tensor(depth)
         rotation, origin = self.tensor(pose[:3, :3]), self.tensor(pose[:3, 3])
         rays = self.rays(intrinsics, depth.shape)
-        cosine = 1 / torch.linalg.norm(rays, dim=-1)
-        weights = cosine**RADIAL * d.clamp_min(0.3).reciprocal() ** DISTANCE
-        if trust is not None:
-            weights = weights * self.tensor(trust)
         # Allocate the blocks around every second pixel's surface, through its band.
         sample = d[::2, ::2]
         ray = rays[::2, ::2][sample > 0]
@@ -225,8 +234,9 @@ class Volume:
             self.weight[chunk] = total.clamp_max(MAX_WEIGHT).half()
         self.frames += 1
 
-    def free(self, points):
-        """Whether the field holds each world point (N x 3 tensor) surely empty."""
+    def free(self, points, against=None):
+        """Whether the field holds each world point (N x 3 tensor) empty, with FREE_AGAINST
+        times the weight against (N tensor) or, without it, FREE_SPLAT."""
         torch = self.torch
         if not self.count:
             return torch.zeros(len(points), dtype=torch.bool, device=self.device)
@@ -234,7 +244,8 @@ class Volume:
         index = slot.clamp_min(0) * BLOCK**3 + linear
         s = self.sdf.reshape(-1)[index].float()
         w = self.weight.reshape(-1)[index].float()
-        return (slot >= 0) & (s > FREE[0]) & (w >= FREE[1])
+        needed = FREE_SPLAT if against is None else (FREE_AGAINST * against).clamp_min(0.05)
+        return (slot >= 0) & (s > FREE) & (w >= needed)
 
     def search(self, rays, near, far, steps, rotation, origin, prefer=None):
         """Depth of a surface of the field between near and far along each ray (0: none):
@@ -266,7 +277,7 @@ class Volume:
             out[chunk] = torch.where(hit, found.gather(1, best)[:, 0], 0)
         return out
 
-    def raycast(self, pose, intrinsics, depth, trust=None):
+    def raycast(self, pose, intrinsics, depth, trust=None, weights=None):
         """Axial depth (H x W, 0: none) for a frame: the field's surface nearest each pixel's
         own depth within SNAP of it, else its own; where it has none, (FILL) the field's
         first surface over FILL_RANGE."""
@@ -290,7 +301,8 @@ class Volume:
                 origin,
                 target,
             )
-            free = self.free((rays[seen] * target[:, None]) @ rotation.T + origin)
+            against = None if weights is None else weights.reshape(-1)[seen]
+            free = self.free((rays[seen] * target[:, None]) @ rotation.T + origin, against)
             if CONFIRM and trust is not None:
                 free |= self.tensor(trust).reshape(-1)[seen] < CONFIRM
             out[seen] = torch.where(found > 0, found, torch.where(free, 0, target))
@@ -313,5 +325,6 @@ class Volume:
 
     def fuse(self, depth, pose, intrinsics, trust=None):
         """Integrate a frame's depth and give back the depth the field has along its rays."""
-        self.integrate(depth, pose, intrinsics, trust)
-        return self.raycast(pose, intrinsics, depth, trust)
+        weights = self.weights(depth, intrinsics, trust)
+        self.integrate(depth, pose, intrinsics, weights)
+        return self.raycast(pose, intrinsics, depth, trust, weights)
