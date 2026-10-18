@@ -44,6 +44,7 @@ DAMPING = 1e-3
 # recent views, as most of a room's keyframes do).
 LOOP_GAP = 10
 EDGE_CHUNK = 32  # edge directions linearised per kernel launch (widened from compact storage)
+STEP = (0.1, math.radians(5), 0.05)  # per keyframe per iteration: metres, radians, log-scale
 # A solve that would move a keyframe some solve already placed further than this (metres,
 # degrees) diverged; it is dropped. Loop closures in a room move keyframes centimetres.
 LIMIT = (0.5, 20.0)
@@ -531,21 +532,34 @@ class GlobalGraph:
                 gradients.append(torch.as_tensor(np.array(b), dtype=torch.float32))
                 which.append(torch.as_tensor(bk))
             # The oldest keyframe is pinned: index -1 drops its blocks (upstream's num_fix=1).
-            dx, ok = self.native.block_solve(
+            arguments = (
                 torch.cat(blocks),
                 torch.cat(rows) - 1,
                 torch.cat(cols) - 1,
                 torch.cat(gradients),
                 torch.cat(which) - 1,
                 n - 1,
-                0.0,
-                DAMPING,
             )
+            # Upstream's plain Gauss-Newton step; where the normal equations do not factor
+            # (a keyframe far from where its edges put it) Levenberg-Marquardt damping.
+            for lm in (0.0, 1e-4, 1e-2):
+                dx, ok = self.native.block_solve(*arguments, lm, DAMPING)
+                if int(ok):
+                    break
             if not int(ok):
                 self.failed += 1
                 self.error = "normal equations not positive definite"
-                return
+                if not steps:
+                    return
+                break  # keep the last iterate that factored
             step = -dx.to(device=poses.device, dtype=torch.float32)
+            # A trust region per keyframe: Gauss-Newton has no line search, and a keyframe
+            # made mid-turn can start far off; large steps are shortened, not taken whole.
+            size = torch.maximum(
+                step[:, 0:3].norm(dim=1) / STEP[0],
+                torch.maximum(step[:, 3:6].norm(dim=1) / STEP[1], step[:, 6].abs() / STEP[2]),
+            )
+            step = step / size.clamp_min(1.0)[:, None]
             steps.append(round(float(step.norm()), 4))
             moved = lietorch.Sim3.exp(step) * lietorch.Sim3(poses[1:])
             poses = torch.cat((poses[:1], moved.data.reshape(-1, 8)))
