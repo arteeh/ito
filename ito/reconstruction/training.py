@@ -67,6 +67,9 @@ GLOBAL = max(1, int(os.environ.get("ITO_FIT_GLOBAL", "4")))
 AA = os.environ.get("ITO_AA", "0") != "0"
 MIP_3D = math.sqrt(0.2)
 MODE = "antialiased" if AA else "classic"
+# ITO_FIT_SPARSE=<weight> (an experiment): 3DGS-MCMC's L1 on opacity. A Gaussian the photos
+# do not need fades below PRUNE_OPACITY and retires: floaters and doubled layers thin out.
+SPARSE = float(os.environ.get("ITO_FIT_SPARSE", "0") or 0)
 # ITO_EXPOSURE=1: each view's colours are the map's times its gain plus its offset; both
 # train beside the map and stay near what the frame's own estimate said (gaussian.py).
 EXPOSURE_RATES = (2e-3, 1e-3)  # log gain, offset per Adam step
@@ -544,6 +547,8 @@ class ViewFit:
             loss = loss + SCALE_WEIGHT * (axes[:, 0] / axes[:, 1].clamp_min(1e-6)).mean()
             needle = (axes[:, 2] / axes[:, 1].clamp_min(1e-6) - NEEDLE).clamp_min(0)
             loss = loss + NEEDLE_WEIGHT * needle.mean()
+            if SPARSE:
+                loss = loss + SPARSE * p["opacity"].sigmoid().mean()
         with self.chunk("fit_backward"):
             loss.backward()
             with torch.no_grad():
