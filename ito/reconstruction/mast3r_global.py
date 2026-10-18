@@ -40,6 +40,9 @@ TRACKING_FRAC = (
 # Added to the normal equations' diagonal: holds a keyframe no factor fixes in some direction
 # (relocalisation failed, no odometry) where it is; negligible beside any real factor.
 DAMPING = 1e-3
+# Retrieval links to a keyframe this many before count as loop closures (the rest overlap
+# recent views, as most of a room's keyframes do).
+LOOP_GAP = 10
 EDGE_CHUNK = 32  # edge directions linearised per kernel launch (widened from compact storage)
 # A solve that would move a keyframe some solve already placed further than this (metres,
 # degrees) diverged; it is dropped. Loop closures in a room move keyframes centimetres.
@@ -140,6 +143,8 @@ class GlobalGraph:
         self.rejected = 0
         self.edge_bytes = 0
         self.error = None
+        self.steps = []
+        self.worst = ((0.0, 0.0), None)
         with torch.inference_mode():
             self.retrieval = self._retriever(checkpoint, frontend.model)
         self.db = []  # retrieval database image id -> keyframe
@@ -203,7 +208,8 @@ class GlobalGraph:
         return dict(
             keyframes=len(self.frontend.frames),
             edges=len(self.edges),
-            loops=len(self.loops),
+            links=len(self.loops),
+            loops=sum(n - k >= LOOP_GAP for n, k in self.loops),
             relocalised=len(self.relocalised),
             lost=len(self.lost),
             solves=self.solves,
@@ -217,6 +223,8 @@ class GlobalGraph:
             queued=self.tasks.qsize(),
             edge_mb=round(self.edge_bytes / 2**20),
             error=self.error,
+            steps=self.steps,
+            worst=[round(self.worst[0][0], 3), round(self.worst[0][1], 1), self.worst[1]],
         )
 
     # --- worker thread ---------------------------------------------------------------
@@ -360,7 +368,7 @@ class GlobalGraph:
                 pair = (min(k, n), max(k, n))
                 if pair in self.pairs and pair not in before and k != n - 1:
                     self.loops.append((n, k))
-                    kept += 1
+                    kept += n - k >= LOOP_GAP
         return kept
 
     def _priors(self, poses, local):
@@ -467,14 +475,23 @@ class GlobalGraph:
             img_size, torch.stack([h[1] for h in held]).float(), self.frontend.K
         ).contiguous()
         Cs = torch.stack([h[2] / h[3] for h in held]).float().contiguous()
+        finite = (torch.isfinite(Xs).all(-1) & torch.isfinite(Cs[..., 0])).all(-1)
+        finite &= torch.isfinite(before).all(-1)
         torch.cuda.current_stream().synchronize()
         del held
+        if not bool(finite.all()):
+            # Guarded at the source (mast3r_frontend._finite_pointmaps); never solve through it.
+            bad = [involved[i] for i in torch.nonzero(~finite)[:, 0].tolist()]
+            self.error = f"non-finite keyframes {bad}"
+            Xs = torch.nan_to_num(Xs, nan=0.0, posinf=0.0, neginf=0.0)
+            Cs = torch.where(torch.isfinite(Cs), Cs, 0)
         K = self.frontend.K.float().contiguous()
         directions = [(local[e[0]], local[e[1]], e[2], e[4], e[6]) for e in edges] + [
             (local[e[1]], local[e[0]], e[3], e[5], e[7]) for e in edges
         ]
         poses = before.clone()
         n = len(involved)
+        steps = self.steps = []
         for _ in range(ITERATIONS):
             blocks, rows, cols, gradients, which = [], [], [], [], []
             for start in range(0, len(directions), EDGE_CHUNK):
@@ -529,6 +546,7 @@ class GlobalGraph:
                 self.error = "normal equations not positive definite"
                 return
             step = -dx.to(device=poses.device, dtype=torch.float32)
+            steps.append(round(float(step.norm()), 4))
             moved = lietorch.Sim3.exp(step) * lietorch.Sim3(poses[1:])
             poses = torch.cat((poses[:1], moved.data.reshape(-1, 8)))
             if float(step.norm()) < float(cfg["delta_norm"]):
@@ -543,6 +561,13 @@ class GlobalGraph:
         moves = corrections(
             dict(keyframes=involved, before=start, after=after, gauge=gauge),
             dict(zip(involved, start, strict=True)),
+        )
+        self.worst = max(
+            (
+                (_size(increment, sim3_matrix(start[local[k]])[0]), k)
+                for k, (increment, _) in moves.items()
+            ),
+            default=((0.0, 0.0), None),
         )
         worst = max(
             (

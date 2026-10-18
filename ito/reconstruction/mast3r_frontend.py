@@ -29,6 +29,26 @@ def view_angle(a, b):
     return math.acos(cosine)
 
 
+def _finite_pointmaps():
+    """Weighted filtering keeps every update a keyframe's pointmap ever had: one non-finite
+    prediction (a tracking step that blew up) would spoil it for good, and with it every
+    global solve the keyframe is in. Points that are not finite count with zero confidence."""
+    import torch
+    from mast3r_slam.frame import Frame
+
+    if getattr(Frame.update_pointmap, "finite", False):
+        return
+    original = Frame.update_pointmap
+
+    def update_pointmap(self, X, C):
+        ok = torch.isfinite(X).all(-1, keepdim=True) & torch.isfinite(C)
+        original(self, torch.where(ok, X, 0), torch.where(ok, C, 0))
+        self.X_canon = torch.where(self.C > 0, self.X_canon, 0)
+
+    update_pointmap.finite = True
+    Frame.update_pointmap = update_pointmap
+
+
 class Keyframes(list):
     reference = None
 
@@ -58,6 +78,8 @@ class MASt3RFrontend:
         config["tracking"]["filtering_mode"] = "weighted_pointmap" if FULL else "recent"
         config["local_opt"]["max_iters"] = 5
         self.config = config
+        if FULL:
+            _finite_pointmaps()
         self.model = load_model(
             weights, report, precision=precision, precision_report=precision_report
         )
