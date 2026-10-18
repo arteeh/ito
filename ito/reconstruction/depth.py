@@ -214,8 +214,8 @@ class VideoGeometry:
         self.caches = out["kv_caches"]
         depth = out["depth_pred"] if "depth_pred" in out else out["depth"]
         depth = depth.float().reshape(depth.shape[-2:])
-        mask = out.get("mask_pred")
-        if mask is not None:  # 1.1's valid-region head
+        mask = out.get("mask_pred") if os.environ.get("ITO_VIGEO_MASK", "1") != "0" else None
+        if mask is not None:  # 1.1's valid-region head (ITO_VIGEO_MASK=0: unmasked)
             depth = torch.where(mask.reshape(depth.shape).to(depth.device), depth, 0)
         return torch.nan_to_num(depth, nan=0, posinf=0, neginf=0).cpu().numpy()
 
