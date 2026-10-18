@@ -70,22 +70,24 @@ GRAPH_SCALE = os.environ.get("ITO_SCALE", "frame") == "graph"
 # from ToF and floor scatters by several percent, and a pot seen at 2.4 m from one frame and
 # again later lands twice, 15 cm apart; the map's own scale stays one scale.
 MAPSCALE = os.environ.get("ITO_MAPSCALE", "0") != "0"
-# Nothing is mapped until fusion has this many ToF or floor scale readings: the first seconds'
-# scale swung from 7% short to 10% long in the sim, and what they mapped stays.
-SCALE_SETTLED = int(os.environ.get("ITO_SCALE_SETTLED", "0"))
+# Nothing is mapped until fusion has this many ToF or floor scale readings (ITO_SCALE_SETTLED=0:
+# from the first frame): the first seconds' scale swung from 7% short to 10% long in the sim,
+# and what they mapped stays.
+SCALE_SETTLED = int(os.environ.get("ITO_SCALE_SETTLED", "25"))
 MAPSCALE_COVERED = 0.3
 MAPSCALE_RANGE = (0.85, 1.15)
 # ITO_REFINE=1 lays each frame onto the map photometrically before mapping it (training.py
 # FrameAlign) and tells fusion where it landed.
 REFINE = os.environ.get("ITO_REFINE", "0") != "0"
 # Map only depth another view agrees on (consensus.py); ITO_CONSENSUS=0 maps every guess.
-CONSENSUS = os.environ.get("ITO_CONSENSUS", "0") != "0"
+CONSENSUS = os.environ.get("ITO_CONSENSUS", "1") != "0"
 # ITO_DUMP=<dir> (a diagnostic): each mapped frame's image, depth as estimated and as agreed,
 # the sim's exact depth when ITO_TRUTH gives it, and its pose, one npz per frame.
 DUMP = os.environ.get("ITO_DUMP")
 # Retained views keep the camera's own frame at DETAIL times the network's grid (512 across)
-# for photometric training, which then refines splats finer than the network sees.
-DETAIL = float(os.environ.get("ITO_DETAIL", "1"))
+# for photometric training, which then refines splats finer than the network sees
+# (ITO_DETAIL=1: the network's own grid).
+DETAIL = float(os.environ.get("ITO_DETAIL", "2"))
 
 
 class SLAMBackend(GaussianBackend):

@@ -37,8 +37,9 @@ MAX_ELONGATION = 10.0  # Longest seed axis over its pixel footprint (grazing flo
 EDGE = 1.08  # Depth ratio to both neighbours that marks a pixel as between two surfaces.
 COARSE = 4.5  # Pixels: a mapped Gaussian this large is refined by the view (seeds are ~2).
 AXES = np.diag([1.0, -1.0, -1.0, 1.0])  # Ito camera (-Z forward, +Y up) to OpenCV.
-# ITO_FIT=view trains whole retained views (training.py) instead of patches (fitting.py).
-FIT = os.environ.get("ITO_FIT", "local")
+# Training: whole retained views on a thread of its own (training.py); ITO_FIT=local trains
+# 32-pixel patches inline instead (fitting.py), as before.
+FIT = os.environ.get("ITO_FIT", "view")
 
 
 @dataclass
