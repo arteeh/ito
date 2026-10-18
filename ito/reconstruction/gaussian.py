@@ -228,12 +228,15 @@ class GaussianBackend(GaussianSlots):
                 calibration = torch.tensor(
                     [[fx, 0, cx], [0, fy, cy], [0, 0, 1]], device="cuda", dtype=torch.float32
                 )
+                channels = torch.as_tensor(size, device="cuda", dtype=torch.float32)[:, None]
+                if EXPOSURE:  # the map's own colour as drawn, to measure a frame's exposure by
+                    channels = torch.cat((channels, records[:, 3, :3] * C0 + 0.5), 1)
                 image, alpha, _ = rasterization(
                     means=records[:, 0, :3],
                     quats=records[:, 2],
                     scales=records[:, 1, :3],
                     opacities=records[:, 0, 3],
-                    colors=torch.as_tensor(size, device="cuda", dtype=torch.float32)[:, None],
+                    colors=channels,
                     viewmats=view.float()[None],
                     Ks=calibration[None],
                     width=width,
@@ -246,7 +249,9 @@ class GaussianBackend(GaussianSlots):
                 image = image[0].cpu().numpy()
             seen = alpha > 0.01
             pixels = np.where(seen, image[..., 0] / np.maximum(alpha, 0.01), 0)
-            return alpha, np.where(seen, image[..., 1], 0), pixels
+            if EXPOSURE:
+                self.drawn_colour = image[..., 1:4] / np.maximum(alpha, 0.01)[..., None]
+            return alpha, np.where(seen, image[..., -1], 0), pixels
         if not len(ids):
             return (np.zeros(shape, np.float32),) * 3
         # Without CUDA: nearest centre per pixel, spread over its projected footprint.
@@ -325,10 +330,19 @@ class GaussianBackend(GaussianSlots):
             # into surfaces that already match, never across texture a view misplaces.
             seen = image[pv[agree], pu[agree]].astype(np.float32) / 255
             color = self.records[supported, 3, :3] * C0 + 0.5
-            if EXPOSURE:
-                usable = ((seen > 0.04) & (seen < 0.96) & (color > 0.04) & (color < 0.96)).all(-1)
+            if EXPOSURE and getattr(self, "drawn_colour", None) is not None:
+                # Against the map as drawn (composited), not single splats: training lifts a
+                # splat's own colour where coverage is thin, which reads as a darker frame.
+                drawn = self.drawn_colour
+                self.drawn_colour = None
+                covered = (
+                    (alpha > 0.95) & valid & (np.abs(depth - mapped) <= DEPTH_TOLERANCE * mapped)
+                )
+                frame = image[covered].astype(np.float32) / 255
+                model = drawn[covered]
+                usable = ((frame > 0.04) & (frame < 0.96) & (model > 0.04) & (model < 0.96)).all(-1)
                 if usable.sum() >= EXPOSURE_SAMPLES:
-                    ratio = np.log(seen[usable]) - np.log(color[usable])
+                    ratio = np.log(frame[usable]) - np.log(model[usable])
                     self.frame_exposure = np.clip(
                         np.median(ratio, axis=0), -EXPOSURE_LIMIT, EXPOSURE_LIMIT
                     )
