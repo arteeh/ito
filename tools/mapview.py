@@ -78,6 +78,11 @@ def draw(records, camera, antialiased=False, gain=None):
     return np.ascontiguousarray(rgb[..., ::-1])
 
 
+def set_size(width):
+    global WIDTH, HEIGHT
+    WIDTH, HEIGHT = width, width * 9 // 16
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     p.add_argument("out", type=Path)
@@ -98,8 +103,7 @@ def main():
         help="columns (from 0) whose maps were trained with ITO_AA=1",
     )
     a = p.parse_args()
-    global WIDTH, HEIGHT
-    WIDTH, HEIGHT = a.width, a.width * 9 // 16
+    set_size(a.width)
     labels = a.labels or [m.parent.name for m in a.maps]
     loaded = [np.load(m) for m in a.maps]
     maps = [z["records"] for z in loaded]
