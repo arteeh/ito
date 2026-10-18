@@ -98,6 +98,10 @@ SCALE_SETTLED = int(os.environ.get("ITO_SCALE_SETTLED", "25"))
 # ToF readings, or for 4 x SCALE_SETTLED tracked frames on a robot whose ToF never answers.
 SETTLE_RANGES = int(os.environ.get("ITO_SETTLE_RANGES", "0"))
 MAPSCALE_COVERED = 0.3
+# ITO_MAP_AGREE=T: a frame maps nothing where the map already shows a surface (opacity over 0.9)
+# more than T (log depth) from its own depth. Seen again from elsewhere, an object mapped once
+# landed a second time beside itself: the new view's depth at its edge was off, not the object.
+MAP_AGREE = float(os.environ.get("ITO_MAP_AGREE", "0"))
 MAPSCALE_RANGE = (0.85, 1.15)
 # ITO_REFINE=1 lays each frame onto the map photometrically before mapping it (training.py
 # FrameAlign) and tells fusion where it landed.
@@ -176,6 +180,7 @@ class SLAMBackend(GaussianBackend):
         self.pose_error = None
         self.scale_readings = 0
         self.range_readings = 0
+        self.map_conflicts = 0
         self.depth = MultiViewDepth() if DEPTH == "da3" else None
         self.mono = MonoGeometry() if DEPTH in ("moge", "hybrid") else None
         self.refine = None
@@ -610,6 +615,16 @@ class SLAMBackend(GaussianBackend):
                         raw_depth *= ratio
                         if COMPARE:
                             self.depth_scales["map"] = ratio
+        if MAP_AGREE and not (self.truth is not None and self.truth[2] is not None and not COMPARE):
+            ids, z, u, v = self.centers(mapped, intrinsics, raw_depth.shape)
+            if len(ids) > 1000:
+                alpha, drawn, _ = self.render(mapped, intrinsics, raw_depth.shape, ids, z, u, v)
+                known = (alpha > 0.9) & (drawn > 0) & (raw_depth > 0)
+                ratio = np.log(np.maximum(raw_depth, 1e-6) / np.maximum(drawn, 1e-6))
+                conflict = known & (np.abs(ratio) > MAP_AGREE)
+                valid = valid & ~conflict
+                raw_depth = np.where(valid, raw_depth, 0).astype(np.float32)
+                self.map_conflicts += int(conflict.sum())
         if self.refine is not None and not (self.truth is not None and self.truth[0] is not None):
             with self.gpu_chunk("map"):
                 refined = self.refine(image, raw_depth, mapped, intrinsics)
