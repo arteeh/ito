@@ -5,6 +5,7 @@ import os
 import queue
 import sys
 import traceback
+from pathlib import Path
 
 import numpy as np
 
@@ -17,6 +18,19 @@ from .admission import GPU_STAGES, Admission
 from .rgbd import RGBDBackend
 from .ring import MotionRing, SplatUpdate, UpdateRing
 from .slam_vision import RESTART_CAUSES
+
+# ITO_DUMP_MAP=<dir> (a diagnostic): the live map's records every MAP_DUMP_EVERY seconds and
+# when the worker stops, for tools/mapview.py on feat/depth-refine. Baseline builds only.
+MAP_DUMP = os.environ.get("ITO_DUMP_MAP")
+MAP_DUMP_EVERY = 30.0
+
+
+def dump_map(backend, now):
+    folder = Path(MAP_DUMP)
+    folder.mkdir(parents=True, exist_ok=True)
+    live = np.flatnonzero((backend.keys >= 0) & ~backend.retiring)
+    np.savez(folder / f"map-{now:07.1f}.npz", records=backend.records[live], seconds=now)
+
 
 __all__ = ["Reconstruction", "SplatUpdate", "default_budget"]
 
@@ -89,8 +103,12 @@ def _run(recon):
         captured = recon.epoch
         published_capture = recon.epoch
         parent = mp.parent_process()
+        next_map_dump = MAP_DUMP_EVERY
         while not recon.stopped.value and parent.is_alive():
             now = clock.now() - recon.epoch
+            if MAP_DUMP and now >= next_map_dump:
+                next_map_dump = now + MAP_DUMP_EVERY
+                dump_map(backend, now)
             if network is not None and now >= next_network_stats:
                 next_network_stats = now + 1
                 count = network.statistics()
@@ -304,6 +322,8 @@ def _run(recon):
             )
             if recon.sequence.value == sequence or not recon.admission.available():
                 recon.admission.wake.wait(0.005)
+        if MAP_DUMP:
+            dump_map(backend, clock.now() - recon.epoch)
     except InterruptedError:
         if not recon.stopped.value:
             recon.errors.send("GPU admission stopped")
