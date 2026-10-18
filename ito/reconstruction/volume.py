@@ -23,11 +23,12 @@ TRUNCATION_RANGE = (0.025, 0.15)
 MAX_WEIGHT = float(os.environ.get("ITO_FUSE_WMAX", "64"))
 NEEDED = float(os.environ.get("ITO_FUSE_WMIN", "2"))  # weight both sides of a surface needs
 # A pixel's weight falls off with the cosine of its ray to the optical axis to this power:
-# depth at the rim of a wide rectified view is the least reliable.
-RADIAL = float(os.environ.get("ITO_FUSE_RADIAL", "2"))
-# And with distance: (1 m / depth) to this power, at most 1. A guess at 3 m is worth a ninth
-# of one at 1 m, so a closer look outweighs the first glimpse from across the room.
-DISTANCE = float(os.environ.get("ITO_FUSE_DISTANCE", "2"))
+# learned depth at the rim of the wide rectified view is about twice as far off as in its
+# middle (4% against 8-11% with the ToF's correction), a quarter to a sixth of the weight.
+RADIAL = float(os.environ.get("ITO_FUSE_RADIAL", "8"))
+# And with distance: (1 m / depth) to this power, at most 1. Off by default: a guess that is
+# too near would weigh itself up.
+DISTANCE = float(os.environ.get("ITO_FUSE_DISTANCE", "0"))
 # A pixel takes the field's surface nearest its own depth within this share of it; with none
 # there it keeps its own (a surface the field does not hold yet, or one it holds wrongly:
 # mapped, it contradicts what lies in front of it).
@@ -149,9 +150,9 @@ class Volume:
     def truncation(depth):
         return (depth * TRUNCATION).clamp(*TRUNCATION_RANGE)
 
-    def integrate(self, depth, pose, intrinsics):
+    def integrate(self, depth, pose, intrinsics, trust=None):
         """depth: H x W axial metres (0: none) of a camera at pose (map-from-camera, Ito axes:
-        x right, y up, looking down -z)."""
+        x right, y up, looking down -z); trust: H x W factor on each pixel's weight."""
         torch = self.torch
         height, width = depth.shape
         fx, fy, cx, cy = intrinsics
@@ -160,6 +161,8 @@ class Volume:
         rays = self.rays(intrinsics, depth.shape)
         cosine = 1 / torch.linalg.norm(rays, dim=-1)
         weights = cosine**RADIAL * d.clamp_min(1e-3).reciprocal().clamp_max(1) ** DISTANCE
+        if trust is not None:
+            weights = weights * self.tensor(trust)
         # Allocate the blocks around every second pixel's surface, through its band.
         sample = d[::2, ::2]
         ray = rays[::2, ::2][sample > 0]
@@ -301,7 +304,7 @@ class Volume:
                 self.filled += int((found > 0).sum())
         return out.reshape(depth.shape).cpu().numpy()
 
-    def fuse(self, depth, pose, intrinsics):
+    def fuse(self, depth, pose, intrinsics, trust=None):
         """Integrate a frame's depth and give back the depth the field has along its rays."""
-        self.integrate(depth, pose, intrinsics)
+        self.integrate(depth, pose, intrinsics, trust)
         return self.raycast(pose, intrinsics, depth)

@@ -125,6 +125,7 @@ FUSE = os.environ.get("ITO_FUSE", "0") != "0"
 # ITO_TOF_FIELD=1: bend each frame's depth to the ToF's zone readings where they land
 # (rangefield.py), not only scale the whole frame by them.
 TOF_FIELD = os.environ.get("ITO_TOF_FIELD", "0") != "0"
+TRUST_UNREAD = 0.3  # fusion's trust in a frame no ToF zone read, with the field on
 # ITO_DUMP=<dir> (a diagnostic): each mapped frame's image, depth as estimated and as agreed,
 # the sim's exact depth when ITO_TRUTH gives it, and its pose, one npz per frame.
 DUMP = os.environ.get("ITO_DUMP")
@@ -207,6 +208,7 @@ class SLAMBackend(GaussianBackend):
             self.refine = FrameAlign(self)
         self.consensus = None
         self.range_field = None
+        self.range_trust = None
         if TOF_FIELD:
             from .rangefield import RangeField
 
@@ -355,6 +357,8 @@ class SLAMBackend(GaussianBackend):
                 depth = -cloud.points[:, 2].reshape(cloud.shape).float().cpu().numpy()
                 valid = cloud.valid.reshape(cloud.shape).cpu().numpy()
                 self.depth_scales["true"] = scale_to(truth[2], np.where(valid, depth, 0))
+        if cloud is None or self.range_field is None:
+            self.range_trust = None
         self.placed = None
         if cloud is not None and ALIGN and (truth is None or truth[0] is None):
             rows, columns = cloud.shape
@@ -459,7 +463,7 @@ class SLAMBackend(GaussianBackend):
         hits = self.sensors.zone_hits(exposure, self.motion, cloud.intrinsics, cloud.shape)
         self.zone_hits = hits
         with self.gpu_chunk("depth"):
-            bent, used = self.range_field.correct(depth, image, hits)
+            bent, used, self.range_trust = self.range_field.correct(depth, image, hits)
         if COMPARE:
             self.depth_scales["tof_field"] = used
         if not used:
@@ -733,7 +737,10 @@ class SLAMBackend(GaussianBackend):
         elif self.volume is not None:
             depth = np.where(valid, -points[..., 2] * scale, 0).astype(np.float32)
             with self.gpu_chunk("fuse"):
-                fused = self.volume.fuse(depth, mapped, intrinsics)
+                trust = self.range_trust
+                if self.range_field is not None and trust is None:
+                    trust = np.full(depth.shape, TRUST_UNREAD, np.float32)
+                fused = self.volume.fuse(depth, mapped, intrinsics, trust)
                 self.carve(mapped, intrinsics, depth.shape)
             fx, fy, cx, cy = intrinsics
             v, u = np.mgrid[:height, :width].astype(np.float32)

@@ -17,6 +17,9 @@ SIGMA_COLOUR = 0.15
 SIGMA_PIXELS = 40.0
 PRIOR = 0.05  # weight of "no correction" against the zones' summed weights
 FLAT = 0.1  # depth spread around a zone's pixel, of depth, beyond which it straddles an edge
+# Fusion's trust in a pixel: depth no zone read is about twice as far off as depth beside one.
+TRUST_FLOOR = 0.3
+TRUST_HALF = 0.3  # summed zone weight at which trust is half way up
 LIMIT = math.log(2.0)  # a ratio past this is a zone hitting something the frame does not show
 
 
@@ -31,7 +34,8 @@ class RangeField:
 
     def correct(self, depth, image, hits):
         """depth: H x W metres (0: none), image: H x W x 3 uint8, hits: (row, column, axial
-        metres) -> the corrected depth and the zones used."""
+        metres) -> the corrected depth, the zones used and each pixel's trust: from TRUST_FLOOR
+        far from any zone that read it up to 1 beside one."""
         torch = self.torch
         height, width = depth.shape
         samples = []
@@ -48,7 +52,7 @@ class RangeField:
             if abs(ratio) < LIMIT:
                 samples.append((row, column, ratio))
         if not samples:
-            return depth, 0
+            return depth, 0, None
         scale = width / 512
         d = torch.as_tensor(depth, device=self.device, dtype=torch.float32)
         log_depth = torch.log(d.clamp_min(1e-3))
@@ -74,6 +78,7 @@ class RangeField:
             denominator += w
         field = numerator / (denominator + PRIOR)
         corrected = torch.where(d > 0, d * torch.exp(field), 0)
+        trust = TRUST_FLOOR + (1 - TRUST_FLOOR) * denominator / (denominator + TRUST_HALF)
         self.used += len(samples)
         self.frames += 1
-        return corrected.cpu().numpy(), len(samples)
+        return corrected.cpu().numpy(), len(samples), trust.cpu().numpy()
