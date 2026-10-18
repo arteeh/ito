@@ -53,6 +53,7 @@ def volume_statistics(volume):
         refuted=volume.refuted,
         carved=volume.carved,
         cleared=volume.cleared,
+        waited=volume.waited,
     )
 
 
