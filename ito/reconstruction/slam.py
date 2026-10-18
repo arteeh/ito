@@ -85,6 +85,10 @@ MAPFIELD_PRIOR = 0.05
 # smooth field (2 x 2 nodes), not one ratio: MoGe-2 holds shape but bends near against far.
 MONO_FIELD = os.environ.get("ITO_MONO_FIELD", "0") != "0"
 MONO_GRID = (2, 2)
+# ITO_MONO_SCALE=1: MoGe-2's depth takes its metric scale from the ToF and the floor read on its
+# own surfaces, MASt3R's only beside them (MONO_MAST3R, log sigma).
+MONO_SCALE = os.environ.get("ITO_MONO_SCALE", "0") != "0"
+MONO_MAST3R = 0.1
 # Nothing is mapped until fusion has this many ToF or floor scale readings (ITO_SCALE_SETTLED=0:
 # from the first frame): the first seconds' scale swung from 7% short to 10% long in the sim,
 # and what they mapped stays.
@@ -296,7 +300,7 @@ class SLAMBackend(GaussianBackend):
             elif self.depth is not None:
                 cloud = self.consistent(cloud, graph.pose(node), exposure)
             elif self.mono is not None:
-                cloud = self.monocular(cloud, rgb)
+                cloud = self.monocular(cloud, rgb, exposure)
             if COMPARE and TRUE_SCALE and truth is not None and truth[2] is not None:
                 unscaled = -cloud.points[:, 2].reshape(cloud.shape).float().cpu().numpy()
                 valid = cloud.valid.reshape(cloud.shape).cpu().numpy()
@@ -373,7 +377,7 @@ class SLAMBackend(GaussianBackend):
         self.depth_scales = found | dict(scale=scale)
         return self.with_depth(cloud, depth * scale)
 
-    def monocular(self, cloud, rgb):
+    def monocular(self, cloud, rgb, exposure):
         """The cloud with MoGe-2's depth for the frame, at the scale MASt3R's depth has (the
         median ratio over pixels both have)."""
         rows, columns = cloud.shape
@@ -391,7 +395,37 @@ class SLAMBackend(GaussianBackend):
         scale = scale_to(mast3r, resample(depth, mast3r.shape))
         if scale is None:
             return cloud
-        fit = log_field(depth, mast3r, MONO_GRID) if MONO_FIELD else None
+        if MONO_SCALE:
+            # The ToF's ranges and the floor below the robot's camera read MoGe-2's scale on
+            # its own surfaces; MASt3R's metric depth (itself scaled from the ToF and floor on
+            # MASt3R's bent surfaces, about 6% off either way) only weighs in beside them.
+            unit = self.with_depth(cloud, depth)
+            robot = self.motion.at(exposure)
+            found = dict(
+                tof=self.sensors.range_scale(unit, exposure, self.motion),
+                floor=floor_scale(unit, robot[:3, :3].T @ UP, float(robot[1, 3])),
+                mast3r=scale,
+            )
+            evidence = [
+                (math.log(found[k]), sigma)
+                for k, sigma in (
+                    ("tof", RANGE_SIGMA),
+                    ("floor", FLOOR_SIGMA),
+                    ("mast3r", MONO_MAST3R),
+                )
+                if found[k]
+            ]
+            weights = [sigma**-2 for _, sigma in evidence]
+            scale = math.exp(
+                sum(w * v for w, (v, _) in zip(weights, evidence, strict=True)) / sum(weights)
+            )
+            if COMPARE:
+                self.depth_scales |= {f"mono_{k}": v for k, v in found.items()}
+                if self.truth is not None and self.truth[2] is not None:
+                    self.depth_scales["mono_exact"] = scale_to(
+                        self.truth[2], resample(depth, mast3r.shape)
+                    )
+        fit = log_field(depth, mast3r, MONO_GRID) if MONO_FIELD and not MONO_SCALE else None
         depth = depth * (fit[0] if fit is not None else scale)
         if DEPTH == "hybrid":
             # MASt3R's own depth where the two agree (its detail up close, where it is sharper),
