@@ -17,7 +17,7 @@ import time
 
 import numpy as np
 
-from .gaussian import AXES, C0
+from .gaussian import AXES, C0, EXPOSURE, exposed
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +57,10 @@ FILL_ALPHA = 0.5
 # view's frames would otherwise queue behind; at full duty they missed about 5% of 60 Hz
 # deadlines, against 2% without training.
 DUTY = float(os.environ.get("ITO_FIT_DUTY", "0.5"))
+# ITO_EXPOSURE=1: each view's colours are the map's times its gain plus its offset; both
+# train beside the map and stay near what the frame's own estimate said (gaussian.py).
+EXPOSURE_RATES = (2e-3, 1e-3)  # log gain, offset per Adam step
+EXPOSURE_WEIGHT = 0.05
 
 
 def ssim(a, b, torch):
@@ -244,10 +248,8 @@ class ViewFit:
             "opacity": torch.nn.Parameter(torch.logit(original[:, 0, 3].clamp(0.001, 0.999))),
             "color": torch.nn.Parameter(original[:, 3, :3].clone()),
         }
-        optimizer = torch.optim.Adam(
-            [{"params": [value], "lr": RATES[key]} for key, value in p.items()], eps=1e-15
-        )
         prepared = []
+        exposures = []
         for observation in targets:
             pose = (
                 observation.fitting_pose
@@ -261,9 +263,17 @@ class ViewFit:
             depth = self.tensor(observation.depth)
             if depth.shape != (h, w):
                 depth = torch.nn.functional.interpolate(depth[None, None], (h, w))[0, 0]
+            exposure = None
+            if EXPOSURE and observation.exposure is not None:
+                if observation.exposure_prior is None:
+                    observation.exposure_prior = observation.exposure.copy()
+                prior = self.tensor(observation.exposure_prior)
+                exposure = (torch.nn.Parameter(self.tensor(observation.exposure)), prior)
+                exposures.append(exposure[0])
             prepared.append(
                 dict(
                     view=observation,
+                    exposure=exposure,
                     camera=self.tensor(np.linalg.inv(pose @ AXES))[None],
                     calibration=self.tensor([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])[None],
                     target=self.tensor(image).permute(2, 0, 1) / 255,
@@ -272,6 +282,10 @@ class ViewFit:
                     focal=fx,
                 )
             )
+        groups = [{"params": [value], "lr": RATES[key]} for key, value in p.items()]
+        if exposures:
+            groups.append({"params": exposures, "lr": EXPOSURE_RATES[0]})
+        optimizer = torch.optim.Adam(groups, eps=1e-15)
         self.active = dict(
             ids=ids,
             keys=keys[chosen],
@@ -359,7 +373,8 @@ class ViewFit:
         ).astype(np.float32)
         with b.lock:
             before = b.count
-            b.seed(points, view.image, depth, holes, pose, view.intrinsics, view.captured)
+            image = view.image if view.exposure is None else exposed(view.image, view.exposure[:3])
+            b.seed(points, image, depth, holes, pose, view.intrinsics, view.captured)
             self.filled += b.count - before
 
     def moved(self, delta):
@@ -474,8 +489,14 @@ class ViewFit:
             info["means2d"].retain_grad()
             rgb = rendered[0, ..., :3].permute(2, 0, 1)
             observed = target["target"]
+            regular = 0
+            if target["exposure"] is not None:
+                exposure, start = target["exposure"]
+                rgb = rgb * exposure[:3].exp()[:, None, None] + exposure[3:, None, None]
+                regular = EXPOSURE_WEIGHT * ((exposure - start) ** 2).sum()
             l1 = (rgb - observed).abs().mean()
             loss = (1 - SSIM_WEIGHT) * l1 + SSIM_WEIGHT * (1 - ssim(rgb, observed, torch))
+            loss = loss + regular
             known = target["depth"]
             drawn = rendered[0, ..., 3]
             mask = (known > 0) & (alpha[0, ..., 0].detach() > 0.5)
@@ -540,6 +561,9 @@ class ViewFit:
             pixels = a["pixels"].cpu().numpy()
             records = records.cpu().numpy()
         self.units += 1
+        for target in a["targets"]:
+            if target["exposure"] is not None:
+                target["view"].exposure = target["exposure"][0].detach().cpu().numpy()
         old = a["snapshot"]
         records[:, 1, 3] = old[:, 1, 3]
         records[:, 3, 3] = old[:, 3, 3]
