@@ -129,18 +129,23 @@ def models(stage, source):
     else:
         print(f"Copying models from {source}", flush=True)
         shutil.copytree(source, target, ignore=shutil.ignore_patterns("__pycache__"))
-        # A bundle from before models/depth or models/moge: fetch those parts into the release.
+        # A bundle from before models/depth or models/moge: fetch those parts once into a
+        # folder beside it (MODELS-extras), and copy them into each release from there.
+        extras = source.parent / f"{source.name}-extras"
         for part, check in (("depth", "model.safetensors"), ("moge", "model.pt")):
-            if not (target / part / check).is_file():
+            if (target / part / check).is_file():
+                continue
+            if not (extras / part / check).is_file():
                 run(
                     sys.executable,
                     "-m",
                     "ito.build",
                     f"--{part}-only",
                     "--output",
-                    target,
+                    extras,
                     cwd=ROOT,
                 )
+            shutil.copytree(extras / part, target / part, dirs_exist_ok=True)
     manifest = json.loads((target / "manifest.json").read_text(encoding="utf-8"))
     if manifest["version"] != BUNDLE_VERSION or manifest["abi"] != abi() or not manifest["native"]:
         raise SystemExit(f"{target} is not a complete bundle {BUNDLE_VERSION} for {abi()}")
