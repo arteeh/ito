@@ -3,6 +3,7 @@ layout(std430, binding = 1) readonly buffer Scene { vec4 attributes[]; };
 layout(std430, binding = 4) readonly buffer Previous { vec4 previous[]; };
 uniform float scene_time;
 uniform float ease;
+uniform int antialiased;
 uniform float fade_seconds;
 uniform uint stride;
 uniform int sh_degree;
@@ -86,6 +87,12 @@ void main() {
     float a = dot(jx, covariance * jx) + 0.3;
     float b = dot(jx, covariance * jy);
     float c = dot(jy, covariance * jy) + 0.3;
+    if (antialiased != 0) {
+        // The dilation keeps the splat's energy, as gsplat's "antialiased" mode trains it.
+        float bare = (a - 0.3) * (c - 0.3) - b * b;
+        p.w *= sqrt(clamp(bare / (a * c - b * b), 0.0, 1.0));
+        if (p.w < 1.0/255.0) return;
+    }
     float mid = 0.5*(a+c);
     float radius = length(vec2(0.5*(a-c), b));
     float major = sqrt(max(mid + radius, 0.3));

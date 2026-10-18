@@ -50,7 +50,7 @@ def pose(position, target):
     return m
 
 
-def draw(records, camera):
+def draw(records, camera, antialiased=False):
     r = torch.as_tensor(records, device="cuda", dtype=torch.float32)
     focal = WIDTH / 2 / math.tan(math.radians(HFOV / 2))
     K = torch.tensor([[focal, 0, WIDTH / 2], [0, focal, HEIGHT / 2], [0, 0, 1]], device="cuda")
@@ -67,6 +67,7 @@ def draw(records, camera):
         width=WIDTH,
         height=HEIGHT,
         near_plane=0.02,
+        rasterize_mode="antialiased" if antialiased else "classic",
     )
     background = torch.tensor([0.04, 0.04, 0.06], device="cuda")
     image = image[0] + (1 - alpha[0]) * background
@@ -79,6 +80,13 @@ def main():
     p.add_argument("out", type=Path)
     p.add_argument("maps", nargs="+", type=Path)
     p.add_argument("--labels", nargs="+")
+    p.add_argument(
+        "--antialiased",
+        nargs="*",
+        type=int,
+        default=[],
+        help="columns (from 0) whose maps were trained with ITO_AA=1",
+    )
     a = p.parse_args()
     labels = a.labels or [m.parent.name for m in a.maps]
     maps = [np.load(m)["records"] for m in a.maps]
@@ -86,8 +94,8 @@ def main():
     for name, position, target in VIEWS:
         camera = pose(position, target)
         cells = []
-        for records, label in zip(maps, labels, strict=True):
-            img = draw(records, camera)
+        for column, (records, label) in enumerate(zip(maps, labels, strict=True)):
+            img = draw(records, camera, column in a.antialiased)
             cv2.rectangle(img, (0, HEIGHT - 30), (WIDTH, HEIGHT), (0, 0, 0), -1)
             cv2.putText(
                 img,

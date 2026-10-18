@@ -18,6 +18,8 @@ EASE = max(0.0, float(os.environ.get("ITO_EASE", "0") or 0))
 # ITO_UPDATE_STATS=1 (a diagnostic): log every 5 s how the applied packets changed the live
 # splats: born, retired, emptied, and how far the changed ones moved.
 UPDATE_STATS = os.environ.get("ITO_UPDATE_STATS") == "1"
+# ITO_AA=1 (training.py): draw as gsplat's "antialiased" mode trained the splats.
+AA = os.environ.get("ITO_AA", "0") != "0"
 log = logging.getLogger(__name__)
 
 
@@ -352,6 +354,7 @@ class GaussianRenderer:
         )
         self.program["fade_seconds"] = self.fade_seconds
         self.program["ease"] = self.ease
+        self.program["antialiased"] = int(AA and self.live is not None)
         self.program["stride"] = self.stride
         self.program["sh_degree"] = self.degree
         self.vao.render(mode=moderngl.TRIANGLE_STRIP, vertices=4, instances=self.draw_count)

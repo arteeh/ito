@@ -60,6 +60,13 @@ DUTY = float(os.environ.get("ITO_FIT_DUTY", "0.5"))
 # Every GLOBAL-th unit starts from the least trained of all retained views, the others from
 # the least trained of the last three (ITO_FIT_GLOBAL, an experiment; 1: always all views).
 GLOBAL = max(1, int(os.environ.get("ITO_FIT_GLOBAL", "4")))
+# ITO_AA=1 (an experiment), Mip-Splatting's two filters: training renders "antialiased" (the
+# 0.3 px screen dilation keeps a splat's energy, as the pilot's renderer then draws it), and
+# no axis of a Gaussian shrinks below MIP_3D of a pixel of the finest view that sees it, so
+# nothing is finer than any photo could show (sparkle and gaps up close in the headset).
+AA = os.environ.get("ITO_AA", "0") != "0"
+MIP_3D = math.sqrt(0.2)
+MODE = "antialiased" if AA else "classic"
 # ITO_EXPOSURE=1: each view's colours are the map's times its gain plus its offset; both
 # train beside the map and stay near what the frame's own estimate said (gaussian.py).
 EXPOSURE_RATES = (2e-3, 1e-3)  # log gain, offset per Adam step
@@ -244,6 +251,31 @@ class ViewFit:
             original[:, 1, :3].clamp_min(1e-6) * GROWTH,
             torch.maximum(widest[:, None], original[:, 1, :3]),
         ).log()
+        smallest = None
+        if AA:
+            finest = torch.full((len(chosen),), float("inf"), device="cuda")
+            for observation in targets:
+                pose = (
+                    observation.fitting_pose
+                    if observation.fitting_pose is not None
+                    else observation.pose
+                )
+                fine = observation.photo_intrinsics or observation.intrinsics
+                z = (-(original[:, 0, :3] - self.tensor(pose[:3, 3])) @ self.tensor(pose[:3, :3]))[
+                    :, 2
+                ]
+                inside = self.visible(
+                    original[:, 0, :3],
+                    original[:, 1, :3].max(-1).values,
+                    pose,
+                    observation.intrinsics,
+                    observation.depth.shape,
+                )
+                finest = torch.where(
+                    inside, torch.minimum(finest, z.clamp_min(0.01) / fine[0]), finest
+                )
+            smallest = torch.where(torch.isfinite(finest), MIP_3D * finest, 0.0).clamp_min(1e-7)
+            smallest = torch.minimum(smallest[:, None].log(), largest)
         p = {
             "means": torch.nn.Parameter(original[:, 0, :3].clone()),
             "scales": torch.nn.Parameter(original[:, 1, :3].clamp_min(1e-6).log()),
@@ -302,6 +334,7 @@ class ViewFit:
             seen=torch.zeros(len(ids), device="cuda"),
             pixels=torch.zeros(len(ids), device="cuda"),
             largest=largest,
+            smallest=smallest,
         )
         if POSES:
             rotation = torch.nn.Parameter(torch.zeros(3, device="cuda"))
@@ -488,6 +521,7 @@ class ViewFit:
                 far_plane=1000,
                 render_mode="RGB+ED",
                 absgrad=True,
+                rasterize_mode=MODE,
             )
             info["means2d"].retain_grad()
             rgb = rendered[0, ..., :3].permute(2, 0, 1)
@@ -534,6 +568,8 @@ class ViewFit:
                 p["opacity"].clamp_(-7, 7)
                 p["color"].clamp_(-0.5 / C0, 0.5 / C0)
                 p["scales"].copy_(torch.minimum(p["scales"], a["largest"]))
+                if a["smallest"] is not None:
+                    p["scales"].copy_(torch.maximum(p["scales"], a["smallest"]))
         target["view"].steps += 1
         b.fit_steps += 1
         a["steps"] += 1
