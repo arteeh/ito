@@ -11,6 +11,7 @@ from .depth import (
     MapFrontend,
     MonoGeometry,
     MultiViewDepth,
+    log_field,
     nearest_views,
     resample,
     scale_to,
@@ -73,6 +74,17 @@ GRAPH_SCALE = os.environ.get("ITO_SCALE", "frame") == "graph"
 # from ToF and floor scatters by several percent, and a pot seen at 2.4 m from one frame and
 # again later lands twice, 15 cm apart; the map's own scale stays one scale.
 MAPSCALE = os.environ.get("ITO_MAPSCALE", "0") != "0"
+# ITO_MAPSCALE=field: instead of one ratio, a smooth field (depth.py log_field) takes the frame's
+# depth onto the map's where the map covers it, and holds still where it does not: a frame
+# agrees with the surfaces already mapped, so a revisit lays nothing a second time.
+MAPFIELD = os.environ.get("ITO_MAPSCALE") == "field"
+MAPFIELD_GRID = (3, 4)
+MAPFIELD_COVERED = 0.1
+MAPFIELD_PRIOR = 0.05
+# ITO_MONO_FIELD=1: MoGe-2's depth (ITO_DEPTH=moge) goes onto MASt3R's metric depth through a
+# smooth field (2 x 2 nodes), not one ratio: MoGe-2 holds shape but bends near against far.
+MONO_FIELD = os.environ.get("ITO_MONO_FIELD", "0") != "0"
+MONO_GRID = (2, 2)
 # Nothing is mapped until fusion has this many ToF or floor scale readings (ITO_SCALE_SETTLED=0:
 # from the first frame): the first seconds' scale swung from 7% short to 10% long in the sim,
 # and what they mapped stays.
@@ -379,7 +391,8 @@ class SLAMBackend(GaussianBackend):
         scale = scale_to(mast3r, resample(depth, mast3r.shape))
         if scale is None:
             return cloud
-        depth = depth * scale
+        fit = log_field(depth, mast3r, MONO_GRID) if MONO_FIELD else None
+        depth = depth * (fit[0] if fit is not None else scale)
         if DEPTH == "hybrid":
             # MASt3R's own depth where the two agree (its detail up close, where it is sharper),
             # MoGe-2's where they do not (walls, far surfaces, the bleed around silhouettes).
@@ -527,7 +540,21 @@ class SLAMBackend(GaussianBackend):
             if len(ids) > 1000:
                 alpha, drawn, _ = self.render(mapped, intrinsics, raw_depth.shape, ids, z, u, v)
                 both = (alpha > 0.9) & (drawn > 0) & (raw_depth > 0)
-                if both.mean() > MAPSCALE_COVERED:
+                fit = None
+                if MAPFIELD and both.mean() > MAPFIELD_COVERED:
+                    fit = log_field(
+                        raw_depth,
+                        np.where(alpha > 0.9, drawn, 0),
+                        MAPFIELD_GRID,
+                        prior_weight=MAPFIELD_PRIOR,
+                    )
+                if fit is not None:
+                    field = np.clip(fit[0], *MAPSCALE_RANGE)
+                    raw_depth *= field
+                    points = points * field[..., None]
+                    if COMPARE:
+                        self.depth_scales["map"] = float(np.median(field))
+                elif not MAPFIELD and both.mean() > MAPSCALE_COVERED:
                     ratio = float(np.median(drawn[both] / raw_depth[both]))
                     if MAPSCALE_RANGE[0] < ratio < MAPSCALE_RANGE[1]:
                         scale *= ratio

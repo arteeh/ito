@@ -168,3 +168,53 @@ class MapFrontend:
 
     def forget(self, nodes):
         pass
+
+
+def log_field(depth, reference, grid=(2, 2), prior=None, prior_weight=0.0, tolerance=0.03):
+    """A smooth multiplier taking depth onto reference: the exp of a log-scale field, bilinear
+    between grid nodes over the image, fitted where both have depth. Pixels off by more than
+    tolerance (log) count less, so silhouettes and wrong pixels do not bend it. prior (node
+    values) holds nodes the reference barely covers. Returns (field like depth, node values),
+    or None if they share too few pixels."""
+    reference = resample(reference, depth.shape)
+    step = max(1, depth.shape[0] // 72)
+    d, r = depth[::step, ::step], reference[::step, ::step]
+    both = (d > 0) & (r > 0) & np.isfinite(d) & np.isfinite(r)
+    if both.sum() < 200:
+        return None
+    gy, gx = grid
+    wy = _hat(d.shape[0], gy)
+    wx = _hat(d.shape[1], gx)
+    rows, columns = np.nonzero(both)
+    basis = (wy[rows][:, :, None] * wx[columns][:, None, :]).reshape(len(rows), gy * gx)
+    residual = np.log(r[both]) - np.log(d[both])
+    smooth = []
+    for j in range(gy):
+        for i in range(gx):
+            for dj, di in ((0, 1), (1, 0)):
+                if j + dj < gy and i + di < gx:
+                    row = np.zeros(gy * gx)
+                    row[j * gx + i], row[(j + dj) * gx + i + di] = 1, -1
+                    smooth.append(row)
+    smooth = np.array(smooth).reshape(-1, gy * gx)
+    prior = np.zeros(gy * gx) if prior is None else np.asarray(prior, np.float64)
+    weight = np.ones(len(residual))
+    nodes = np.full(gy * gx, np.median(residual))
+    for _ in range(4):
+        a = (basis * weight[:, None]).T @ basis / len(residual)
+        a += 1e-3 * smooth.T @ smooth + (prior_weight + 1e-6) * np.eye(gy * gx)
+        b = (basis * weight[:, None]).T @ residual / len(residual) + prior_weight * prior
+        nodes = np.linalg.solve(a, b)
+        error = np.abs(basis @ nodes - residual)
+        weight = np.where(error < tolerance, 1.0, tolerance / np.maximum(error, 1e-9))
+    field = np.exp(_hat(depth.shape[0], gy) @ nodes.reshape(gy, gx) @ _hat(depth.shape[1], gx).T)
+    return field.astype(np.float32), nodes
+
+
+def _hat(size, nodes):
+    """(size, nodes) bilinear weights of pixel centres between evenly spread nodes."""
+    if nodes == 1:
+        return np.ones((size, 1))
+    position = (np.arange(size) + 0.5) / size * (nodes - 1)
+    weights = np.maximum(0, 1 - np.abs(position[:, None] - np.arange(nodes)[None, :]))
+    return weights
