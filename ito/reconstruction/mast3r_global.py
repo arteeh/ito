@@ -63,20 +63,16 @@ PAIR_ITERATIONS = 10
 # new keyframe into the room rather than the room about it; =reference holds the pilot's
 # keyframe always (before 18 Oct).
 GAUGE = os.environ.get("ITO_SLAM_GAUGE", "settled")
-# Upstream weighs every matched pixel as an independent 1 px measurement: an edge's ~10^5 matches
-# say its relative pose to ~0.001 degrees, so the robot's factors (odometry, gravity, height, ToF
-# scale) count for nothing beside it. ITO_SLAM_VISUAL=robot scales each edge so the pose it says
-# alone is as sure as the robot-first window takes a tracked frame (VISUAL_SIGMA radians); unset or
-# =upstream keeps upstream's weights.
-VISUAL = os.environ.get("ITO_SLAM_VISUAL", "upstream")
-VISUAL_SIGMA = math.radians(float(os.environ.get("ITO_SLAM_VISUAL_DEG", "0.5")))
 # ITO_SLAM_EDGES=pose: each edge enters the global solve as the relative pose its matches alone
 # give (the edge check's two-keyframe solve, redone as the keyframes' pointmaps fill in) with the
-# robot-first window's trust in a tracked frame: rotation VISUAL_SIGMA, camera centre EDGE_CM plus
+# robot-first window's trust in a tracked frame: rotation EDGE_DEG, camera centre EDGE_CM plus
 # EDGE_BASELINE of the pair's baseline (MASt3R's translation is off by its depth error, 5-14 cm on
 # half-metre pairs on the loop route, its rotation better than the robot's), Cauchy-robust, solved
 # with the robot's factors by least squares (default). =dense: upstream's per-pixel Gauss-Newton.
+# Upstream's kernel counts each matched pixel as an independent 1 px measurement, so its dense solve
+# (=dense) trusts an edge to ~0.001 degrees and the robot's factors count for nothing beside it.
 EDGES = os.environ.get("ITO_SLAM_EDGES", "pose")
+EDGE_DEG = float(os.environ.get("ITO_SLAM_EDGE_DEG", "0.5"))
 EDGE_CM = float(os.environ.get("ITO_SLAM_EDGE_CM", "2"))
 EDGE_BASELINE = float(os.environ.get("ITO_SLAM_EDGE_BASELINE", "0.1"))
 EDGE_SCALE = 0.05  # log-scale sigma of a pair's relative scale
@@ -183,7 +179,6 @@ class GlobalGraph:
         self.steps = []
         self.worst = ((0.0, 0.0), None)
         self.kinds = {}  # (min, max) keyframe pair -> 'track', 'prev', 'retrieval' or 'reloc'
-        self.weights = {}  # (min, max) keyframe pair -> scale of its normal equations
         self.relative = {}  # (i, j) edge -> its own relative pose (ITO_SLAM_EDGES=pose)
         self.refreshed = 0
         self.checked = []  # (n, k, kind, metres, degrees, matches, kept) per checked edge
@@ -459,15 +454,12 @@ class GlobalGraph:
             other = edge[1] if edge[0] == n else edge[0]
             kind = self.kinds.get((min(edge[0], edge[1]), max(edge[0], edge[1])), "retrieval")
             try:
-                metres, degrees, matches, sigma_t, sigma_r, relative = self._pair(edge, n)
+                metres, degrees, matches, relative = self._pair(edge, n)
             except Exception:
                 log.exception("Edge check failed")
                 continue
-            pair = (min(edge[0], edge[1]), max(edge[0], edge[1]))
             self._remember(edge, relative, matches)
-            if VISUAL == "robot" and math.isfinite(sigma_r) and sigma_r > 0:
-                self.weights[pair] = min(1.0, (sigma_r / VISUAL_SIGMA) ** 2)
-            results.append((e, other, kind, metres, degrees, matches, sigma_t, sigma_r))
+            results.append((e, other, kind, metres, degrees, matches))
         # Without a tracking edge (a lost keyframe, relocalised) its pose is the robot's guess:
         # nothing says the links are wrong rather than it.
         tracking = [r for r in results if r[2] == "track"]
@@ -476,7 +468,7 @@ class GlobalGraph:
             self.unsettled.add(n)
             self.unsettled_view = tuple(sorted(self.unsettled))
         drop = []
-        for e, other, kind, metres, degrees, matches, sigma_t, sigma_r in results:
+        for e, other, kind, metres, degrees, matches in results:
             off = metres > CHECK[0] or degrees > CHECK[1]
             keep = not (EDGE_CHECK == "drop" and trusted and off and kind != "track")
             self.checked.append((n, other, kind, metres, degrees, matches, keep))
@@ -488,9 +480,6 @@ class GlobalGraph:
                 metres=round(metres, 4),
                 degrees=round(degrees, 2),
                 matches=matches,
-                sigma_cm=round(sigma_t * 100, 5),
-                sigma_deg=round(math.degrees(sigma_r), 6),
-                weight=self.weights.get((min(n, other), max(n, other)), 1.0),
                 trusted=trusted,
                 kept=keep,
             )
@@ -530,7 +519,7 @@ class GlobalGraph:
         stale.sort(key=lambda item: -item[0])
         for _, edge in stale[:REFRESH]:
             try:
-                *_, matches, _, _, relative = self._pair(edge, max(edge[0], edge[1]))
+                *_, matches, relative = self._pair(edge, max(edge[0], edge[1]))
             except Exception:
                 log.exception("Edge refresh failed")
                 continue
@@ -573,23 +562,13 @@ class GlobalGraph:
         matches = int(counted.sum())
         K = self.frontend.K.float().contiguous()
         start = poses.clone()
-        sigma_t = sigma_r = math.inf
-        for iteration in range(PAIR_ITERATIONS):
+        for _ in range(PAIR_ITERATIONS):
             self._wait()
             Hs, gs = self.native.calib_linearize(
                 poses, Xs, Cs, K, li, lj, idx, valid, Q, height, width,
                 int(cfg["pixel_border"]), float(cfg["depth_eps"]), float(cfg["sigma_pixel"]),
                 float(cfg["sigma_depth"]), float(cfg["C_conf"]), float(cfg["Q_conf"]),
             )  # fmt: skip
-            if iteration == 0:
-                # The moving keyframe's own block: how sure this edge alone is of its pose.
-                free = [Hs[0, d] for d in range(2) if int(li[d]) == 1]
-                free += [Hs[3, d] for d in range(2) if int(lj[d]) == 1]
-                block = sum(free).double().cpu().numpy()
-                if np.isfinite(block).all() and np.linalg.cond(block) < 1e15:
-                    covariance = np.linalg.inv(block)
-                    sigma_t = math.sqrt(max(0.0, np.trace(covariance[0:3, 0:3]) / 3))
-                    sigma_r = math.sqrt(max(0.0, np.trace(covariance[3:6, 3:6]) / 3))
             arguments = (
                 Hs.reshape(-1, 7, 7).cpu(),
                 torch.cat((li, li, lj, lj)).cpu() - 1,
@@ -619,7 +598,7 @@ class GlobalGraph:
         before = sim3_matrix(start[1].double().cpu().numpy())[0]
         after = sim3_matrix(poses[1].double().cpu().numpy())[0]
         if not np.isfinite(after).all():
-            return math.inf, 180.0, matches, sigma_t, sigma_r, None
+            return math.inf, 180.0, matches, None
         _, rb, tb = split(before)
         _, ra, ta = split(after)
         angle = math.degrees(math.acos(np.clip((np.trace(rb.T @ ra) - 1) / 2, -1, 1)))
@@ -627,7 +606,7 @@ class GlobalGraph:
         held_pose = sim3_matrix(start[0].double().cpu().numpy())[0]
         pose_i, pose_j = (held_pose, after) if order[0] == i else (after, held_pose)
         relative = np.linalg.inv(pose_i) @ pose_j
-        return float(np.linalg.norm(ta - tb)), angle, matches, sigma_t, sigma_r, relative
+        return float(np.linalg.norm(ta - tb)), angle, matches, relative
 
     def _priors(self, poses, local):
         """The robot's factors at poses (n, 8 Sim3 data): 7x7 blocks (A, i, j) and gradients
@@ -886,13 +865,8 @@ class GlobalGraph:
             Xs = torch.nan_to_num(Xs, nan=0.0, posinf=0.0, neginf=0.0)
             Cs = torch.where(torch.isfinite(Cs), Cs, 0)
         K = self.frontend.K.float().contiguous()
-        weight = [self.weights.get((min(e[0], e[1]), max(e[0], e[1])), 1.0) for e in edges]
-        directions = [
-            (local[e[0]], local[e[1]], e[2], e[4], e[6], w)
-            for e, w in zip(edges, weight, strict=True)
-        ] + [
-            (local[e[1]], local[e[0]], e[3], e[5], e[7], w)
-            for e, w in zip(edges, weight, strict=True)
+        directions = [(local[e[0]], local[e[1]], e[2], e[4], e[6]) for e in edges] + [
+            (local[e[1]], local[e[0]], e[3], e[5], e[7]) for e in edges
         ]
         poses = before.clone()
         n = len(involved)
@@ -923,9 +897,6 @@ class GlobalGraph:
                     float(cfg["C_conf"]),
                     float(cfg["Q_conf"]),
                 )
-                w = torch.tensor([c[5] for c in chunk], dtype=Hs.dtype, device=Hs.device)
-                Hs = Hs * w[None, :, None, None]
-                gs = gs * w[None, :, None]
                 blocks.append(Hs.reshape(-1, 7, 7).cpu())
                 rows.append(torch.cat((li, li, lj, lj)).cpu())
                 cols.append(torch.cat((li, lj, li, lj)).cpu())
@@ -1001,7 +972,7 @@ def solve_pose_graph(start, pairs, gravity, height, odometry, turns, scales, fix
     v_l = np.log([q[2] for q in pairs])
     baseline = np.linalg.norm(v_t, axis=1) * s0[vi]  # metres
     v_sigma = np.empty((len(pairs), 7))
-    v_sigma[:, 0:3] = VISUAL_SIGMA
+    v_sigma[:, 0:3] = math.radians(EDGE_DEG)
     v_sigma[:, 3:6] = (EDGE_CM / 100 + EDGE_BASELINE * baseline)[:, None]
     v_sigma[:, 6] = EDGE_SCALE
     v_sigma /= np.sqrt([q[5] for q in pairs])[:, None]

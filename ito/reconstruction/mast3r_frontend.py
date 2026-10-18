@@ -20,7 +20,7 @@ UNKNOWN = np.full(6, np.inf)
 # tracking is lost. Unset: the frontend as before (local graph, forgetting keyframes).
 FULL = os.environ.get("ITO_SLAM") == "full"
 # Full: a keyframe a metre from the predicted camera counts like one turned this far away.
-REACH = math.radians(float(os.environ.get("ITO_SLAM_REACH", "30")))
+REACH = math.radians(30)
 NEAR = 1.5  # metres: farther keyframes are only tried when retrieval names them
 
 
