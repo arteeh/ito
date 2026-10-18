@@ -112,7 +112,18 @@ class Pi3Depth:
         source = next((p for p in candidates if (p / "pi3" / "models").is_dir()), root)
         if str(source) not in sys.path:
             sys.path.insert(0, str(source))
-        from pi3.models.pi3 import Pi3
+        # pi3 takes CroCo's CUDA RoPE when `models.curope` imports, which it does here (MASt3R's
+        # CroCo is on the path); that one needs contiguous tokens, pi3 hands it a transpose.
+        # Its PyTorch RoPE then: hide curope while pi3 imports.
+        hidden = sys.modules.get("models.curope")
+        sys.modules["models.curope"] = None
+        try:
+            from pi3.models.pi3 import Pi3
+        finally:
+            if hidden is None:
+                del sys.modules["models.curope"]
+            else:
+                sys.modules["models.curope"] = hidden
 
         net = Pi3()
         net.load_state_dict(load_file(root / "pi3" / "model.safetensors"))
