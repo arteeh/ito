@@ -69,11 +69,18 @@ GAUGE = os.environ.get("ITO_SLAM_GAUGE", "settled")
 # alone is as sure as the robot-first window takes a tracked frame (VISUAL_SIGMA radians); unset or
 # =upstream keeps upstream's weights.
 VISUAL = os.environ.get("ITO_SLAM_VISUAL", "upstream")
-VISUAL_SIGMA = math.radians(0.5)
-# With =robot, an edge's say on where its cameras' centres are is further scaled by this: MASt3R's
-# wide-baseline pairs place a keyframe 5-14 cm off where the robot's motion (and the sim's truth)
-# has it while their rotation is better than the robot's; 0.04 is a 5x larger centre sigma.
-VISUAL_CENTRES = float(os.environ.get("ITO_SLAM_VISUAL_CENTRES", "0.04"))
+VISUAL_SIGMA = math.radians(float(os.environ.get("ITO_SLAM_VISUAL_DEG", "0.5")))
+# ITO_SLAM_EDGES=pose: each edge enters the global solve as the relative pose its matches alone
+# give (the edge check's two-keyframe solve, redone as the keyframes' pointmaps fill in) with the
+# robot-first window's trust in a tracked frame: rotation VISUAL_SIGMA, camera centre EDGE_CM plus
+# EDGE_BASELINE of the pair's baseline (MASt3R's translation is off by its depth error, 5-14 cm on
+# half-metre pairs on the loop route, its rotation better than the robot's), Cauchy-robust, solved
+# with the robot's factors by least squares. Unset (=dense): upstream's per-pixel Gauss-Newton.
+EDGES = os.environ.get("ITO_SLAM_EDGES", "dense")
+EDGE_CM = float(os.environ.get("ITO_SLAM_EDGE_CM", "2"))
+EDGE_BASELINE = float(os.environ.get("ITO_SLAM_EDGE_BASELINE", "0.1"))
+EDGE_SCALE = 0.05  # log-scale sigma of a pair's relative scale
+REFRESH = 8  # edges whose keyframes' pointmaps have filled in since, re-solved per global solve
 # ITO_SLAM_LOG=<file>: one JSON line per solve and per checked edge (a diagnostic).
 SOLVE_LOG = os.environ.get("ITO_SLAM_LOG")
 
@@ -177,6 +184,8 @@ class GlobalGraph:
         self.worst = ((0.0, 0.0), None)
         self.kinds = {}  # (min, max) keyframe pair -> 'track', 'prev', 'retrieval' or 'reloc'
         self.weights = {}  # (min, max) keyframe pair -> scale of its normal equations
+        self.relative = {}  # (i, j) edge -> its own relative pose (ITO_SLAM_EDGES=pose)
+        self.refreshed = 0
         self.checked = []  # (n, k, kind, metres, degrees, matches, kept) per checked edge
         self.dropped = 0  # links left out by the edge check
         self.unsettled = set()  # keyframes whose own tracking edge disagreed with their pose
@@ -450,11 +459,12 @@ class GlobalGraph:
             other = edge[1] if edge[0] == n else edge[0]
             kind = self.kinds.get((min(edge[0], edge[1]), max(edge[0], edge[1])), "retrieval")
             try:
-                metres, degrees, matches, sigma_t, sigma_r = self._pair(edge, n)
+                metres, degrees, matches, sigma_t, sigma_r, relative = self._pair(edge, n)
             except Exception:
                 log.exception("Edge check failed")
                 continue
             pair = (min(edge[0], edge[1]), max(edge[0], edge[1]))
+            self._remember(edge, relative, matches)
             if VISUAL == "robot" and math.isfinite(sigma_r) and sigma_r > 0:
                 self.weights[pair] = min(1.0, (sigma_r / VISUAL_SIGMA) ** 2)
             results.append((e, other, kind, metres, degrees, matches, sigma_t, sigma_r))
@@ -491,6 +501,41 @@ class GlobalGraph:
             self.edge_bytes -= sum(t.numel() * t.element_size() for t in edge[2:])
             self.dropped += 1
             log.info("Edge check: link %d-%d left out", edge[0], edge[1])
+
+    def _remember(self, edge, relative, matches):
+        """ITO_SLAM_EDGES=pose: the edge's own relative pose and how much it saw."""
+        if relative is None or not np.isfinite(relative).all():
+            return
+        frames = self.frontend.frames
+        pixels = 2 * int(edge[2].numel())
+        self.relative[(edge[0], edge[1])] = dict(
+            pose=relative,
+            fraction=matches / max(1, pixels),
+            updates=(frames[edge[0]].N, frames[edge[1]].N),
+        )
+
+    def _refresh(self, edges):
+        """Re-solve up to REFRESH edges whose keyframes' pointmaps have grown by half since."""
+        frames = self.frontend.frames
+        stale = []
+        for edge in edges:
+            known = self.relative.get((edge[0], edge[1]))
+            now = (frames[edge[0]].N, frames[edge[1]].N)
+            if known is None:
+                stale.append((math.inf, edge))
+                continue
+            growth = max(n / max(1, k) for n, k in zip(now, known["updates"], strict=True))
+            if growth >= 1.5 and sum(now) - sum(known["updates"]) >= 4:
+                stale.append((growth, edge))
+        stale.sort(key=lambda item: -item[0])
+        for _, edge in stale[:REFRESH]:
+            try:
+                *_, matches, _, _, relative = self._pair(edge, max(edge[0], edge[1]))
+            except Exception:
+                log.exception("Edge refresh failed")
+                continue
+            self._remember(edge, relative, matches)
+            self.refreshed += 1
 
     def _pair(self, edge, moving):
         """Gauss-Newton on one edge alone, the keyframe `moving` free and the other held, from
@@ -574,11 +619,15 @@ class GlobalGraph:
         before = sim3_matrix(start[1].double().cpu().numpy())[0]
         after = sim3_matrix(poses[1].double().cpu().numpy())[0]
         if not np.isfinite(after).all():
-            return math.inf, 180.0, matches, sigma_t, sigma_r
+            return math.inf, 180.0, matches, sigma_t, sigma_r, None
         _, rb, tb = split(before)
         _, ra, ta = split(after)
         angle = math.degrees(math.acos(np.clip((np.trace(rb.T @ ra) - 1) / 2, -1, 1)))
-        return float(np.linalg.norm(ta - tb)), angle, matches, sigma_t, sigma_r
+        # The relative pose its matches alone give, edge[0] to edge[1] (MASt3R axes).
+        held_pose = sim3_matrix(start[0].double().cpu().numpy())[0]
+        pose_i, pose_j = (held_pose, after) if order[0] == i else (after, held_pose)
+        relative = np.linalg.inv(pose_i) @ pose_j
+        return float(np.linalg.norm(ta - tb)), angle, matches, sigma_t, sigma_r, relative
 
     def _priors(self, poses, local):
         """The robot's factors at poses (n, 8 Sim3 data): 7x7 blocks (A, i, j) and gradients
@@ -670,13 +719,8 @@ class GlobalGraph:
         return A, ai, aj, b, bk
 
     def _solve(self):
-        """All keyframes with a factor, Gauss-Newton as upstream's solve_GN_calib (the oldest
-        pinned, points constrained to their rays, ITERATIONS steps), robot factors added."""
-        torch = self.torch
-        import lietorch
-        from mast3r_slam.geometry import constrain_points_to_ray
-
-        cfg = self.config["local_opt"]
+        """All keyframes with a visual edge, the oldest pinned, solved with the robot's factors
+        (_dense or _pose), then the gauge, the move limit and the result for the tracking thread."""
         frames = self.frontend.frames
         edges = list(self.edges)
         with self.lock:
@@ -688,6 +732,133 @@ class GlobalGraph:
         if len(involved) < 2:
             return
         local = {k: i for i, k in enumerate(involved)}
+        if EDGES == "pose":
+            self._refresh(edges)
+            result = self._pose(edges, involved, local)
+        else:
+            result = self._dense(edges, involved, local)
+        if result is None:
+            return
+        start, after = result
+        if not np.isfinite(after).all():
+            self.failed += 1
+            self.error = "non-finite poses"
+            return
+        gauge = self.reference if self.reference in local else involved[-1]
+        if GAUGE == "settled" and (gauge not in self.owned or gauge in self.unsettled):
+            parent = self.tracking.get(gauge)
+            if parent in local and parent in self.owned and parent not in self.unsettled:
+                gauge = parent
+        self.gauges.append(gauge)
+        del self.gauges[:-20]
+        moves = corrections(
+            dict(keyframes=involved, before=start, after=after, gauge=gauge),
+            dict(zip(involved, start, strict=True)),
+        )
+        self.worst = max(
+            (
+                (_size(increment, sim3_matrix(start[local[k]])[0]), k)
+                for k, (increment, _) in moves.items()
+            ),
+            default=((0.0, 0.0), None),
+        )
+        worst = max(
+            (
+                _size(increment, sim3_matrix(start[local[k]])[0])
+                for k, (increment, _) in moves.items()
+                if k in self.owned
+            ),
+            default=(0.0, 0.0),
+        )
+        rejected = worst[0] > LIMIT[0] or worst[1] > LIMIT[1]
+        if self.log_file is not None:
+            self._log(
+                event="solve",
+                solve=self.solves + 1,
+                keyframes=len(involved),
+                edges=len(edges),
+                reference=self.reference,
+                gauge=gauge,
+                steps=self.steps,
+                rejected=rejected,
+                moves={
+                    str(k): [round(v, 4) for v in _size(inc, sim3_matrix(start[local[k]])[0])]
+                    for k, (inc, _) in moves.items()
+                },
+                worst_edges=[
+                    [e[0], e[1], self.kinds.get((min(e[0], e[1]), max(e[0], e[1])))]
+                    for e in edges
+                    if self.worst[1] in (e[0], e[1])
+                ],
+            )
+        if rejected:
+            # Gauss-Newton has no line search: a step this large moved settled keyframes
+            # through the room; keep them, the next keyframe's solve starts afresh.
+            self.rejected += 1
+            self.error = (
+                f"rejected: a settled keyframe would move {worst[0]:.2f} m, {worst[1]:.0f} deg"
+            )
+            return
+        self.unsettled -= set(involved)
+        self.unsettled_view = tuple(sorted(self.unsettled))
+        self.solves += 1
+        self.results.put(
+            dict(
+                keyframes=involved,
+                before=start,
+                after=after,
+                gauge=gauge,
+                solve=self.solves,
+            )
+        )
+
+    def _pose(self, edges, involved, local):
+        """ITO_SLAM_EDGES=pose: solve_pose_graph on the keyframes' poses now, each edge's own
+        relative pose and the robot's factors. Returns poses before and after (Sim3 data)."""
+        torch = self.torch
+        frames = self.frontend.frames
+        held = [frames[k].T_WC.data for k in involved]
+        self._wait()
+        start = torch.stack([h.reshape(8) for h in held]).double()
+        torch.cuda.current_stream().synchronize()
+        start = start.cpu().numpy()
+        del held
+        if not np.isfinite(start).all():
+            self.error = "non-finite poses"
+            return None
+        pairs = []
+        for e in edges:
+            known = self.relative.get((e[0], e[1]))
+            if known is not None:
+                pairs.append((local[e[0]], local[e[1]], known["pose"], known["fraction"]))
+        if not pairs:
+            return None
+        with self.lock:
+            gravity = [(local[k], *v) for k, v in self.gravity.items() if k in local]
+            height = [(local[k], *v) for k, v in self.height.items() if k in local]
+            odometry = [
+                (local[i], local[j], r, t, sg)
+                for i, j, r, t, sg in self.odometry
+                if i in local and j in local
+            ]
+            turns = [
+                (local[i], local[j], r, sg)
+                for i, j, r, sg in self.turns
+                if i in local and j in local
+            ]
+            scales = [(local[k], list(v)) for k, v in self.scales.items() if k in local and v]
+        after, self.steps = solve_pose_graph(start, pairs, gravity, height, odometry, turns, scales)
+        return start, after
+
+    def _dense(self, edges, involved, local):
+        """Gauss-Newton as upstream's solve_GN_calib (points constrained to their rays,
+        ITERATIONS steps), robot factors added. Returns poses before and after (Sim3 data)."""
+        torch = self.torch
+        import lietorch
+        from mast3r_slam.geometry import constrain_points_to_ray
+
+        cfg = self.config["local_opt"]
+        frames = self.frontend.frames
         keyframes = [frames[k] for k in involved]
         # The tracking thread replaces these tensors as it goes; hold them until the copies
         # are done, or the allocator may hand their memory to its stream meanwhile.
@@ -724,9 +895,6 @@ class GlobalGraph:
         steps = self.steps = []
         for _ in range(ITERATIONS):
             blocks, rows, cols, gradients, which = [], [], [], [], []
-            centres = None
-            if VISUAL == "robot" and VISUAL_CENTRES != 1.0:
-                centres = _centre_scaling(poses, VISUAL_CENTRES)
             for start in range(0, len(directions), EDGE_CHUNK):
                 self._wait()
                 chunk = directions[start : start + EDGE_CHUNK]
@@ -754,24 +922,6 @@ class GlobalGraph:
                 w = torch.tensor([c[5] for c in chunk], dtype=Hs.dtype, device=Hs.device)
                 Hs = Hs * w[None, :, None, None]
                 gs = gs * w[None, :, None]
-                if centres is not None:
-                    # A = M S M^-1 per keyframe: M takes (centre move, rotation, log-scale) to
-                    # the left perturbation (tau, phi, sigma); S scales the centre part.
-                    ai, aj = centres[li], centres[lj]
-                    Hs = torch.stack(
-                        (
-                            ai.transpose(1, 2) @ Hs[0] @ ai,
-                            ai.transpose(1, 2) @ Hs[1] @ aj,
-                            aj.transpose(1, 2) @ Hs[2] @ ai,
-                            aj.transpose(1, 2) @ Hs[3] @ aj,
-                        )
-                    )
-                    gs = torch.stack(
-                        (
-                            (ai.transpose(1, 2) @ gs[0, ..., None])[..., 0],
-                            (aj.transpose(1, 2) @ gs[1, ..., None])[..., 0],
-                        )
-                    )
                 blocks.append(Hs.reshape(-1, 7, 7).cpu())
                 rows.append(torch.cat((li, li, lj, lj)).cpu())
                 cols.append(torch.cat((li, lj, li, lj)).cpu())
@@ -818,98 +968,137 @@ class GlobalGraph:
             poses = torch.cat((poses[:1], moved.data.reshape(-1, 8)))
             if float(step.norm()) < float(cfg["delta_norm"]):
                 break
-        after = poses.double().cpu().numpy()
-        start = before.double().cpu().numpy()
-        if not np.isfinite(after).all():
-            self.failed += 1
-            self.error = "non-finite poses"
-            return
-        gauge = self.reference if self.reference in local else involved[-1]
-        if GAUGE == "settled" and (gauge not in self.owned or gauge in self.unsettled):
-            parent = self.tracking.get(gauge)
-            if parent in local and parent in self.owned and parent not in self.unsettled:
-                gauge = parent
-        self.gauges.append(gauge)
-        del self.gauges[:-20]
-        moves = corrections(
-            dict(keyframes=involved, before=start, after=after, gauge=gauge),
-            dict(zip(involved, start, strict=True)),
-        )
-        self.worst = max(
+        return before.double().cpu().numpy(), poses.double().cpu().numpy()
+
+
+def solve_pose_graph(start, pairs, gravity, height, odometry, turns, scales):
+    """Keyframe poses start (n, 8 Sim3 data, MASt3R axes; the first pinned) solved against
+    pairs (i, j, relative 4x4 similarity edge i -> j, match fraction), Cauchy-robust, and the
+    robot's factors: gravity (k, up seen, sigma), height (k, y, sigma), odometry (i, j, rotation,
+    translation, sigma[6]), turns (i, j, rotation, sigma), scales (k, log readings). Returns the
+    poses after (Sim3 data) and [cost, evaluations]."""
+    from scipy.optimize import least_squares
+    from scipy.sparse import lil_matrix
+    from scipy.spatial.transform import Rotation
+
+    m0 = sim3_matrix(start)
+    s0 = np.cbrt(np.linalg.det(m0[:, :3, :3]))
+    r0 = Rotation.from_matrix(m0[:, :3, :3] / s0[:, None, None])
+    c0, l0 = m0[:, :3, 3], np.log(s0)
+    n = len(start)
+    pairs = [(i, j, *split(pose), min(1.0, max(0.05, fraction))) for i, j, pose, fraction in pairs]
+    vi = np.array([q[0] for q in pairs])
+    vj = np.array([q[1] for q in pairs])
+    v_inv = Rotation.from_matrix(np.array([q[3] for q in pairs])).inv()
+    v_t = np.array([q[4] for q in pairs])
+    v_l = np.log([q[2] for q in pairs])
+    baseline = np.linalg.norm(v_t, axis=1) * s0[vi]  # metres
+    v_sigma = np.empty((len(pairs), 7))
+    v_sigma[:, 0:3] = VISUAL_SIGMA
+    v_sigma[:, 3:6] = (EDGE_CM / 100 + EDGE_BASELINE * baseline)[:, None]
+    v_sigma[:, 6] = EDGE_SCALE
+    v_sigma /= np.sqrt([q[5] for q in pairs])[:, None]
+    up = np.array([0.0, -1.0, 0.0])  # MASt3R's world: +y down
+    gi = np.array([g[0] for g in gravity], int)
+    g_seen = np.array([g[1] for g in gravity]).reshape(-1, 3)
+    g_sigma = np.array([g[2] for g in gravity], float)
+    hi = np.array([h[0] for h in height], int)
+    h_y = np.array([h[1] for h in height], float)
+    h_sigma = np.array([h[2] for h in height], float)
+    oi = np.array([o[0] for o in odometry], int)
+    oj = np.array([o[1] for o in odometry], int)
+    if odometry:
+        o_inv = Rotation.from_matrix(np.array([o[2] for o in odometry])).inv()
+        o_t = np.array([o[3] for o in odometry])
+        o_sigma = np.array([o[4] for o in odometry]).reshape(-1, 6)
+    ti = np.array([t[0] for t in turns], int)
+    tj = np.array([t[1] for t in turns], int)
+    if turns:
+        t_inv = Rotation.from_matrix(np.array([t[2] for t in turns])).inv()
+        t_sigma = np.array([t[3] for t in turns], float)
+    si = np.array([sc[0] for sc in scales], int)
+    s_centre, s_sigma = [], []
+    for _, readings in scales:
+        values = np.array(readings)
+        centre = float(np.median(values))
+        spread = 1.4826 * float(np.median(np.abs(values - centre))) if len(values) > 2 else 0.05
+        s_centre.append(centre)
+        s_sigma.append(max(SCALE_FLOOR, math.hypot(spread, 0.05) / math.sqrt(len(values))))
+    s_centre, s_sigma = np.array(s_centre), np.array(s_sigma)
+
+    def unpack(x):
+        delta = x.reshape(-1, 7)
+        rotations = Rotation.concatenate([r0[:1], Rotation.from_rotvec(delta[:, 0:3]) * r0[1:]])
+        centres = c0.copy()
+        centres[1:] += delta[:, 3:6]
+        logs = l0.copy()
+        logs[1:] += delta[:, 6]
+        return rotations, centres, logs
+
+    def residuals(x):
+        rotations, centres, logs = unpack(x)
+        inverse = rotations[vi].inv()
+        vision = np.hstack(
             (
-                (_size(increment, sim3_matrix(start[local[k]])[0]), k)
-                for k, (increment, _) in moves.items()
-            ),
-            default=((0.0, 0.0), None),
-        )
-        worst = max(
-            (
-                _size(increment, sim3_matrix(start[local[k]])[0])
-                for k, (increment, _) in moves.items()
-                if k in self.owned
-            ),
-            default=(0.0, 0.0),
-        )
-        rejected = worst[0] > LIMIT[0] or worst[1] > LIMIT[1]
-        if self.log_file is not None:
-            self._log(
-                event="solve",
-                solve=self.solves + 1,
-                keyframes=len(involved),
-                edges=len(edges),
-                reference=self.reference,
-                gauge=gauge,
-                steps=steps,
-                rejected=rejected,
-                moves={
-                    str(k): [round(v, 4) for v in _size(inc, sim3_matrix(start[local[k]])[0])]
-                    for k, (inc, _) in moves.items()
-                },
-                worst_edges=[
-                    [e[0], e[1], self.kinds.get((min(e[0], e[1]), max(e[0], e[1])))]
-                    for e in edges
-                    if self.worst[1] in (e[0], e[1])
-                ],
-            )
-        if rejected:
-            # Gauss-Newton has no line search: a step this large moved settled keyframes
-            # through the room; keep them, the next keyframe's solve starts afresh.
-            self.rejected += 1
-            self.error = (
-                f"rejected: a settled keyframe would move {worst[0]:.2f} m, {worst[1]:.0f} deg"
-            )
-            return
-        self.unsettled -= set(involved)
-        self.unsettled_view = tuple(sorted(self.unsettled))
-        self.solves += 1
-        self.results.put(
-            dict(
-                keyframes=involved,
-                before=start,
-                after=after,
-                gauge=gauge,
-                solve=self.solves,
+                (v_inv * inverse * rotations[vj]).as_rotvec(),
+                inverse.apply(centres[vj] - centres[vi]) - np.exp(logs[vi])[:, None] * v_t,
+                (logs[vj] - logs[vi] - v_l)[:, None],
             )
         )
+        out = [_robust(vision / v_sigma).ravel()]
+        if len(gi):
+            out.append(((rotations[gi].inv().apply(up) - g_seen) / g_sigma[:, None]).ravel())
+        if len(hi):
+            out.append((centres[hi, 1] - h_y) / h_sigma)
+        if len(oi):
+            inverse = rotations[oi].inv()
+            motion = np.hstack(
+                (
+                    (o_inv * inverse * rotations[oj]).as_rotvec(),
+                    inverse.apply(centres[oj] - centres[oi]) - o_t,
+                )
+            )
+            out.append((motion / o_sigma).ravel())
+        if len(ti):
+            turned = (t_inv * rotations[ti].inv() * rotations[tj]).as_rotvec()
+            out.append((turned / t_sigma[:, None]).ravel())
+        if len(si):
+            out.append((logs[si] - s_centre) / s_sigma)
+        return np.concatenate(out)
+
+    rows = []  # (row count, local keyframes it depends on) per factor, in residuals' order
+    rows += [(7, (a, b)) for a, b in zip(vi, vj, strict=True)]
+    rows += [(3, (a,)) for a in gi] + [(1, (a,)) for a in hi]
+    rows += [(6, (a, b)) for a, b in zip(oi, oj, strict=True)]
+    rows += [(3, (a, b)) for a, b in zip(ti, tj, strict=True)] + [(1, (a,)) for a in si]
+    sparsity = lil_matrix((sum(r for r, _ in rows), 7 * (n - 1)), dtype=int)
+    row = 0
+    for count, keyframes in rows:
+        for k in keyframes:
+            if k > 0:
+                sparsity[row : row + count, 7 * (k - 1) : 7 * k] = 1
+        row += count
+    result = least_squares(
+        residuals,
+        np.zeros(7 * (n - 1)),
+        jac_sparsity=sparsity,
+        method="trf",
+        x_scale="jac",
+        max_nfev=60,
+    )
+    rotations, centres, logs = unpack(result.x)
+    after = np.tile(np.eye(4), (n, 1, 1))
+    after[:, :3, :3] = rotations.as_matrix() * np.exp(logs)[:, None, None]
+    after[:, :3, 3] = centres
+    return matrix_sim3(after), [round(float(result.cost), 3), int(result.nfev)]
 
 
-def _centre_scaling(poses, factor):
-    """Per keyframe (n, 7, 7) on poses' device: A = M S M^-1, S scaling the information on its
-    camera centre's move by factor (left perturbations: centre move = tau + phi x c + sigma c)."""
-    import torch
-
-    c = poses[:, 0:3].float()
-    n = len(c)
-    cross = torch.zeros((n, 3, 3), dtype=c.dtype, device=c.device)
-    cross[:, 0, 1], cross[:, 0, 2], cross[:, 1, 2] = -c[:, 2], c[:, 1], -c[:, 0]
-    cross[:, 1, 0], cross[:, 2, 0], cross[:, 2, 1] = c[:, 2], -c[:, 1], c[:, 0]
-    eye = torch.eye(7, dtype=c.dtype, device=c.device).repeat(n, 1, 1)
-    m, m_inv = eye.clone(), eye.clone()
-    m[:, 0:3, 3:6], m[:, 0:3, 6] = cross, -c
-    m_inv[:, 0:3, 3:6], m_inv[:, 0:3, 6] = -cross, c
-    scale = eye.clone()
-    scale[:, 0:3, 0:3] *= math.sqrt(factor)
-    return m @ scale @ m_inv
+def _robust(whitened):
+    """Cauchy on each factor's whitened residual (rows), as fusion's visual factors."""
+    squared = np.sum(whitened * whitened, axis=1, keepdims=True)
+    cost = 2.0**2 * np.log1p(squared / 2.0**2)
+    factor = np.sqrt(np.divide(cost, squared, out=np.ones_like(squared), where=squared > 1e-12))
+    return whitened * factor
 
 
 def _size(increment, pose):
