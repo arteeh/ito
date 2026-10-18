@@ -265,6 +265,7 @@ def main():
         env=os.environ
         | ({"DISPLAY": os.environ.get("DISPLAY", ":0")} if WSLG.exists() else {})
         | ({"ITO_MICRODUCK_TRUTH_DEPTH": "3"} if args.truth and args.truth != "poses" else {})
+        | ({"ITO_MICRODUCK_SEND_TRUTH": "1"} if args.truth else {})
         | {
             "PYTHONPATH": str(args.sim_source),
             "GST_PLUGIN_PATH": str(prefix / "gst-plugins-rs/target/debug"),

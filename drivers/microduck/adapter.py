@@ -565,6 +565,9 @@ class MicroduckAdapter(Adapter):
             return {}
         position, orientation = truth.in_world(row, self._origin)
         self._compare_kinematics(row["time"], position, orientation)
+        # A pilot that does not know true_pose (main) rejects the whole frame message.
+        if os.environ.get("ITO_MICRODUCK_SEND_TRUTH") != "1":
+            return {}
         depth = None
         if "depth" in row:
             height, width = row["depth_shape"]
