@@ -73,6 +73,12 @@ IDLE_MOVE = (0.03, math.radians(3))  # metres, radians
 AA = os.environ.get("ITO_AA", "0") != "0"
 MIP_3D = math.sqrt(0.2)
 MODE = "antialiased" if AA else "classic"
+# ITO_FIT_BA=1 (an experiment): the partner views' poses train with the map, as MonoGS and
+# MoonSplat map (the chosen view holds the frame): a view a few millimetres off stops dragging
+# surfaces into streaks across the others. Larger corrections than ALIGN_LIMIT are dropped.
+BA = os.environ.get("ITO_FIT_BA", "0") != "0"
+BA_RATES = (2e-4, 2e-4)  # radians, metres per Adam step
+BA_WEIGHT = 1e-3  # L2 on the correction, in units of ALIGN_LIMIT
 # ITO_FIT_SPARSE=<weight> (an experiment): 3DGS-MCMC's L1 on opacity. A Gaussian the photos
 # do not need fades below PRUNE_OPACITY and retires: floaters and doubled layers thin out.
 SPARSE = float(os.environ.get("ITO_FIT_SPARSE", "0") or 0)
@@ -128,6 +134,7 @@ class ViewFit:
         self.aligned = 0
         self.filled = 0
         self.floaters = 0
+        self.adjusted = 0
         self.seconds = dict(prepare=0.0, finish=0.0)  # CPU time outside the Adam steps
         self.threaded = False
 
@@ -393,6 +400,14 @@ class ViewFit:
         groups = [{"params": [value], "lr": RATES[key]} for key, value in p.items()]
         if exposures:
             groups.append({"params": exposures, "lr": EXPOSURE_RATES[0]})
+        if BA and len(prepared) > 1:
+            for target in prepared[1:]:
+                target["delta"] = (
+                    torch.nn.Parameter(torch.zeros(3, device="cuda")),
+                    torch.nn.Parameter(torch.zeros(3, device="cuda")),
+                )
+            groups.append({"params": [t["delta"][0] for t in prepared[1:]], "lr": BA_RATES[0]})
+            groups.append({"params": [t["delta"][1] for t in prepared[1:]], "lr": BA_RATES[1]})
         optimizer = torch.optim.Adam(groups, eps=1e-15)
         self.active = dict(
             ids=ids,
@@ -578,6 +593,9 @@ class ViewFit:
         target = a["targets"][a["steps"] % len(a["targets"])]
         w, h = target["size"]
         with self.chunk("fit_forward"):
+            camera = target["camera"]
+            if "delta" in target:
+                camera = (self.moved(target["delta"]) @ camera[0])[None]
             rendered, alpha, info = self.rasterize(
                 means=p["means"],
                 quats=p["quats"],
@@ -585,7 +603,7 @@ class ViewFit:
                 opacities=p["opacity"].sigmoid(),
                 colors=p["color"][:, None],
                 sh_degree=0,
-                viewmats=target["camera"],
+                viewmats=camera,
                 Ks=target["calibration"],
                 width=w,
                 height=h,
@@ -619,6 +637,12 @@ class ViewFit:
             loss = loss + NEEDLE_WEIGHT * needle.mean()
             if SPARSE:
                 loss = loss + SPARSE * p["opacity"].sigmoid().mean()
+            if "delta" in target:
+                rotation, translation = target["delta"]
+                loss = loss + BA_WEIGHT * (
+                    rotation.square().sum() / ALIGN_LIMIT[0] ** 2
+                    + translation.square().sum() / ALIGN_LIMIT[1] ** 2
+                )
         with self.chunk("fit_backward"):
             loss.backward()
             with torch.no_grad():
@@ -683,6 +707,18 @@ class ViewFit:
         for target in a["targets"]:
             if target["exposure"] is not None:
                 target["view"].exposure = target["exposure"][0].detach().cpu().numpy()
+            if "delta" in target:
+                with torch.no_grad():
+                    rotation, translation = target["delta"]
+                    if (
+                        float(rotation.norm()) <= ALIGN_LIMIT[0]
+                        and float(translation.norm()) <= ALIGN_LIMIT[1]
+                    ):
+                        camera = self.moved(target["delta"]) @ target["camera"][0]
+                        target["view"].fitting_pose = (
+                            np.linalg.inv(camera.double().cpu().numpy()) @ AXES
+                        )
+                        self.adjusted += 1
         old = a["snapshot"]
         records[:, 1, 3] = old[:, 1, 3]
         records[:, 3, 3] = old[:, 3, 3]

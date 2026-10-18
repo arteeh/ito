@@ -392,6 +392,7 @@ def _run(recon):
                                     "aligned",
                                     "filled",
                                     "floaters",
+                                    "adjusted",
                                     "seconds",
                                 )
                                 if hasattr(backend.fitter, k)
