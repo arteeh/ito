@@ -104,6 +104,8 @@ class MASt3RFrontend:
         self.last_scale = 1.0  # the scale the last returned cloud was made at
         self.lost = False  # full: the last keyframe was kept without a visual match
         self.relocalisations = 0
+        self.last_match = None
+        self.forced = 0  # keyframes kept because the pose graph's window was empty
 
     def bind_admission(self, admission):
         from .admission import bind_model, bind_native
@@ -198,7 +200,8 @@ class MASt3RFrontend:
         )
         return self.K.new_tensor(1 / sigma**2)
 
-    def track(self, rgb, node, predicted, prior_sigma):
+    def track(self, rgb, node, predicted, prior_sigma, force=False):
+        """force: keep this frame as a keyframe if it tracks (full SLAM, pose graph empty)."""
         from mast3r_slam.mast3r_utils import mast3r_inference_mono
 
         torch = self.torch
@@ -237,13 +240,17 @@ class MASt3RFrontend:
                         break
             new_keyframe, usable, match, keyframe_pose, keyframe_scale, pose, scale = attempt
             self.unmatched = 0 if usable else self.unmatched + 1
+            self.last_match = match
             if not usable:
                 frame.T_WC = self.unplaced(predicted, keyframe_scale)
                 scale = keyframe_scale
             cloud = self._cloud(frame, scale)
             self.last_scale = float(scale)
             self.reference = reference
-            becomes = bool(new_keyframe) and usable or self.unmatched >= UNMATCHED_KEYFRAME
+            becomes = (
+                (bool(new_keyframe) or force) and usable or self.unmatched >= UNMATCHED_KEYFRAME
+            )
+            self.forced += bool(force and becomes)
             relative = np.linalg.inv(keyframe_pose) @ pose if usable else None
             if becomes:
                 self._keep(frame, node)

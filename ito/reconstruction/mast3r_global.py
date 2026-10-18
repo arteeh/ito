@@ -20,8 +20,10 @@ The worker does its GPU work on a stream below tracking's and waits while the re
 GPU to back off; its native calls release the GIL (native/mast3r_full.cu).
 """
 
+import json
 import logging
 import math
+import os
 import queue
 import threading
 import time
@@ -48,6 +50,21 @@ STEP = (0.1, math.radians(5), 0.05)  # per keyframe per iteration: metres, radia
 # A solve that would move a keyframe some solve already placed further than this (metres,
 # degrees) diverged; it is dropped. Loop closures in a room move keyframes centimetres.
 LIMIT = (0.5, 20.0)
+# Every new edge is solved alone first (its two keyframes, one held): where its matches put the
+# other keyframe against where the graph has it. A link that disagrees by more than CHECK
+# (metres, degrees) while the new keyframe's tracking edge agrees within AGREE is a wrong match
+# (a look-alike shelf); ITO_SLAM_EDGE_CHECK=drop (default) leaves it out, =log only records it.
+EDGE_CHECK = os.environ.get("ITO_SLAM_EDGE_CHECK", "drop")
+CHECK = (0.3, 15.0)
+AGREE = (0.1, 5.0)
+PAIR_ITERATIONS = 10
+# The gauge: ITO_SLAM_GAUGE=settled (default) holds the keyframe the pilot tracks against if a
+# solve has placed it before, else the settled keyframe it was tracked from, so a solve moves the
+# new keyframe into the room rather than the room about it; =reference holds the pilot's
+# keyframe always (before 18 Oct).
+GAUGE = os.environ.get("ITO_SLAM_GAUGE", "settled")
+# ITO_SLAM_LOG=<file>: one JSON line per solve and per checked edge (a diagnostic).
+SOLVE_LOG = os.environ.get("ITO_SLAM_LOG")
 
 
 def skew(v):
@@ -147,6 +164,13 @@ class GlobalGraph:
         self.error = None
         self.steps = []
         self.worst = ((0.0, 0.0), None)
+        self.kinds = {}  # (min, max) keyframe pair -> 'track', 'prev', 'retrieval' or 'reloc'
+        self.checked = []  # (n, k, kind, metres, degrees, matches, kept) per checked edge
+        self.dropped = 0  # links left out by the edge check
+        self.unsettled = set()  # keyframes whose own tracking edge disagreed with their pose
+        self.unsettled_view = ()  # its copy for statistics() on the tracking thread
+        self.gauges = []  # the gauge keyframe of the last solves
+        self.log_file = open(SOLVE_LOG, "a", buffering=1) if SOLVE_LOG else None
         with torch.inference_mode():
             self.retrieval = self._retriever(checkpoint, frontend.model)
         self.db = []  # retrieval database image id -> keyframe
@@ -229,7 +253,19 @@ class GlobalGraph:
             error=self.error,
             steps=self.steps,
             worst=[round(self.worst[0][0], 3), round(self.worst[0][1], 1), self.worst[1]],
+            dropped=self.dropped,
+            unsettled=list(self.unsettled_view),
+            gauges=self.gauges[-5:],
+            # the largest disagreement any edge checked so far had: metres, degrees
+            check_worst=[
+                round(max((c[3] for c in self.checked), default=0.0), 3),
+                round(max((c[4] for c in self.checked), default=0.0), 1),
+            ],
         )
+
+    def _log(self, **row):
+        if self.log_file is not None:
+            self.log_file.write(json.dumps(row) + "\n")
 
     # --- worker thread ---------------------------------------------------------------
 
@@ -292,9 +328,11 @@ class GlobalGraph:
                         return
                     time.sleep(0.5)
 
-    def _add(self, ii, jj, min_match_frac, is_reloc=False):
+    def _add(self, ii, jj, min_match_frac, is_reloc=False, kind="retrieval"):
         """Upstream add_factors for pairs not linked yet; True if any edge was kept (with
-        is_reloc, all or nothing)."""
+        is_reloc, all or nothing). kind: what made the link, one per pair or for all."""
+        kinds = kind if isinstance(kind, list) else [kind] * len(ii)
+        kinds = {(min(i, j), max(i, j)): c for i, j, c in zip(ii, jj, kinds, strict=True)}
         pairs = [
             (i, j) for i, j in zip(ii, jj, strict=True) if (min(i, j), max(i, j)) not in self.pairs
         ]
@@ -323,6 +361,7 @@ class GlobalGraph:
             self.edges.append(edge)
             self.edge_bytes += sum(t.numel() * t.element_size() for t in edge[2:])
             self.pairs.add((min(i, j), max(i, j)))
+            self.kinds[(min(i, j), max(i, j))] = kinds.get((min(i, j), max(i, j)), "retrieval")
         return True
 
     def _connect(self, n):
@@ -344,36 +383,174 @@ class GlobalGraph:
             lost = n in self.lost
             tracked = self.tracking.get(n)
         candidates = [k for k in dict.fromkeys(found) if k != n]
+        first = len(self.edges)
         if lost:
             if candidates and self._add(
                 [n] * len(candidates),
                 candidates,
                 cfg["reloc"]["min_match_frac"],
                 is_reloc=cfg["reloc"]["strict"],
+                kind="reloc",
             ):
                 self.relocalised.append((n, candidates))
                 log.info("Relocalised keyframe %d against %s", n, candidates)
+                self._check(n, first)
                 return len(candidates)
             return 0
         if tracked is not None and tracked != n:
             # Upstream's consecutive edge: the keyframe tracking linked it to, always kept.
-            self._add([tracked], [n], TRACKING_FRAC)
+            self._add([tracked], [n], TRACKING_FRAC, kind="track")
         others = [k for k in candidates if k != tracked]
         if n > 0 and n - 1 != tracked and n - 1 not in others:
             others.insert(0, n - 1)
         kept = 0
         if others:
-            before = set(self.pairs)
             # (n, k), never (k, n): upstream keeps an edge (n - 1, n) unchecked as consecutive;
             # here the keyframe before need not overlap (tracking chose another), so every
             # edge but the tracking one passes upstream's two-way match-fraction check.
-            self._add([n] * len(others), others, cfg["local_opt"]["min_match_frac"])
-            for k in others:
-                pair = (min(k, n), max(k, n))
-                if pair in self.pairs and pair not in before and k != n - 1:
-                    self.loops.append((n, k))
-                    kept += n - k >= LOOP_GAP
+            self._add(
+                [n] * len(others),
+                others,
+                cfg["local_opt"]["min_match_frac"],
+                kind=["prev" if k == n - 1 else "retrieval" for k in others],
+            )
+        before = {(min(e[0], e[1]), max(e[0], e[1])) for e in self.edges[:first]}
+        self._check(n, first)
+        kept_pairs = {(min(e[0], e[1]), max(e[0], e[1])) for e in self.edges[first:]}
+        for k in others:
+            pair = (min(k, n), max(k, n))
+            if pair in kept_pairs and pair not in before and k != n - 1:
+                self.loops.append((n, k))
+                kept += n - k >= LOOP_GAP
         return kept
+
+    def _check(self, n, first):
+        """The edge check on keyframe n's new edges (self.edges[first:]): each solved alone
+        (n moved, the other held). Links that put n far from where its tracking edge and the
+        graph agree it is are dropped (ITO_SLAM_EDGE_CHECK=drop); if n's own tracking edge
+        disagrees with its pose, n's pose is off, not the links: it is marked unsettled and
+        never holds the gauge until a solve has placed it."""
+        if EDGE_CHECK == "off" or len(self.edges) <= first:
+            return
+        results = []
+        for e in range(first, len(self.edges)):
+            edge = self.edges[e]
+            other = edge[1] if edge[0] == n else edge[0]
+            kind = self.kinds.get((min(edge[0], edge[1]), max(edge[0], edge[1])), "retrieval")
+            try:
+                metres, degrees, matches = self._pair(edge, n)
+            except Exception:
+                log.exception("Edge check failed")
+                continue
+            results.append((e, other, kind, metres, degrees, matches))
+        # Without a tracking edge (a lost keyframe, relocalised) its pose is the robot's guess:
+        # nothing says the links are wrong rather than it.
+        tracking = [r for r in results if r[2] == "track"]
+        trusted = bool(tracking) and tracking[0][3] <= AGREE[0] and tracking[0][4] <= AGREE[1]
+        if tracking and not trusted or not tracking and n in self.lost:
+            self.unsettled.add(n)
+            self.unsettled_view = tuple(sorted(self.unsettled))
+        drop = []
+        for e, other, kind, metres, degrees, matches in results:
+            off = metres > CHECK[0] or degrees > CHECK[1]
+            keep = not (EDGE_CHECK == "drop" and trusted and off and kind != "track")
+            self.checked.append((n, other, kind, metres, degrees, matches, keep))
+            self._log(
+                event="edge",
+                keyframe=n,
+                other=other,
+                kind=kind,
+                metres=round(metres, 4),
+                degrees=round(degrees, 2),
+                matches=matches,
+                trusted=trusted,
+                kept=keep,
+            )
+            if not keep:
+                drop.append(e)
+        for e in sorted(drop, reverse=True):
+            edge = self.edges.pop(e)
+            self.edge_bytes -= sum(t.numel() * t.element_size() for t in edge[2:])
+            self.dropped += 1
+            log.info("Edge check: link %d-%d left out", edge[0], edge[1])
+
+    def _pair(self, edge, moving):
+        """Gauss-Newton on one edge alone, the keyframe `moving` free and the other held, from
+        where the graph has them now: how far (metres of its centre, degrees) the edge's
+        matches alone would move it, and how many matches count."""
+        torch = self.torch
+        import lietorch
+        from mast3r_slam.geometry import constrain_points_to_ray
+
+        cfg = self.config["local_opt"]
+        frames = self.frontend.frames
+        i, j = edge[0], edge[1]
+        # Local 0 is held: the keyframe that is not moving.
+        order = (j, i) if moving == i else (i, j)
+        held = [(frames[k].T_WC.data, frames[k].X_canon, frames[k].C, frames[k].N) for k in order]
+        self._wait()
+        poses = torch.stack([h[0].reshape(8) for h in held]).float().contiguous()
+        img_size = frames[i].img.shape[-2:]
+        height, width = img_size
+        Xs = constrain_points_to_ray(
+            img_size, torch.stack([h[1] for h in held]).float(), self.frontend.K
+        ).contiguous()
+        Cs = torch.stack([h[2] / h[3] for h in held]).float().contiguous()
+        torch.cuda.current_stream().synchronize()
+        del held
+        Xs = torch.nan_to_num(Xs, nan=0.0, posinf=0.0, neginf=0.0)
+        Cs = torch.where(torch.isfinite(Cs), Cs, 0)
+        a, b = (0, 1) if order[0] == i else (1, 0)  # local index of edge[0], edge[1]
+        li = torch.tensor([a, b], device="cuda")
+        lj = torch.tensor([b, a], device="cuda")
+        idx = torch.stack((edge[2], edge[3])).long().contiguous()
+        valid = torch.stack((edge[4], edge[5])).contiguous()
+        Q = torch.stack((edge[6], edge[7])).float().contiguous()
+        counted = valid.reshape(2, -1) & (Q.reshape(2, -1) > float(cfg["Q_conf"]))
+        matches = int(counted.sum())
+        K = self.frontend.K.float().contiguous()
+        start = poses.clone()
+        for _ in range(PAIR_ITERATIONS):
+            self._wait()
+            Hs, gs = self.native.calib_linearize(
+                poses, Xs, Cs, K, li, lj, idx, valid, Q, height, width,
+                int(cfg["pixel_border"]), float(cfg["depth_eps"]), float(cfg["sigma_pixel"]),
+                float(cfg["sigma_depth"]), float(cfg["C_conf"]), float(cfg["Q_conf"]),
+            )  # fmt: skip
+            arguments = (
+                Hs.reshape(-1, 7, 7).cpu(),
+                torch.cat((li, li, lj, lj)).cpu() - 1,
+                torch.cat((li, lj, li, lj)).cpu() - 1,
+                gs.reshape(-1, 7).cpu(),
+                torch.cat((li, lj)).cpu() - 1,
+                1,
+            )
+            for lm in (0.0, 1e-4, 1e-2):
+                dx, ok = self.native.block_solve(*arguments, lm, DAMPING)
+                if int(ok):
+                    break
+            if not int(ok):
+                break
+            step = -dx.to(device=poses.device, dtype=torch.float32)
+            size = max(
+                float(step[:, 0:3].norm()) / STEP[0],
+                float(step[:, 3:6].norm()) / STEP[1],
+                float(step[:, 6].abs().max()) / STEP[2],
+                1.0,
+            )
+            step = step / size
+            moved = lietorch.Sim3.exp(step) * lietorch.Sim3(poses[1:])
+            poses = torch.cat((poses[:1], moved.data.reshape(-1, 8)))
+            if float(step.norm()) < 1e-6:
+                break
+        before = sim3_matrix(start[1].double().cpu().numpy())[0]
+        after = sim3_matrix(poses[1].double().cpu().numpy())[0]
+        if not np.isfinite(after).all():
+            return math.inf, 180.0, matches
+        _, rb, tb = split(before)
+        _, ra, ta = split(after)
+        angle = math.degrees(math.acos(np.clip((np.trace(rb.T @ ra) - 1) / 2, -1, 1)))
+        return float(np.linalg.norm(ta - tb)), angle, matches
 
     def _priors(self, poses, local):
         """The robot's factors at poses (n, 8 Sim3 data): 7x7 blocks (A, i, j) and gradients
@@ -590,6 +767,12 @@ class GlobalGraph:
             self.error = "non-finite poses"
             return
         gauge = self.reference if self.reference in local else involved[-1]
+        if GAUGE == "settled" and (gauge not in self.owned or gauge in self.unsettled):
+            parent = self.tracking.get(gauge)
+            if parent in local and parent in self.owned and parent not in self.unsettled:
+                gauge = parent
+        self.gauges.append(gauge)
+        del self.gauges[:-20]
         moves = corrections(
             dict(keyframes=involved, before=start, after=after, gauge=gauge),
             dict(zip(involved, start, strict=True)),
@@ -609,7 +792,28 @@ class GlobalGraph:
             ),
             default=(0.0, 0.0),
         )
-        if worst[0] > LIMIT[0] or worst[1] > LIMIT[1]:
+        rejected = worst[0] > LIMIT[0] or worst[1] > LIMIT[1]
+        if self.log_file is not None:
+            self._log(
+                event="solve",
+                solve=self.solves + 1,
+                keyframes=len(involved),
+                edges=len(edges),
+                reference=self.reference,
+                gauge=gauge,
+                steps=steps,
+                rejected=rejected,
+                moves={
+                    str(k): [round(v, 4) for v in _size(inc, sim3_matrix(start[local[k]])[0])]
+                    for k, (inc, _) in moves.items()
+                },
+                worst_edges=[
+                    [e[0], e[1], self.kinds.get((min(e[0], e[1]), max(e[0], e[1])))]
+                    for e in edges
+                    if self.worst[1] in (e[0], e[1])
+                ],
+            )
+        if rejected:
             # Gauss-Newton has no line search: a step this large moved settled keyframes
             # through the room; keep them, the next keyframe's solve starts afresh.
             self.rejected += 1
@@ -617,6 +821,8 @@ class GlobalGraph:
                 f"rejected: a settled keyframe would move {worst[0]:.2f} m, {worst[1]:.0f} deg"
             )
             return
+        self.unsettled -= set(involved)
+        self.unsettled_view = tuple(sorted(self.unsettled))
         self.solves += 1
         self.results.put(
             dict(

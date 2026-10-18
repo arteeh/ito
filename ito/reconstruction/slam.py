@@ -256,6 +256,8 @@ class SLAMBackend(GaussianBackend):
         self.depth_scales = {}
         self.placed = None
         self.global_graph = None  # ITO_SLAM=full, made in bind_admission
+        self.empty_window_frames = 0  # frames tracked while the pose graph had no keyframe
+        self.robot_camera = None  # the robot's own camera pose at the last frame (timeline)
         self.keyframe_exposure = {}  # full: keyframe index -> exposure time (pilot clock)
         self.node_keyframe = {}  # full: frame node -> keyframe index its surfaces follow
         self.global_applied = 0
@@ -317,6 +319,16 @@ class SLAMBackend(GaussianBackend):
             imu=dict(
                 gyro=len(self.sensors.gyro), tilts=len(self.sensors.tilts), priors=self.imu_priors
             ),
+            reference=self.frontend.reference,
+            match=None
+            if self.frontend.last_match is None
+            else round(float(self.frontend.last_match), 3),
+            empty_window_frames=self.empty_window_frames,
+            forced_keyframes=self.frontend.forced,
+            robot=None
+            if self.robot_camera is None
+            else [round(float(v), 3) for v in self.robot_camera[:3, 3]]
+            + [round(math.degrees(heading(self.robot_camera[:3, :3])), 1)],
             field_rebuilds=self.volume_rebuilds,
             field_rebuild_ms=round(self.rebuild_seconds * 1000),
             fused_frames=len(self.fused_frames),
@@ -535,18 +547,26 @@ class SLAMBackend(GaussianBackend):
         self.waiting = False
         if self.global_graph is not None:
             self.apply_global()
-        propagated = graph.predict(captured) if graph.latest() is not None else None
+        previous = graph.latest()
+        previous_time = graph.nodes[previous].time if previous is not None else None
+        propagated = graph.predict(captured) if previous is not None else None
         expired = graph.expire(self.motion.times[0])
         self.retired_keyframes += len(expired)
         self.frontend.forget(expired)
-        if expired and not graph.keyframes:
+        # Full SLAM: a revisit makes no keyframe, so the window empties as the motion buffer
+        # moves on; each frame then follows the one before it by the robot's motion, not raw
+        # odometry held to where the window emptied.
+        empty = not graph.keyframes and propagated is not None
+        hold = empty and (bool(expired) or self.global_graph is not None)
+        if hold:
             graph.anchor = propagated.copy()
-        node = graph.add_frame(
-            captured, pose=propagated if expired and not graph.keyframes else None
-        )
+            self.empty_window_frames += 1
+        node = graph.add_frame(captured, pose=propagated if hold else None)
         predicted = graph.pose(node)
         last = graph.latest_keyframe()
         reference_time = graph.nodes[last].time if last is not None else captured
+        if last is None and hold and previous_time is not None and self.global_graph is not None:
+            reference_time = previous_time
         _, covariance = self.motion.between(reference_time - graph.td, exposure)
         prior_sigma = np.sqrt(np.diag(covariance))
         if HEAD_IMU and last is not None:
@@ -566,7 +586,12 @@ class SLAMBackend(GaussianBackend):
             graph.solve_frame()
             self._publish(node)
             return
-        result = self.frontend.track(rgb, node, predicted, prior_sigma)
+        # ...and the next frame that tracks becomes a keyframe, so the window has one again.
+        force = self.global_graph is not None and hold
+        result = self.frontend.track(
+            rgb, node, predicted, prior_sigma, **({"force": True} if force else {})
+        )
+        self.robot_camera = self.motion.at(exposure)
         cloud = result.cloud
         if self.global_graph is not None:
             self.global_graph.reference = self.frontend.reference
