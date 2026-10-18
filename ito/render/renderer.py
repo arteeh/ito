@@ -1,3 +1,5 @@
+import logging
+import os
 from importlib.resources import files
 
 import moderngl
@@ -8,6 +10,63 @@ from ito import clock
 
 from .pose import validate_pose
 from .scene import FloatArray, GaussianBuffer
+
+# ITO_EASE=<seconds> (an experiment, off by default): every change to a live splat glides
+# from what is drawn to the new record over this time (new splats fade in), and a retired
+# splat stays whole that long before its fade, so a replacement is in before it goes.
+EASE = max(0.0, float(os.environ.get("ITO_EASE", "0") or 0))
+# ITO_UPDATE_STATS=1 (a diagnostic): log every 5 s how the applied packets changed the live
+# splats: born, retired, emptied, and how far the changed ones moved.
+UPDATE_STATS = os.environ.get("ITO_UPDATE_STATS") == "1"
+log = logging.getLogger(__name__)
+
+
+class UpdateStats:
+    def __init__(self):
+        self.mirror = np.zeros((0, 2, 4), np.float32)
+        self.since = clock.now()
+        self.reset()
+
+    def reset(self):
+        self.packets = self.born = self.retired = self.emptied = self.kept = 0
+        self.moves = []
+
+    def __call__(self, indices, records):
+        if len(self.mirror) <= int(indices.max()):
+            grown = np.zeros((max(1024, 2 * int(indices.max()) + 2), 2, 4), np.float32)
+            grown[: len(self.mirror)] = self.mirror
+            self.mirror = grown
+        old = self.mirror[indices]
+        live_before = (old[:, 0, 3] > 0) & (old[:, 1, 3] != 1)
+        live_after = records[:, 0, 3] > 0
+        retiring = records[:, 3, 3] == 1
+        self.packets += 1
+        self.born += int((~live_before & live_after & ~retiring).sum())
+        self.retired += int((live_before & retiring).sum())
+        self.emptied += int((~live_after).sum())
+        changed = live_before & live_after & ~retiring
+        self.kept += int(changed.sum())
+        if changed.any():
+            self.moves.append(np.linalg.norm(records[changed, 0, :3] - old[changed, 0, :3], axis=1))
+        self.mirror[indices, 0] = records[:, 0]
+        self.mirror[indices, 1, 3] = retiring
+        now = clock.now()
+        if now - self.since >= 5:
+            moves = np.concatenate(self.moves) * 1000 if self.moves else np.zeros(1)
+            log.info(
+                "Splat updates in %.1f s: %d packets, %d born, %d retired, %d emptied, %d changed"
+                " (moved p50 %.1f p95 %.1f max %.0f mm, %d over 1 cm)",
+                now - self.since,
+                self.packets,
+                self.born,
+                self.retired,
+                self.emptied,
+                self.kept,
+                *np.percentile(moves, [50, 95, 100]),
+                int((moves > 10).sum()),
+            )
+            self.since = now
+            self.reset()
 
 
 class GaussianRenderer:
@@ -35,6 +94,8 @@ class GaussianRenderer:
         self.draw_count = 0
         self.sorts = 0
         self.scene_buffer = None
+        self.previous = None
+        self.ease = 0.0
         self.order = None
         self.count = 0
         self.capacity = 0
@@ -45,6 +106,7 @@ class GaussianRenderer:
         self.degree = 0
         self.revision = -1
         self.coordinate_frame = None
+        self.stats = UpdateStats() if UPDATE_STATS else None
 
     def upload(self, scene: GaussianBuffer) -> None:
         count, stride, _ = scene.records.shape
@@ -69,6 +131,10 @@ class GaussianRenderer:
         self.draw_count = self.slot_capacity = count
         self.live = None
         self.fade_seconds = 0.0
+        self.ease = 0.0
+        if self.previous is not None:
+            self.previous.release()
+            self.previous = None
         self.uploaded_bytes += scene.records.nbytes
 
     def _allocate_live(self, capacity, *, keep):
@@ -83,16 +149,25 @@ class GaussianRenderer:
         except Exception:
             scene.release()
             raise
+        previous = None
+        if EASE:
+            previous = self.context.buffer(reserve=capacity * 64)
+            previous.clear()
         live = np.zeros(capacity, dtype=bool)
         observed_at = np.zeros(capacity, dtype=np.float64)
         if self.scene_buffer is not None:
             if keep:
                 kept = min(capacity, self.slot_capacity)
                 self.context.copy_buffer(scene, self.scene_buffer, size=kept * 64)
+                if previous is not None and self.previous is not None:
+                    self.context.copy_buffer(previous, self.previous, size=kept * 64)
                 live[:kept] = self.live[:kept]
                 observed_at[:kept] = self.observed_at[:kept]
             self.scene_buffer.release()
             self.order.release()
+        if self.previous is not None:
+            self.previous.release()
+        self.previous, self.ease = previous, EASE
         self.scene_buffer, self.order, self.live = scene, order, live
         self.observed_at = observed_at
         self.slot_capacity = capacity
@@ -134,6 +209,8 @@ class GaussianRenderer:
             self._allocate_live(required, keep=bool(self.fade_seconds and not new_scene))
         elif not self.fade_seconds or new_scene:
             self.scene_buffer.clear()
+            if self.previous is not None:
+                self.previous.clear()
             self.live.fill(False)
             self.observed_at.fill(0)
             self.draw_count = 0
@@ -156,11 +233,13 @@ class GaussianRenderer:
             occupied = np.flatnonzero(self.live[: self.draw_count])
             self.draw_count = int(occupied[-1]) + 1 if len(occupied) else 0
         self.capacity = max(1024, 1 << max(0, self.draw_count - 1).bit_length())
+        if self.stats is not None:
+            self.stats(update.indices, update.records)
         changes, slots = self.staging[slot]
         records = update.records.copy()
         retiring = records[:, 3, 3] == 1
         records[retiring, 1, 3] = np.minimum(
-            records[retiring, 1, 3], clock.now() - self.epoch + self.fade_seconds
+            records[retiring, 1, 3], clock.now() - self.epoch + self.fade_seconds + self.ease
         )
         changes.write(records)
         slots.write(update.indices)
@@ -168,6 +247,9 @@ class GaussianRenderer:
         self.scene_buffer.bind_to_storage_buffer(1)
         changes.bind_to_storage_buffer(2)
         slots.bind_to_storage_buffer(3)
+        (self.scene_buffer if self.previous is None else self.previous).bind_to_storage_buffer(4)
+        self.update["ease"] = self.ease
+        self.update["scene_time"] = clock.now() - self.epoch
         self.update["count"] = n
         self.update.run(group_x=(n + 255) // 256)
         GL.glMemoryBarrier(GL.GL_SHADER_STORAGE_BARRIER_BIT)
@@ -259,13 +341,17 @@ class GaussianRenderer:
             self.sort(robot_camera, head)
         view = self._view(world_from_eye)
         self.scene_buffer.bind_to_storage_buffer(1)
+        (self.scene_buffer if self.previous is None else self.previous).bind_to_storage_buffer(4)
         self.order.bind_to_storage_buffer(0)
         self.program["view"].write(view.T.copy())
         self.program["projection"].write(projection.T.copy())
         self.program["eye"] = tuple(world_from_eye[:3, 3])
         self.program["viewport"] = viewport[2:]
-        self.program["scene_time"] = clock.now() - self.epoch if self.fade_seconds else 0
+        self.program["scene_time"] = (
+            clock.now() - self.epoch if self.fade_seconds or self.ease else 0
+        )
         self.program["fade_seconds"] = self.fade_seconds
+        self.program["ease"] = self.ease
         self.program["stride"] = self.stride
         self.program["sh_degree"] = self.degree
         self.vao.render(mode=moderngl.TRIANGLE_STRIP, vertices=4, instances=self.draw_count)
@@ -283,6 +369,7 @@ class GaussianRenderer:
             self.sort_program,
             self.keys,
             self.scene_buffer,
+            self.previous,
             self.order,
             self.update,
         ):
