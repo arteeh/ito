@@ -32,6 +32,11 @@ __all__ = ["RESTART_CAUSES", "SLAMBackend"]
 # it, and its splats would be streaks. Blur is |angular velocity| x exposure x focal length.
 BLUR_PIXELS = 8.0
 EXPOSURE = 0.010
+# ITO_ROLLING_SHUTTER=MS: the camera reads its rows top to bottom over MS milliseconds (an IMX219
+# at 1080p30: ~30), so a turning head skews each frame. Every frame is first warped to how it
+# would look read all at once at its stamp, by the camera's turn then (the motion buffer):
+# tracking, depth and colour all see the unskewed frame.
+ROLLING_SHUTTER = float(os.environ.get("ITO_ROLLING_SHUTTER", "0")) / 1000
 DELAY_RANGE = (-0.1, 0.2)
 FLOOR_RAY = math.radians(10)
 FLOOR_SHARE = 0.1
@@ -291,6 +296,8 @@ class SLAMBackend(GaussianBackend):
             self.waiting = True
             return
         self.waiting = False
+        if ROLLING_SHUTTER:
+            rgb = self.unroll(rgb, exposure)
         propagated = graph.predict(captured) if graph.latest() is not None else None
         expired = graph.expire(self.motion.times[0])
         self.retired_keyframes += len(expired)
@@ -421,6 +428,39 @@ class SLAMBackend(GaussianBackend):
         exact = truth is not None and truth[2] is not None and not COMPARE
         if cloud is not None and (settled or exact):
             self.place(cloud, pose, now + clock.now() - started, node=node, rgb=rgb)
+
+    def unroll(self, rgb, exposure):
+        """rgb warped from rolling-shutter rows (row v read at (v / height - 1/2) x ROLLING_SHUTTER
+        from the stamp) to one read at the stamp, for the camera's rotation alone."""
+        import cv2
+
+        before = self.motion.at(exposure - 0.02)[:3, :3]
+        after = self.motion.at(exposure + 0.02)[:3, :3]
+        turn = before.T @ after  # camera axes: x right, y up, looking down -z
+        angle = math.acos(max(-1.0, min(1.0, (np.trace(turn) - 1) / 2)))
+        if angle < 1e-5:
+            return rgb
+        axis = np.array(
+            (turn[2, 1] - turn[1, 2], turn[0, 2] - turn[2, 0], turn[1, 0] - turn[0, 1])
+        ) / (2 * math.sin(angle))
+        wx, wy, wz = (float(w) for w in axis * angle / 0.04)  # radians per second
+        height, width = rgb.shape[:2]
+        if getattr(self, "unroll_grid", (None,))[0] != (height, width):
+            v, u = np.mgrid[:height, :width].astype(np.float32)
+            self.unroll_grid = ((height, width), u, v)
+        _, u, v = self.unroll_grid
+        f = float(self.intrinsics.fx) * width / self.intrinsics.width
+        t = (v / height - 0.5) * ROLLING_SHUTTER
+        # Image motion of a turning camera, pixels per second (+u right, +v down).
+        du = f * wy - wz * (v - height / 2)
+        dv = f * wx + wz * (u - width / 2)
+        return cv2.remap(
+            np.ascontiguousarray(rgb),
+            u + du * t,
+            v + dv * t,
+            cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REPLICATE,
+        )
 
     def depth_turn(self):
         self.depth_frames = getattr(self, "depth_frames", -1) + 1
