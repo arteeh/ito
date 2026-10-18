@@ -48,6 +48,9 @@ SILHOUETTE = 0.1  # depth span over 5x5 pixels, of depth, that marks a silhouett
 # ITO_TRUTH=compare (a diagnostic): map the network's depth, but log its scale against the
 # simulator's exact depth in the timeline.
 COMPARE = os.environ.get("ITO_TRUTH") == "compare"
+# With compare, ITO_TRUE_SCALE=1 (a diagnostic) maps each frame's estimated depth at the scale
+# of the sim's exact depth: the estimate's shape and poses, a perfect per-frame scale.
+TRUE_SCALE = os.environ.get("ITO_TRUE_SCALE", "0") != "0"
 # ITO_DEPTH=moge maps MoGe-2's single-image depth (depth.py MonoGeometry) at MASt3R's metric
 # scale for the frame: its walls and silhouettes, MASt3R's scale and tracking. ITO_DEPTH=hybrid
 # keeps MASt3R's depth wherever it is within HYBRID_AGREE of MoGe-2's, MoGe-2's elsewhere.
@@ -282,6 +285,12 @@ class SLAMBackend(GaussianBackend):
                 cloud = self.consistent(cloud, graph.pose(node), exposure)
             elif self.mono is not None:
                 cloud = self.monocular(cloud, rgb)
+            if COMPARE and TRUE_SCALE and truth is not None and truth[2] is not None:
+                unscaled = -cloud.points[:, 2].reshape(cloud.shape).float().cpu().numpy()
+                valid = cloud.valid.reshape(cloud.shape).cpu().numpy()
+                exact = scale_to(truth[2], np.where(valid, unscaled, 0))
+                if exact is not None:
+                    cloud = cloud._replace(points=cloud.points * exact)
             if COMPARE and truth is not None and truth[2] is not None:
                 depth = -cloud.points[:, 2].reshape(cloud.shape).float().cpu().numpy()
                 valid = cloud.valid.reshape(cloud.shape).cpu().numpy()
