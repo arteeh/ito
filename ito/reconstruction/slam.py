@@ -426,7 +426,8 @@ class SLAMBackend(GaussianBackend):
             began = time.perf_counter()
             stream = torch.cuda.Stream(priority=0)
             try:
-                with torch.cuda.stream(stream), torch.inference_mode():
+                # no_grad, not inference_mode: tracking updates this field in place afterwards.
+                with torch.cuda.stream(stream), torch.no_grad():
                     if tracking is not None:
                         stream.wait_stream(tracking)
                     volume = Volume()
