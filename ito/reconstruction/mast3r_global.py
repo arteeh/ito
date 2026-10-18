@@ -49,7 +49,7 @@ EDGE_CHUNK = 32  # edge directions linearised per kernel launch (widened from co
 STEP = (0.1, math.radians(5), 0.05)  # per keyframe per iteration: metres, radians, log-scale
 # A solve that would move a keyframe some solve already placed further than this (metres,
 # degrees) diverged; it is dropped. Loop closures in a room move keyframes centimetres.
-LIMIT = (0.5, 20.0)
+LIMIT = (0.5, 20.0, 0.1)  # metres, degrees, |log-scale| (a settled keyframe rescaled by 10%)
 # Every new edge is solved alone first (its two keyframes, one held): where its matches put the
 # other keyframe against where the graph has it. A link that disagrees by more than CHECK
 # (metres, degrees) while the new keyframe's tracking edge agrees within AGREE is a wrong match
@@ -268,7 +268,7 @@ class GlobalGraph:
             edge_mb=round(self.edge_bytes / 2**20),
             error=self.error,
             steps=self.steps,
-            worst=[round(self.worst[0][0], 3), round(self.worst[0][1], 1), self.worst[1]],
+            worst=[*(round(v, 3) for v in self.worst[0]), self.worst[1]],
             dropped=self.dropped,
             unsettled=list(self.unsettled_view),
             gauges=self.gauges[-5:],
@@ -743,7 +743,7 @@ class GlobalGraph:
                 (_size(increment, sim3_matrix(start[local[k]])[0]), k)
                 for k, (increment, _) in moves.items()
             ),
-            default=((0.0, 0.0), None),
+            default=((0.0, 0.0, 0.0), None),
         )
         worst = max(
             (
@@ -751,9 +751,9 @@ class GlobalGraph:
                 for k, (increment, _) in moves.items()
                 if k in self.owned
             ),
-            default=(0.0, 0.0),
+            default=(0.0, 0.0, 0.0),
         )
-        rejected = worst[0] > LIMIT[0] or worst[1] > LIMIT[1]
+        rejected = worst[0] > LIMIT[0] or worst[1] > LIMIT[1] or worst[2] > LIMIT[2]
         if self.log_file is not None:
             self._log(
                 event="solve",
@@ -779,7 +779,8 @@ class GlobalGraph:
             # through the room; keep them, the next keyframe's solve starts afresh.
             self.rejected += 1
             self.error = (
-                f"rejected: a settled keyframe would move {worst[0]:.2f} m, {worst[1]:.0f} deg"
+                f"rejected: a settled keyframe would move {worst[0]:.2f} m, {worst[1]:.0f} deg,"
+                f" rescale {math.exp(worst[2]):.2f}x"
             )
             return
         self.unsettled -= set(involved)
@@ -1081,12 +1082,13 @@ def _robust(whitened):
 
 
 def _size(increment, pose):
-    """How far a world similarity carries a camera: metres of its centre, degrees of turn."""
+    """How far a world similarity carries a camera: metres of its centre, degrees of turn, and
+    how much it rescales the keyframe (|log|)."""
     s, rotation, _ = split(increment)
     centre = pose[:3, 3]
     shift = float(np.linalg.norm(increment[:3, :3] @ centre + increment[:3, 3] - centre))
     angle = math.degrees(math.acos(np.clip((np.trace(rotation) - 1) / 2, -1, 1)))
-    return shift, angle
+    return shift, angle, abs(math.log(s))
 
 
 def gauge_correction(before, after):

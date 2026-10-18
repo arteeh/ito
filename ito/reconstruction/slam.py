@@ -452,6 +452,7 @@ class SLAMBackend(GaussianBackend):
             return
         self.rebuild_again = False
         frames = list(self.fused_frames)
+        blocks = self.volume.count
         torch = _torch()
         available = self.admission.available
         stopped = self.global_graph.stopped
@@ -466,6 +467,7 @@ class SLAMBackend(GaussianBackend):
                     if tracking is not None:
                         stream.wait_stream(tracking)
                     volume = Volume()
+                    _reserve(volume, blocks + blocks // 8 + 4096)
                     for frame in frames:
                         while not available():
                             if stopped():
@@ -1222,6 +1224,16 @@ class SLAMBackend(GaussianBackend):
             raw_depth=raw_depth if self.consensus is not None else None,
             keyframe=self.node_keyframe.get(node) if self.global_graph is not None else None,
         )
+
+
+def _reserve(volume, capacity):
+    """Room for capacity blocks in a new field at once: grown by doubling while a rebuild fused
+    hundreds of frames, the copies took the CUDA peak to 10.8 GiB (hp-fullptn3-loop-b)."""
+    torch = _torch()
+    size = volume.sdf.shape[1]
+    volume.sdf = torch.ones((capacity, size), dtype=volume.sdf.dtype, device=volume.device)
+    volume.weight = torch.zeros((capacity, size), dtype=volume.weight.dtype, device=volume.device)
+    volume.origins = torch.zeros((capacity, 3), dtype=torch.int64, device=volume.device)
 
 
 def _fuse_remembered(volume, frame):
