@@ -70,6 +70,10 @@ GAUGE = os.environ.get("ITO_SLAM_GAUGE", "settled")
 # =upstream keeps upstream's weights.
 VISUAL = os.environ.get("ITO_SLAM_VISUAL", "upstream")
 VISUAL_SIGMA = math.radians(0.5)
+# With =robot, an edge's say on where its cameras' centres are is further scaled by this: MASt3R's
+# wide-baseline pairs place a keyframe 5-14 cm off where the robot's motion (and the sim's truth)
+# has it while their rotation is better than the robot's; 0.04 is a 5x larger centre sigma.
+VISUAL_CENTRES = float(os.environ.get("ITO_SLAM_VISUAL_CENTRES", "0.04"))
 # ITO_SLAM_LOG=<file>: one JSON line per solve and per checked edge (a diagnostic).
 SOLVE_LOG = os.environ.get("ITO_SLAM_LOG")
 
@@ -720,6 +724,9 @@ class GlobalGraph:
         steps = self.steps = []
         for _ in range(ITERATIONS):
             blocks, rows, cols, gradients, which = [], [], [], [], []
+            centres = None
+            if VISUAL == "robot" and VISUAL_CENTRES != 1.0:
+                centres = _centre_scaling(poses, VISUAL_CENTRES)
             for start in range(0, len(directions), EDGE_CHUNK):
                 self._wait()
                 chunk = directions[start : start + EDGE_CHUNK]
@@ -747,6 +754,24 @@ class GlobalGraph:
                 w = torch.tensor([c[5] for c in chunk], dtype=Hs.dtype, device=Hs.device)
                 Hs = Hs * w[None, :, None, None]
                 gs = gs * w[None, :, None]
+                if centres is not None:
+                    # A = M S M^-1 per keyframe: M takes (centre move, rotation, log-scale) to
+                    # the left perturbation (tau, phi, sigma); S scales the centre part.
+                    ai, aj = centres[li], centres[lj]
+                    Hs = torch.stack(
+                        (
+                            ai.transpose(1, 2) @ Hs[0] @ ai,
+                            ai.transpose(1, 2) @ Hs[1] @ aj,
+                            aj.transpose(1, 2) @ Hs[2] @ ai,
+                            aj.transpose(1, 2) @ Hs[3] @ aj,
+                        )
+                    )
+                    gs = torch.stack(
+                        (
+                            (ai.transpose(1, 2) @ gs[0, ..., None])[..., 0],
+                            (aj.transpose(1, 2) @ gs[1, ..., None])[..., 0],
+                        )
+                    )
                 blocks.append(Hs.reshape(-1, 7, 7).cpu())
                 rows.append(torch.cat((li, li, lj, lj)).cpu())
                 cols.append(torch.cat((li, lj, li, lj)).cpu())
@@ -866,6 +891,25 @@ class GlobalGraph:
                 solve=self.solves,
             )
         )
+
+
+def _centre_scaling(poses, factor):
+    """Per keyframe (n, 7, 7) on poses' device: A = M S M^-1, S scaling the information on its
+    camera centre's move by factor (left perturbations: centre move = tau + phi x c + sigma c)."""
+    import torch
+
+    c = poses[:, 0:3].float()
+    n = len(c)
+    cross = torch.zeros((n, 3, 3), dtype=c.dtype, device=c.device)
+    cross[:, 0, 1], cross[:, 0, 2], cross[:, 1, 2] = -c[:, 2], c[:, 1], -c[:, 0]
+    cross[:, 1, 0], cross[:, 2, 0], cross[:, 2, 1] = c[:, 2], -c[:, 1], c[:, 0]
+    eye = torch.eye(7, dtype=c.dtype, device=c.device).repeat(n, 1, 1)
+    m, m_inv = eye.clone(), eye.clone()
+    m[:, 0:3, 3:6], m[:, 0:3, 6] = cross, -c
+    m_inv[:, 0:3, 3:6], m_inv[:, 0:3, 6] = -cross, c
+    scale = eye.clone()
+    scale[:, 0:3, 0:3] *= math.sqrt(factor)
+    return m @ scale @ m_inv
 
 
 def _size(increment, pose):
