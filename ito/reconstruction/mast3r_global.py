@@ -374,6 +374,9 @@ class GlobalGraph:
                 graph.Q_ii2jj[e].half(),
                 graph.Q_jj2ii[e].half(),
             )
+            if EDGES == "pose":
+                # Only the edge check and refreshes read them: in host memory, not the GPU's.
+                edge = (i, j, *(t.to("cpu") for t in edge[2:]))
             self.edges.append(edge)
             self.edge_bytes += sum(t.numel() * t.element_size() for t in edge[2:])
             self.pairs.add((min(i, j), max(i, j)))
@@ -555,9 +558,9 @@ class GlobalGraph:
         a, b = (0, 1) if order[0] == i else (1, 0)  # local index of edge[0], edge[1]
         li = torch.tensor([a, b], device="cuda")
         lj = torch.tensor([b, a], device="cuda")
-        idx = torch.stack((edge[2], edge[3])).long().contiguous()
-        valid = torch.stack((edge[4], edge[5])).contiguous()
-        Q = torch.stack((edge[6], edge[7])).float().contiguous()
+        idx = torch.stack((edge[2], edge[3])).to("cuda").long().contiguous()
+        valid = torch.stack((edge[4], edge[5])).to("cuda").contiguous()
+        Q = torch.stack((edge[6], edge[7])).to("cuda").float().contiguous()
         counted = valid.reshape(2, -1) & (Q.reshape(2, -1) > float(cfg["Q_conf"]))
         matches = int(counted.sum())
         K = self.frontend.K.float().contiguous()
