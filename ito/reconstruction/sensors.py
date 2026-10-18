@@ -82,6 +82,39 @@ class HeadSensors:
         when, up = min(self.tilts, key=lambda sample: abs(sample[0] - t))
         return (up, TILT_SIGMA) if abs(when - t) <= IMU_MATCH else None
 
+    def zone_hits(self, t, motion, intrinsics, shape):
+        """Where each valid zone of the ToF grid nearest t met a surface, in the camera at t:
+        (row, column, axial depth in metres) on a grid of shape with intrinsics (fx, fy, cx,
+        cy). The sim casts one ray through each zone's centre; a real VL53 reports the
+        nearest target across the zone, which its centre ray only meets on a flat zone."""
+        if not self.grids:
+            return []
+        grid = min(self.grids, key=lambda g: abs(g["time"] - t))
+        if abs(grid["time"] - t) > RANGE_MATCH:
+            return []
+        mount = grid["mount"]
+        if motion.covers(t) and motion.covers(grid["time"]):
+            mount = np.linalg.inv(motion.at(t)) @ motion.at(grid["time"]) @ mount
+        rows, cols = grid["shape"]
+        width, height = grid["field_of_view"]
+        fx, fy, cx, cy = intrinsics
+        image_h, image_w = shape
+        hits = []
+        for zone, distance in enumerate(grid["distances"]):
+            if not math.isfinite(distance):
+                continue
+            row, col = divmod(zone, cols)
+            across = ((col + 0.5) / cols - 0.5) * width
+            up = (0.5 - (row + 0.5) / rows) * height
+            point = mount[:3, :3] @ (np.array(ray(across, up)) * distance) + mount[:3, 3]
+            if point[2] > -0.05:
+                continue
+            x = fx * point[0] / -point[2] + cx
+            y = cy - fy * point[1] / -point[2]
+            if 0 <= x <= image_w - 1 and 0 <= y <= image_h - 1:
+                hits.append((int(round(y)), int(round(x)), float(-point[2])))
+        return hits
+
     def range_scale(self, cloud, t, motion):
         if not self.grids:
             return None

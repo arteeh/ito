@@ -25,10 +25,20 @@ NEEDED = float(os.environ.get("ITO_FUSE_WMIN", "2"))  # weight both sides of a s
 # A pixel's weight falls off with the cosine of its ray to the optical axis to this power:
 # depth at the rim of a wide rectified view is the least reliable.
 RADIAL = float(os.environ.get("ITO_FUSE_RADIAL", "2"))
-WINDOW = (0.6, 1.5)  # share of a pixel's own depth its ray is searched over
+# And with distance: (1 m / depth) to this power, at most 1. A guess at 3 m is worth a ninth
+# of one at 1 m, so a closer look outweighs the first glimpse from across the room.
+DISTANCE = float(os.environ.get("ITO_FUSE_DISTANCE", "2"))
+# A pixel takes the field's surface nearest its own depth within this share of it; with none
+# there it keeps its own (a surface the field does not hold yet, or one it holds wrongly:
+# mapped, it contradicts what lies in front of it).
+SNAP = float(os.environ.get("ITO_FUSE_SNAP", "0.15"))
+# Space the field holds empty this surely (normalised distance, weight) refutes a pixel that
+# would put a surface there, and a mapped splat sitting there.
+FREE = (0.5, float(os.environ.get("ITO_FUSE_FREE_WEIGHT", "3")))
 FILL = os.environ.get("ITO_FUSE_FILL", "1") != "0"  # rays without depth search FILL_RANGE
 FILL_RANGE = (0.2, 4.0)  # metres
-STEPS = 48
+STEPS = 24  # along a snap window
+FILL_STEPS = 64
 RAYS = 32768  # rays searched at once
 BLOCKS = 4096  # visible blocks updated at once
 OFFSET = 1 << 20  # block coordinates are packed in 21 bits each
@@ -54,7 +64,8 @@ class Volume:
         self.frames = 0
         self.filled = 0
         self.agreed = 0
-        self.moved = 0
+        self.refuted = 0
+        self.carved = 0
 
     @property
     def nbytes(self):
@@ -148,7 +159,7 @@ class Volume:
         rotation, origin = self.tensor(pose[:3, :3]), self.tensor(pose[:3, 3])
         rays = self.rays(intrinsics, depth.shape)
         cosine = 1 / torch.linalg.norm(rays, dim=-1)
-        weights = cosine**RADIAL
+        weights = cosine**RADIAL * d.clamp_min(1e-3).reciprocal().clamp_max(1) ** DISTANCE
         # Allocate the blocks around every second pixel's surface, through its band.
         sample = d[::2, ::2]
         ray = rays[::2, ::2][sample > 0]
@@ -206,23 +217,26 @@ class Volume:
             self.weight[chunk] = total.clamp_max(MAX_WEIGHT).half()
         self.frames += 1
 
-    def raycast(self, pose, intrinsics, depth):
-        """Axial depth (H x W, 0: none) of the field's first surface along each pixel's ray,
-        searched around the pixel's own depth, or (FILL) over FILL_RANGE where it has none."""
+    def free(self, points):
+        """Whether the field holds each world point (N x 3 tensor) surely empty."""
         torch = self.torch
-        d = self.tensor(depth).reshape(-1)
-        rotation, origin = self.tensor(pose[:3, :3]), self.tensor(pose[:3, 3])
-        rays = self.rays(intrinsics, depth.shape).reshape(-1, 3)
-        near = torch.where(d > 0, d * WINDOW[0], FILL_RANGE[0])
-        far = torch.where(d > 0, d * WINDOW[1], FILL_RANGE[1])
-        searched = (d > 0) | FILL
-        out = torch.zeros_like(d)
         if not self.count:
-            return out.reshape(depth.shape).cpu().numpy()
-        steps = torch.linspace(0, 1, STEPS, device=self.device)
+            return torch.zeros(len(points), dtype=torch.bool, device=self.device)
+        slot, linear = self.lookup(points)
+        index = slot.clamp_min(0) * BLOCK**3 + linear
+        s = self.sdf.reshape(-1)[index].float()
+        w = self.weight.reshape(-1)[index].float()
+        return (slot >= 0) & (s > FREE[0]) & (w >= FREE[1])
+
+    def search(self, rays, near, far, steps, rotation, origin, prefer=None):
+        """Depth of a surface of the field between near and far along each ray (0: none):
+        the one nearest prefer, or the first."""
+        torch = self.torch
+        out = torch.zeros_like(near)
+        fraction = torch.linspace(0, 1, steps, device=self.device)
         flat_sdf, flat_weight = self.sdf.reshape(-1), self.weight.reshape(-1)
-        for chunk in torch.split(torch.nonzero(searched)[:, 0], RAYS):
-            along = near[chunk, None] + (far[chunk, None] - near[chunk, None]) * steps
+        for chunk in torch.split(torch.arange(len(near), device=self.device), RAYS):
+            along = near[chunk, None] + (far[chunk, None] - near[chunk, None]) * fraction
             points = (rays[chunk, None, :] * along[..., None]) @ rotation.T + origin
             slot, linear = self.lookup(points)
             index = slot.clamp_min(0) * BLOCK**3 + linear
@@ -230,17 +244,62 @@ class Volume:
             w = torch.where(slot >= 0, flat_weight[index].float(), 0.0)
             known = w >= NEEDED
             cross = (s[:, :-1] > 0) & (s[:, 1:] <= 0) & known[:, :-1] & known[:, 1:]
-            hit = cross.any(1)
-            first = torch.argmax(cross.to(torch.uint8), 1)[:, None]
-            s0, s1 = s.gather(1, first)[:, 0], s.gather(1, first + 1)[:, 0]
-            d0, d1 = along.gather(1, first)[:, 0], along.gather(1, first + 1)[:, 0]
+            s0, s1 = s[:, :-1], s[:, 1:]
+            d0, d1 = along[:, :-1], along[:, 1:]
             found = d0 + (d1 - d0) * s0 / (s0 - s1).clamp_min(1e-6)
-            out[chunk] = torch.where(hit, found, 0)
-        fused = out.reshape(depth.shape)
+            if prefer is None:
+                score = torch.arange(steps - 1, device=self.device, dtype=torch.float32)
+                score = score.expand_as(found)
+            else:
+                score = (found - prefer[chunk, None]).abs()
+            score = torch.where(cross, score, float("inf"))
+            best = torch.argmin(score, 1)[:, None]
+            hit = cross.any(1)
+            out[chunk] = torch.where(hit, found.gather(1, best)[:, 0], 0)
+        return out
+
+    def raycast(self, pose, intrinsics, depth):
+        """Axial depth (H x W, 0: none) for a frame: the field's surface nearest each pixel's
+        own depth within SNAP of it, else its own; where it has none, (FILL) the field's
+        first surface over FILL_RANGE."""
+        torch = self.torch
         own = self.tensor(depth)
-        self.filled += int(((own <= 0) & (fused > 0)).sum())
-        self.agreed += int(((own > 0) & (fused > 0)).sum())
-        return fused.cpu().numpy()
+        d = own.reshape(-1)
+        out = d.clone()
+        if not self.count:
+            return depth
+        rotation, origin = self.tensor(pose[:3, :3]), self.tensor(pose[:3, 3])
+        rays = self.rays(intrinsics, depth.shape).reshape(-1, 3)
+        seen = torch.nonzero(d > 0)[:, 0]
+        if len(seen):
+            target = d[seen]
+            found = self.search(
+                rays[seen],
+                target / (1 + SNAP),
+                target * (1 + SNAP),
+                STEPS,
+                rotation,
+                origin,
+                target,
+            )
+            free = self.free((rays[seen] * target[:, None]) @ rotation.T + origin)
+            out[seen] = torch.where(found > 0, found, torch.where(free, 0, target))
+            self.agreed += int((found > 0).sum())
+            self.refuted += int((free & (found <= 0)).sum())
+        if FILL:
+            empty = torch.nonzero(d <= 0)[:, 0]
+            if len(empty):
+                found = self.search(
+                    rays[empty],
+                    torch.full((len(empty),), FILL_RANGE[0], device=self.device),
+                    torch.full((len(empty),), FILL_RANGE[1], device=self.device),
+                    FILL_STEPS,
+                    rotation,
+                    origin,
+                )
+                out[empty] = found
+                self.filled += int((found > 0).sum())
+        return out.reshape(depth.shape).cpu().numpy()
 
     def fuse(self, depth, pose, intrinsics):
         """Integrate a frame's depth and give back the depth the field has along its rays."""

@@ -46,8 +46,17 @@ def volume_statistics(volume):
     if volume is None:
         return None
     return dict(
-        blocks=volume.count, bytes=volume.nbytes, filled=volume.filled, agreed=volume.agreed
+        blocks=volume.count,
+        bytes=volume.nbytes,
+        filled=volume.filled,
+        agreed=volume.agreed,
+        refuted=volume.refuted,
+        carved=volume.carved,
     )
+
+
+def range_statistics(field):
+    return None if field is None else dict(zones=field.used, frames=field.frames)
 
 
 def default_budget(renderer: str = "") -> int:
@@ -360,6 +369,7 @@ def _run(recon):
                                 getattr(backend, "consensus", None), "dropped", None
                             ),
                             fused=volume_statistics(getattr(backend, "volume", None)),
+                            tof_field=range_statistics(getattr(backend, "range_field", None)),
                             frame_delay_ms=round(backend.graph.td * 1000, 1)
                             if hasattr(backend, "graph")
                             else None,

@@ -122,6 +122,9 @@ CONSENSUS = os.environ.get("ITO_CONSENSUS", "1") != "0"
 # ITO_FUSE=1: every frame's depth is fused into a signed distance field (volume.py) and the
 # frame is mapped by the field's depth along its rays; it takes consensus's place.
 FUSE = os.environ.get("ITO_FUSE", "0") != "0"
+# ITO_TOF_FIELD=1: bend each frame's depth to the ToF's zone readings where they land
+# (rangefield.py), not only scale the whole frame by them.
+TOF_FIELD = os.environ.get("ITO_TOF_FIELD", "0") != "0"
 # ITO_DUMP=<dir> (a diagnostic): each mapped frame's image, depth as estimated and as agreed,
 # the sim's exact depth when ITO_TRUTH gives it, and its pose, one npz per frame.
 DUMP = os.environ.get("ITO_DUMP")
@@ -203,6 +206,11 @@ class SLAMBackend(GaussianBackend):
 
             self.refine = FrameAlign(self)
         self.consensus = None
+        self.range_field = None
+        if TOF_FIELD:
+            from .rangefield import RangeField
+
+            self.range_field = RangeField()
         self.volume = None
         if FUSE:
             from .volume import Volume
@@ -333,6 +341,10 @@ class SLAMBackend(GaussianBackend):
                 cloud = self.consistent(cloud, graph.pose(node), exposure)
             elif self.mono is not None:
                 cloud = self.monocular(cloud, rgb, exposure)
+            if self.range_field is not None and not (
+                truth is not None and truth[2] is not None and not COMPARE
+            ):
+                cloud = self.bend_to_ranges(cloud, exposure)
             if COMPARE and TRUE_SCALE and truth is not None and truth[2] is not None:
                 unscaled = -cloud.points[:, 2].reshape(cloud.shape).float().cpu().numpy()
                 valid = cloud.valid.reshape(cloud.shape).cpu().numpy()
@@ -417,6 +429,44 @@ class SLAMBackend(GaussianBackend):
             if self.truth is not None and self.truth[2] is not None:
                 self.depth_scales["da3_exact"] = scale_to(self.truth[2], depth)
         return self.with_depth(cloud, depth * scale)
+
+    def carve(self, camera, intrinsics, shape):
+        """Splats in view that the fused field holds surely empty gather contradictions, as
+        splats a view sees through do, and retire."""
+        ids, _, _, _ = self.centers(camera, intrinsics, shape)
+        if not len(ids):
+            return
+        centres = _torch().as_tensor(self.records[ids, 0, :3], device="cuda")
+        hit = ids[self.volume.free(centres).cpu().numpy()]
+        if not len(hit):
+            return
+        self.contradictions[hit] = np.minimum(self.contradictions[hit].astype(int) + 1, 255)
+        limit = np.where(self.support[hit] >= 10, 6, 3)
+        gone = hit[self.contradictions[hit] >= limit]
+        if len(gone):
+            self.captures[gone] = self.source_captured
+            self.retire(gone)
+            self.volume.carved += len(gone)
+
+    def bend_to_ranges(self, cloud, exposure):
+        """The cloud with its depth bent to the ToF zones that land on it (rangefield.py)."""
+        rows, columns = cloud.shape
+        valid = cloud.valid.reshape(rows, columns).cpu().numpy()
+        depth = np.where(
+            valid, -cloud.points[:, 2].reshape(rows, columns).float().cpu().numpy(), 0
+        ).astype(np.float32)
+        image = cloud.colors.reshape(rows, columns, 3).cpu().numpy()
+        hits = self.sensors.zone_hits(exposure, self.motion, cloud.intrinsics, cloud.shape)
+        with self.gpu_chunk("depth"):
+            bent, used = self.range_field.correct(depth, image, hits)
+        if COMPARE:
+            self.depth_scales["tof_field"] = used
+        if not used:
+            return cloud
+        torch = _torch()
+        factor = np.where(depth > 0, bent / np.maximum(depth, 1e-6), 0).astype(np.float32)
+        factor = torch.as_tensor(factor.reshape(-1, 1), device=cloud.points.device)
+        return cloud._replace(points=cloud.points * factor.to(cloud.points.dtype))
 
     def ranging_surface(self, cloud, rgb):
         """The cloud the ToF's ranges are read against: MASt3R's own, or (ITO_TOF_VIA=moge)
@@ -682,11 +732,12 @@ class SLAMBackend(GaussianBackend):
             depth = np.where(valid, -points[..., 2] * scale, 0).astype(np.float32)
             with self.gpu_chunk("fuse"):
                 fused = self.volume.fuse(depth, mapped, intrinsics)
+                self.carve(mapped, intrinsics, depth.shape)
             fx, fy, cx, cy = intrinsics
             v, u = np.mgrid[:height, :width].astype(np.float32)
-            points = np.stack(
-                ((u - cx) / fx * fused, -(v - cy) / fy * fused, -fused), -1
-            ).astype(np.float32)
+            points = np.stack(((u - cx) / fx * fused, -(v - cy) / fy * fused, -fused), -1).astype(
+                np.float32
+            )
             valid, scale = fused > 0, 1.0
         elif self.consensus is not None:
             depth = np.where(valid, -points[..., 2] * scale, 0).astype(np.float32)
