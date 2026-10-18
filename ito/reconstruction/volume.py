@@ -76,6 +76,7 @@ class Volume:
         self.agreed = 0
         self.refuted = 0
         self.carved = 0
+        self.cleared = 0
 
     @property
     def nbytes(self):
@@ -233,6 +234,59 @@ class Volume:
             self.sdf[chunk] = fused.half()
             self.weight[chunk] = total.clamp_max(MAX_WEIGHT).half()
         self.frames += 1
+
+    def clear(self, pose, field_of_view, reach, weight, near=0.0, spread=1.0):
+        """Space a multizone range sensor measured empty. pose: map-from-sensor (looking down
+        -z, x right, y up); field_of_view: (width, height) radians; reach: rows x cols metres
+        (nan: zone not measured), the radial distance out to which nothing lies anywhere in
+        that zone. Every allocated voxel whose centre is in a zone (within its middle spread
+        across and up) and nearer than its reach, beyond near, moves toward free space with
+        this weight."""
+        torch = self.torch
+        reach = self.tensor(reach)
+        rows, cols = reach.shape
+        if not self.count or not bool(torch.isfinite(reach).any()):
+            return
+        width, height = field_of_view
+        rotation, origin = self.tensor(pose[:3, :3]), self.tensor(pose[:3, 3])
+        size = BLOCK * VOXEL
+        centres = (self.origins[: self.count].float() + 0.5) * size
+        seen = (centres - origin) @ rotation
+        distance = torch.linalg.norm(seen, dim=-1)
+        radius = 0.87 * size
+        slack = torch.asin((radius / distance.clamp_min(radius)).clamp_max(1))
+        across = torch.atan2(seen[:, 0], -seen[:, 2])
+        up = torch.asin((seen[:, 1] / distance.clamp_min(1e-6)).clamp(-1, 1))
+        visible = distance - radius < float(torch.nan_to_num(reach, nan=0).max())
+        visible &= (across.abs() < width / 2 + slack) & (up.abs() < height / 2 + slack)
+        visible &= -seen[:, 2] > -radius
+        slots = torch.nonzero(visible)[:, 0]
+        if not len(slots):
+            return
+        local = (self.local.float() + 0.5) * VOXEL
+        flat = torch.nan_to_num(reach, nan=-1.0).reshape(-1)
+        cleared = 0
+        for chunk in torch.split(slots, BLOCKS):
+            points = (self.origins[chunk].float() * size)[:, None, :] + local
+            seen = (points - origin) @ rotation
+            distance = torch.linalg.norm(seen, dim=-1)
+            column = (torch.atan2(seen[..., 0], -seen[..., 2]) / width + 0.5) * cols
+            row = (
+                0.5 - torch.asin((seen[..., 1] / distance.clamp_min(1e-6)).clamp(-1, 1)) / height
+            ) * rows
+            inside = (
+                (column >= 0) & (column < cols) & (row >= 0) & (row < rows) & (seen[..., 2] < 0)
+            )
+            middle = ((column % 1 - 0.5).abs() < spread / 2) & ((row % 1 - 0.5).abs() < spread / 2)
+            zone = row.long().clamp(0, rows - 1) * cols + column.long().clamp(0, cols - 1)
+            update = inside & middle & (distance > near) & (distance < flat[zone])
+            if not update.any():
+                continue
+            s, w = self.sdf[chunk].float(), self.weight[chunk].float()
+            self.sdf[chunk] = torch.where(update, (s * w + weight) / (w + weight), s).half()
+            self.weight[chunk] = torch.where(update, (w + weight).clamp_max(MAX_WEIGHT), w).half()
+            cleared += int(update.sum())
+        self.cleared += cleared
 
     def free(self, points, against=None):
         """Whether the field holds each world point (N x 3 tensor) empty, with FREE_AGAINST

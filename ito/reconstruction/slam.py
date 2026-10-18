@@ -128,7 +128,17 @@ REFINE = os.environ.get("ITO_REFINE", "0") != "0"
 CONSENSUS = os.environ.get("ITO_CONSENSUS", "1") != "0"
 # ITO_FUSE=1: every frame's depth is fused into a signed distance field (volume.py) and the
 # frame is mapped by the field's depth along its rays; it takes consensus's place.
-FUSE = os.environ.get("ITO_FUSE", "0") != "0"
+# ITO_TOF_MAP=1: the ToF's readings go into the fused field (and turn it on) as measured empty
+# space: a VL53 reports the nearest target anywhere in a zone, so nothing lies in the zone's
+# footprint closer than its reading. Every valid zone of every grid clears that space (with
+# ITO_TOF_MAP_WEIGHT per grid), short of the reading by TOF_MARGIN; a guessed surface there,
+# like the pot a rim view put a third too near, is refuted and its splats retire.
+TOF_MAP = os.environ.get("ITO_TOF_MAP", "0") != "0"
+TOF_MAP_WEIGHT = float(os.environ.get("ITO_TOF_MAP_WEIGHT", "1"))
+TOF_SPREAD = 1.0  # middle share of a zone's width and height cleared
+TOF_MARGIN = (0.03, 0.05)  # metres plus a share of the reading left uncleared before it
+TOF_NEAR = 0.12  # metres: the sensor's own minimum range
+FUSE = TOF_MAP or os.environ.get("ITO_FUSE", "0") != "0"
 # ITO_TOF_FIELD=1: bend each frame's depth to the ToF's zone readings where they land
 # (rangefield.py), not only scale the whole frame by them.
 TOF_FIELD = os.environ.get("ITO_TOF_FIELD", "0") != "0"
@@ -451,6 +461,31 @@ class SLAMBackend(GaussianBackend):
                 self.depth_scales["da3_exact"] = scale_to(self.truth[2], depth)
         return self.with_depth(cloud, depth * scale)
 
+    def clear_ranges(self):
+        """Every ToF grid since the last frame, up to this frame's capture, clears the space
+        before its zones' readings in the fused field (TOF_MAP)."""
+        done = getattr(self, "ranges_cleared", -math.inf)
+        td = self.graph.td
+        for grid in [
+            g for g in self.sensors.grids if done < g["time"] <= self.source_captured - td
+        ]:
+            # Grid times are on the motion's clock, as exposures are: a capture stamp less td.
+            camera = self.pose_at(grid["time"] + td)
+            self.ranges_cleared = grid["time"]
+            if camera is None:
+                continue
+            distances = np.array(
+                [np.nan if d is None else d for d in grid["distances"]], np.float32
+            ).reshape(grid["shape"])
+            self.volume.clear(
+                camera @ grid["mount"],
+                grid["field_of_view"],
+                distances * (1 - TOF_MARGIN[1]) - TOF_MARGIN[0],
+                TOF_MAP_WEIGHT,
+                TOF_NEAR,
+                TOF_SPREAD,
+            )
+
     def carve(self, camera, intrinsics, shape):
         """Splats in view that the fused field holds surely empty gather contradictions, as
         splats a view sees through do, and retire."""
@@ -754,6 +789,8 @@ class SLAMBackend(GaussianBackend):
         elif self.volume is not None:
             depth = np.where(valid, -points[..., 2] * scale, 0).astype(np.float32)
             with self.gpu_chunk("fuse"):
+                if TOF_MAP:
+                    self.clear_ranges()
                 trust = self.range_trust
                 if self.range_field is not None and trust is None:
                     trust = np.full(depth.shape, TRUST_UNREAD, np.float32)
