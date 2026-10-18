@@ -61,6 +61,11 @@ DUTY = float(os.environ.get("ITO_FIT_DUTY", "0.5"))
 # Every GLOBAL-th unit starts from the least trained of all retained views, the others from
 # the least trained of the last three (ITO_FIT_GLOBAL, an experiment; 1: always all views).
 GLOBAL = max(1, int(os.environ.get("ITO_FIT_GLOBAL", "4")))
+# ITO_FIT_IDLE=1 (an experiment): while the last three retained views stand within IDLE_MOVE
+# of each other (the robot holds still), every unit starts from all views: the recent ones are
+# trained already and the rest of the room waits.
+IDLE = os.environ.get("ITO_FIT_IDLE", "0") != "0"
+IDLE_MOVE = (0.03, math.radians(3))  # metres, radians
 # ITO_AA=1 (an experiment), Mip-Splatting's two filters: training renders "antialiased" (the
 # 0.3 px screen dilation keeps a splat's energy, as the pilot's renderer then draws it), and
 # no axis of a Gaussian shrinks below MIP_3D of a pixel of the finest view that sees it, so
@@ -187,6 +192,15 @@ class ViewFit:
         views = list(b.views)
         recent = views[-3:]
         pool = recent if self.serial % GLOBAL else views
+        if IDLE and len(views) > 3:
+            first = recent[0].pose
+            still = all(
+                np.linalg.norm(v.pose[:3, 3] - first[:3, 3]) < IDLE_MOVE[0]
+                and float(v.pose[:3, 2] @ first[:3, 2]) > math.cos(IDLE_MOVE[1])
+                for v in recent[1:]
+            )
+            if still:
+                pool = views
         self.serial += 1
         return min(pool, key=lambda v: v.steps)
 
