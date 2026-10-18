@@ -125,9 +125,10 @@ class GlobalGraph:
         self.relocalised = []
         self.lost = set()
         self.tracking = {}  # keyframe -> keyframe it was tracked against when made
-        self.gravity = {}  # keyframe -> (robot camera rotation, MASt3R axes; sigma rad)
+        self.gravity = {}  # keyframe -> (up as the camera sees it, MASt3R axes; sigma rad)
         self.height = {}  # keyframe -> (camera y, MASt3R axes; sigma m)
         self.odometry = []  # (i, j, rotation, translation, sigma[6]) robot motion i -> j
+        self.turns = []  # (i, j, rotation, sigma) the head gyro's turn i -> j (ITO_HEAD_IMU)
         self.scales = {}  # keyframe -> list of log metres per pointmap unit (ToF readings)
         self.owned = set()  # keyframes a solve has posed
         self.lock = threading.Lock()  # factors and the retrieval database
@@ -160,7 +161,7 @@ class GlobalGraph:
 
     # --- called on the tracking thread ---------------------------------------------------
 
-    def add_keyframe(self, index, *, tracked_against, lost, gravity, height, odometry):
+    def add_keyframe(self, index, *, tracked_against, lost, gravity, height, odometry, turn=None):
         """A keyframe the frontend just kept, with the robot's say on it: gravity (rotation,
         sigma), height (y, sigma), odometry (previous keyframe, rotation, translation, sigma);
         any may be None. Poses are world-from-camera in MASt3R's axes."""
@@ -175,6 +176,8 @@ class GlobalGraph:
                 self.height[index] = height
             if odometry is not None:
                 self.odometry.append((odometry[0], index, *odometry[1:]))
+            if turn is not None:
+                self.turns.append((turn[0], index, *turn[1:]))
         self.tasks.put(index)
 
     def add_scale(self, index, log_scale):
@@ -391,14 +394,15 @@ class GlobalGraph:
             gravity = dict(self.gravity)
             height = dict(self.height)
             odometry = list(self.odometry)
+            turns = list(self.turns)
             scales = {k: list(v) for k, v in self.scales.items()}
         up = np.array([0.0, -1.0, 0.0])  # MASt3R's world: +y down
-        for k, (robot, sigma) in gravity.items():
+        for k, (seen, sigma) in gravity.items():
             if k not in local:
                 continue
             _, rotation, _ = split(m[local[k]])
             # Up as the camera sees it, against the robot's: roll and pitch whatever the yaw.
-            error = rotation.T @ up - robot.T @ up
+            error = rotation.T @ up - seen
             J = np.zeros((3, 7))
             J[:, 3:6] = rotation.T @ skew(up)
             add([local[k]], [J], error, np.full(3, sigma**-2))
@@ -432,6 +436,20 @@ class GlobalGraph:
                 [Ji, Jj],
                 np.concatenate((r_rot, r_t)),
                 np.asarray(sigma, float) ** -2,
+            )
+        for i, j, rotation, sigma in turns:
+            if i not in local or j not in local:
+                continue
+            _, ri, _ = split(m[local[i]])
+            _, rj, _ = split(m[local[j]])
+            Ji, Jj = np.zeros((3, 7)), np.zeros((3, 7))
+            Ji[:, 3:6] = -rj.T
+            Jj[:, 3:6] = rj.T
+            add(
+                [local[i], local[j]],
+                [Ji, Jj],
+                rotvec(rotation.T @ ri.T @ rj),
+                np.full(3, sigma**-2),
             )
         for k, readings in scales.items():
             if k not in local or not readings:

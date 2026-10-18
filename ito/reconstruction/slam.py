@@ -159,6 +159,10 @@ DETAIL = float(os.environ.get("ITO_DETAIL", "2"))
 # anchored to keyframes and moved with them. Unset: the 30-keyframe pose graph alone, as before.
 FULL = os.environ.get("ITO_SLAM") == "full"
 FLIP = np.diag([1.0, -1.0, -1.0])  # Ito axes <-> MASt3R's (OpenCV), for the global graph
+# ITO_HEAD_IMU=1 (stone P3): the head IMU's gyro turn since the last keyframe sets the frame
+# tracker's rotation prior (the kinematic one rides up to 2 degrees past the servos' play), and
+# with ITO_SLAM=full its turns and tilt join the global graph. Unset: as before.
+HEAD_IMU = os.environ.get("ITO_HEAD_IMU", "0") != "0"
 MAP_MOVE = (0.002, 0.05, 0.002)  # metres, degrees, log-scale: a keyframe's move the map follows
 
 
@@ -258,6 +262,7 @@ class SLAMBackend(GaussianBackend):
         self.global_change = (0.0, 0.0)
         self.map_poses = {}  # full: keyframe -> its pose (Ito axes) its surfaces were placed by
         self.first_pose = None  # full: keyframe 0's rigid pose when it was made
+        self.imu_priors = 0  # ITO_HEAD_IMU: frames tracked with the gyro's rotation prior
         # Full with ITO_FUSE: every fused frame's input, by keyframe, to fuse the field afresh
         # where the global graph moved keyframes (rebuild_volume) instead of keeping its old room.
         self.fused_frames = []
@@ -309,6 +314,9 @@ class SLAMBackend(GaussianBackend):
             applied=self.global_applied,
             change=[round(v, 4) for v in self.global_change],
             frontend_relocalised=getattr(self.frontend, "relocalisations", 0),
+            imu=dict(
+                gyro=len(self.sensors.gyro), tilts=len(self.sensors.tilts), priors=self.imu_priors
+            ),
             field_rebuilds=self.volume_rebuilds,
             field_rebuild_ms=round(self.rebuild_seconds * 1000),
             fused_frames=len(self.fused_frames),
@@ -455,13 +463,22 @@ class SLAMBackend(GaussianBackend):
         frontend = self.frontend
         index = len(frontend.frames) - 1
         self.keyframe_exposure[index] = exposure
+        previous = self.keyframe_exposure.get(index - 1)
         robot = self.motion.at(exposure)
         rotation = FLIP @ robot[:3, :3] @ FLIP
         position = FLIP @ robot[:3, 3]
-        gravity = (rotation, self.motion.gravity_sigma(exposure))
+        gravity = (rotation.T @ np.array([0.0, -1.0, 0.0]), self.motion.gravity_sigma(exposure))
+        turn = None
+        if HEAD_IMU:
+            seen = self.sensors.up(exposure)
+            if seen is not None:
+                gravity = (FLIP @ seen[0], seen[1])  # the head's own tilt, past the gear play
+            if previous is not None:
+                turned = self.sensors.turn(previous, exposure)
+                if turned is not None:
+                    turn = (index - 1, FLIP @ turned[0].as_matrix() @ FLIP, turned[1])
         height = (float(position[1]), self.motion.height_sigma(exposure, HEIGHT_SIGMA))
         odometry = None
-        previous = self.keyframe_exposure.get(index - 1)
         if previous is not None and self.motion.covers(previous):
             relative, covariance = self.motion.between(previous, exposure)
             odometry = (
@@ -489,6 +506,7 @@ class SLAMBackend(GaussianBackend):
             gravity=gravity,
             height=height,
             odometry=odometry,
+            turn=turn,
         )
         self.node_keyframe[node] = index
 
@@ -529,6 +547,15 @@ class SLAMBackend(GaussianBackend):
         last = graph.latest_keyframe()
         reference_time = graph.nodes[last].time if last is not None else captured
         _, covariance = self.motion.between(reference_time - graph.td, exposure)
+        prior_sigma = np.sqrt(np.diag(covariance))
+        if HEAD_IMU and last is not None:
+            turned = self.sensors.turn(reference_time - graph.td, exposure)
+            if turned is not None and turned[1] < prior_sigma[0]:
+                predicted = predicted.copy()
+                predicted[:3, :3] = graph.nodes[last].pose[:3, :3] @ turned[0].as_matrix()
+                prior_sigma = prior_sigma.copy()
+                prior_sigma[:3] = turned[1]
+                self.imu_priors += 1
         gyro = self.sensors.angular_velocity(exposure)
         if gyro is None:
             gyro = self.motion.angular_velocity(exposure)
@@ -538,7 +565,7 @@ class SLAMBackend(GaussianBackend):
             graph.solve_frame()
             self._publish(node)
             return
-        result = self.frontend.track(rgb, node, predicted, np.sqrt(np.diag(covariance)))
+        result = self.frontend.track(rgb, node, predicted, prior_sigma)
         cloud = result.cloud
         if self.global_graph is not None:
             self.global_graph.reference = self.frontend.reference
