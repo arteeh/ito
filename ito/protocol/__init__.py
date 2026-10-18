@@ -412,6 +412,8 @@ def decode(data: str | bytes) -> WireMessage:
 
 
 def encode(message: WireMessage) -> str:
-    data = message.model_dump_json()
+    # A frame without the sim's exact pose leaves the field out: main's pilot forbids it.
+    empty = {"true_pose"} if getattr(message, "true_pose", True) is None else None
+    data = message.model_dump_json(exclude=empty)
     decode(data)
     return data
