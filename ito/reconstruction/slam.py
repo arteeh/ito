@@ -11,6 +11,7 @@ from .depth import (
     MapFrontend,
     MonoGeometry,
     MultiViewDepth,
+    PromptedDepth,
     log_field,
     nearest_views,
     resample,
@@ -218,6 +219,8 @@ class SLAMBackend(GaussianBackend):
         self.map_conflicts = 0
         self.depth = MultiViewDepth() if DEPTH == "da3" else None
         self.mono = MonoGeometry() if DEPTH in ("moge", "hybrid") or TOF_VIA_MOGE else None
+        # ITO_DEPTH=dmdc: dToF-DMDC's metric depth, prompted with the ToF's readings.
+        self.prompted = PromptedDepth() if DEPTH == "dmdc" else None
         self.refine = None
         if REFINE:
             from .training import FrameAlign
@@ -360,6 +363,8 @@ class SLAMBackend(GaussianBackend):
             elif self.depth is not None and self.depth_turn():
                 cloud = self.consistent(cloud, graph.pose(node), exposure)
                 self.from_da3 = True
+            elif self.prompted is not None:
+                cloud = self.prompted_depth(cloud, rgb, exposure)
             elif self.mono is not None:
                 cloud = self.monocular(cloud, rgb, exposure)
             if self.range_field is not None and not (
@@ -503,6 +508,25 @@ class SLAMBackend(GaussianBackend):
             self.captures[gone] = self.source_captured
             self.retire(gone)
             self.volume.carved += len(gone)
+
+    def prompted_depth(self, cloud, rgb, exposure):
+        """The cloud with dToF-DMDC's metric depth for the frame (at 640 x 360), prompted with
+        the ToF zones' readings at their centre pixels."""
+        size = (640, 360)
+        i = self.intrinsics
+        s = size[0] / i.width
+        grid = (i.fx * s, i.fy * s, (i.cx + 0.5) * s - 0.5, (i.cy + 0.5) * s - 0.5)
+        hits = self.sensors.zone_hits(exposure, self.motion, grid, (size[1], size[0]))
+        fov = math.degrees(2 * math.atan(i.width / 2 / i.fx))
+        with self.gpu_chunk("depth"):
+            depth = self.prompted(rgb, fov, size, hits)
+        if COMPARE:
+            self.depth_scales["dmdc_zones"] = len(hits)
+        if not (depth > 0).any():
+            return cloud
+        # Even a prompted network ramps across a silhouette over a pixel or two.
+        span = maximum_filter(depth, size=3) - minimum_filter(depth, size=3)
+        return self.with_depth(cloud, np.where(span > SILHOUETTE * depth, 0, depth))
 
     def bend_to_ranges(self, cloud, exposure):
         """The cloud with its depth bent to the ToF zones that land on it (rangefield.py)."""
