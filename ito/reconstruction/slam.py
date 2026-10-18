@@ -11,6 +11,7 @@ from .depth import (
     MapFrontend,
     MonoGeometry,
     MultiViewDepth,
+    Pi3Depth,
     PromptedDepth,
     VideoGeometry,
     log_field,
@@ -227,7 +228,9 @@ class SLAMBackend(GaussianBackend):
         self.scale_readings = 0
         self.range_readings = 0
         self.map_conflicts = 0
-        self.depth = MultiViewDepth() if DEPTH == "da3" else None
+        self.depth = None
+        if DEPTH == "da3":
+            self.depth = Pi3Depth() if os.environ.get("ITO_DA3") == "pi3" else MultiViewDepth()
         self.mono = MonoGeometry() if DEPTH in ("moge", "hybrid") or TOF_VIA_MOGE else None
         if DEPTH == "vigeo":
             self.mono = VideoGeometry()

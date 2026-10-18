@@ -95,6 +95,41 @@ class MultiViewDepth:
         return output.depth[0].float().cpu().numpy()
 
 
+class Pi3Depth:
+    """The ITO_DEPTH=da3 path with ITO_DA3=pi3: pi3 (ICLR 2026; code and weights BSD-2-Clause)
+    over the new frame and the retained views around it, one call, one unknown scale, its
+    local point maps' depth. ITO_PI3 names a folder holding the source (Pi3 or src/Pi3) and
+    the weights (pi3/model.safetensors); not bundled. Same interface as MultiViewDepth;
+    pi3 takes no camera tokens."""
+
+    def __init__(self):
+        import torch
+        from safetensors.torch import load_file
+
+        root = Path(os.environ["ITO_PI3"])
+        source = next((p for p in (root / "Pi3", root / "src" / "Pi3") if p.is_dir()), root)
+        if str(source) not in sys.path:
+            sys.path.insert(0, str(source))
+        from pi3.models.pi3 import Pi3
+
+        net = Pi3()
+        net.load_state_dict(load_file(root / "pi3" / "model.safetensors"))
+        # bfloat16 halves its 3.8 GB of float32 weights; it runs under bfloat16 autocast anyway.
+        self.net = net.to(torch.bfloat16).to("cuda").eval()
+        self.torch = torch
+
+    def __call__(self, images, cameras=None):
+        """Depths (N, SIZE[1], SIZE[0]) of uint8 RGB images seen together, one unknown scale."""
+        import cv2
+
+        torch = self.torch
+        batch = np.stack([cv2.resize(i, SIZE, interpolation=cv2.INTER_AREA) for i in images])
+        x = torch.as_tensor(batch, device="cuda").permute(0, 3, 1, 2)[None].float() / 255
+        with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
+            out = self.net(x.to(torch.bfloat16))
+        return out["local_points"][0, ..., 2].float().cpu().numpy()
+
+
 MOGE = MODELS / "moge"  # MoGe-2 source, utils3d-moge and ViT-B weights, from ito.build
 MOGE_TOKENS = 1800  # the ViT's patch tokens: about 1024 x 576 for a 16:9 frame
 
