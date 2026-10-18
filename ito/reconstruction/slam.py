@@ -89,6 +89,10 @@ MONO_GRID = (2, 2)
 # own surfaces, MASt3R's only beside them (MONO_MAST3R, log sigma).
 MONO_SCALE = os.environ.get("ITO_MONO_SCALE", "0") != "0"
 MONO_MAST3R = 0.1
+# ITO_TOF_VIA=moge: MASt3R's depth stays the map's, but the ToF reads its scale on MoGe-2's
+# surfaces (ranging_surface). On MASt3R's own, the reading jumped 10-20% for seconds after the
+# first turn and close to the shelf (its centre bends against its edges); on MoGe-2's it held.
+TOF_VIA_MOGE = os.environ.get("ITO_TOF_VIA") == "moge"
 # Nothing is mapped until fusion has this many ToF or floor scale readings (ITO_SCALE_SETTLED=0:
 # from the first frame): the first seconds' scale swung from 7% short to 10% long in the sim,
 # and what they mapped stays.
@@ -189,7 +193,7 @@ class SLAMBackend(GaussianBackend):
         self.range_readings = 0
         self.map_conflicts = 0
         self.depth = MultiViewDepth() if DEPTH == "da3" else None
-        self.mono = MonoGeometry() if DEPTH in ("moge", "hybrid") else None
+        self.mono = MonoGeometry() if DEPTH in ("moge", "hybrid") or TOF_VIA_MOGE else None
         self.refine = None
         if REFINE:
             from .training import FrameAlign
@@ -268,7 +272,9 @@ class SLAMBackend(GaussianBackend):
             below = floor_scale(cloud, robot[:3, :3].T @ UP, float(robot[1, 3]))
             if below is not None:
                 seen.append((math.log(below), FLOOR_SIGMA))
-            ranged = self.sensors.range_scale(cloud, exposure, self.motion)
+            ranged = self.sensors.range_scale(
+                self.ranging_surface(cloud, rgb), exposure, self.motion
+            )
             if ranged is not None:
                 seen.append((math.log(ranged), RANGE_SIGMA))
             if COMPARE:
@@ -403,6 +409,23 @@ class SLAMBackend(GaussianBackend):
             if self.truth is not None and self.truth[2] is not None:
                 self.depth_scales["da3_exact"] = scale_to(self.truth[2], depth)
         return self.with_depth(cloud, depth * scale)
+
+    def ranging_surface(self, cloud, rgb):
+        """The cloud the ToF's ranges are read against: MASt3R's own, or (ITO_TOF_VIA=moge)
+        MoGe-2's surfaces brought to MASt3R's units by their median ratio over the whole frame."""
+        if not TOF_VIA_MOGE or self.mono is None:
+            return cloud
+        rows, columns = cloud.shape
+        valid = cloud.valid.reshape(rows, columns).cpu().numpy()
+        mast3r = np.where(
+            valid, -cloud.points[:, 2].reshape(rows, columns).float().cpu().numpy(), 0
+        )
+        i = self.intrinsics
+        fov = math.degrees(2 * math.atan(i.width / 2 / i.fx))
+        with self.gpu_chunk("depth"):
+            depth = self.mono(rgb, fov, (2 * columns, 2 * rows))
+        ratio = scale_to(mast3r, resample(depth, mast3r.shape))
+        return cloud if ratio is None else self.with_depth(cloud, depth * ratio)
 
     def monocular(self, cloud, rgb, exposure):
         """The cloud with MoGe-2's depth for the frame, at the scale MASt3R's depth has (the
