@@ -4,6 +4,7 @@ layout(std430, binding = 4) readonly buffer Previous { vec4 previous[]; };
 uniform float scene_time;
 uniform float ease;
 uniform int antialiased;
+uniform vec3 color_gain;  // ITO_EXPOSURE: the camera's usual exposure against the map
 uniform float fade_seconds;
 uniform uint stride;
 uniform int sh_degree;
@@ -110,5 +111,5 @@ void main() {
         vec3 rgb0 = max(vec3(0.5) + 0.2820947918 * previous[id * 4u + 3u].rgb, vec3(0));
         rgb = mix(rgb0, rgb, glide);
     }
-    color_opacity = vec4(rgb, p.w);
+    color_opacity = vec4(rgb * color_gain, p.w);
 }

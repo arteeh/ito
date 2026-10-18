@@ -50,7 +50,7 @@ def pose(position, target):
     return m
 
 
-def draw(records, camera, antialiased=False):
+def draw(records, camera, antialiased=False, gain=None):
     r = torch.as_tensor(records, device="cuda", dtype=torch.float32)
     focal = WIDTH / 2 / math.tan(math.radians(HFOV / 2))
     K = torch.tensor([[focal, 0, WIDTH / 2], [0, focal, HEIGHT / 2], [0, 0, 1]], device="cuda")
@@ -70,7 +70,10 @@ def draw(records, camera, antialiased=False):
         rasterize_mode="antialiased" if antialiased else "classic",
     )
     background = torch.tensor([0.04, 0.04, 0.06], device="cuda")
-    image = image[0] + (1 - alpha[0]) * background
+    image = image[0]
+    if gain is not None:  # ITO_EXPOSURE: as the pilot draws it, at the camera's usual exposure
+        image = image * torch.as_tensor(np.exp(gain), device="cuda", dtype=torch.float32)
+    image = image + (1 - alpha[0]) * background
     rgb = (image.clamp(0, 1) * 255).byte().cpu().numpy()
     return np.ascontiguousarray(rgb[..., ::-1])
 
@@ -89,13 +92,15 @@ def main():
     )
     a = p.parse_args()
     labels = a.labels or [m.parent.name for m in a.maps]
-    maps = [np.load(m)["records"] for m in a.maps]
+    loaded = [np.load(m) for m in a.maps]
+    maps = [z["records"] for z in loaded]
+    gains = [z["color_gain"] if "color_gain" in z.files else None for z in loaded]
     rows = []
     for name, position, target in VIEWS:
         camera = pose(position, target)
         cells = []
         for column, (records, label) in enumerate(zip(maps, labels, strict=True)):
-            img = draw(records, camera, column in a.antialiased)
+            img = draw(records, camera, column in a.antialiased, gains[column])
             cv2.rectangle(img, (0, HEIGHT - 30), (WIDTH, HEIGHT), (0, 0, 0), -1)
             cv2.putText(
                 img,

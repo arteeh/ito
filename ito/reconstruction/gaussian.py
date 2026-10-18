@@ -48,6 +48,9 @@ FIT = os.environ.get("ITO_FIT", "view")
 EXPOSURE = os.environ.get("ITO_EXPOSURE", "0") != "0"
 EXPOSURE_SAMPLES = 300
 EXPOSURE_LIMIT = 0.7  # log gain: a camera's exposure swing between neighbouring frames
+# The map keeps the colours of the frames it began with; the pilot draws it at the camera's
+# usual exposure since, the running mean of frame gains against it (frames, 1/e).
+EXPOSURE_MEMORY = 300
 
 
 def exposed(image, log_gain):
@@ -320,6 +323,12 @@ class GaussianBackend(GaussianSlots):
                         np.median(ratio, axis=0), -EXPOSURE_LIMIT, EXPOSURE_LIMIT
                     )
                     seen = np.clip(seen * np.exp(-self.frame_exposure), 0, 1)
+                    usual = getattr(self, "exposure_mean", None)
+                    self.exposure_mean = (
+                        self.frame_exposure.copy()
+                        if usual is None
+                        else usual + (self.frame_exposure - usual) / EXPOSURE_MEMORY
+                    )
             change = np.abs(seen - color).max(-1)
             near = np.flatnonzero((change < BLEND) & (change > 0.01))
             near = near[np.argsort(-change[near])[:BLENDED]]

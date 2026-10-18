@@ -58,7 +58,13 @@ def dump_map(backend, now):
     folder = Path(MAP_DUMP)
     folder.mkdir(parents=True, exist_ok=True)
     live = np.flatnonzero((backend.keys >= 0) & ~backend.retiring)
-    np.savez(folder / f"map-{now:07.1f}.npz", records=backend.records[live], seconds=now)
+    usual = getattr(backend, "exposure_mean", None)
+    np.savez(
+        folder / f"map-{now:07.1f}.npz",
+        records=backend.records[live],
+        seconds=now,
+        color_gain=np.zeros(3) if usual is None else usual,
+    )
 
 
 __all__ = ["Reconstruction", "SplatUpdate", "default_budget"]
@@ -441,6 +447,9 @@ def _run(recon):
                         if contributing.any()
                         else published_capture,
                     )
+                    usual = getattr(backend, "exposure_mean", None)
+                    if usual is not None:
+                        recon.ring.color_gain[:] = usual
                     if not recon.ring.publish(
                         indices,
                         backend.records[indices],

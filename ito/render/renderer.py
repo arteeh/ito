@@ -109,6 +109,7 @@ class GaussianRenderer:
         self.revision = -1
         self.coordinate_frame = None
         self.stats = UpdateStats() if UPDATE_STATS else None
+        self.color_gain = (0.0, 0.0, 0.0)
 
     def upload(self, scene: GaussianBuffer) -> None:
         count, stride, _ = scene.records.shape
@@ -220,6 +221,7 @@ class GaussianRenderer:
         self.count = update.count
         self.stride, self.degree = 4, 0
         self.epoch, self.fade_seconds = update.epoch, update.fade_seconds
+        self.color_gain = getattr(update, "color_gain", (0.0, 0.0, 0.0))
         self.revision = update.revision
         self.coordinate_frame = update.coordinate_frame
         if not n:
@@ -355,6 +357,9 @@ class GaussianRenderer:
         self.program["fade_seconds"] = self.fade_seconds
         self.program["ease"] = self.ease
         self.program["antialiased"] = int(AA and self.live is not None)
+        self.program["color_gain"] = (
+            tuple(np.exp(self.color_gain)) if self.live is not None else (1, 1, 1)
+        )
         self.program["stride"] = self.stride
         self.program["sh_degree"] = self.degree
         self.vao.render(mode=moderngl.TRIANGLE_STRIP, vertices=4, instances=self.draw_count)
