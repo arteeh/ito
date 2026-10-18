@@ -35,6 +35,10 @@ DISTANCE = float(os.environ.get("ITO_FUSE_DISTANCE", "2"))
 # there it keeps its own (a surface the field does not hold yet, or one it holds wrongly:
 # mapped, it contradicts what lies in front of it).
 SNAP = float(os.environ.get("ITO_FUSE_SNAP", "0.08"))
+# ITO_FUSE_SNAP_FROM=D: only pixels at least D metres away snap; nearer ones keep their own
+# depth (unless the field holds it empty). Up close a frame's depth is a centimetre or two off,
+# as far as one book's spine stands from the next: a snap there takes the neighbour's surface.
+SNAP_FROM = float(os.environ.get("ITO_FUSE_SNAP_FROM", "0"))
 # Space the field holds empty (normalised distance above FREE) with FREE_AGAINST times the weight
 # of a pixel that would put a surface there refutes the pixel; a mapped splat sitting in
 # space held empty with weight FREE_SPLAT retires. Relative, since weights fall with depth:
@@ -373,6 +377,9 @@ class Volume:
             if CONFIRM and trust is not None:
                 free |= self.tensor(trust).reshape(-1)[seen] < CONFIRM
             own = torch.zeros_like(target) if agree else target
+            if SNAP_FROM:
+                found = torch.where(target < SNAP_FROM, 0, found)
+                own = torch.where(target < SNAP_FROM, target, own)
             out[seen] = torch.where(found > 0, found, torch.where(free, 0, own))
             self.agreed += int((found > 0).sum())
             self.refuted += int((free & (found <= 0)).sum())
