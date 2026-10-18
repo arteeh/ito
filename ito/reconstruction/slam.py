@@ -169,6 +169,7 @@ FLIP = np.diag([1.0, -1.0, -1.0])  # Ito axes <-> MASt3R's (OpenCV), for the glo
 # with ITO_SLAM=full its turns and tilt join the global graph. Unset: as before.
 HEAD_IMU = os.environ.get("ITO_HEAD_IMU", "0") != "0"
 MAP_MOVE = (0.002, 0.05, 0.002)  # metres, degrees, log-scale: a keyframe's move the map follows
+FIELD_MOVE = (0.012, 0.5)  # metres, degrees: keyframe moves that rebuild the fused field
 
 
 class SLAMBackend(GaussianBackend):
@@ -265,6 +266,7 @@ class SLAMBackend(GaussianBackend):
         self.global_graph = None  # ITO_SLAM=full, made in bind_admission
         self.empty_window_frames = 0  # frames tracked while the pose graph had no keyframe
         self.robot_camera = None  # the robot's own camera pose at the last frame (timeline)
+        self.field_moved = (0.0, 0.0)  # full: keyframe moves since the field was last rebuilt
         self.keyframe_exposure = {}  # full: keyframe index -> exposure time (pilot clock)
         self.node_keyframe = {}  # full: frame node -> keyframe index its surfaces follow
         self.global_applied = 0
@@ -402,7 +404,14 @@ class SLAMBackend(GaussianBackend):
                 self.repose(deltas, self.node_keyframe)
                 if self.volume is not None:
                     self.move_fused(deltas)
-                    self.rebuild_volume()
+                    # Rebuilt once keyframes have moved about a voxel or half a degree since the
+                    # last rebuild: each takes seconds and holds two fields (10.4 GiB peaks when the
+                    # pose graph's small moves rebuilt it after nearly every solve).
+                    shift, turn = self.field_moved
+                    self.field_moved = (shift + moved, turn + turned)
+                    if self.field_moved[0] > FIELD_MOVE[0] or self.field_moved[1] > FIELD_MOVE[1]:
+                        self.field_moved = (0.0, 0.0)
+                        self.rebuild_volume()
 
     def remember_fused(self, depth, trust, pose, intrinsics, node):
         self.fused_frames.append(
