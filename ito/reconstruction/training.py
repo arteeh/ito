@@ -73,6 +73,11 @@ IDLE_MOVE = (0.03, math.radians(3))  # metres, radians
 AA = os.environ.get("ITO_AA", "0") != "0"
 MIP_3D = math.sqrt(0.2)
 MODE = "antialiased" if AA else "classic"
+# ITO_FIT_DIVERSE=1 (an experiment): a unit's views stand at least DIVERSE apart (metres,
+# radians) where the overlapping views allow it. The nearest views (the default choice) are
+# near-duplicates up close: no parallax to settle depth, only their millimetre pose jitter,
+# which training then paints into streaks.
+DIVERSE = (0.1, math.radians(10)) if os.environ.get("ITO_FIT_DIVERSE", "0") != "0" else None
 # ITO_FIT_BA=1 (an experiment): the partner views' poses train with the map, as MonoGS and
 # MoonSplat map (the chosen view holds the frame): a view a few millimetres off stops dragging
 # surfaces into streaks across the others. Larger corrections than ALIGN_LIMIT are dropped.
@@ -224,7 +229,21 @@ class ViewFit:
             if cosine > 0.7 and distance < 0.8:
                 scored.append((other.steps + 50 * (1 - cosine) + 20 * distance, other))
         scored.sort(key=lambda item: item[0])
-        return [other for _, other in scored[:PARTNERS]]
+        if DIVERSE is None:
+            return [other for _, other in scored[:PARTNERS]]
+        chosen, poses = [], [pose]
+        for _, other in scored:
+            o = other.fitting_pose if other.fitting_pose is not None else other.pose
+            if all(
+                np.linalg.norm(o[:3, 3] - q[:3, 3]) >= DIVERSE[0]
+                or float(o[:3, 2] @ q[:3, 2]) <= math.cos(DIVERSE[1])
+                for q in poses
+            ):
+                chosen.append(other)
+                poses.append(o)
+            if len(chosen) == PARTNERS:
+                break
+        return chosen or [other for _, other in scored[:PARTNERS]]
 
     def visible(self, centers, reach, pose, intrinsics, shape):
         """Mask of centers (N x 3, map frame, on CUDA) whose footprint (reach, metres) falls in
