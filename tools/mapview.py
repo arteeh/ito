@@ -84,6 +84,13 @@ def main():
     p.add_argument("maps", nargs="+", type=Path)
     p.add_argument("--labels", nargs="+")
     p.add_argument(
+        "--width",
+        type=int,
+        default=WIDTH,
+        help="cell width in pixels (same field of view): above 960 renders finer than the"
+        " sheets, as a headset eye does",
+    )
+    p.add_argument(
         "--antialiased",
         nargs="*",
         type=int,
@@ -91,6 +98,8 @@ def main():
         help="columns (from 0) whose maps were trained with ITO_AA=1",
     )
     a = p.parse_args()
+    global WIDTH, HEIGHT
+    WIDTH, HEIGHT = a.width, a.width * 9 // 16
     labels = a.labels or [m.parent.name for m in a.maps]
     loaded = [np.load(m) for m in a.maps]
     maps = [z["records"] for z in loaded]
