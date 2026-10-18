@@ -70,6 +70,15 @@ MODE = "antialiased" if AA else "classic"
 # ITO_FIT_SPARSE=<weight> (an experiment): 3DGS-MCMC's L1 on opacity. A Gaussian the photos
 # do not need fades below PRUNE_OPACITY and retires: floaters and doubled layers thin out.
 SPARSE = float(os.environ.get("ITO_FIT_SPARSE", "0") or 0)
+# ITO_FLOATERS=1 (an experiment): a frame only ever tests the map it finds, so what a bad frame
+# seeds is never tested against the views before it. Every FLOATER_EVERY units all live
+# Gaussians are tested against every retained view's depth: one that at least FLOATER_VIEWS
+# views see through (the nearest depth around its pixel lies beyond it), and twice as many
+# as see it on their surface, retires.
+FLOATERS = os.environ.get("ITO_FLOATERS", "0") != "0"
+FLOATER_EVERY = 8
+FLOATER_VIEWS = 2
+FLOATER_MARGIN = 0.1  # of depth, beyond the Gaussian's own extent
 # ITO_EXPOSURE=1: each view's colours are the map's times its gain plus its offset; both
 # train beside the map and stay near what the frame's own estimate said (gaussian.py).
 EXPOSURE_RATES = (2e-3, 1e-3)  # log gain, offset per Adam step
@@ -112,6 +121,7 @@ class ViewFit:
         self.pruned = 0
         self.aligned = 0
         self.filled = 0
+        self.floaters = 0
         self.seconds = dict(prepare=0.0, finish=0.0)  # CPU time outside the Adam steps
         self.threaded = False
 
@@ -207,6 +217,51 @@ class ViewFit:
         r = 3 * fx * reach / safe
         inside = (z > 0.01) & (u > -r) & (u < width + r) & (v > -r) & (v < height + r)
         return inside
+
+    def sweep(self):
+        """ITO_FLOATERS: retire Gaussians the retained views see through."""
+        b, torch = self.backend, self.torch
+        with b.lock:
+            live = np.flatnonzero((b.keys >= 0) & ~b.retiring)
+            if not len(live) or len(b.views) < 2:
+                return
+            centers = b.records[live, 0, :3].copy()
+            extent = b.records[live, 1, :3].max(-1).copy()
+            keys = b.keys[live].copy()
+            views = [
+                (v.fitting_pose if v.fitting_pose is not None else v.pose, v.depth, v.intrinsics)
+                for v in b.views
+            ]
+        c = self.tensor(centers)
+        r = self.tensor(extent)
+        through = torch.zeros(len(live), dtype=torch.int32, device="cuda")
+        surface = torch.zeros(len(live), dtype=torch.int32, device="cuda")
+        pool = torch.nn.functional.max_pool2d
+        for pose, depth, (fx, fy, cx, cy) in views:
+            d = self.tensor(depth)
+            # Nearest depth around each pixel: a silhouette a pixel off is not free space.
+            nearest = -pool(-torch.where(d > 0, d, 1e6)[None, None], 3, 1, 1)[0, 0]
+            local = (c - self.tensor(pose[:3, 3])) @ self.tensor(pose[:3, :3])
+            z = -local[:, 2]
+            u = torch.round(cx + fx * local[:, 0] / z.clamp_min(0.01)).long()
+            v = torch.round(cy - fy * local[:, 1] / z.clamp_min(0.01)).long()
+            h, w = d.shape
+            on = (z > 0.05) & (u >= 0) & (u < w) & (v >= 0) & (v < h)
+            uu, vv = u.clamp(0, w - 1), v.clamp(0, h - 1)
+            observed = d[vv, uu]
+            margin = FLOATER_MARGIN * z + 2 * r
+            seen = on & (observed > 0)
+            through += (seen & (nearest[vv, uu] > z + margin) & (nearest[vv, uu] < 1e5)).int()
+            surface += (seen & ((observed - z).abs() <= margin)).int()
+        gone = ((through >= FLOATER_VIEWS) & (through >= 2 * surface)).cpu().numpy()
+        if not gone.any():
+            return
+        with b.lock:
+            ids = live[gone]
+            ids = ids[(b.keys[ids] == keys[gone]) & ~b.retiring[ids]]
+            if len(ids):
+                b.retire(ids)
+                self.floaters += len(ids)
 
     def prepare(self):
         """Pick a view and its partners and copy the Gaussians they see. The map's lock is held
@@ -605,6 +660,11 @@ class ViewFit:
             pixels = a["pixels"].cpu().numpy()
             records = records.cpu().numpy()
         self.units += 1
+        if FLOATERS and self.units % FLOATER_EVERY == 0:
+            try:
+                self.sweep()
+            except Exception:
+                log.exception("Floater sweep failed")
         for target in a["targets"]:
             if target["exposure"] is not None:
                 target["view"].exposure = target["exposure"][0].detach().cpu().numpy()
