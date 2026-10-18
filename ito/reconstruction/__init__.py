@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import multiprocessing as mp
 import os
 import queue
@@ -54,6 +55,14 @@ def volume_statistics(volume):
         carved=volume.carved,
         cleared=volume.cleared,
     )
+
+
+def _camera(pose):
+    """The published camera for the timeline: x, y, z (m) and heading (degrees, left +)."""
+    if pose is None:
+        return None
+    heading = math.degrees(math.atan2(pose[0, 2], pose[2, 2]))
+    return [round(float(v), 3) for v in pose[:3, 3]] + [round(heading, 1)]
 
 
 def range_statistics(field):
@@ -371,6 +380,7 @@ def _run(recon):
                             ),
                             fused=volume_statistics(getattr(backend, "volume", None)),
                             global_graph=getattr(backend, "global_statistics", lambda: None)(),
+                            camera=_camera(getattr(backend, "camera_pose", None)),
                             tof_field=range_statistics(getattr(backend, "range_field", None)),
                             frame_delay_ms=round(backend.graph.td * 1000, 1)
                             if hasattr(backend, "graph")
