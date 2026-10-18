@@ -457,6 +457,7 @@ class SLAMBackend(GaussianBackend):
         ).astype(np.float32)
         image = cloud.colors.reshape(rows, columns, 3).cpu().numpy()
         hits = self.sensors.zone_hits(exposure, self.motion, cloud.intrinsics, cloud.shape)
+        self.zone_hits = hits
         with self.gpu_chunk("depth"):
             bent, used = self.range_field.correct(depth, image, hits)
         if COMPARE:
@@ -653,6 +654,7 @@ class SLAMBackend(GaussianBackend):
                 [self.intrinsics.fx, self.intrinsics.fy, self.intrinsics.cx, self.intrinsics.cy]
             ),
             captured=self.source_captured,
+            zones=np.array(getattr(self, "zone_hits", []), np.float32).reshape(-1, 3),
         )
 
     def place(self, cloud, pose, when, *, node, rgb=None):
