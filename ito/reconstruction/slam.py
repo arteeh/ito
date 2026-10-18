@@ -102,6 +102,10 @@ MAPSCALE_COVERED = 0.3
 # more than T (log depth) from its own depth. Seen again from elsewhere, an object mapped once
 # landed a second time beside itself: the new view's depth at its edge was off, not the object.
 MAP_AGREE = float(os.environ.get("ITO_MAP_AGREE", "0"))
+# ITO_MAP_MARGIN=F: map no depth from the outer F of the frame on each side. The plant pot, seen at
+# the edge of view while the robot walked up to the shelf and looked along it, landed beside
+# itself; at the edge of the rectified wide view every depth network is least sure.
+MARGIN = float(os.environ.get("ITO_MAP_MARGIN", "0"))
 # Only where the map's Gaussians there are finer than MAP_AGREE_WIDTH pixels of this view: a frame
 # much closer than the views that mapped a surface sees it in more detail and still maps it.
 MAP_AGREE_WIDTH = float(os.environ.get("ITO_MAP_AGREE_WIDTH", "1.5"))
@@ -576,6 +580,11 @@ class SLAMBackend(GaussianBackend):
         image = cloud.colors.detach().cpu().numpy().reshape(height, width, 3)
         valid = cloud.valid.detach().cpu().numpy().reshape(height, width)
         intrinsics = cloud.intrinsics
+        if MARGIN and not (self.truth is not None and self.truth[2] is not None and not COMPARE):
+            rows, columns = int(MARGIN * height), int(MARGIN * width)
+            valid = valid.copy()
+            valid[:rows], valid[height - rows :] = False, False
+            valid[:, :columns], valid[:, width - columns :] = False, False
         photo = None
         if DETAIL > 1 and rgb is not None:
             photo = self.photo(rgb, intrinsics, (height, width))
