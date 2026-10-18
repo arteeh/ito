@@ -40,6 +40,10 @@ TRACKING_FRAC = (
 # Added to the normal equations' diagonal: holds a keyframe no factor fixes in some direction
 # (relocalisation failed, no odometry) where it is; negligible beside any real factor.
 DAMPING = 1e-3
+EDGE_CHUNK = 32  # edge directions linearised per kernel launch (widened from compact storage)
+# A solve that would move a keyframe some solve already placed further than this (metres,
+# degrees) diverged; it is dropped. Loop closures in a room move keyframes centimetres.
+LIMIT = (0.5, 20.0)
 
 
 def skew(v):
@@ -108,7 +112,10 @@ class GlobalGraph:
         self.available = available
         self.stopped = stopped
         self.tracking_stream = tracking_stream
-        self.graph = FactorGraph(frontend.model, frontend.frames, frontend.K, device="cuda")
+        self.FactorGraph = FactorGraph
+        # Edges, each as upstream's FactorGraph holds them but compact: (i, j, idx i->j int32,
+        # idx j->i int32, valid j, valid i, Q i->j fp16, Q j->i fp16); widened per chunk to solve.
+        self.edges = []
         self.pairs = set()
         self.loops = []  # (keyframe, earlier keyframe) links retrieval found and matching kept
         self.relocalised = []
@@ -130,6 +137,9 @@ class GlobalGraph:
         self.loop_seconds = []
         self.last_change = (0.0, 0.0)  # largest correction of the last solve: metres, degrees
         self.failed = 0
+        self.rejected = 0
+        self.edge_bytes = 0
+        self.error = None
         with torch.inference_mode():
             self.retrieval = self._retriever(checkpoint, frontend.model)
         self.db = []  # retrieval database image id -> keyframe
@@ -192,7 +202,7 @@ class GlobalGraph:
     def statistics(self):
         return dict(
             keyframes=len(self.frontend.frames),
-            edges=int(self.graph.ii.numel()),
+            edges=len(self.edges),
             loops=len(self.loops),
             relocalised=len(self.relocalised),
             lost=len(self.lost),
@@ -203,7 +213,10 @@ class GlobalGraph:
             loop_ms=[round(s * 1000) for s in self.loop_seconds[-5:]],
             change=[round(v, 4) for v in self.last_change],
             failed=self.failed,
+            rejected=self.rejected,
             queued=self.tasks.qsize(),
+            edge_mb=round(self.edge_bytes / 2**20),
+            error=self.error,
         )
 
     # --- worker thread ---------------------------------------------------------------
@@ -249,14 +262,18 @@ class GlobalGraph:
                     errors = 0
                 except InterruptedError:
                     return
-                except torch.cuda.OutOfMemoryError:
+                except torch.cuda.OutOfMemoryError as exc:
                     log.exception("Global graph out of GPU memory; it skips this keyframe's solve")
                     self.failed += 1
+                    self.error = f"OOM: {exc}"[:300]
                     torch.cuda.empty_cache()
                     time.sleep(1.0)
-                except Exception:
+                except Exception as exc:
+                    import traceback
+
                     log.exception("Global graph step failed")
                     self.failed += 1
+                    self.error = "".join(traceback.format_exception(exc)[-3:])[-600:]
                     errors += 1
                     if errors >= 5:
                         log.error("Global graph stopped after repeated failures")
@@ -272,14 +289,29 @@ class GlobalGraph:
         if not pairs:
             return False
         self._wait()
-        before = int(self.graph.ii.numel())
-        added = self.graph.add_factors(
+        graph = self.FactorGraph(
+            self.frontend.model, self.frontend.frames, self.frontend.K, device="cuda"
+        )
+        added = graph.add_factors(
             [i for i, _ in pairs], [j for _, j in pairs], min_match_frac, is_reloc=is_reloc
         )
-        ii, jj = self.graph.ii[before:].tolist(), self.graph.jj[before:].tolist()
-        for i, j in zip(ii, jj, strict=True):
+        if not added:
+            return False
+        for e, (i, j) in enumerate(zip(graph.ii.tolist(), graph.jj.tolist(), strict=True)):
+            edge = (
+                i,
+                j,
+                graph.idx_ii2jj[e].int(),
+                graph.idx_jj2ii[e].int(),
+                graph.valid_match_j[e],
+                graph.valid_match_i[e],
+                graph.Q_ii2jj[e].half(),
+                graph.Q_jj2ii[e].half(),
+            )
+            self.edges.append(edge)
+            self.edge_bytes += sum(t.numel() * t.element_size() for t in edge[2:])
             self.pairs.add((min(i, j), max(i, j)))
-        return bool(added)
+        return True
 
     def _connect(self, n):
         """Upstream's backend step for keyframe n: retrieval (adding n to the database), the
@@ -409,78 +441,84 @@ class GlobalGraph:
         """All keyframes with a factor, Gauss-Newton as upstream's solve_GN_calib (the oldest
         pinned, points constrained to their rays, ITERATIONS steps), robot factors added."""
         torch = self.torch
+        import lietorch
         from mast3r_slam.geometry import constrain_points_to_ray
 
         cfg = self.config["local_opt"]
         frames = self.frontend.frames
+        edges = list(self.edges)
         with self.lock:
-            involved = set(self.graph.ii.tolist()) | set(self.graph.jj.tolist())
-            involved |= {k for k in self.gravity} | {j for _, j, *_ in self.odometry}
+            involved = {e[0] for e in edges} | {e[1] for e in edges}
+            involved |= set(self.gravity) | {j for _, j, *_ in self.odometry}
             involved |= {i for i, *_ in self.odometry}
         involved = sorted(k for k in involved if k < len(frames))
         if len(involved) < 2:
             return
         local = {k: i for i, k in enumerate(involved)}
         keyframes = [frames[k] for k in involved]
+        # The tracking thread replaces these tensors as it goes; hold them until the copies
+        # are done, or the allocator may hand their memory to its stream meanwhile.
+        held = [(kf.T_WC.data, kf.X_canon, kf.C, kf.N) for kf in keyframes]
         self._wait()
-        before = torch.stack([kf.T_WC.data.reshape(8) for kf in keyframes]).float().contiguous()
+        before = torch.stack([h[0].reshape(8) for h in held]).float().contiguous()
         img_size = keyframes[0].img.shape[-2:]
         height, width = img_size
         Xs = constrain_points_to_ray(
-            img_size, torch.stack([kf.X_canon for kf in keyframes]).float(), self.frontend.K
+            img_size, torch.stack([h[1] for h in held]).float(), self.frontend.K
         ).contiguous()
-        Cs = torch.stack([kf.get_average_conf() for kf in keyframes]).float().contiguous()
-        ii, jj, idx, valid, Q = self.graph.prep_two_way_edges()
-        lookup = torch.full((len(frames),), -1, dtype=torch.long, device=ii.device)
-        lookup[torch.as_tensor(involved, device=ii.device)] = torch.arange(
-            len(involved), device=ii.device
-        )
-        li, lj = lookup[ii].contiguous(), lookup[jj].contiguous()
-        idx, valid, Q = idx.contiguous(), valid.contiguous(), Q.float().contiguous()
+        Cs = torch.stack([h[2] / h[3] for h in held]).float().contiguous()
+        torch.cuda.current_stream().synchronize()
+        del held
         K = self.frontend.K.float().contiguous()
-        import lietorch
-
+        directions = [(local[e[0]], local[e[1]], e[2], e[4], e[6]) for e in edges] + [
+            (local[e[1]], local[e[0]], e[3], e[5], e[7]) for e in edges
+        ]
         poses = before.clone()
         n = len(involved)
         for _ in range(ITERATIONS):
-            self._wait()
-            Hs, gs = self.native.calib_linearize(
-                poses,
-                Xs,
-                Cs,
-                K,
-                li,
-                lj,
-                idx,
-                valid,
-                Q,
-                height,
-                width,
-                int(cfg["pixel_border"]),
-                float(cfg["depth_eps"]),
-                float(cfg["sigma_pixel"]),
-                float(cfg["sigma_depth"]),
-                float(cfg["C_conf"]),
-                float(cfg["Q_conf"]),
-            )
+            blocks, rows, cols, gradients, which = [], [], [], [], []
+            for start in range(0, len(directions), EDGE_CHUNK):
+                self._wait()
+                chunk = directions[start : start + EDGE_CHUNK]
+                li = torch.as_tensor([c[0] for c in chunk], device="cuda")
+                lj = torch.as_tensor([c[1] for c in chunk], device="cuda")
+                Hs, gs = self.native.calib_linearize(
+                    poses,
+                    Xs,
+                    Cs,
+                    K,
+                    li,
+                    lj,
+                    torch.stack([c[2] for c in chunk]).long().contiguous(),
+                    torch.stack([c[3] for c in chunk]).contiguous(),
+                    torch.stack([c[4] for c in chunk]).float().contiguous(),
+                    height,
+                    width,
+                    int(cfg["pixel_border"]),
+                    float(cfg["depth_eps"]),
+                    float(cfg["sigma_pixel"]),
+                    float(cfg["sigma_depth"]),
+                    float(cfg["C_conf"]),
+                    float(cfg["Q_conf"]),
+                )
+                blocks.append(Hs.reshape(-1, 7, 7).cpu())
+                rows.append(torch.cat((li, li, lj, lj)).cpu())
+                cols.append(torch.cat((li, lj, li, lj)).cpu())
+                gradients.append(gs.reshape(-1, 7).cpu())
+                which.append(torch.cat((li, lj)).cpu())
             A, ai, aj, b, bk = self._priors(poses.double().cpu().numpy(), local)
-            blocks = [Hs.reshape(-1, 7, 7).double().cpu()]
-            rows = [torch.cat((li, li, lj, lj)).cpu()]
-            cols = [torch.cat((li, lj, li, lj)).cpu()]
-            gradients = [gs.reshape(-1, 7).double().cpu()]
-            which = [torch.cat((li, lj)).cpu()]
             if A:
-                blocks.append(torch.as_tensor(np.array(A)))
+                blocks.append(torch.as_tensor(np.array(A), dtype=torch.float32))
                 rows.append(torch.as_tensor(ai))
                 cols.append(torch.as_tensor(aj))
-                gradients.append(torch.as_tensor(np.array(b)))
+                gradients.append(torch.as_tensor(np.array(b), dtype=torch.float32))
                 which.append(torch.as_tensor(bk))
             # The oldest keyframe is pinned: index -1 drops its blocks (upstream's num_fix=1).
             dx, ok = self.native.block_solve(
-                torch.cat(blocks).float(),
+                torch.cat(blocks),
                 torch.cat(rows) - 1,
                 torch.cat(cols) - 1,
-                torch.cat(gradients).float(),
+                torch.cat(gradients),
                 torch.cat(which) - 1,
                 n - 1,
                 0.0,
@@ -488,7 +526,8 @@ class GlobalGraph:
             )
             if not int(ok):
                 self.failed += 1
-                break
+                self.error = "normal equations not positive definite"
+                return
             step = -dx.to(device=poses.device, dtype=torch.float32)
             moved = lietorch.Sim3.exp(step) * lietorch.Sim3(poses[1:])
             poses = torch.cat((poses[:1], moved.data.reshape(-1, 8)))
@@ -498,8 +537,29 @@ class GlobalGraph:
         start = before.double().cpu().numpy()
         if not np.isfinite(after).all():
             self.failed += 1
+            self.error = "non-finite poses"
             return
         gauge = self.reference if self.reference in local else involved[-1]
+        moves = corrections(
+            dict(keyframes=involved, before=start, after=after, gauge=gauge),
+            dict(zip(involved, start, strict=True)),
+        )
+        worst = max(
+            (
+                _size(increment, sim3_matrix(start[local[k]])[0])
+                for k, (increment, _) in moves.items()
+                if k in self.owned
+            ),
+            default=(0.0, 0.0),
+        )
+        if worst[0] > LIMIT[0] or worst[1] > LIMIT[1]:
+            # Gauss-Newton has no line search: a step this large moved settled keyframes
+            # through the room; keep them, the next keyframe's solve starts afresh.
+            self.rejected += 1
+            self.error = (
+                f"rejected: a settled keyframe would move {worst[0]:.2f} m, {worst[1]:.0f} deg"
+            )
+            return
         self.solves += 1
         self.results.put(
             dict(
@@ -510,6 +570,15 @@ class GlobalGraph:
                 solve=self.solves,
             )
         )
+
+
+def _size(increment, pose):
+    """How far a world similarity carries a camera: metres of its centre, degrees of turn."""
+    s, rotation, _ = split(increment)
+    centre = pose[:3, 3]
+    shift = float(np.linalg.norm(increment[:3, :3] @ centre + increment[:3, 3] - centre))
+    angle = math.degrees(math.acos(np.clip((np.trace(rotation) - 1) / 2, -1, 1)))
+    return shift, angle
 
 
 def gauge_correction(before, after):
