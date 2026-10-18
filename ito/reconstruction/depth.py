@@ -178,7 +178,8 @@ class PromptedDepth:
                 fov_x=fov_x,
                 use_fp16=True,
             )
-        depth = torch.nan_to_num(out["depth"].float(), nan=0, posinf=0, neginf=0)
+        depth = out.get("metric_depth", out.get("depth"))
+        depth = torch.nan_to_num(depth.float(), nan=0, posinf=0, neginf=0)
         return depth.cpu().numpy()
 
 
