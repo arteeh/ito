@@ -22,7 +22,7 @@ from .gaussian import AXES, C0, EXPOSURE, exposed
 log = logging.getLogger(__name__)
 
 STEPS = int(os.environ.get("ITO_FIT_STEPS", "30"))  # per unit
-PARTNERS = 2  # overlapping views trained beside the chosen one
+PARTNERS = int(os.environ.get("ITO_FIT_PARTNERS", "2"))  # overlapping views trained beside the chosen one
 MAX_UNIT = 400_000
 SSIM_WEIGHT = 0.2
 DEPTH_WEIGHT = 0.1
