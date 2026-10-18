@@ -143,6 +143,10 @@ FUSE = TOF_MAP or os.environ.get("ITO_FUSE", "0") != "0"
 # ITO_TOF_FIELD=1: bend each frame's depth to the ToF's zone readings where they land
 # (rangefield.py), not only scale the whole frame by them.
 TOF_FIELD = os.environ.get("ITO_TOF_FIELD", "0") != "0"
+# ITO_TOF_ZONES=nearest: a zone's reading is the nearest target anywhere in its footprint, as a
+# real VL53 (and the sim with MICRODUCK_TOF_FOOTPRINT) reports it; default "centre": the range
+# along the zone's centre ray, as the sim's one ray per zone gives it.
+TOF_ZONES = os.environ.get("ITO_TOF_ZONES", "centre")
 TRUST_UNREAD = 0.3  # fusion's trust in a frame no ToF zone read, with the field on
 # ITO_DUMP=<dir> (a diagnostic): each mapped frame's image, depth as estimated and as agreed,
 # the sim's exact depth when ITO_TRUTH gives it, and its pose, one npz per frame.
@@ -536,7 +540,13 @@ class SLAMBackend(GaussianBackend):
             valid, -cloud.points[:, 2].reshape(rows, columns).float().cpu().numpy(), 0
         ).astype(np.float32)
         image = cloud.colors.reshape(rows, columns, 3).cpu().numpy()
-        hits = self.sensors.zone_hits(exposure, self.motion, cloud.intrinsics, cloud.shape)
+        if TOF_ZONES == "nearest":
+            footprints = self.sensors.zone_footprints(
+                exposure, self.motion, cloud.intrinsics, cloud.shape
+            )
+            hits = self.range_field.nearest(depth, footprints, cloud.intrinsics)
+        else:
+            hits = self.sensors.zone_hits(exposure, self.motion, cloud.intrinsics, cloud.shape)
         self.zone_hits = hits
         with self.gpu_chunk("depth"):
             bent, used, self.range_trust = self.range_field.correct(depth, image, hits)

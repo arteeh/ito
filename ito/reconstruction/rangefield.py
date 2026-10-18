@@ -11,6 +11,8 @@ correction away from them. So the pot moves back to where the ToF found it, the 
 import math
 import os
 
+import numpy as np
+
 # Spread of a zone's ratio: log depth, colour (0..1 per channel) and pixels (at 512 across).
 SIGMA_DEPTH = float(os.environ.get("ITO_TOF_FIELD_DEPTH", "0.15"))
 SIGMA_COLOUR = 0.15
@@ -40,6 +42,30 @@ class RangeField:
         self.device = device
         self.used = 0
         self.frames = 0
+
+    def nearest(self, depth, footprints, intrinsics):
+        """Zone samples (row, column, axial metres) from footprints (sensors.zone_footprints):
+        a VL53 reads the nearest target anywhere in a zone, so its reading belongs to the
+        footprint's pixel whose surface lies nearest the sensor, at the depth along that
+        pixel's ray where the distance from the sensor is the reading."""
+        fx, fy, cx, cy = intrinsics
+        samples = []
+        for pixels, reading, origin in footprints:
+            rows, columns = pixels[:, 0], pixels[:, 1]
+            d = depth[rows, columns]
+            keep = d > 0
+            if keep.sum() < 3:
+                continue
+            rows, columns, d = rows[keep], columns[keep], d[keep]
+            rays = np.stack(((columns - cx) / fx, -(rows - cy) / fy, -np.ones_like(d)), -1)
+            k = int(np.argmin(np.linalg.norm(rays * d[:, None] - origin, axis=1)))
+            u = rays[k]
+            uo, uu = float(u @ origin), float(u @ u)
+            disc = uo * uo - uu * (float(origin @ origin) - reading * reading)
+            if disc <= 0:
+                continue
+            samples.append((int(rows[k]), int(columns[k]), (uo + math.sqrt(disc)) / uu))
+        return samples
 
     def correct(self, depth, image, hits):
         """depth: H x W metres (0: none), image: H x W x 3 uint8, hits: (row, column, axial
