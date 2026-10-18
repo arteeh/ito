@@ -132,6 +132,58 @@ class MonoGeometry:
         return torch.nan_to_num(depth, nan=0, posinf=0, neginf=0).cpu().numpy()
 
 
+class VideoGeometry:
+    """Each mapped frame's depth from ViGeo 1.1 (arXiv 2605.30060; code Apache-2.0, weights
+    CC BY-NC 4.0), streaming: one frame per call, its attention carrying the earlier frames'
+    keys and values, so depth keeps one shape and one scale from frame to frame. The scale is
+    its own; callers scale it to theirs. ITO_VIGEO names a folder holding the ViGeo source
+    (ViGeo or src/ViGeo, with the vigeo package) and the weights (vigeo11/vigeo.pt); not
+    bundled."""
+
+    def __init__(self):
+        import torch
+
+        root = Path(os.environ["ITO_VIGEO"])
+        source = next((p for p in (root / "ViGeo", root / "src" / "ViGeo") if p.is_dir()), root)
+        if str(source) not in sys.path:
+            sys.path.insert(0, str(source))
+        from vigeo import ViGeo
+
+        self.torch = torch
+        net = ViGeo.from_pretrained(str(root / "vigeo11" / "vigeo.pt"))
+        # bfloat16 halves the ViT-g's 5 GB of weights; inference runs in it anyway.
+        self.net = net.to(torch.bfloat16).to("cuda").eval()
+        self.tokens = int(os.environ.get("ITO_VIGEO_TOKENS", "900"))
+        # Key/value cache across its 40 layers, in tokens: VIGEO_CONTEXT frames' worth. The
+        # first frame's tokens stay (anchors), so the scale holds to it.
+        self.budget = int(os.environ.get("ITO_VIGEO_CONTEXT", "8")) * self.tokens * 40
+        self.caches = None
+
+    def __call__(self, rgb, fov_x, size):
+        """Depth (size[1] x size[0], unknown but steady scale, 0: none) of the next frame."""
+        import cv2
+
+        torch = self.torch
+        image = cv2.resize(rgb, size, interpolation=cv2.INTER_AREA)
+        x = torch.as_tensor(image, device="cuda").permute(2, 0, 1)[None].float() / 255
+        with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
+            out = self.net.infer(
+                x,
+                mode="online",
+                kv_caches=self.caches,
+                num_tokens=self.tokens,
+                total_budget=self.budget,
+                reset_cache=self.caches is None,
+            )
+        self.caches = out["kv_caches"]
+        depth = out["depth_pred"] if "depth_pred" in out else out["depth"]
+        depth = depth.float().reshape(depth.shape[-2:])
+        mask = out.get("mask_pred")
+        if mask is not None:  # 1.1's valid-region head
+            depth = torch.where(mask.reshape(depth.shape).to(depth.device), depth, 0)
+        return torch.nan_to_num(depth, nan=0, posinf=0, neginf=0).cpu().numpy()
+
+
 class PromptedDepth:
     """A frame's dense metric depth from dToF-DMDC (CVPR 2026, MIT): MoGe-2 with a direct-ToF's
     sparse metric readings as a prompt. ITO_DMDC names a folder holding its source

@@ -12,6 +12,7 @@ from .depth import (
     MonoGeometry,
     MultiViewDepth,
     PromptedDepth,
+    VideoGeometry,
     log_field,
     nearest_views,
     resample,
@@ -96,6 +97,11 @@ MONO_GRID = (2, 2)
 # ITO_MONO_SCALE=1: MoGe-2's depth takes its metric scale from the ToF and the floor read on its
 # own surfaces, MASt3R's only beside them (MONO_MAST3R, log sigma).
 MONO_SCALE = os.environ.get("ITO_MONO_SCALE", "0") != "0"
+# ITO_DEPTH=vigeo maps ViGeo's streaming video depth (depth.py VideoGeometry) through the same
+# path as MoGe-2's. ITO_MONO_STEADY=T: the scale is the scale evidence of the last ~T seconds
+# pooled (weights decaying with age), not each frame's own: a video network keeps one scale
+# from frame to frame, while each frame's ToF or floor reading is a few percent off.
+MONO_STEADY = float(os.environ.get("ITO_MONO_STEADY", "0"))
 MONO_MAST3R = 0.1
 # ITO_TOF_VIA=moge: MASt3R's depth stays the map's, but the ToF reads its scale on MoGe-2's
 # surfaces (ranging_surface). On MASt3R's own, the reading jumped 10-20% for seconds after the
@@ -223,6 +229,8 @@ class SLAMBackend(GaussianBackend):
         self.map_conflicts = 0
         self.depth = MultiViewDepth() if DEPTH == "da3" else None
         self.mono = MonoGeometry() if DEPTH in ("moge", "hybrid") or TOF_VIA_MOGE else None
+        if DEPTH == "vigeo":
+            self.mono = VideoGeometry()
         # ITO_DEPTH=dmdc: dToF-DMDC's metric depth, prompted with the ToF's readings.
         self.prompted = PromptedDepth() if DEPTH == "dmdc" else None
         self.refine = None
@@ -624,6 +632,11 @@ class SLAMBackend(GaussianBackend):
                     self.depth_scales["mono_exact"] = scale_to(
                         self.truth[2], resample(depth, mast3r.shape)
                     )
+        if MONO_STEADY:
+            pooled = self.steady(
+                evidence if MONO_SCALE else [(math.log(scale), MONO_MAST3R)], self.source_captured
+            )
+            scale = pooled if pooled is not None else scale
         fit = log_field(depth, mast3r, MONO_GRID) if MONO_FIELD and not MONO_SCALE else None
         depth = depth * (fit[0] if fit is not None else scale)
         if DEPTH == "hybrid":
@@ -638,6 +651,20 @@ class SLAMBackend(GaussianBackend):
         if COMPARE:
             self.depth_scales["mono"] = scale
         return self.with_depth(cloud, depth)
+
+    def steady(self, evidence, now):
+        """exp of the weighted mean of log-scale evidence (value, sigma) seen over about the
+        last MONO_STEADY seconds, or None before any."""
+        last = getattr(self, "steady_time", None)
+        decay = 1.0 if last is None else math.exp(-max(now - last, 0.0) / MONO_STEADY)
+        self.steady_time = now
+        total = getattr(self, "steady_weight", 0.0) * decay
+        value = getattr(self, "steady_value", 0.0) * decay
+        for v, sigma in evidence:
+            total += sigma**-2
+            value += sigma**-2 * v
+        self.steady_weight, self.steady_value = total, value
+        return math.exp(value / total) if total > 0 else None
 
     def with_depth(self, cloud, depth):
         """The cloud with this axial depth (metres, covering the whole frame at any size) in
