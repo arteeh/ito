@@ -114,8 +114,9 @@ class Pi3Depth:
 
         net = Pi3()
         net.load_state_dict(load_file(root / "pi3" / "model.safetensors"))
-        # bfloat16 halves its 3.8 GB of float32 weights; it runs under bfloat16 autocast anyway.
-        self.net = net.to(torch.bfloat16).to("cuda").eval()
+        # float32 weights under bfloat16 autocast: cast to bfloat16 whole, some of its float32
+        # buffers meet bfloat16 weights in a matmul and it fails.
+        self.net = net.to("cuda").eval()
         self.torch = torch
 
     def __call__(self, images, cameras=None):
@@ -126,7 +127,7 @@ class Pi3Depth:
         batch = np.stack([cv2.resize(i, SIZE, interpolation=cv2.INTER_AREA) for i in images])
         x = torch.as_tensor(batch, device="cuda").permute(0, 3, 1, 2)[None].float() / 255
         with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-            out = self.net(x.to(torch.bfloat16))
+            out = self.net(x)
         return out["local_points"][0, ..., 2].float().cpu().numpy()
 
 
