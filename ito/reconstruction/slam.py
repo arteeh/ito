@@ -40,7 +40,7 @@ FLOOR_LEVEL = 0.05
 FLOOR_SIGMA = 0.4
 RANGE_SIGMA = 0.05
 SCALE_STEP = 0.01
-REFERENCES = 2  # retained views seen together with each new frame for its depth
+REFERENCES = int(os.environ.get("ITO_DA3_VIEWS", "2"))  # retained views seen with each new frame
 VIEWS_SIGMA = 0.05  # log-scale: a retained view's metric depth, seen in the same call
 SCALE_SIGMAS = dict(tof=RANGE_SIGMA, floor=FLOOR_SIGMA)
 # A frame laid onto the map's surfaces (align.py) tells fusion where the camera was this well.
@@ -61,9 +61,9 @@ HYBRID_AGREE = 0.08
 # also drops the MASt3R tracker: frames are placed by the robot's motion and the map alone.
 TRACKER = os.environ.get("ITO_TRACKER", "mast3r")
 DEPTH = "da3" if TRACKER == "map" else os.environ.get("ITO_DEPTH", "mast3r")
-# ITO_ALIGN=1 lays each frame's depth onto the map's surfaces (align.py) with MASt3R's depth too,
-# not only DA3's: where it was placed tells fusion where the camera was.
-ALIGN = DEPTH == "da3" or os.environ.get("ITO_ALIGN", "0") != "0"
+# ITO_ALIGN=1 (always with ITO_TRACKER=map) lays each frame's depth onto the map's surfaces
+# (align.py): where it was placed tells fusion where the camera was.
+ALIGN = TRACKER == "map" or os.environ.get("ITO_ALIGN", "0") != "0"
 # ITO_SCALE=graph: a frame's depth in metres by the scale fusion keeps over many ToF and floor
 # readings, not by the one this frame read (about 7% apart from frame to frame in the sim);
 # with it, registration lays a frame onto retained views without rescaling it to them, so
@@ -375,6 +375,13 @@ class SLAMBackend(GaussianBackend):
             sum(w * v for w, (v, _) in zip(weights, evidence, strict=True)) / sum(weights)
         )
         self.depth_scales = found | dict(scale=scale)
+        if COMPARE:
+            if found["views"]:
+                self.depth_scales["da3_views"] = float(np.median(found["views"]))
+            self.depth_scales |= {f"da3_{k}": found[k] for k in ("tof", "floor") if found[k]}
+            self.depth_scales["da3_scale"] = scale
+            if self.truth is not None and self.truth[2] is not None:
+                self.depth_scales["da3_exact"] = scale_to(self.truth[2], depth)
         return self.with_depth(cloud, depth * scale)
 
     def monocular(self, cloud, rgb, exposure):

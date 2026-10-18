@@ -6,13 +6,17 @@ scale per call. That scale is taken from the retained views' own metric depth: t
 surfaces land where the map already holds them, instead of where a pairwise guess put them.
 """
 
+import os
 import sys
+from pathlib import Path
 
 import numpy as np
 
 from .mast3r_runtime import MODELS
 
 ROOT = MODELS / "depth"  # depth_anything_3 source and DA3-BASE weights, from ito.build
+# ITO_DA3=giant (an experiment): DA3-GIANT-1.1 (CC BY-NC 4.0), weights from ITO_DA3_WEIGHTS.
+DA3_SIZE = os.environ.get("ITO_DA3", "base")
 SIZE = (504, 280)  # width, height the network sees: multiples of its 14-pixel patches
 MEAN = np.array((0.485, 0.456, 0.406), np.float32)
 STD = np.array((0.229, 0.224, 0.225), np.float32)
@@ -32,14 +36,20 @@ class MultiViewDepth:
         from depth_anything_3.cfg import create_object, load_config
         from depth_anything_3.registry import MODEL_REGISTRY
 
-        net = create_object(load_config(MODEL_REGISTRY["da3-base"]))
-        weights = load_file(ROOT / "model.safetensors")
+        weights_folder = Path(os.environ.get("ITO_DA3_WEIGHTS") or ROOT)
+        net = create_object(load_config(MODEL_REGISTRY[f"da3-{DA3_SIZE}"]))
+        weights = load_file(weights_folder / "model.safetensors")
         loaded = net.load_state_dict(
             {k.removeprefix("model."): v for k, v in weights.items()}, strict=False
         )
         # The release weights leave out an auxiliary head that inference never runs.
         if loaded.unexpected_keys or any("_aux" not in k for k in loaded.missing_keys):
             raise RuntimeError(f"Depth model weights do not fit DA3-BASE: {loaded}")
+        if DA3_SIZE != "base":
+            # The ViT in bfloat16 halves its weights (giant: 4.5 to 2.3 GB); the heads stay in
+            # float32 and run outside autocast, so the ViT hands them float32.
+            net.backbone.to(torch.bfloat16)
+            net.backbone.register_forward_hook(lambda module, args, output: _float(output))
         self.net = net.to("cuda").eval()
         self.torch = torch
         self.dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
@@ -97,6 +107,16 @@ class MonoGeometry:
             out = self.net.infer(x, fov_x=fov_x, num_tokens=MOGE_TOKENS, use_fp16=True)
         depth = out["depth"].float()
         return torch.nan_to_num(depth, nan=0, posinf=0, neginf=0).cpu().numpy()
+
+
+def _float(output):
+    import torch
+
+    if isinstance(output, torch.Tensor) and output.is_floating_point():
+        return output.float()
+    if isinstance(output, list | tuple):
+        return type(output)(_float(item) for item in output)
+    return output
 
 
 def nearest_views(views, pose, count):
