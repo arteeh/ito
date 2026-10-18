@@ -652,9 +652,10 @@ class GlobalGraph:
         frames = self.frontend.frames
         edges = list(self.edges)
         with self.lock:
+            # Only keyframes with a visual edge: one whose edges are not made yet (queued while
+            # the worker connected another) was posed by the robot's factors alone and pulled
+            # back by its edges one solve later, turning the room about it.
             involved = {e[0] for e in edges} | {e[1] for e in edges}
-            involved |= set(self.gravity) | {j for _, j, *_ in self.odometry}
-            involved |= {i for i, *_ in self.odometry}
         involved = sorted(k for k in involved if k < len(frames))
         if len(involved) < 2:
             return
