@@ -78,6 +78,12 @@ MODE = "antialiased" if AA else "classic"
 # near-duplicates up close: no parallax to settle depth, only their millimetre pose jitter,
 # which training then paints into streaks.
 DIVERSE = (0.1, math.radians(10)) if os.environ.get("ITO_FIT_DIVERSE", "0") != "0" else None
+# ITO_FIT_NEAR=1 (an experiment): a Gaussian's position steps shrink with its distance from
+# the unit's chosen view, below NEAR_DEPTH, as 3DGS scales position steps by the scene's size:
+# up close the views' millimetre pose errors are large against the surface, and full-size
+# steps paint them into streaks across books and plain walls.
+NEAR = os.environ.get("ITO_FIT_NEAR", "0") != "0"
+NEAR_DEPTH = 2.0  # metres
 # ITO_FIT_BA=1 (an experiment): the partner views' poses train with the map, as MonoGS and
 # MoonSplat map (the chosen view holds the frame): a view a few millimetres off stops dragging
 # surfaces into streaks across the others. Larger corrections than ALIGN_LIMIT are dropped.
@@ -442,6 +448,7 @@ class ViewFit:
             pixels=torch.zeros(len(ids), device="cuda"),
             largest=largest,
             smallest=smallest,
+            near=(distance / NEAR_DEPTH).clamp(0.1, 1.0)[:, None] if NEAR else None,
         )
         if POSES:
             rotation = torch.nn.Parameter(torch.zeros(3, device="cuda"))
@@ -679,7 +686,12 @@ class ViewFit:
                 if radius.dim() > 1:
                     radius = radius.max(-1).values
                 a["pixels"] = torch.maximum(a["pixels"], radius.float())
+            if a["near"] is not None:
+                before = p["means"].detach().clone()
             a["optimizer"].step()
+            if a["near"] is not None:
+                with torch.no_grad():
+                    p["means"].copy_(before + (p["means"] - before) * a["near"])
             a["optimizer"].zero_grad(set_to_none=True)
             with torch.no_grad():
                 p["quats"].copy_(torch.nn.functional.normalize(p["quats"], dim=-1))
