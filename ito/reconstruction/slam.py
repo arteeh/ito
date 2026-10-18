@@ -40,6 +40,10 @@ FLOOR_LEVEL = 0.05
 FLOOR_SIGMA = 0.4
 RANGE_SIGMA = 0.05
 SCALE_STEP = 0.01
+# ITO_DA3_EVERY=N: DA3 on every Nth frame with depth, MASt3R's depth between (with ITO_FUSE the
+# field holds both, DA3's weighed ITO_DA3_TRUST times: it is about a third as far off).
+DA3_EVERY = int(os.environ.get("ITO_DA3_EVERY", "1"))
+DA3_TRUST = float(os.environ.get("ITO_DA3_TRUST", "4"))
 REFERENCES = int(os.environ.get("ITO_DA3_VIEWS", "2"))  # retained views seen with each new frame
 VIEWS_SIGMA = 0.05  # log-scale: a retained view's metric depth, seen in the same call
 SCALE_SIGMAS = dict(tof=RANGE_SIGMA, floor=FLOOR_SIGMA)
@@ -247,6 +251,7 @@ class SLAMBackend(GaussianBackend):
         unchanged, beside them."""
         started = clock.now()
         self.truth = truth
+        self.from_da3 = False
         graph = self.graph
         exposure = captured - graph.td
         if not self.motion.covers(exposure):
@@ -339,8 +344,9 @@ class SLAMBackend(GaussianBackend):
             )
             if truth is not None and truth[2] is not None and not COMPARE:
                 cloud = self.with_depth(cloud, truth[2])
-            elif self.depth is not None:
+            elif self.depth is not None and self.depth_turn():
                 cloud = self.consistent(cloud, graph.pose(node), exposure)
+                self.from_da3 = True
             elif self.mono is not None:
                 cloud = self.monocular(cloud, rgb, exposure)
             if self.range_field is not None and not (
@@ -382,6 +388,10 @@ class SLAMBackend(GaussianBackend):
         exact = truth is not None and truth[2] is not None and not COMPARE
         if cloud is not None and (settled or exact):
             self.place(cloud, pose, now + clock.now() - started, node=node, rgb=rgb)
+
+    def depth_turn(self):
+        self.depth_frames = getattr(self, "depth_frames", -1) + 1
+        return self.depth_frames % DA3_EVERY == 0
 
     def consistent(self, cloud, pose, exposure):
         """The cloud with depth seen together with the retained views nearest it. Its scale
@@ -740,6 +750,8 @@ class SLAMBackend(GaussianBackend):
                 trust = self.range_trust
                 if self.range_field is not None and trust is None:
                     trust = np.full(depth.shape, TRUST_UNREAD, np.float32)
+                if self.from_da3 and DA3_EVERY > 1:
+                    trust = DA3_TRUST * (1 if trust is None else trust)
                 fused = self.volume.fuse(depth, mapped, intrinsics, trust)
                 if self.volume.frames % 2 == 0:
                     self.carve(mapped, intrinsics, depth.shape)
