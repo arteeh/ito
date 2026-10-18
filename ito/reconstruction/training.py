@@ -52,6 +52,11 @@ ALIGN_LIMIT = (math.radians(3), 0.05)  # a larger correction is a mismatch, not 
 # they agree on is seeded. A first glimpse that the next frame missed is not lost for good.
 FILL_REFERENCES = 6
 FILL_ALPHA = 0.5
+# The trainer thread's share of time on the GPU: after a step it rests as long again. A step
+# (a 1024 x 576 view, a few hundred thousand Gaussians) takes tens of milliseconds the pilot
+# view's frames would otherwise queue behind; at full duty they missed about 5% of 60 Hz
+# deadlines, against 2% without training.
+DUTY = float(os.environ.get("ITO_FIT_DUTY", "0.5"))
 
 
 def ssim(a, b, torch):
@@ -111,7 +116,11 @@ class ViewFit:
                         time.sleep(0.002)
                         continue
                     try:
+                        began = time.perf_counter()
                         progressed = self.step()
+                        torch.cuda.current_stream().synchronize()
+                        if progressed and 0 < DUTY < 1:
+                            time.sleep((time.perf_counter() - began) * (1 / DUTY - 1))
                         errors = 0
                     except torch.cuda.OutOfMemoryError as exc:
                         self.active = None
