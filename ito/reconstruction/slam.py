@@ -169,7 +169,8 @@ FLIP = np.diag([1.0, -1.0, -1.0])  # Ito axes <-> MASt3R's (OpenCV), for the glo
 # with ITO_SLAM=full its turns and tilt join the global graph. Unset: as before.
 HEAD_IMU = os.environ.get("ITO_HEAD_IMU", "0") != "0"
 MAP_MOVE = (0.002, 0.05, 0.002)  # metres, degrees, log-scale: a keyframe's move the map follows
-FIELD_MOVE = (0.012, 0.5)  # metres, degrees: keyframe moves that rebuild the fused field
+FIELD_MOVE = (0.02, 1.5)  # metres, degrees: keyframe moves that rebuild the fused field
+FIELD_INTERVAL = 20.0  # seconds: the least time from one field rebuild to the next
 
 
 class SLAMBackend(GaussianBackend):
@@ -267,6 +268,7 @@ class SLAMBackend(GaussianBackend):
         self.empty_window_frames = 0  # frames tracked while the pose graph had no keyframe
         self.robot_camera = None  # the robot's own camera pose at the last frame (timeline)
         self.field_moved = (0.0, 0.0)  # full: keyframe moves since the field was last rebuilt
+        self.field_rebuilt = -math.inf  # time.monotonic() of the last rebuild started
         self.keyframe_exposure = {}  # full: keyframe index -> exposure time (pilot clock)
         self.node_keyframe = {}  # full: frame node -> keyframe index its surfaces follow
         self.global_applied = 0
@@ -404,13 +406,15 @@ class SLAMBackend(GaussianBackend):
                 self.repose(deltas, self.node_keyframe)
                 if self.volume is not None:
                     self.move_fused(deltas)
-                    # Rebuilt once keyframes have moved about a voxel or half a degree since the
-                    # last rebuild: each takes seconds and holds two fields (10.4 GiB peaks when the
-                    # pose graph's small moves rebuilt it after nearly every solve).
+                    # A rebuild takes seconds and holds two fields: rebuilt after nearly every
+                    # solve the CUDA peak reached 10.4 GiB (hp-fullptn-loop). Only once keyframes
+                    # have moved 2 cm or 1.5 degrees since, and at most every FIELD_INTERVAL.
                     shift, turn = self.field_moved
                     self.field_moved = (shift + moved, turn + turned)
-                    if self.field_moved[0] > FIELD_MOVE[0] or self.field_moved[1] > FIELD_MOVE[1]:
+                    far = self.field_moved[0] > FIELD_MOVE[0] or self.field_moved[1] > FIELD_MOVE[1]
+                    if far and time.monotonic() - self.field_rebuilt >= FIELD_INTERVAL:
                         self.field_moved = (0.0, 0.0)
+                        self.field_rebuilt = time.monotonic()
                         self.rebuild_volume()
 
     def remember_fused(self, depth, trust, pose, intrinsics, node):
@@ -487,8 +491,10 @@ class SLAMBackend(GaussianBackend):
         self.volume = volume
         self.rebuilt = self.rebuilding = None
         self.volume_rebuilds += 1
+        # The old field's blocks go back to the driver, not into this process's cache.
+        _torch().cuda.empty_cache()
         if self.rebuild_again:
-            self.rebuild_volume()
+            self.field_moved = (math.inf, math.inf)  # rebuilt at the next solve the interval allows
 
     def queue_keyframe(self, node, exposure):
         """Full SLAM: hand the keyframe just kept to the global graph with the robot's factors."""
