@@ -36,6 +36,7 @@ class MultiViewDepth:
         from depth_anything_3.cfg import create_object, load_config
         from depth_anything_3.registry import MODEL_REGISTRY
 
+        _stub_evo()
         weights_folder = Path(os.environ.get("ITO_DA3_WEIGHTS") or ROOT)
         net = create_object(load_config(MODEL_REGISTRY[f"da3-{DA3_SIZE}"]))
         weights = load_file(weights_folder / "model.safetensors")
@@ -107,6 +108,20 @@ class MonoGeometry:
             out = self.net.infer(x, fov_x=fov_x, num_tokens=MOGE_TOKENS, use_fp16=True)
         depth = out["depth"].float()
         return torch.nan_to_num(depth, nan=0, posinf=0, neginf=0).cpu().numpy()
+
+
+def _stub_evo():
+    """DA3-GIANT's Gaussian head imports evo's trajectory alignment at load; depth never uses it,
+    and evo is not bundled."""
+    import importlib.util
+    import types
+
+    if importlib.util.find_spec("evo") is not None:
+        return
+    for name in ("evo", "evo.core", "evo.core.trajectory"):
+        module = sys.modules.setdefault(name, types.ModuleType(name))
+        module.__path__ = []
+    sys.modules["evo.core.trajectory"].PosePath3D = object
 
 
 def _float(output):
