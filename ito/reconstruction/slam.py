@@ -44,7 +44,10 @@ SCALE_STEP = 0.01
 # field holds both, DA3's weighed ITO_DA3_TRUST times: it is about a third as far off).
 DA3_EVERY = int(os.environ.get("ITO_DA3_EVERY", "1"))
 DA3_TRUST = float(os.environ.get("ITO_DA3_TRUST", "4"))
-REFERENCES = int(os.environ.get("ITO_DA3_VIEWS", "2"))  # retained views seen with each new frame
+REFERENCES = int(os.environ.get("ITO_DA3_VIEWS", "2"))
+# ITO_DA3_CAMS=1: DA3 is told each view's pose and the rectified view's intrinsics (its camera
+# tokens); offline on shelf-close its shape error fell from 5.2% to 4.5%.
+DA3_CAMS = os.environ.get("ITO_DA3_CAMS", "0") != "0"  # retained views seen with each new frame
 VIEWS_SIGMA = 0.05  # log-scale: a retained view's metric depth, seen in the same call
 SCALE_SIGMAS = dict(tof=RANGE_SIGMA, floor=FLOOR_SIGMA)
 # A frame laid onto the map's surfaces (align.py) tells fusion where the camera was this well.
@@ -403,8 +406,12 @@ class SLAMBackend(GaussianBackend):
         references = nearest_views(
             self.views, self.registration.map_from_estimator @ pose, REFERENCES
         )
+        cameras = None
+        if DA3_CAMS:
+            cameras = [(self.registration.map_from_estimator @ pose, cloud.intrinsics)]
+            cameras += [(view.pose, view.intrinsics) for view in references]
         with self.gpu_chunk("depth"):
-            depths = self.depth([image] + [view.image for view in references])
+            depths = self.depth([image] + [view.image for view in references], cameras)
         depth = depths[0]
         # Learned depth ramps across a silhouette; what lies on the ramp is neither surface.
         span = maximum_filter(depth, size=5) - minimum_filter(depth, size=5)

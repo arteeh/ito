@@ -18,6 +18,7 @@ ROOT = MODELS / "depth"  # depth_anything_3 source and DA3-BASE weights, from it
 # ITO_DA3=giant (an experiment): DA3-GIANT-1.1 (CC BY-NC 4.0), weights from ITO_DA3_WEIGHTS.
 DA3_SIZE = os.environ.get("ITO_DA3", "base")
 SIZE = (504, 280)  # width, height the network sees: multiples of its 14-pixel patches
+AXES = np.diag([1.0, -1.0, -1.0, 1.0])  # Ito camera (x right, y up, z back) to OpenCV
 MEAN = np.array((0.485, 0.456, 0.406), np.float32)
 STD = np.array((0.229, 0.224, 0.225), np.float32)
 
@@ -55,8 +56,10 @@ class MultiViewDepth:
         self.torch = torch
         self.dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
 
-    def __call__(self, images):
-        """Depths (N, SIZE[1], SIZE[0]) of uint8 RGB images seen together, one unknown scale."""
+    def __call__(self, images, cameras=None):
+        """Depths (N, SIZE[1], SIZE[0]) of uint8 RGB images seen together, one unknown scale.
+        cameras: per image (map-from-camera pose in Ito axes, (fx, fy, cx, cy) at the image's
+        size), handed to the network as its camera tokens."""
         import cv2
 
         torch = self.torch
@@ -68,8 +71,27 @@ class MultiViewDepth:
             ]
         )
         x = torch.as_tensor(batch, device="cuda").permute(0, 3, 1, 2)[None]
+        extrinsics = intrinsics = None
+        if cameras is not None:
+            world_to_camera = np.stack([np.linalg.inv(pose @ AXES) for pose, _ in cameras])
+            # As DA3's own api: relative to the first view, translations over their median.
+            world_to_camera = world_to_camera @ np.linalg.inv(world_to_camera[0])
+            centres = np.linalg.inv(world_to_camera)[:, :3, 3]
+            world_to_camera[:, :3, 3] /= max(float(np.median(np.linalg.norm(centres, axis=1))), 0.1)
+            matrices = []
+            for image, (_, (fx, fy, cx, cy)) in zip(images, cameras, strict=True):
+                sx, sy = SIZE[0] / image.shape[1], SIZE[1] / image.shape[0]
+                matrices.append(
+                    [
+                        [fx * sx, 0, (cx + 0.5) * sx - 0.5],
+                        [0, fy * sy, (cy + 0.5) * sy - 0.5],
+                        [0, 0, 1],
+                    ]
+                )
+            extrinsics = torch.as_tensor(world_to_camera, device="cuda", dtype=torch.float32)[None]
+            intrinsics = torch.as_tensor(matrices, device="cuda", dtype=torch.float32)[None]
         with torch.inference_mode(), torch.autocast("cuda", dtype=self.dtype):
-            output = self.net(x, None, None, [], False, False)
+            output = self.net(x, extrinsics, intrinsics, [], False, False)
         return output.depth[0].float().cpu().numpy()
 
 
