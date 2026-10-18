@@ -28,7 +28,8 @@ from scipy.spatial.transform import Rotation
 from .slots import KEEP, GaussianSlots
 
 C0 = 0.28209479177387814
-MAX_VIEWS = 24
+# ITO_FIT_VIEWS (an experiment): retained views training refines the map against.
+MAX_VIEWS = int(os.environ.get("ITO_FIT_VIEWS", "24"))
 DEPTH_TOLERANCE = 0.08  # Of depth: two estimates closer than this are one surface.
 COVERED = 0.85  # Rendered opacity above which a pixel is explained by the map.
 BLEND = 0.2  # Colour difference below which a view's light refines a surface's colour.

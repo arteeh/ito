@@ -21,7 +21,7 @@ from .gaussian import AXES, C0, EXPOSURE, exposed
 
 log = logging.getLogger(__name__)
 
-STEPS = 30
+STEPS = int(os.environ.get("ITO_FIT_STEPS", "30"))  # per unit
 PARTNERS = 2  # overlapping views trained beside the chosen one
 MAX_UNIT = 400_000
 SSIM_WEIGHT = 0.2
@@ -57,6 +57,9 @@ FILL_ALPHA = 0.5
 # view's frames would otherwise queue behind; at full duty they missed about 5% of 60 Hz
 # deadlines, against 2% without training.
 DUTY = float(os.environ.get("ITO_FIT_DUTY", "0.5"))
+# Every GLOBAL-th unit starts from the least trained of all retained views, the others from
+# the least trained of the last three (ITO_FIT_GLOBAL, an experiment; 1: always all views).
+GLOBAL = max(1, int(os.environ.get("ITO_FIT_GLOBAL", "4")))
 # ITO_EXPOSURE=1: each view's colours are the map's times its gain plus its offset; both
 # train beside the map and stay near what the frame's own estimate said (gaussian.py).
 EXPOSURE_RATES = (2e-3, 1e-3)  # log gain, offset per Adam step
@@ -162,7 +165,7 @@ class ViewFit:
         b = self.backend
         views = list(b.views)
         recent = views[-3:]
-        pool = recent if self.serial % 4 else views
+        pool = recent if self.serial % GLOBAL else views
         self.serial += 1
         return min(pool, key=lambda v: v.steps)
 
