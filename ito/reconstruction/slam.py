@@ -741,7 +741,8 @@ class SLAMBackend(GaussianBackend):
                 if self.range_field is not None and trust is None:
                     trust = np.full(depth.shape, TRUST_UNREAD, np.float32)
                 fused = self.volume.fuse(depth, mapped, intrinsics, trust)
-                self.carve(mapped, intrinsics, depth.shape)
+                if self.volume.frames % 2 == 0:
+                    self.carve(mapped, intrinsics, depth.shape)
             fx, fy, cx, cy = intrinsics
             v, u = np.mgrid[:height, :width].astype(np.float32)
             points = np.stack(((u - cx) / fx * fused, -(v - cy) / fy * fused, -fused), -1).astype(

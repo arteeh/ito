@@ -29,13 +29,17 @@ RADIAL = float(os.environ.get("ITO_FUSE_RADIAL", "8"))
 # And with distance: (1 m / depth) to this power, at most 1. Off by default: a guess that is
 # too near would weigh itself up.
 DISTANCE = float(os.environ.get("ITO_FUSE_DISTANCE", "0"))
-# A pixel takes the field's surface nearest its own depth within this share of it; with none
+# A pixel takes the field's surface nearest its own depth within this share of it (wider, and a
+# pixel of the wall beside a bookcase takes the bookcase's side); with none
 # there it keeps its own (a surface the field does not hold yet, or one it holds wrongly:
 # mapped, it contradicts what lies in front of it).
-SNAP = float(os.environ.get("ITO_FUSE_SNAP", "0.15"))
+SNAP = float(os.environ.get("ITO_FUSE_SNAP", "0.08"))
 # Space the field holds empty this surely (normalised distance, weight) refutes a pixel that
 # would put a surface there, and a mapped splat sitting there.
 FREE = (0.5, float(os.environ.get("ITO_FUSE_FREE_WEIGHT", "3")))
+# ITO_FUSE_CONFIRM=T: a pixel trusted less than T (rim, no ToF zone near) that finds no field
+# surface near its depth waits for the field to confirm it instead of mapping its own guess.
+CONFIRM = float(os.environ.get("ITO_FUSE_CONFIRM", "0"))
 FILL = os.environ.get("ITO_FUSE_FILL", "1") != "0"  # rays without depth search FILL_RANGE
 FILL_RANGE = (0.2, 4.0)  # metres
 STEPS = 24  # along a snap window
@@ -261,7 +265,7 @@ class Volume:
             out[chunk] = torch.where(hit, found.gather(1, best)[:, 0], 0)
         return out
 
-    def raycast(self, pose, intrinsics, depth):
+    def raycast(self, pose, intrinsics, depth, trust=None):
         """Axial depth (H x W, 0: none) for a frame: the field's surface nearest each pixel's
         own depth within SNAP of it, else its own; where it has none, (FILL) the field's
         first surface over FILL_RANGE."""
@@ -286,6 +290,8 @@ class Volume:
                 target,
             )
             free = self.free((rays[seen] * target[:, None]) @ rotation.T + origin)
+            if CONFIRM and trust is not None:
+                free |= self.tensor(trust).reshape(-1)[seen] < CONFIRM
             out[seen] = torch.where(found > 0, found, torch.where(free, 0, target))
             self.agreed += int((found > 0).sum())
             self.refuted += int((free & (found <= 0)).sum())
@@ -307,4 +313,4 @@ class Volume:
     def fuse(self, depth, pose, intrinsics, trust=None):
         """Integrate a frame's depth and give back the depth the field has along its rays."""
         self.integrate(depth, pose, intrinsics, trust)
-        return self.raycast(pose, intrinsics, depth)
+        return self.raycast(pose, intrinsics, depth, trust)

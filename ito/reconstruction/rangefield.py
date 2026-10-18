@@ -23,6 +23,15 @@ TRUST_HALF = 0.3  # summed zone weight at which trust is half way up
 LIMIT = math.log(2.0)  # a ratio past this is a zone hitting something the frame does not show
 
 
+def colour_distance(colour, at):
+    """Squared colour distance (K x H x W) of each pixel of colour (H x W x 3) to each of at
+    (K x 3), without a K x H x W x 3 intermediate."""
+    import torch
+
+    dot = torch.einsum("hwc,kc->khw", colour, at)
+    return ((colour**2).sum(-1)[None] - 2 * dot + (at**2).sum(-1)[:, None, None]).clamp_min(0)
+
+
 class RangeField:
     def __init__(self, device="cuda"):
         import torch
@@ -65,17 +74,16 @@ class RangeField:
             torch.arange(width, device=self.device, dtype=torch.float32),
             indexing="ij",
         )
-        numerator = torch.zeros_like(d)
-        denominator = torch.zeros_like(d)
-        for k in range(len(samples)):
-            r, c = rows[k], columns[k]
-            w = torch.exp(
-                -((v - r) ** 2 + (u - c) ** 2) / (2 * (SIGMA_PIXELS * scale) ** 2)
-                - (log_depth - log_depth[r, c]) ** 2 / (2 * SIGMA_DEPTH**2)
-                - ((colour - colour[r, c]) ** 2).sum(-1) / (2 * SIGMA_COLOUR**2)
-            )
-            numerator += w * ratios[k]
-            denominator += w
+        # All zones at once: K x H x W weights (64 zones of a 512 x 288 frame, 38 MB).
+        w = torch.exp(
+            -((v[None] - rows[:, None, None]) ** 2 + (u[None] - columns[:, None, None]) ** 2)
+            / (2 * (SIGMA_PIXELS * scale) ** 2)
+            - (log_depth[None] - log_depth[rows, columns][:, None, None]) ** 2
+            / (2 * SIGMA_DEPTH**2)
+            - colour_distance(colour, colour[rows, columns]) / (2 * SIGMA_COLOUR**2)
+        )
+        numerator = (w * ratios[:, None, None]).sum(0)
+        denominator = w.sum(0)
         field = numerator / (denominator + PRIOR)
         corrected = torch.where(d > 0, d * torch.exp(field), 0)
         trust = TRUST_FLOOR + (1 - TRUST_FLOOR) * denominator / (denominator + TRUST_HALF)
