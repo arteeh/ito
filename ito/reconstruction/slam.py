@@ -305,13 +305,16 @@ class SLAMBackend(GaussianBackend):
         pilot looks from) back to the robot's starting frame, as keyframe 0 was placed in it."""
         if self.global_graph is None or not self.frontend.frames or 0 not in self.map_poses:
             return None
-        from .mast3r_global import sim3_matrix, to_ito
+        from .mast3r_global import EDGES, level_correction, sim3_matrix, to_ito
 
         if self.first_pose is None:
             return None
-        now = to_ito(
-            sim3_matrix(self.frontend.frames[0].T_WC.data.reshape(8).double().cpu().numpy())[0]
-        )
+        now = sim3_matrix(self.frontend.frames[0].T_WC.data.reshape(8).double().cpu().numpy())[0]
+        if EDGES == "pose":
+            # The pose graph solves keyframe 0's tilt and height too; only its heading and floor
+            # position are the gauge's.
+            return to_ito(level_correction(to_ito(self.first_pose), now))
+        now = to_ito(now)
         now[:3, :3] /= np.cbrt(np.linalg.det(now[:3, :3]))
         return self.first_pose @ np.linalg.inv(now)
 
