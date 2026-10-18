@@ -18,6 +18,132 @@ from mjlab_microduck.sim.camera import Camera
 
 from drivers.microduck import lens, truth
 
+# Camera realism (local experiments; all off by default = the clean render as before). Motion
+# effects follow the camera's rotation between frames (the head's motion is mostly rotation:
+# at 60 deg/s a turn moves the image ~10x what walking at 0.15 m/s does at 1 m).
+# ITO_MICRODUCK_ROLLING=MS: rolling shutter, rows read top to bottom over MS milliseconds
+# (IMX219 at 1080p30: ~30); each row shows the scene at its own read time.
+ROLLING = float(os.environ.get("ITO_MICRODUCK_ROLLING", "0")) / 1000
+# ITO_MICRODUCK_SHUTTER=MS: motion blur of an MS millisecond exposure (indoors ~10-20).
+SHUTTER = float(os.environ.get("ITO_MICRODUCK_SHUTTER", "0")) / 1000
+# ITO_MICRODUCK_NOISE=S: sensor noise, read sigma S levels (of 255) plus shot noise growing with
+# the signal, taken at mid grey (S * sqrt(2)) for every level, per pixel and channel, every frame.
+NOISE = float(os.environ.get("ITO_MICRODUCK_NOISE", "0"))
+# ITO_MICRODUCK_EXPOSURE=TAU: auto exposure. A gain holds the frame's mean brightness at the first
+# frames' mean, following the view with a lag of TAU seconds: turning from the bright wall to the
+# dark bookcase brightens the next frames over ~TAU s, as an ISP does.
+EXPOSURE = float(os.environ.get("ITO_MICRODUCK_EXPOSURE", "0"))
+EXPOSURE_RANGE = (0.5, 2.5)
+# ITO_MICRODUCK_SHAKE=D: the image (not the robot's state) jitters by D degrees, one sigma, smoothly
+# over ~3 frames, about the optical axis and across it: mount play no joint reading sees.
+SHAKE = float(os.environ.get("ITO_MICRODUCK_SHAKE", "0"))
+REALISM = bool(ROLLING or SHUTTER or NOISE or EXPOSURE or SHAKE)
+
+
+def _matrix(q):
+    x, y, z, w = q
+    return np.array(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+        ]
+    )
+
+
+class Realism:
+    def __init__(self, width, height):
+        import cv2
+
+        self.cv = cv2
+        self.gain, self.target, self.last = 1.0, None, None
+        self.random = np.random.default_rng(int(os.environ.get("ITO_MICRODUCK_SEED", "7")))
+        self.shake = np.zeros(3)
+        # Pixels per radian near the middle of the 116-degree fisheye, near enough for jitter/flow.
+        self.focal = width / 2 / np.radians(58)
+        v, u = np.mgrid[:height, :width].astype(np.float32)
+        self.u, self.v = u, v
+        self.du, self.dv = u - width / 2, v - height / 2
+        self.row_time = (v / height - 0.5) * ROLLING  # seconds from the frame's middle row
+        # Noise: a bank of frames drawn once, one picked per frame (drawing 2.8M normals a
+        # frame costs ~30 ms, the camera's whole budget).
+        # Mid-grey sigma (S * sqrt(2)) for every level: shot noise's growth with the signal left out.
+        self.bank = (
+            np.round(self.random.standard_normal((6, height, width, 3)) * NOISE * 1.41).astype(np.int16)
+            if NOISE
+            else None
+        )
+
+    def flow(self, exposed):
+        """Image motion (pixels per second, u and v maps) of a rotating camera."""
+        if exposed is None:
+            return None
+        now, rotation = exposed["time"], _matrix(exposed["orientation"])
+        last, self.last = self.last, (now, rotation)
+        if last is None or not 0 < now - last[0] < 0.2:
+            return None
+        relative = last[1].T @ rotation  # camera axes: x right, y up, looking down -z
+        angle = np.arccos(np.clip((np.trace(relative) - 1) / 2, -1, 1))
+        if angle < 1e-6:
+            return None
+        axis = np.array(
+            [
+                relative[2, 1] - relative[1, 2],
+                relative[0, 2] - relative[2, 0],
+                relative[1, 0] - relative[0, 1],
+            ]
+        ) / (2 * np.sin(angle))
+        wx, wy, wz = (float(w) for w in axis * angle / (now - last[0]))
+        f = float(self.focal)
+        return f * wy - wz * self.dv, f * wx + wz * self.du
+
+    def __call__(self, rgb, exposed):
+        """One remap for rolling shutter and shake, a line blur along the motion, then
+        exposure gain and noise, all on uint8 (the camera thread has ~3 ms to spare)."""
+        cv2 = self.cv
+        flow = self.flow(exposed) if (ROLLING or SHUTTER) else None
+        mu = mv = None
+        if flow is not None and ROLLING:
+            fu, fv = flow
+            mu, mv = self.u - fu * self.row_time, self.v - fv * self.row_time
+        if SHAKE:
+            self.shake = 0.7 * self.shake + 0.71 * self.random.normal(0, np.radians(SHAKE), 3)
+            roll, (su, sv) = float(self.shake[0]), self.focal * self.shake[1:]
+            bu = self.u if mu is None else mu
+            bv = self.v if mv is None else mv
+            mu = bu - roll * self.dv + float(su)
+            mv = bv + roll * self.du + float(sv)
+        if mu is not None:
+            rgb = cv2.remap(
+                rgb,
+                mu.astype(np.float32),
+                mv.astype(np.float32),
+                cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_REFLECT,
+            )
+        if flow is not None and SHUTTER:
+            fu, fv = flow
+            du, dv = float(np.median(fu[::16, ::16])) * SHUTTER, float(np.median(fv[::16, ::16])) * SHUTTER
+            length = int(np.ceil(np.hypot(du, dv)))
+            if length >= 2:
+                size = 2 * (length // 2) + 1
+                kernel = np.zeros((size, size), np.float32)
+                c = size // 2
+                for k in np.linspace(-0.5, 0.5, 2 * size):
+                    kernel[int(round(c + k * dv)), int(round(c + k * du))] = 1
+                rgb = cv2.filter2D(rgb, -1, kernel / kernel.sum(), borderType=cv2.BORDER_REFLECT)
+        if EXPOSURE:
+            mean = float(rgb[::8, ::8].mean())
+            if self.target is None:
+                self.target = mean
+            wanted = np.clip(self.target / max(mean, 1.0), *EXPOSURE_RANGE)
+            self.gain += (wanted - self.gain) * (1 - np.exp(-1 / (FPS * EXPOSURE)))
+            rgb = cv2.convertScaleAbs(rgb, alpha=float(self.gain))
+        if NOISE:
+            noise = self.bank[self.random.integers(len(self.bank))]
+            rgb = np.clip(rgb.astype(np.int16) + noise, 0, 255).astype(np.uint8)
+        return rgb
+
 
 class Fisheye:
     """The beta's lens (lens.py), drawn from pinhole views, which are all MuJoCo renders: views
@@ -198,6 +324,10 @@ class HeadCamera(Camera):
 
     def publish(self, frames, exposed=None):
         rgb = frames[0] if self.blur == 1 else np.mean(frames, axis=0).astype(np.uint8)
+        if REALISM:
+            if not hasattr(self, "realism"):
+                self.realism = Realism(rgb.shape[1], rgb.shape[0])
+            rgb = self.realism(rgb, exposed)
         packed = self.uyvy(rgb)
         with self.lock:
             self.latest = packed
