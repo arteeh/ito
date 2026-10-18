@@ -39,6 +39,10 @@ SNAP = float(os.environ.get("ITO_FUSE_SNAP", "0.08"))
 # depth (unless the field holds it empty). Up close a frame's depth is a centimetre or two off,
 # as far as one book's spine stands from the next: a snap there takes the neighbour's surface.
 SNAP_FROM = float(os.environ.get("ITO_FUSE_SNAP_FROM", "0"))
+# ITO_FUSE_SNAP_KEEP=K: a pixel within K of the field's surface (share of its depth) keeps its own
+# depth; only one further off (an inconsistent guess, a floor patch floating up) snaps. Within
+# that, views agree and their own depth carries the detail the field's average blurs.
+SNAP_KEEP = float(os.environ.get("ITO_FUSE_SNAP_KEEP", "0"))
 # Space the field holds empty (normalised distance above FREE) with FREE_AGAINST times the weight
 # of a pixel that would put a surface there refutes the pixel; a mapped splat sitting in
 # space held empty with weight FREE_SPLAT retires. Relative, since weights fall with depth:
@@ -380,6 +384,9 @@ class Volume:
             if SNAP_FROM:
                 found = torch.where(target < SNAP_FROM, 0, found)
                 own = torch.where(target < SNAP_FROM, target, own)
+            if SNAP_KEEP:
+                near = (found > 0) & ((found - target).abs() < SNAP_KEEP * target)
+                found = torch.where(near, target, found)
             out[seen] = torch.where(found > 0, found, torch.where(free, 0, own))
             self.agreed += int((found > 0).sum())
             self.refuted += int((free & (found <= 0)).sum())
