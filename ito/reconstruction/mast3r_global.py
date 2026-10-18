@@ -732,9 +732,17 @@ class GlobalGraph:
         if len(involved) < 2:
             return
         local = {k: i for i, k in enumerate(involved)}
-        if EDGES == "pose":
+        gauge = self.reference if self.reference in local else involved[-1]
+        if GAUGE == "settled" and (gauge not in self.owned or gauge in self.unsettled):
+            parent = self.tracking.get(gauge)
+            if parent in local and parent in self.owned and parent not in self.unsettled:
+                gauge = parent
+        self.gauges.append(gauge)
+        del self.gauges[:-20]
+        level = EDGES == "pose"
+        if level:
             self._refresh(edges)
-            result = self._pose(edges, involved, local)
+            result = self._pose(edges, involved, local, local[gauge])
         else:
             result = self._dense(edges, involved, local)
         if result is None:
@@ -744,15 +752,8 @@ class GlobalGraph:
             self.failed += 1
             self.error = "non-finite poses"
             return
-        gauge = self.reference if self.reference in local else involved[-1]
-        if GAUGE == "settled" and (gauge not in self.owned or gauge in self.unsettled):
-            parent = self.tracking.get(gauge)
-            if parent in local and parent in self.owned and parent not in self.unsettled:
-                gauge = parent
-        self.gauges.append(gauge)
-        del self.gauges[:-20]
         moves = corrections(
-            dict(keyframes=involved, before=start, after=after, gauge=gauge),
+            dict(keyframes=involved, before=start, after=after, gauge=gauge, level=level),
             dict(zip(involved, start, strict=True)),
         )
         self.worst = max(
@@ -808,11 +809,12 @@ class GlobalGraph:
                 before=start,
                 after=after,
                 gauge=gauge,
+                level=level,
                 solve=self.solves,
             )
         )
 
-    def _pose(self, edges, involved, local):
+    def _pose(self, edges, involved, local, fix):
         """ITO_SLAM_EDGES=pose: solve_pose_graph on the keyframes' poses now, each edge's own
         relative pose and the robot's factors. Returns poses before and after (Sim3 data)."""
         torch = self.torch
@@ -847,7 +849,9 @@ class GlobalGraph:
                 if i in local and j in local
             ]
             scales = [(local[k], list(v)) for k, v in self.scales.items() if k in local and v]
-        after, self.steps = solve_pose_graph(start, pairs, gravity, height, odometry, turns, scales)
+        after, self.steps = solve_pose_graph(
+            start, pairs, gravity, height, odometry, turns, scales, fix=fix
+        )
         return start, after
 
     def _dense(self, edges, involved, local):
@@ -971,12 +975,15 @@ class GlobalGraph:
         return before.double().cpu().numpy(), poses.double().cpu().numpy()
 
 
-def solve_pose_graph(start, pairs, gravity, height, odometry, turns, scales):
+def solve_pose_graph(start, pairs, gravity, height, odometry, turns, scales, fix=0):
     """Keyframe poses start (n, 8 Sim3 data, MASt3R axes; the first pinned) solved against
     pairs (i, j, relative 4x4 similarity edge i -> j, match fraction), Cauchy-robust, and the
     robot's factors: gravity (k, up seen, sigma), height (k, y, sigma), odometry (i, j, rotation,
-    translation, sigma[6]), turns (i, j, rotation, sigma), scales (k, log readings). Returns the
-    poses after (Sim3 data) and [cost, evaluations]."""
+    translation, sigma[6]), turns (i, j, rotation, sigma), scales (k, log readings). Keyframe
+    `fix` keeps its place across the floor and its heading (what nothing observes); its tilt,
+    height and scale are solved like every other's (pinning them whole fought the robot's
+    gravity and turned the room a little more each solve). Returns the poses after (Sim3 data)
+    and [cost, evaluations]."""
     from scipy.optimize import least_squares
     from scipy.sparse import lil_matrix
     from scipy.spatial.transform import Rotation
@@ -1028,12 +1035,8 @@ def solve_pose_graph(start, pairs, gravity, height, odometry, turns, scales):
 
     def unpack(x):
         delta = x.reshape(-1, 7)
-        rotations = Rotation.concatenate([r0[:1], Rotation.from_rotvec(delta[:, 0:3]) * r0[1:]])
-        centres = c0.copy()
-        centres[1:] += delta[:, 3:6]
-        logs = l0.copy()
-        logs[1:] += delta[:, 6]
-        return rotations, centres, logs
+        rotations = Rotation.from_rotvec(delta[:, 0:3]) * r0
+        return rotations, c0 + delta[:, 3:6], l0 + delta[:, 6]
 
     def residuals(x):
         rotations, centres, logs = unpack(x)
@@ -1064,6 +1067,8 @@ def solve_pose_graph(start, pairs, gravity, height, odometry, turns, scales):
             out.append((turned / t_sigma[:, None]).ravel())
         if len(si):
             out.append((logs[si] - s_centre) / s_sigma)
+        held = x.reshape(-1, 7)[fix]
+        out.append(np.array([held[1], held[3], held[5]]) / 1e-5)  # yaw (world y), x, z
         return np.concatenate(out)
 
     rows = []  # (row count, local keyframes it depends on) per factor, in residuals' order
@@ -1071,16 +1076,16 @@ def solve_pose_graph(start, pairs, gravity, height, odometry, turns, scales):
     rows += [(3, (a,)) for a in gi] + [(1, (a,)) for a in hi]
     rows += [(6, (a, b)) for a, b in zip(oi, oj, strict=True)]
     rows += [(3, (a, b)) for a, b in zip(ti, tj, strict=True)] + [(1, (a,)) for a in si]
-    sparsity = lil_matrix((sum(r for r, _ in rows), 7 * (n - 1)), dtype=int)
+    rows += [(3, (fix,))]
+    sparsity = lil_matrix((sum(r for r, _ in rows), 7 * n), dtype=int)
     row = 0
     for count, keyframes in rows:
         for k in keyframes:
-            if k > 0:
-                sparsity[row : row + count, 7 * (k - 1) : 7 * k] = 1
+            sparsity[row : row + count, 7 * k : 7 * k + 7] = 1
         row += count
     result = least_squares(
         residuals,
-        np.zeros(7 * (n - 1)),
+        np.zeros(7 * n),
         jac_sparsity=sparsity,
         method="trf",
         x_scale="jac",
@@ -1122,6 +1127,22 @@ def gauge_correction(before, after):
     return d
 
 
+def level_correction(before, after):
+    """The rigid D (MASt3R axes, +y down) turning about the vertical and sliding across the
+    floor only, with D @ after keeping the gauge keyframe's heading and floor position: the
+    pose graph solves tilt and height against gravity and the floor, which D must not undo."""
+    from scipy.spatial.transform import Rotation
+
+    _, rb, tb = split(before)
+    _, ra, ta = split(after)
+    turn = math.atan2(rb[0, 2], rb[2, 2]) - math.atan2(ra[0, 2], ra[2, 2])
+    d = np.eye(4)
+    d[:3, :3] = Rotation.from_rotvec([0.0, turn, 0.0]).as_matrix()
+    moved = d[:3, :3] @ ta
+    d[:3, 3] = [tb[0] - moved[0], 0.0, tb[2] - moved[2]]
+    return d
+
+
 def corrections(result, current):
     """Per keyframe: the world similarity (MASt3R axes) taking its pose now to its solved pose
     under the gauge. current: keyframe -> Sim3 data now (the tracking thread may have moved a
@@ -1130,7 +1151,10 @@ def corrections(result, current):
     before = sim3_matrix(result["before"])
     after = sim3_matrix(result["after"])
     g = keyframes.index(result["gauge"])
-    d = gauge_correction(before[g], after[g])
+    if result.get("level"):
+        d = level_correction(before[g], after[g])
+    else:
+        d = gauge_correction(before[g], after[g])
     out = {}
     for i, k in enumerate(keyframes):
         increment = d @ after[i] @ np.linalg.inv(before[i])
