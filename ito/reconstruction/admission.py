@@ -24,6 +24,7 @@ GPU_STAGES = (
     "coverage",
     "depth",
     "consensus",
+    "fuse",
 )
 
 

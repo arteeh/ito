@@ -119,6 +119,9 @@ MAPSCALE_RANGE = (0.85, 1.15)
 REFINE = os.environ.get("ITO_REFINE", "0") != "0"
 # Map only depth another view agrees on (consensus.py); ITO_CONSENSUS=0 maps every guess.
 CONSENSUS = os.environ.get("ITO_CONSENSUS", "1") != "0"
+# ITO_FUSE=1: every frame's depth is fused into a signed distance field (volume.py) and the
+# frame is mapped by the field's depth along its rays; it takes consensus's place.
+FUSE = os.environ.get("ITO_FUSE", "0") != "0"
 # ITO_DUMP=<dir> (a diagnostic): each mapped frame's image, depth as estimated and as agreed,
 # the sim's exact depth when ITO_TRUTH gives it, and its pose, one npz per frame.
 DUMP = os.environ.get("ITO_DUMP")
@@ -200,7 +203,12 @@ class SLAMBackend(GaussianBackend):
 
             self.refine = FrameAlign(self)
         self.consensus = None
-        if CONSENSUS:
+        self.volume = None
+        if FUSE:
+            from .volume import Volume
+
+            self.volume = Volume()
+        elif CONSENSUS:
             from .consensus import Consensus
 
             self.consensus = Consensus()
@@ -670,6 +678,16 @@ class SLAMBackend(GaussianBackend):
                     self.graph.solve_frame()
         if self.truth is not None and self.truth[2] is not None and not COMPARE:
             scale = 1.0
+        elif self.volume is not None:
+            depth = np.where(valid, -points[..., 2] * scale, 0).astype(np.float32)
+            with self.gpu_chunk("fuse"):
+                fused = self.volume.fuse(depth, mapped, intrinsics)
+            fx, fy, cx, cy = intrinsics
+            v, u = np.mgrid[:height, :width].astype(np.float32)
+            points = np.stack(
+                ((u - cx) / fx * fused, -(v - cy) / fy * fused, -fused), -1
+            ).astype(np.float32)
+            valid, scale = fused > 0, 1.0
         elif self.consensus is not None:
             depth = np.where(valid, -points[..., 2] * scale, 0).astype(np.float32)
             with self.gpu_chunk("consensus"):

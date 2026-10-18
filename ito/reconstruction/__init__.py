@@ -42,6 +42,14 @@ STOP_WAIT = 0.5
 DEFAULT_MAX_SPLATS = 1_000_000
 
 
+def volume_statistics(volume):
+    if volume is None:
+        return None
+    return dict(
+        blocks=volume.count, bytes=volume.nbytes, filled=volume.filled, agreed=volume.agreed
+    )
+
+
 def default_budget(renderer: str = "") -> int:
     if any(name in renderer.lower() for name in ("llvmpipe", "softpipe", "software")):
         return 16_384
@@ -351,6 +359,7 @@ def _run(recon):
                             consensus_dropped=getattr(
                                 getattr(backend, "consensus", None), "dropped", None
                             ),
+                            fused=volume_statistics(getattr(backend, "volume", None)),
                             frame_delay_ms=round(backend.graph.td * 1000, 1)
                             if hasattr(backend, "graph")
                             else None,
