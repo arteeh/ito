@@ -93,6 +93,10 @@ MONO_MAST3R = 0.1
 # from the first frame): the first seconds' scale swung from 7% short to 10% long in the sim,
 # and what they mapped stays.
 SCALE_SETTLED = int(os.environ.get("ITO_SCALE_SETTLED", "25"))
+# ITO_SETTLE_RANGES=N: with a well-shaped depth (ITO_DEPTH=moge|da3) the ToF reads the scale to a
+# few percent and the floor alone does not (10% off on MoGe-2's surfaces), so mapping waits for N
+# ToF readings, or for 4 x SCALE_SETTLED tracked frames on a robot whose ToF never answers.
+SETTLE_RANGES = int(os.environ.get("ITO_SETTLE_RANGES", "0"))
 MAPSCALE_COVERED = 0.3
 MAPSCALE_RANGE = (0.85, 1.15)
 # ITO_REFINE=1 lays each frame onto the map photometrically before mapping it (training.py
@@ -171,6 +175,7 @@ class SLAMBackend(GaussianBackend):
         self.truth = None
         self.pose_error = None
         self.scale_readings = 0
+        self.range_readings = 0
         self.depth = MultiViewDepth() if DEPTH == "da3" else None
         self.mono = MonoGeometry() if DEPTH in ("moge", "hybrid") else None
         self.refine = None
@@ -261,6 +266,7 @@ class SLAMBackend(GaussianBackend):
                     unscaled = -cloud.points[:, 2].reshape(cloud.shape).float().cpu().numpy()
                     valid = cloud.valid.reshape(cloud.shape).cpu().numpy()
                     self.depth_scales["exact"] = scale_to(truth[2], np.where(valid, unscaled, 0))
+            self.range_readings += ranged is not None
             for value, sigma in seen:
                 graph.add_scale(value, sigma)
                 self.scale_readings += 1
@@ -329,6 +335,8 @@ class SLAMBackend(GaussianBackend):
                 self.aligned += 1
         pose = self._publish(node)
         settled = self.scale_readings >= SCALE_SETTLED or self.tracked > 4 * SCALE_SETTLED
+        if SETTLE_RANGES:
+            settled = self.range_readings >= SETTLE_RANGES or self.tracked > 4 * SCALE_SETTLED
         exact = truth is not None and truth[2] is not None and not COMPARE
         if cloud is not None and (settled or exact):
             self.place(cloud, pose, now + clock.now() - started, node=node, rgb=rgb)
