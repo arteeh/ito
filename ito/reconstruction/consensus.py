@@ -13,6 +13,7 @@ surface waits for the next frame to confirm it.
 """
 
 import math
+import os
 from collections import deque
 
 import numpy as np
@@ -23,6 +24,15 @@ RETAINED = 4  # and retained views facing most like it
 NEEDED = 1  # other views that must agree (the frame itself is one more)
 FACING = math.cos(math.radians(60))
 NEAREST = 1.5  # metres: retained views further than this from the camera are not asked
+# ITO_WITNESSES=N: also up to N retained views that look at the frame's surfaces from elsewhere
+# (any heading, within WITNESS_RANGE of them). A point WITNESS_NEEDED of them see well past
+# (WITNESS_MARGIN of depth) lies in space they saw empty. From the bookshelf, the plant pot
+# at the edge of view landed beside itself; the views from the start had seen the wall there.
+WITNESSES = int(os.environ.get("ITO_WITNESSES", "0"))
+WITNESS_RANGE = 4.0
+WITNESS_FACING = math.cos(math.radians(40))
+WITNESS_MARGIN = 0.1
+WITNESS_NEEDED = 2
 
 
 class Consensus:
@@ -51,21 +61,53 @@ class Consensus:
             chosen.append((view.depth, view.pose, view.intrinsics, view.captured))
         return chosen
 
+    def witnesses(self, depth, pose, intrinsics, views, references):
+        """Retained views that see this frame's middle surface from furthest off its heading."""
+        if not WITNESSES or not (depth > 0).any():
+            return []
+        height, width = depth.shape
+        middle = depth[height // 4 : 3 * height // 4, width // 4 : 3 * width // 4]
+        middle = middle[middle > 0]
+        if not len(middle):
+            return []
+        point = pose[:3, 3] - pose[:3, 2] * float(np.median(middle))
+        taken = {round(r[3], 4) for r in references}
+        scored = []
+        for view in views:
+            if round(view.captured, 4) in taken or view.depth is None:
+                continue
+            toward = point - view.pose[:3, 3]
+            distance = float(np.linalg.norm(toward))
+            if not 0.2 < distance < WITNESS_RANGE:
+                continue
+            if float(-view.pose[:3, 2] @ toward) / distance < WITNESS_FACING:
+                continue
+            scored.append((float(view.pose[:3, 2] @ pose[:3, 2]), view))
+        scored.sort(key=lambda item: item[0])
+        return [
+            (view.depth, view.pose, view.intrinsics, view.captured)
+            for _, view in scored[:WITNESSES]
+        ]
+
     def fuse(self, depth, pose, intrinsics, captured, views):
         """depth (H x W metres, 0: none) of a camera at pose (map-from-camera, Ito axes) ->
         (depth agreed by NEEDED other views, 0 elsewhere; agreeing views per pixel)."""
         references = self.references(pose, views)
+        witnesses = self.witnesses(depth, pose, intrinsics, views, references)
         self.recent.append((depth.copy(), pose.copy(), intrinsics, captured))
-        fused, agree = agreed(depth, pose, intrinsics, references, self.torch, self.device)
+        fused, agree = agreed(
+            depth, pose, intrinsics, references, self.torch, self.device, witnesses
+        )
         kept = int((fused > 0).sum())
         self.kept += kept
         self.dropped += int((depth > 0).sum()) - kept
         return fused, agree
 
 
-def agreed(depth, pose, intrinsics, references, torch, device="cuda"):
+def agreed(depth, pose, intrinsics, references, torch, device="cuda", witnesses=()):
     """depth where NEEDED of references (depth, pose, intrinsics, ...) see the same surface,
-    as the mean of the agreeing views' depths (0 elsewhere), and the agreeing count."""
+    as the mean of the agreeing views' depths (0 elsewhere), and the agreeing count. Where
+    WITNESS_NEEDED witnesses see well past a point, it is dropped."""
 
     def tensor(value):
         return torch.as_tensor(np.asarray(value), device=device, dtype=torch.float32)
@@ -83,7 +125,10 @@ def agreed(depth, pose, intrinsics, references, torch, device="cuda"):
     total = d.clone()
     agree = torch.zeros_like(d)
     against = torch.zeros_like(d)
-    for ref_depth, ref_pose, ref_intrinsics, *_ in references:
+    passed = torch.zeros_like(d)
+    for index, (ref_depth, ref_pose, ref_intrinsics, *_) in enumerate(
+        list(references) + list(witnesses)
+    ):
         rh, rw = ref_depth.shape
         rfx, rfy, rcx, rcy = ref_intrinsics
         seen = (world - tensor(ref_pose[:3, 3])) @ tensor(ref_pose[:3, :3])
@@ -96,11 +141,14 @@ def agreed(depth, pose, intrinsics, references, torch, device="cuda"):
         found[inside] = tensor(ref_depth)[rv[inside], ru[inside]]
         known = inside & (found > 0)
         relative = (found - z) / safe
+        if index >= len(references):
+            passed += known & (relative > WITNESS_MARGIN)
+            continue
         ok = known & (relative.abs() < AGREE)
         # The reference's surface, moved along this camera's ray by the same share.
         total += torch.where(ok, d * found / safe, 0)
         agree += ok
         against += known & (relative > AGREE)
-    keep = (agree >= NEEDED) & (against < agree) & (d > 0)
+    keep = (agree >= NEEDED) & (against < agree) & (passed < WITNESS_NEEDED) & (d > 0)
     fused = torch.where(keep, total / (agree + 1), 0)
     return fused.cpu().numpy(), agree.cpu().numpy()
