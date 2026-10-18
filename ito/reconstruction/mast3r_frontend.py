@@ -1,4 +1,5 @@
 import math
+import os
 
 import numpy as np
 
@@ -14,6 +15,13 @@ VISUAL_ROTATION = math.radians(0.5)
 VISUAL_TRANSLATION = 0.02
 SCALE_PRIOR = 0.1
 UNKNOWN = np.full(6, np.inf)
+# ITO_SLAM=full (mast3r_global.py): every keyframe kept in one global graph, upstream's
+# weighted pointmap filtering, a reference chosen by place as well as direction, retrieval when
+# tracking is lost. Unset: the frontend as before (local graph, forgetting keyframes).
+FULL = os.environ.get("ITO_SLAM") == "full"
+# Full: a keyframe a metre from the predicted camera counts like one turned this far away.
+REACH = math.radians(30)
+NEAR = 1.5  # metres: farther keyframes are only tried when retrieval names them
 
 
 def view_angle(a, b):
@@ -47,7 +55,7 @@ class MASt3RFrontend:
         load_config(str(source / "config/base.yaml"))
         config["single_thread"] = True
         config["use_calib"] = True
-        config["tracking"]["filtering_mode"] = "recent"
+        config["tracking"]["filtering_mode"] = "weighted_pointmap" if FULL else "recent"
         config["local_opt"]["max_iters"] = 5
         self.config = config
         self.model = load_model(
@@ -69,6 +77,11 @@ class MASt3RFrontend:
         self.unmatched = 0
         self.tracked_against = None
         self.keyframe_count = 0
+        self.global_graph = None  # set by SLAMBackend when ITO_SLAM=full
+        self.reference = None  # full: index of the keyframe the last frame was tracked against
+        self.last_scale = 1.0  # the scale the last returned cloud was made at
+        self.lost = False  # full: the last keyframe was kept without a visual match
+        self.relocalisations = 0
 
     def bind_admission(self, admission):
         from .admission import bind_model, bind_native
@@ -97,7 +110,16 @@ class MASt3RFrontend:
 
     def _angles(self, predicted):
         poses = [self.placed(kf.T_WC)[0] for kf in self.frames]
-        return [math.inf if p is None else view_angle(p, predicted) for p in poses]
+        if not FULL:
+            return [math.inf if p is None else view_angle(p, predicted) for p in poses]
+        # Every keyframe is kept: one facing the same way from across the room shares nothing.
+        scores = []
+        for p in poses:
+            distance = math.inf if p is None else float(np.linalg.norm(p[:3, 3] - predicted[:3, 3]))
+            scores.append(
+                math.inf if distance > NEAR else view_angle(p, predicted) + REACH * distance
+            )
+        return scores
 
     def _reference(self, predicted):
         angles = self._angles(predicted)
@@ -174,21 +196,37 @@ class MASt3RFrontend:
                 return VisualResult(None, None, UNKNOWN, 0.0, self._cloud(frame, 1.0), True)
             reference = self._reference(predicted)
             attempt = self._attempt(frame, reference, predicted, prior_sigma)
+            tried = {reference}
             if not attempt[1] and (other := self._retry(predicted, reference)) is not None:
+                tried.add(other)
                 retried = self._attempt(frame, other, predicted, prior_sigma)
                 if retried[1]:
                     reference, attempt = other, retried
+            if not attempt[1] and self.global_graph is not None:
+                # Relocalisation: the keyframes upstream's retrieval finds for this frame.
+                for other in self.global_graph.query(frame):
+                    if other in tried or other >= len(self.frames):
+                        continue
+                    tried.add(other)
+                    retried = self._attempt(frame, other, predicted, prior_sigma)
+                    if retried[1]:
+                        reference, attempt = other, retried
+                        self.relocalisations += 1
+                        break
             new_keyframe, usable, match, keyframe_pose, keyframe_scale, pose, scale = attempt
             self.unmatched = 0 if usable else self.unmatched + 1
             if not usable:
                 frame.T_WC = self.unplaced(predicted, keyframe_scale)
                 scale = keyframe_scale
             cloud = self._cloud(frame, scale)
+            self.last_scale = float(scale)
+            self.reference = reference
             becomes = bool(new_keyframe) and usable or self.unmatched >= UNMATCHED_KEYFRAME
             relative = np.linalg.inv(keyframe_pose) @ pose if usable else None
             if becomes:
                 self._keep(frame, node)
-                if usable:
+                self.lost = not usable
+                if usable and not FULL:
                     relative = self._local_graph(reference)
                 self.unmatched = 0
             sigma = (
@@ -226,8 +264,11 @@ class MASt3RFrontend:
         return np.linalg.inv(reference_pose) @ new_pose
 
     def correct(self, keyframe_poses, scale):
+        owned = self.global_graph.owned if self.global_graph is not None else ()
         with self.torch.inference_mode():
-            for keyframe, node in zip(self.frames, self.ids, strict=True):
+            for index, (keyframe, node) in enumerate(zip(self.frames, self.ids, strict=True)):
+                if index in owned:
+                    continue  # the global graph poses it (and its scale) now
                 _, own = self.placed(keyframe.T_WC)
                 pose = keyframe_poses.get(node)
                 if pose is None:
@@ -236,6 +277,8 @@ class MASt3RFrontend:
                     keyframe.T_WC = self.unplaced(pose, own * scale)
 
     def forget(self, nodes):
+        if FULL:
+            return  # the global graph keeps every keyframe, by index
         keep = [i for i, node in enumerate(self.ids) if node not in set(nodes)]
         self.frames[:] = [self.frames[i] for i in keep]
         self.ids[:] = [self.ids[i] for i in keep]

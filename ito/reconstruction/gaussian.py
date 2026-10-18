@@ -66,6 +66,16 @@ class Observation:
     filled: int = 0  # retained views there were when training last filled this view's holes
 
 
+def _moved_camera(delta, camera):
+    """A world-from-camera pose carried by a world similarity: the camera's centre goes where
+    the similarity takes it, its orientation turns with it; it stays rigid."""
+    scale = np.cbrt(np.linalg.det(delta[:3, :3]))
+    moved = np.array(camera, dtype=np.float64, copy=True)
+    moved[:3, :3] = (delta[:3, :3] / scale) @ camera[:3, :3]
+    moved[:3, 3] = delta[:3, :3] @ camera[:3, 3] + delta[:3, 3]
+    return moved.astype(np.asarray(camera).dtype)
+
+
 class GaussianBackend(GaussianSlots):
     def __init__(self, *args, precision="full", **options):
         super().__init__(*args, **options)
@@ -75,6 +85,10 @@ class GaussianBackend(GaussianSlots):
         self.views = []
         self.anchors = {}
         self.next_anchor = 0
+        # ITO_SLAM=full: the keyframe each anchor's surfaces follow (slam.py sets seed_keyframe
+        # before observing a frame), and how often repose() moved them.
+        self.anchor_keyframe = {}
+        self.reposed = 0
         self.fit_steps = 0
         self.next_key = 0
         self.fitter = None
@@ -117,6 +131,61 @@ class GaussianBackend(GaussianSlots):
             changed = True
         if changed:
             self.recover()
+
+    def repose(self, deltas, node_keyframe):
+        """ITO_SLAM=full: the global graph moved keyframes by deltas (keyframe -> 4x4 world
+        similarity, Ito axes). Every surface anchored to one, and every retained view whose
+        frame followed one, moves with it: positions, orientations and sizes, a view's camera
+        and depth. Surfaces of other anchors stay."""
+        from scipy.spatial.transform import Rotation
+
+        deltas = {k: d for k, d in deltas.items() if not np.allclose(d, np.eye(4), atol=1e-7)}
+        if not deltas:
+            return 0
+        moved = 0
+        with self.lock:
+            live = np.flatnonzero(self.keys >= 0)
+            owners = self.owners[live]
+            unique, inverse = np.unique(owners, return_inverse=True)
+            follows = np.array([self.anchor_keyframe.get(int(a), -1) for a in unique])[inverse]
+            for k, delta in deltas.items():
+                slots = live[follows == k]
+                scale = float(np.cbrt(np.linalg.det(delta[:3, :3])))
+                rotation = delta[:3, :3] / scale
+                if len(slots):
+                    records = self.records[slots]
+                    records[:, 0, :3] = records[:, 0, :3] @ delta[:3, :3].T + delta[:3, 3]
+                    records[:, 1, :3] *= scale
+                    turn = Rotation.from_matrix(rotation)
+                    quats = Rotation.from_quat(records[:, 2][:, [1, 2, 3, 0]])
+                    records[:, 2] = (turn * quats).as_quat()[:, [3, 0, 1, 2]]
+                    self.records[slots] = records
+                    self.dirty[slots] = True
+                    self.moves[slots] += 1
+                    moved += len(slots)
+                for anchor, keyframe in self.anchor_keyframe.items():
+                    if keyframe == k and anchor in self.anchors:
+                        self.anchors[anchor] = _moved_camera(delta, self.anchors[anchor])
+            for view in self.views:
+                delta = deltas.get(node_keyframe.get(view.node))
+                if delta is None:
+                    continue
+                scale = float(np.cbrt(np.linalg.det(delta[:3, :3])))
+                for name in ("pose", "fitting_pose", "estimated_pose", "estimated_map_pose"):
+                    camera = getattr(view, name)
+                    if camera is not None:
+                        setattr(view, name, _moved_camera(delta, camera))
+                if abs(scale - 1) > 1e-6:
+                    view.depth = view.depth * scale
+                    if view.raw_depth is not None:
+                        view.raw_depth = view.raw_depth * scale
+                view.features = None
+                view.steps = 0
+                view.tile_steps = None
+            self.reposed += 1
+        if moved:
+            self.recover()
+        return moved
 
     def fit(self):
         """One bounded training step; False when there was nothing to train."""
@@ -253,9 +322,11 @@ class GaussianBackend(GaussianSlots):
         registered=True,
         photo=None,
         raw_depth=None,
+        keyframe=None,
     ):
         """registered: the camera pose was aligned to retained views (or is given).
-        photo: (the camera's frame at a finer grid, its intrinsics) for training."""
+        photo: (the camera's frame at a finer grid, its intrinsics) for training.
+        keyframe: ITO_SLAM=full, the keyframe new surfaces follow (repose)."""
         points = np.asarray(points, np.float32)
         height, width = image.shape[:2]
         points = points.reshape(height, width, 3)
@@ -331,10 +402,10 @@ class GaussianBackend(GaussianSlots):
         # nearest and farthest surface belongs to neither and would seed a streak.
         farthest = maximum_filter(depth, size=3)
         missing &= ~((depth > closest * EDGE) & (depth * EDGE < farthest))
-        self.seed(points, image, depth, missing, camera, intrinsics, now)
+        self.seed(points, image, depth, missing, camera, intrinsics, now, keyframe=keyframe)
         self.keep_view(camera, image, depth, intrinsics, node, photo, raw_depth)
 
-    def seed(self, points, image, depth, missing, camera, intrinsics, now):
+    def seed(self, points, image, depth, missing, camera, intrinsics, now, keyframe=None):
         height, width = depth.shape
         # A three-pixel lattice has a calibrated footprint; colour edges keep one-pixel
         # samples. Surface tangents follow depth instead of making camera-facing discs.
@@ -359,6 +430,8 @@ class GaussianBackend(GaussianSlots):
         anchor = self.next_anchor
         self.next_anchor += 1
         self.anchors[anchor] = camera.copy()
+        if keyframe is not None:
+            self.anchor_keyframe[anchor] = keyframe
         x, y = xx.ravel()[seeds], yy.ravel()[seeds]
         p = points[y, x]
         fx, fy, _, _ = intrinsics
@@ -427,6 +500,7 @@ class GaussianBackend(GaussianSlots):
         self.dirty[slots] = True
         owners = set(self.owners[self.keys >= 0])
         self.anchors = {k: v for k, v in self.anchors.items() if k in owners}
+        self.anchor_keyframe = {k: v for k, v in self.anchor_keyframe.items() if k in owners}
 
     def keep_view(self, camera, image, depth, intrinsics, node, photo=None, raw_depth=None):
         if self.views and self.source_captured - self.views[-1].captured < 0.5:

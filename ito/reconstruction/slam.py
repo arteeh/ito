@@ -16,7 +16,7 @@ from .depth import (
     resample,
     scale_to,
 )
-from .fusion import UP, PoseGraph
+from .fusion import HEIGHT_SIGMA, UP, PoseGraph
 from .gaussian import GaussianBackend
 from .motion import MotionBuffer
 from .sensors import HeadSensors
@@ -150,6 +150,12 @@ DUMP = os.environ.get("ITO_DUMP")
 # for photometric training, which then refines splats finer than the network sees
 # (ITO_DETAIL=1: the network's own grid).
 DETAIL = float(os.environ.get("ITO_DETAIL", "2"))
+# ITO_SLAM=full: upstream MASt3R-SLAM's whole backend (mast3r_global.py): every keyframe in one
+# global Sim(3) graph with the robot's factors, retrieval loop closure, relocalisation; the map
+# anchored to keyframes and moved with them. Unset: the 30-keyframe pose graph alone, as before.
+FULL = os.environ.get("ITO_SLAM") == "full"
+FLIP = np.diag([1.0, -1.0, -1.0])  # Ito axes <-> MASt3R's (OpenCV), for the global graph
+MAP_MOVE = (0.002, 0.05, 0.002)  # metres, degrees, log-scale: a keyframe's move the map follows
 
 
 class SLAMBackend(GaussianBackend):
@@ -241,6 +247,12 @@ class SLAMBackend(GaussianBackend):
             self.consensus = Consensus()
         self.depth_scales = {}
         self.placed = None
+        self.global_graph = None  # ITO_SLAM=full, made in bind_admission
+        self.keyframe_exposure = {}  # full: keyframe index -> exposure time (pilot clock)
+        self.node_keyframe = {}  # full: frame node -> keyframe index its surfaces follow
+        self.global_applied = 0
+        self.global_change = (0.0, 0.0)
+        self.map_poses = {}  # full: keyframe -> its pose (Ito axes) its surfaces were placed by
         from .registration import Registration
 
         self.registration = Registration()
@@ -250,6 +262,120 @@ class SLAMBackend(GaussianBackend):
         super().bind_admission(admission)
         if hasattr(self.frontend, "bind_admission"):
             self.frontend.bind_admission(admission)
+        if FULL and hasattr(self.frontend, "global_graph"):
+            from .mast3r_global import GlobalGraph
+
+            self.global_graph = GlobalGraph(
+                self.frontend,
+                self.report,
+                admission.available,
+                lambda: bool(admission.stopped.value),
+                admission.torch_stream,
+            )
+            self.frontend.global_graph = self.global_graph
+
+    def global_statistics(self):
+        if self.global_graph is None:
+            return None
+        stats = self.global_graph.statistics()
+        stats.update(
+            applied=self.global_applied,
+            change=[round(v, 4) for v in self.global_change],
+            frontend_relocalised=getattr(self.frontend, "relocalisations", 0),
+        )
+        return stats
+
+    def apply_global(self):
+        """Full SLAM, on the tracking thread: take each finished global solve to the keyframes,
+        the pose graph's window and every surface and view anchored to a moved keyframe."""
+        from .mast3r_global import corrections, matrix_sim3, to_ito
+
+        torch = _torch()
+        import lietorch
+
+        frontend, graph = self.frontend, self.graph
+        for result in self.global_graph.poll():
+            frames = frontend.frames
+            current = {
+                k: frames[k].T_WC.data.reshape(8).double().cpu().numpy()
+                for k in result["keyframes"]
+            }
+            changes = corrections(result, current)
+            with torch.inference_mode():
+                for k, (_, pose) in changes.items():
+                    data = torch.as_tensor(matrix_sim3(pose), dtype=torch.float32, device="cuda")
+                    frames[k].T_WC = lietorch.Sim3(data)
+                    self.global_graph.owned.add(k)
+            index = {node: i for i, node in enumerate(frontend.ids)}
+            for node in graph.keyframes:
+                k = index.get(node)
+                if k in changes:
+                    pose, _ = frontend.placed(frames[k].T_WC)
+                    if pose is not None:
+                        graph.nodes[node].pose = pose  # held there by solve_window(fixed)
+            if graph.keyframes:
+                graph.anchor = graph.nodes[graph.keyframes[0]].pose.copy()
+            graph._refresh_published()
+            # The map follows a keyframe once its pose has moved past what a surface would show
+            # (MAP_MOVE); smaller corrections wait, adding up, so a solve does not resend the map.
+            deltas, moved, turned = {}, 0.0, 0.0
+            for k, (_, pose) in changes.items():
+                now = to_ito(pose)
+                before = self.map_poses.get(k)
+                if before is None:
+                    self.map_poses[k] = now
+                    continue
+                delta = now @ np.linalg.inv(before)
+                scale = float(np.cbrt(np.linalg.det(delta[:3, :3])))
+                rotation = delta[:3, :3] / scale
+                angle = math.degrees(math.acos(np.clip((np.trace(rotation) - 1) / 2, -1, 1)))
+                shift = float(
+                    np.linalg.norm(delta[:3, :3] @ before[:3, 3] + delta[:3, 3] - before[:3, 3])
+                )
+                moved, turned = max(moved, shift), max(turned, angle)
+                if shift > MAP_MOVE[0] or angle > MAP_MOVE[1] or abs(math.log(scale)) > MAP_MOVE[2]:
+                    deltas[k] = delta
+                    self.map_poses[k] = now
+            self.global_change = (moved, turned)
+            self.global_applied += 1
+            if deltas:
+                self.repose(deltas, self.node_keyframe)
+
+    def queue_keyframe(self, node, exposure):
+        """Full SLAM: hand the keyframe just kept to the global graph with the robot's factors."""
+        frontend = self.frontend
+        index = len(frontend.frames) - 1
+        self.keyframe_exposure[index] = exposure
+        robot = self.motion.at(exposure)
+        rotation = FLIP @ robot[:3, :3] @ FLIP
+        position = FLIP @ robot[:3, 3]
+        gravity = (rotation, self.motion.gravity_sigma(exposure))
+        height = (float(position[1]), self.motion.height_sigma(exposure, HEIGHT_SIGMA))
+        odometry = None
+        previous = self.keyframe_exposure.get(index - 1)
+        if previous is not None and self.motion.covers(previous):
+            relative, covariance = self.motion.between(previous, exposure)
+            odometry = (
+                index - 1,
+                FLIP @ relative[:3, :3] @ FLIP,
+                FLIP @ relative[:3, 3],
+                np.sqrt(np.diag(covariance)),
+            )
+        from .mast3r_global import sim3_matrix, to_ito
+
+        self.map_poses[index] = to_ito(
+            sim3_matrix(frontend.frames[index].T_WC.data.reshape(8).double().cpu().numpy())[0]
+        )
+        lost = frontend.lost
+        self.global_graph.add_keyframe(
+            index,
+            tracked_against=None if lost else frontend.reference,
+            lost=lost,
+            gravity=gravity,
+            height=height,
+            odometry=odometry,
+        )
+        self.node_keyframe[node] = index
 
     def add_sensors(self, imu, ranges):
         self.sensors.add(imu, ranges)
@@ -273,6 +399,8 @@ class SLAMBackend(GaussianBackend):
             self.waiting = True
             return
         self.waiting = False
+        if self.global_graph is not None:
+            self.apply_global()
         propagated = graph.predict(captured) if graph.latest() is not None else None
         expired = graph.expire(self.motion.times[0])
         self.retired_keyframes += len(expired)
@@ -297,8 +425,18 @@ class SLAMBackend(GaussianBackend):
             return
         result = self.frontend.track(rgb, node, predicted, np.sqrt(np.diag(covariance)))
         cloud = result.cloud
+        if self.global_graph is not None:
+            self.global_graph.reference = self.frontend.reference
         if result.relative is not None:
-            graph.add_visual(result.reference, node, result.relative, result.sigma)
+            if self.global_graph is not None and result.reference not in graph.nodes:
+                # Tracked against a keyframe the window has let go (a revisit): where the
+                # global graph has that keyframe says where this frame is.
+                k = self.frontend.reference
+                anchor, _ = self.frontend.placed(self.frontend.frames[k].T_WC)
+                if anchor is not None:
+                    graph.add_map(node, anchor @ result.relative, result.sigma)
+            else:
+                graph.add_visual(result.reference, node, result.relative, result.sigma)
             graph.solve_delay()
             self.matched += 1
         measured_scale = None
@@ -321,6 +459,17 @@ class SLAMBackend(GaussianBackend):
                     valid = cloud.valid.reshape(cloud.shape).cpu().numpy()
                     self.depth_scales["exact"] = scale_to(truth[2], np.where(valid, unscaled, 0))
             self.range_readings += ranged is not None
+            if ranged is not None and self.global_graph is not None and ranged > 0:
+                # Metres per unit of the reference keyframe's pointmap, and of this frame's
+                # own if it becomes a keyframe: the global graph's tie to the ToF.
+                k = self.frontend.reference
+                if k is not None and k < len(self.frontend.frames):
+                    _, own = self.frontend.placed(self.frontend.frames[k].T_WC)
+                    self.global_graph.add_scale(k, math.log(own * ranged))
+                if result.keyframe:
+                    self.global_graph.add_scale(
+                        len(self.frontend.frames) - 1, math.log(self.frontend.last_scale * ranged)
+                    )
             for value, sigma in seen:
                 graph.add_scale(value, sigma)
                 self.scale_readings += 1
@@ -340,16 +489,24 @@ class SLAMBackend(GaussianBackend):
         poses, dropped = {}, []
         if result.keyframe:
             dropped = graph.promote()
-            poses = graph.solve_window()
+            fixed = ()
+            if self.global_graph is not None:
+                fixed = {self.frontend.ids[k] for k in self.global_graph.owned}
+            poses = graph.solve_window(fixed)
         scale = 1.0
         if poses or abs(graph.log_scale) > SCALE_STEP:
             scale = graph.fold_scale()
             self.frontend.correct(poses, scale)
-        if truth is None or truth[0] is None:
+        if (truth is None or truth[0] is None) and self.global_graph is None:
             self.revise(poses)
         if dropped:
             self.retired_keyframes += len(dropped)
             self.frontend.forget(dropped)
+        if self.global_graph is not None:
+            if result.keyframe:
+                self.queue_keyframe(node, exposure)
+            elif self.frontend.reference is not None:
+                self.node_keyframe[node] = self.frontend.reference
         if cloud is not None:
             cloud = cloud._replace(
                 points=cloud.points
@@ -729,9 +886,14 @@ class SLAMBackend(GaussianBackend):
             photo = self.photo(rgb, intrinsics, (height, width))
         self.observation_estimate = pose
         self.observation_map_estimate = self.registration.map_from_estimator @ pose
-        mapped, scale = self.registration.align(
-            image, -points[..., 2], pose, intrinsics, self.views
-        )
+        if self.global_graph is not None:
+            # The global graph keeps the map consistent; its corrections move the map with the
+            # keyframes (apply_global), so frames are placed where the graph has them.
+            mapped, scale = pose, 1.0
+        else:
+            mapped, scale = self.registration.align(
+                image, -points[..., 2], pose, intrinsics, self.views
+            )
         if GRAPH_SCALE:
             scale = 1.0
         if self.truth is not None and self.truth[0] is not None:
@@ -828,9 +990,11 @@ class SLAMBackend(GaussianBackend):
             node=node,
             registered=self.registration.matched
             or self.placed is not None
+            or self.global_graph is not None
             or (self.truth is not None and self.truth[0] is not None),
             photo=photo,
             raw_depth=raw_depth if self.consensus is not None else None,
+            keyframe=self.node_keyframe.get(node) if self.global_graph is not None else None,
         )
 
 

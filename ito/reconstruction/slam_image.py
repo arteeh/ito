@@ -25,6 +25,8 @@ def sensor_frame_type():
                 torch.where(self.sensor_pixels, points, 0),
                 torch.where(self.sensor_pixels, confidence, 0),
             )
+            # Weighted filtering (ITO_SLAM=full) divides by the summed confidence, zero here.
+            self.X_canon = torch.where(self.sensor_pixels, self.X_canon, 0)
 
     return SensorFrame
 

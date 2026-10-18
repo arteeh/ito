@@ -203,6 +203,7 @@ class ViewFit:
             live = np.flatnonzero((b.keys >= 0) & ~b.retiring)
             snapshot = b.records[live].copy()
             keys = b.keys[live].copy()
+            moves = b.moves[live].copy()
         if not len(live):
             return False
         centers = self.tensor(snapshot[:, 0, :3])
@@ -275,6 +276,7 @@ class ViewFit:
         self.active = dict(
             ids=ids,
             keys=keys[chosen],
+            moves=moves[chosen],
             original=original,
             snapshot=snapshot[chosen],
             p=p,
@@ -359,7 +361,16 @@ class ViewFit:
         ).astype(np.float32)
         with b.lock:
             before = b.count
-            b.seed(points, view.image, depth, holes, pose, view.intrinsics, view.captured)
+            b.seed(
+                points,
+                view.image,
+                depth,
+                holes,
+                pose,
+                view.intrinsics,
+                view.captured,
+                keyframe=getattr(b, "node_keyframe", {}).get(view.node),
+            )
             self.filled += b.count - before
 
     def moved(self, delta):
@@ -556,6 +567,7 @@ class ViewFit:
         with b.lock:
             safe = np.minimum(ids, len(b.keys) - 1)
             live = (ids < len(b.keys)) & ~b.retiring[safe] & (b.keys[safe] == a["keys"])
+            live &= b.moves[safe] == a["moves"]
             written = ids[changed & live]
             b.records[written] = records[changed & live]
             b.refined[written] = True

@@ -248,8 +248,10 @@ class PoseGraph:
         self._solve([self.current], frame_only=True)
         return self.nodes[self.current].pose
 
-    def solve_window(self):
+    def solve_window(self, fixed=()):
+        """fixed: keyframes held where they are (ITO_SLAM=full: the global graph poses them)."""
         order = self.keyframes + ([self.current] if self.current is not None else [])
+        order = [n for n in order if n not in fixed]
         if order:
             self._solve(order, frame_only=False)
             self._refresh_published()

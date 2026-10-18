@@ -132,7 +132,9 @@ def models(stage, source):
         # A bundle from before models/depth or models/moge: fetch those parts once into a
         # folder beside it (MODELS-extras), and copy them into each release from there.
         extras = source.parent / f"{source.name}-extras"
-        for part, check in (("depth", "model.safetensors"), ("moge", "model.pt")):
+        # models/full (ITO_SLAM=full) is built from the bundle's own SLAM sources, beside it.
+        parts = (("depth", "model.safetensors"), ("moge", "model.pt"), ("full", "manifest.json"))
+        for part, check in parts:
             if (target / part / check).is_file():
                 continue
             if not (extras / part / check).is_file():
@@ -141,6 +143,7 @@ def models(stage, source):
                     "-m",
                     "ito.build",
                     f"--{part}-only",
+                    *([source] if part == "full" else []),
                     "--output",
                     extras,
                     cwd=ROOT,

@@ -59,6 +59,8 @@ slam = [
     "ninja==1.11.1.4",
     "psutil==7.1.3",
     "setuptools==75.8.0",
+    # ITO_SLAM=full: upstream's vendored ASMK (loop-closure retrieval) indexes its codebook with it.
+    "faiss-cpu==1.13.2",
 ]
 
 [tool.uv]

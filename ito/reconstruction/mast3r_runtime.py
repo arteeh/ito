@@ -100,6 +100,37 @@ def prepare(report):
     return slam, MODELS
 
 
+def prepare_full(report):
+    """ITO_SLAM=full, after prepare(): load models/full (ito.build full_bundle): the GIL-free
+    Gauss-Newton entry points and upstream's vendored ASMK, whose Cython `hamming` module is
+    replaced by asmk_hamming. Returns (native module, retrieval checkpoint path)."""
+    full = MODELS / "full"
+    try:
+        manifest = json.loads((full / "manifest.json").read_text(encoding="utf-8"))
+        for name, size in manifest["files"].items():
+            if (full / name).stat().st_size != size:
+                raise ValueError(f"damaged {name}")
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise RuntimeError(f"Full SLAM files missing or damaged in {full}") from exc
+    import torch
+
+    if manifest["torch"] != str(torch.__version__) or manifest["abi"] != abi():
+        raise RuntimeError("Full SLAM kernels were built for another torch or Python")
+    report("Loading full MASt3R-SLAM (global graph, retrieval)")
+    spec = importlib.util.spec_from_file_location("mast3r_full_backends", full / manifest["native"])
+    native = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(native)
+    sys.modules["mast3r_full_backends"] = native
+    asmk = MODELS / "slam/thirdparty/mast3r/asmk"
+    if str(asmk) not in sys.path:
+        sys.path.insert(0, str(asmk))
+    from . import asmk_hamming
+
+    sys.modules.setdefault("asmk.hamming", asmk_hamming)
+    (checkpoint,) = (full / "retrieval").glob("*_trainingfree.pth")
+    return native, checkpoint
+
+
 def load_model(weights, report, *, precision="full", precision_report=None):
     report("Loading MASt3R")
     import torch

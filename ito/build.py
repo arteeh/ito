@@ -31,6 +31,17 @@ UTILS3D_REV = "62f09d58509485564e24d5d9f6aac9ee9ebc0c37"
 MOGE_MODEL = "Ruicheng/moge-2-vitb-normal"
 MOGE_MODEL_REV = "ca5f0e07ff01d3e5a364c1d954ed12ee1814b368"
 MOGE_FILES = {"model.pt": "16b8110e86d5dc5a849db120ca96ef3a223fd30b0c9146d1d81db504073da5f6"}
+# Full MASt3R-SLAM (ITO_SLAM=full): upstream's retrieval for loop closure and relocalisation.
+RETRIEVAL_BASE = "https://download.europe.naverlabs.com/ComputerVision/MASt3R"
+RETRIEVAL_NAME = "MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric_retrieval"
+RETRIEVAL_FILES = {
+    f"{RETRIEVAL_NAME}_trainingfree.pth": (
+        "000a324f06f9369ab3e32d03dd4b8a838d48e98e3f3bf9d7dd034dce1bfd4c50"
+    ),
+    f"{RETRIEVAL_NAME}_codebook.pkl": (
+        "700af9e31ad0ca6159955dc80b4fd6e14234780b52f5c91884f6553991933c1a"
+    ),
+}
 
 
 def report(message, progress=-1):
@@ -365,6 +376,76 @@ def moge_bundle(cache, work):
     )
 
 
+def full_bundle(cache, work, bundle):
+    """models/full (ITO_SLAM=full, ito/reconstruction/mast3r_global.py): MASt3R's retrieval
+    weights and codebook (CC BY-NC-SA 4.0) for upstream's ASMK loop closure, and
+    mast3r_full_backends: upstream's Gauss-Newton kernels (gn_kernels.cu from the SLAM bundle in
+    BUNDLE) with GIL-free entry points that let Ito add the robot's factors. BUNDLE stays as is."""
+    full = cache / "full"
+    full.mkdir(parents=True, exist_ok=True)
+    (full / "manifest.json").unlink(missing_ok=True)
+    for name, digest in RETRIEVAL_FILES.items():
+        download(
+            f"{RETRIEVAL_BASE}/{name}",
+            full / "retrieval" / name,
+            report,
+            f"MASt3R retrieval {name.rsplit('_', 1)[-1]} (CC BY-NC-SA; non-commercial)",
+            digest,
+        )
+    try:
+        import torch
+        from torch.utils.cpp_extension import load
+    except ImportError as exc:
+        raise RuntimeError("Full SLAM kernels need torch: " + BUILD_COMMAND) from exc
+    backend = bundle / "slam/mast3r_slam/backend"
+    if "getCurrentCUDAStream" not in (backend / "src/gn_kernels.cu").read_text(encoding="utf-8"):
+        raise RuntimeError(f"{bundle} holds an unadapted SLAM bundle; rebuild it first")
+    native = Path(__file__).resolve().parent / "reconstruction" / "native"
+    os.environ.setdefault("MAX_JOBS", "2")
+    os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "7.5;8.0;8.6;8.9;9.0+PTX")
+    directory = work / "native" / "mast3r_full_backends"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "lock").unlink(missing_ok=True)
+    report("Building full SLAM kernels", -1)
+    module = load(
+        "mast3r_full_backends",
+        [str(native / "mast3r_full.cpp"), str(native / "mast3r_full.cu")],
+        extra_include_paths=[str(backend / "src"), str(backend / "include"), str(bundle / "eigen")],
+        build_directory=str(directory),
+        extra_cflags=["/O2", "/std:c++17"] if sys.platform == "win32" else ["-O3"],
+        extra_cuda_cflags=["-O3"],
+    )
+    target = full / "native" / Path(module.__file__).name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(module.__file__, target)
+    (full / "ATTRIBUTION.txt").write_text(
+        f"MASt3R retrieval model and codebook, Copyright 2024-present NAVER Corp.\n"
+        f"{RETRIEVAL_BASE}/{RETRIEVAL_NAME}_*. Unmodified. CC BY-NC-SA 4.0 (see the SLAM bundle's\n"
+        "LICENSE, NOTICE and CHECKPOINTS_NOTICE). native/mast3r_full_backends: MASt3R-SLAM's\n"
+        f"gn_kernels.cu (revision {SLAM_REV}, CC BY-NC-SA 4.0, parts BSD-3-Clause from\n"
+        "DROID-SLAM) "
+        "compiled with Ito's GIL-free entry points.\n",
+        encoding="utf-8",
+    )
+    files = {
+        p.relative_to(full).as_posix(): p.stat().st_size for p in full.rglob("*") if p.is_file()
+    }
+    (full / "manifest.json").write_text(
+        json.dumps(
+            dict(
+                torch=str(torch.__version__),
+                abi=abi(),
+                native=target.relative_to(full).as_posix(),
+                files=files,
+            ),
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    report(f"Full SLAM part ready: {full}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=MODELS, help="release models directory")
@@ -374,11 +455,20 @@ def main():
     parser.add_argument(
         "--moge-only", action="store_true", help="only (re)fetch the MoGe-2 model into it"
     )
+    parser.add_argument(
+        "--full-only",
+        type=Path,
+        metavar="BUNDLE",
+        help="only build the full-SLAM part (retrieval, kernels) into it from SLAM bundle BUNDLE",
+    )
     args = parser.parse_args()
     cache = args.output.resolve()
     work = Path(__file__).resolve().parents[1] / ".slam-build"
     cache.mkdir(parents=True, exist_ok=True)
     work.mkdir(parents=True, exist_ok=True)
+    if args.full_only:
+        full_bundle(cache, work, args.full_only.resolve())
+        return
     if args.depth_only or args.moge_only:
         if args.depth_only:
             depth_bundle(cache, work)

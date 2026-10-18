@@ -25,6 +25,9 @@ SLOT_FIELDS = {
     "contribution": (np.float32, 0, ()),
     "contradictions": (np.uint8, 0, ()),
     "owners": (np.int64, -1, ()),
+    # Times a full-SLAM correction moved the slot (GaussianBackend.repose): training writes back
+    # only what it read before the latest move.
+    "moves": (np.uint32, 0, ()),
 }
 
 

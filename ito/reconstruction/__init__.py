@@ -370,6 +370,7 @@ def _run(recon):
                                 getattr(backend, "consensus", None), "dropped", None
                             ),
                             fused=volume_statistics(getattr(backend, "volume", None)),
+                            global_graph=getattr(backend, "global_statistics", lambda: None)(),
                             tof_field=range_statistics(getattr(backend, "range_field", None)),
                             frame_delay_ms=round(backend.graph.td * 1000, 1)
                             if hasattr(backend, "graph")

@@ -1,3 +1,4 @@
+import threading
 import time
 from collections import deque
 from contextlib import contextmanager
@@ -63,6 +64,7 @@ class Admission:
         self.cooldown = 0.0
         self.recovered_at = 0.0
         self.stream = self.torch_stream = None
+        self.owner = None  # the thread that integrates frames (set on its first frame)
 
     def completed(self, began, period):
         now = clock.now()
@@ -139,6 +141,13 @@ class Admission:
 
     @contextmanager
     def cuda_chunk(self, events, *, kind="map"):
+        if self.owner is not None and threading.get_ident() != self.owner:
+            # Another thread of the worker (the full SLAM graph): like the trainer it keeps out
+            # of this thread's accounting and only waits while the renderer asks to back off.
+            while not self.stopped.value and not self.available():
+                time.sleep(0.002)
+            yield
+            return
         self.checkpoint()
         start, end, elapsed = events
         start.record()
@@ -153,6 +162,7 @@ class Admission:
     def integration(self):
         from contextlib import nullcontext
 
+        self.owner = threading.get_ident()
         if self.stream is None:
             yield
             return
