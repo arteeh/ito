@@ -26,9 +26,10 @@ NEEDED = float(os.environ.get("ITO_FUSE_WMIN", "2"))  # weight both sides of a s
 # learned depth at the rim of the wide rectified view is about twice as far off as in its
 # middle (4% against 8-11% with the ToF's correction), a quarter to a sixth of the weight.
 RADIAL = float(os.environ.get("ITO_FUSE_RADIAL", "8"))
-# And with distance: (1 m / depth) to this power, at most 1. Off by default: a guess that is
-# too near would weigh itself up.
-DISTANCE = float(os.environ.get("ITO_FUSE_DISTANCE", "0"))
+# And with distance: (1 m / depth) to this power. Learned depth is off by a share of the
+# distance, so a look from 0.5 m pins a surface 4 times as tightly as one from 2 m and must
+# outweigh it 16 times, or close-ups take on the far view's centimetres.
+DISTANCE = float(os.environ.get("ITO_FUSE_DISTANCE", "2"))
 # A pixel takes the field's surface nearest its own depth within this share of it (wider, and a
 # pixel of the wall beside a bookcase takes the bookcase's side); with none
 # there it keeps its own (a surface the field does not hold yet, or one it holds wrongly:
@@ -164,7 +165,7 @@ class Volume:
         rotation, origin = self.tensor(pose[:3, :3]), self.tensor(pose[:3, 3])
         rays = self.rays(intrinsics, depth.shape)
         cosine = 1 / torch.linalg.norm(rays, dim=-1)
-        weights = cosine**RADIAL * d.clamp_min(1e-3).reciprocal().clamp_max(1) ** DISTANCE
+        weights = cosine**RADIAL * d.clamp_min(0.3).reciprocal() ** DISTANCE
         if trust is not None:
             weights = weights * self.tensor(trust)
         # Allocate the blocks around every second pixel's surface, through its band.
