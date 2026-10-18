@@ -75,8 +75,8 @@ VISUAL_SIGMA = math.radians(float(os.environ.get("ITO_SLAM_VISUAL_DEG", "0.5")))
 # robot-first window's trust in a tracked frame: rotation VISUAL_SIGMA, camera centre EDGE_CM plus
 # EDGE_BASELINE of the pair's baseline (MASt3R's translation is off by its depth error, 5-14 cm on
 # half-metre pairs on the loop route, its rotation better than the robot's), Cauchy-robust, solved
-# with the robot's factors by least squares. Unset (=dense): upstream's per-pixel Gauss-Newton.
-EDGES = os.environ.get("ITO_SLAM_EDGES", "dense")
+# with the robot's factors by least squares (default). =dense: upstream's per-pixel Gauss-Newton.
+EDGES = os.environ.get("ITO_SLAM_EDGES", "pose")
 EDGE_CM = float(os.environ.get("ITO_SLAM_EDGE_CM", "2"))
 EDGE_BASELINE = float(os.environ.get("ITO_SLAM_EDGE_BASELINE", "0.1"))
 EDGE_SCALE = 0.05  # log-scale sigma of a pair's relative scale
