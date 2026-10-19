@@ -13,7 +13,9 @@ from .depth import (
     MapFrontend,
     MonoGeometry,
     MultiViewDepth,
+    Pi3Depth,
     PromptedDepth,
+    VideoGeometry,
     log_field,
     nearest_views,
     resample,
@@ -34,6 +36,11 @@ log = logging.getLogger(__name__)
 # it, and its splats would be streaks. Blur is |angular velocity| x exposure x focal length.
 BLUR_PIXELS = 8.0
 EXPOSURE = 0.010
+# ITO_ROLLING_SHUTTER=MS: the camera reads its rows top to bottom over MS milliseconds (an IMX219
+# at 1080p30: ~30), so a turning head skews each frame. Every frame is first warped to how it
+# would look read all at once at its stamp, by the camera's turn then (the motion buffer):
+# tracking, depth and colour all see the unskewed frame.
+ROLLING_SHUTTER = float(os.environ.get("ITO_ROLLING_SHUTTER", "0")) / 1000
 DELAY_RANGE = (-0.1, 0.2)
 FLOOR_RAY = math.radians(10)
 FLOOR_SHARE = 0.1
@@ -100,6 +107,11 @@ MONO_GRID = (2, 2)
 # ITO_MONO_SCALE=1: MoGe-2's depth takes its metric scale from the ToF and the floor read on its
 # own surfaces, MASt3R's only beside them (MONO_MAST3R, log sigma).
 MONO_SCALE = os.environ.get("ITO_MONO_SCALE", "0") != "0"
+# ITO_DEPTH=vigeo maps ViGeo's streaming video depth (depth.py VideoGeometry) through the same
+# path as MoGe-2's. ITO_MONO_STEADY=T: the scale is the scale evidence of the last ~T seconds
+# pooled (weights decaying with age), not each frame's own: a video network keeps one scale
+# from frame to frame, while each frame's ToF or floor reading is a few percent off.
+MONO_STEADY = float(os.environ.get("ITO_MONO_STEADY", "0"))
 MONO_MAST3R = 0.1
 # ITO_TOF_VIA=moge: MASt3R's depth stays the map's, but the ToF reads its scale on MoGe-2's
 # surfaces (ranging_surface). On MASt3R's own, the reading jumped 10-20% for seconds after the
@@ -237,8 +249,12 @@ class SLAMBackend(GaussianBackend):
         self.scale_readings = 0
         self.range_readings = 0
         self.map_conflicts = 0
-        self.depth = MultiViewDepth() if DEPTH == "da3" else None
+        self.depth = None
+        if DEPTH == "da3":
+            self.depth = Pi3Depth() if os.environ.get("ITO_DA3") == "pi3" else MultiViewDepth()
         self.mono = MonoGeometry() if DEPTH in ("moge", "hybrid") or TOF_VIA_MOGE else None
+        if DEPTH == "vigeo":
+            self.mono = VideoGeometry()
         # ITO_DEPTH=dmdc: dToF-DMDC's metric depth, prompted with the ToF's readings.
         self.prompted = PromptedDepth() if DEPTH == "dmdc" else None
         self.refine = None
@@ -577,6 +593,8 @@ class SLAMBackend(GaussianBackend):
             self.waiting = True
             return
         self.waiting = False
+        if ROLLING_SHUTTER:
+            rgb = self.unroll(rgb, exposure)
         if self.global_graph is not None:
             self.apply_global()
         previous = graph.latest()
@@ -760,6 +778,39 @@ class SLAMBackend(GaussianBackend):
         exact = truth is not None and truth[2] is not None and not COMPARE
         if cloud is not None and (settled or exact):
             self.place(cloud, pose, now + clock.now() - started, node=node, rgb=rgb)
+
+    def unroll(self, rgb, exposure):
+        """rgb warped from rolling-shutter rows (row v read at (v / height - 1/2) x ROLLING_SHUTTER
+        from the stamp) to one read at the stamp, for the camera's rotation alone."""
+        import cv2
+
+        before = self.motion.at(exposure - 0.02)[:3, :3]
+        after = self.motion.at(exposure + 0.02)[:3, :3]
+        turn = before.T @ after  # camera axes: x right, y up, looking down -z
+        angle = math.acos(max(-1.0, min(1.0, (np.trace(turn) - 1) / 2)))
+        if angle < 1e-5:
+            return rgb
+        axis = np.array(
+            (turn[2, 1] - turn[1, 2], turn[0, 2] - turn[2, 0], turn[1, 0] - turn[0, 1])
+        ) / (2 * math.sin(angle))
+        wx, wy, wz = (float(w) for w in axis * angle / 0.04)  # radians per second
+        height, width = rgb.shape[:2]
+        if getattr(self, "unroll_grid", (None,))[0] != (height, width):
+            v, u = np.mgrid[:height, :width].astype(np.float32)
+            self.unroll_grid = ((height, width), u, v)
+        _, u, v = self.unroll_grid
+        f = float(self.intrinsics.fx) * width / self.intrinsics.width
+        t = (v / height - 0.5) * ROLLING_SHUTTER
+        # Image motion of a turning camera, pixels per second (+u right, +v down).
+        du = f * wy - wz * (v - height / 2)
+        dv = f * wx + wz * (u - width / 2)
+        return cv2.remap(
+            np.ascontiguousarray(rgb),
+            u + du * t,
+            v + dv * t,
+            cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REPLICATE,
+        )
 
     def depth_turn(self):
         self.depth_frames = getattr(self, "depth_frames", -1) + 1
@@ -974,6 +1025,11 @@ class SLAMBackend(GaussianBackend):
                     self.depth_scales["mono_exact"] = scale_to(
                         self.truth[2], resample(depth, mast3r.shape)
                     )
+        if MONO_STEADY:
+            pooled = self.steady(
+                evidence if MONO_SCALE else [(math.log(scale), MONO_MAST3R)], self.source_captured
+            )
+            scale = pooled if pooled is not None else scale
         fit = log_field(depth, mast3r, MONO_GRID) if MONO_FIELD and not MONO_SCALE else None
         depth = depth * (fit[0] if fit is not None else scale)
         if DEPTH == "hybrid":
@@ -988,6 +1044,20 @@ class SLAMBackend(GaussianBackend):
         if COMPARE:
             self.depth_scales["mono"] = scale
         return self.with_depth(cloud, depth)
+
+    def steady(self, evidence, now):
+        """exp of the weighted mean of log-scale evidence (value, sigma) seen over about the
+        last MONO_STEADY seconds, or None before any."""
+        last = getattr(self, "steady_time", None)
+        decay = 1.0 if last is None else math.exp(-max(now - last, 0.0) / MONO_STEADY)
+        self.steady_time = now
+        total = getattr(self, "steady_weight", 0.0) * decay
+        value = getattr(self, "steady_value", 0.0) * decay
+        for v, sigma in evidence:
+            total += sigma**-2
+            value += sigma**-2 * v
+        self.steady_weight, self.steady_value = total, value
+        return math.exp(value / total) if total > 0 else None
 
     def with_depth(self, cloud, depth):
         """The cloud with this axial depth (metres, covering the whole frame at any size) in

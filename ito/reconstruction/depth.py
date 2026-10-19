@@ -95,6 +95,55 @@ class MultiViewDepth:
         return output.depth[0].float().cpu().numpy()
 
 
+class Pi3Depth:
+    """The ITO_DEPTH=da3 path with ITO_DA3=pi3: pi3 (ICLR 2026; code and weights BSD-2-Clause)
+    over the new frame and the retained views around it, one call, one unknown scale, its
+    local point maps' depth. ITO_PI3 names a folder holding the source (Pi3 or src/Pi3) and
+    the weights (pi3/model.safetensors); not bundled. Same interface as MultiViewDepth;
+    pi3 takes no camera tokens."""
+
+    def __init__(self):
+        import torch
+        from safetensors.torch import load_file
+
+        root = Path(os.environ["ITO_PI3"])
+        # Windows paths ignore case: root/Pi3 may be the weights' root/pi3; look for the package.
+        candidates = (root / "src" / "Pi3", root / "Pi3", root)
+        source = next((p for p in candidates if (p / "pi3" / "models").is_dir()), root)
+        if str(source) not in sys.path:
+            sys.path.insert(0, str(source))
+        # pi3 takes CroCo's CUDA RoPE when `models.curope` imports, which it does here (MASt3R's
+        # CroCo is on the path); that one needs contiguous tokens, pi3 hands it a transpose.
+        # Its PyTorch RoPE then: hide curope while pi3 imports.
+        hidden = sys.modules.get("models.curope")
+        sys.modules["models.curope"] = None
+        try:
+            from pi3.models.pi3 import Pi3
+        finally:
+            if hidden is None:
+                del sys.modules["models.curope"]
+            else:
+                sys.modules["models.curope"] = hidden
+
+        net = Pi3()
+        net.load_state_dict(load_file(root / "pi3" / "model.safetensors"))
+        # float32 weights under bfloat16 autocast: cast to bfloat16 whole, some of its float32
+        # buffers meet bfloat16 weights in a matmul and it fails.
+        self.net = net.to("cuda").eval()
+        self.torch = torch
+
+    def __call__(self, images, cameras=None):
+        """Depths (N, SIZE[1], SIZE[0]) of uint8 RGB images seen together, one unknown scale."""
+        import cv2
+
+        torch = self.torch
+        batch = np.stack([cv2.resize(i, SIZE, interpolation=cv2.INTER_AREA) for i in images])
+        x = torch.as_tensor(batch, device="cuda").permute(0, 3, 1, 2)[None].float() / 255
+        with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
+            out = self.net(x)
+        return out["local_points"][0, ..., 2].float().cpu().numpy()
+
+
 MOGE = MODELS / "moge"  # MoGe-2 source, utils3d-moge and ViT-B weights, from ito.build
 MOGE_TOKENS = 1800  # the ViT's patch tokens: about 1024 x 576 for a 16:9 frame
 
@@ -129,6 +178,58 @@ class MonoGeometry:
         with torch.inference_mode():
             out = self.net.infer(x, fov_x=fov_x, num_tokens=MOGE_TOKENS, use_fp16=True)
         depth = out["depth"].float()
+        return torch.nan_to_num(depth, nan=0, posinf=0, neginf=0).cpu().numpy()
+
+
+class VideoGeometry:
+    """Each mapped frame's depth from ViGeo 1.1 (arXiv 2605.30060; code Apache-2.0, weights
+    CC BY-NC 4.0), streaming: one frame per call, its attention carrying the earlier frames'
+    keys and values, so depth keeps one shape and one scale from frame to frame. The scale is
+    its own; callers scale it to theirs. ITO_VIGEO names a folder holding the ViGeo source
+    (ViGeo or src/ViGeo, with the vigeo package) and the weights (vigeo11/vigeo.pt); not
+    bundled."""
+
+    def __init__(self):
+        import torch
+
+        root = Path(os.environ["ITO_VIGEO"])
+        source = next((p for p in (root / "ViGeo", root / "src" / "ViGeo") if p.is_dir()), root)
+        if str(source) not in sys.path:
+            sys.path.insert(0, str(source))
+        from vigeo import ViGeo
+
+        self.torch = torch
+        net = ViGeo.from_pretrained(str(root / "vigeo11" / "vigeo.pt"))
+        # bfloat16 halves the ViT-g's 5 GB of weights; inference runs in it anyway.
+        self.net = net.to(torch.bfloat16).to("cuda").eval()
+        self.tokens = int(os.environ.get("ITO_VIGEO_TOKENS", "900"))
+        # Key/value cache across its 40 layers, in tokens: VIGEO_CONTEXT frames' worth. The
+        # first frame's tokens stay (anchors), so the scale holds to it.
+        self.budget = int(os.environ.get("ITO_VIGEO_CONTEXT", "8")) * self.tokens * 40
+        self.caches = None
+
+    def __call__(self, rgb, fov_x, size):
+        """Depth (size[1] x size[0], unknown but steady scale, 0: none) of the next frame."""
+        import cv2
+
+        torch = self.torch
+        image = cv2.resize(rgb, size, interpolation=cv2.INTER_AREA)
+        x = torch.as_tensor(image, device="cuda").permute(2, 0, 1)[None].float() / 255
+        with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
+            out = self.net.infer(
+                x,
+                mode="online",
+                kv_caches=self.caches,
+                num_tokens=self.tokens,
+                total_budget=self.budget,
+                reset_cache=self.caches is None,
+            )
+        self.caches = out["kv_caches"]
+        depth = out["depth_pred"] if "depth_pred" in out else out["depth"]
+        depth = depth.float().reshape(depth.shape[-2:])
+        mask = out.get("mask_pred") if os.environ.get("ITO_VIGEO_MASK", "1") != "0" else None
+        if mask is not None:  # 1.1's valid-region head (ITO_VIGEO_MASK=0: unmasked)
+            depth = torch.where(mask.reshape(depth.shape).to(depth.device), depth, 0)
         return torch.nan_to_num(depth, nan=0, posinf=0, neginf=0).cpu().numpy()
 
 
