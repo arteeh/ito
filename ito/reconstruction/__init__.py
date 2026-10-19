@@ -23,7 +23,9 @@ FIT_SHARE = 0.1  # Of the worker's tracking time, given to local training.
 # ITO_DUMP_MAP=<dir> (a diagnostic): the live map's records every MAP_DUMP_EVERY seconds and
 # when the worker stops, to look at one map from fixed viewpoints afterwards (tools/mapview.py).
 MAP_DUMP = os.environ.get("ITO_DUMP_MAP")
-MAP_DUMP_EVERY = 30.0
+MAP_DUMP_EVERY = float(os.environ.get("ITO_DUMP_MAP_EVERY", "30"))
+# ITO_LOG_POSES=1 (a diagnostic): each backend_frame timeline row carries the placed camera pose.
+LOG_POSES = os.environ.get("ITO_LOG_POSES") == "1"
 
 
 def dump_map(backend, now):
@@ -376,6 +378,10 @@ def _run(recon):
                             if hasattr(backend, "graph")
                             else None,
                         )
+                        if LOG_POSES and getattr(backend, "camera_pose", None) is not None:
+                            # Research: the frame's placed camera (Ito world, Ito axes), so live
+                            # maps can be drawn from the pilot's own estimate in eye tests.
+                            row["camera_pose"] = np.asarray(backend.camera_pose).round(6).tolist()
                         timeline.write(json.dumps(row) + "\n")
                     if recon.backend == "slam" and recon.output_lock.acquire(False):
                         try:

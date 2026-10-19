@@ -114,6 +114,9 @@ def load_model(weights, report, *, precision="full", precision_report=None):
         missing = [key for key in result.missing_keys if ".dpt.scratch.layer_rn." not in key]
         if missing or result.unexpected_keys:
             raise RuntimeError(f"weights do not match MASt3R: {missing + result.unexpected_keys}")
+        adapter = os.environ.get("ITO_MAST3R_ADAPTER")
+        if adapter:
+            merge_adapter(model, adapter, report)
         model.eval()
         network = NetworkPrecision(model, precision_report)
         if precision == "half":
@@ -138,6 +141,30 @@ def load_model(weights, report, *, precision="full", precision_report=None):
         raise
     except (ImportError, OSError, ValueError, RuntimeError) as exc:
         raise RuntimeError(f"MASt3R model could not load from {weights}") from exc
+
+
+def merge_adapter(model, path, report):
+    """ITO_MAST3R_ADAPTER=file.safetensors (research): a LoRA adapter for MASt3R's decoders
+    (GrandCougar/tools/lora_mast3r.py: <module>.down.weight / .up.weight, scale alpha/rank in the
+    file's metadata, default 1) merged into the weights: W += scale * up @ down. No runtime cost."""
+    import torch
+    from safetensors import safe_open
+
+    with safe_open(path, framework="pt") as f:
+        scale = float((f.metadata() or {}).get("scale", 1.0))
+        tensors = {k: f.get_tensor(k) for k in f.keys()}
+    modules = dict(model.named_modules())
+    merged = 0
+    for key, down in tensors.items():
+        if not key.endswith(".down.weight"):
+            continue
+        name = key[: -len(".down.weight")]
+        up = tensors[name + ".up.weight"]
+        linear = modules[name.removesuffix(".base")] if name not in modules else modules[name]
+        with torch.no_grad():
+            linear.weight += (scale * up.float() @ down.float()).to(linear.weight.dtype)
+        merged += 1
+    report(f"MASt3R adapter {Path(path).name}: {merged} layers merged")
 
 
 class NetworkPrecision:
