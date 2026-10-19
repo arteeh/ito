@@ -1019,7 +1019,9 @@ def solve_pose_graph(start, pairs, gravity, height, odometry, turns, scales, fix
         vision = np.hstack(
             (
                 (v_inv * inverse * rotations[vj]).as_rotvec(),
-                inverse.apply(centres[vj] - centres[vi]) - np.exp(logs[vi])[:, None] * v_t,
+                # The pair's translation in metres at the scale keyframe i has now: left free,
+                # its scale chased MASt3R's translation (2-3x in a solve, hp-fullptn4-loop-a).
+                inverse.apply(centres[vj] - centres[vi]) - s0[vi][:, None] * v_t,
                 (logs[vj] - logs[vi] - v_l)[:, None],
             )
         )
