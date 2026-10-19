@@ -176,6 +176,7 @@ DETAIL = float(os.environ.get("ITO_DETAIL", "2"))
 # anchored to keyframes and moved with them. Unset: the 30-keyframe pose graph alone, as before.
 FULL = os.environ.get("ITO_SLAM") == "full"
 FLIP = np.diag([1.0, -1.0, -1.0])  # Ito axes <-> MASt3R's (OpenCV), for the global graph
+FLIP4 = np.diag([1.0, -1.0, -1.0, 1.0])
 # ITO_HEAD_IMU=1 (stone P3): the head IMU's gyro turn since the last keyframe sets the frame
 # tracker's rotation prior (the kinematic one rides up to 2 degrees past the servos' play), and
 # with ITO_SLAM=full its turns and tilt join the global graph. Unset: as before.
@@ -568,8 +569,17 @@ class SLAMBackend(GaussianBackend):
             height=height,
             odometry=odometry,
             turn=turn,
+            truth=self._keyframe_truth(),
         )
         self.node_keyframe[node] = index
+
+    def _keyframe_truth(self):
+        """The sim's exact pose of the frame just kept (MASt3R axes), if the run has it."""
+        truth = self.truth
+        if truth is None:
+            return None
+        exact = truth[3] if len(truth) > 3 and truth[3] is not None else truth[0]
+        return None if exact is None else FLIP4 @ np.asarray(exact, float) @ FLIP4
 
     def add_sensors(self, imu, ranges):
         self.sensors.add(imu, ranges)

@@ -79,6 +79,9 @@ EDGE_SCALE = 0.05  # log-scale sigma of a pair's relative scale
 REFRESH = 8  # edges whose keyframes' pointmaps have filled in since, re-solved per global solve
 # ITO_SLAM_LOG=<file>: one JSON line per solve and per checked edge (a diagnostic).
 SOLVE_LOG = os.environ.get("ITO_SLAM_LOG")
+# ITO_SLAM_RECORD=<dir> (a diagnostic): every pose-graph solve's inputs and result, with the sim's
+# exact keyframe poses when ITO_TRUTH gives them, one pickle per solve, to replay offline.
+RECORD = os.environ.get("ITO_SLAM_RECORD")
 
 
 def skew(v):
@@ -180,6 +183,7 @@ class GlobalGraph:
         self.worst = ((0.0, 0.0), None)
         self.kinds = {}  # (min, max) keyframe pair -> 'track', 'prev', 'retrieval' or 'reloc'
         self.relative = {}  # (i, j) edge -> its own relative pose (ITO_SLAM_EDGES=pose)
+        self.truth = {}  # keyframe -> the sim's exact pose (MASt3R axes), when known (diagnostic)
         self.refreshed = 0
         self.checked = []  # (n, k, kind, metres, degrees, matches, kept) per checked edge
         self.dropped = 0  # links left out by the edge check
@@ -201,11 +205,15 @@ class GlobalGraph:
 
     # --- called on the tracking thread ---------------------------------------------------
 
-    def add_keyframe(self, index, *, tracked_against, lost, gravity, height, odometry, turn=None):
+    def add_keyframe(
+        self, index, *, tracked_against, lost, gravity, height, odometry, turn=None, truth=None
+    ):
         """A keyframe the frontend just kept, with the robot's say on it: gravity (rotation,
         sigma), height (y, sigma), odometry (previous keyframe, rotation, translation, sigma);
         any may be None. Poses are world-from-camera in MASt3R's axes."""
         with self.lock:
+            if truth is not None:
+                self.truth[index] = truth
             if tracked_against is not None:
                 self.tracking[index] = tracked_against
             if lost:
@@ -843,6 +851,32 @@ class GlobalGraph:
         after, self.steps = solve_pose_graph(
             start, pairs, gravity, height, odometry, turns, scales, fix=fix
         )
+        if RECORD:
+            import pickle
+            from pathlib import Path
+
+            folder = Path(RECORD)
+            folder.mkdir(parents=True, exist_ok=True)
+            with open(
+                folder / f"solve-{self.solves + self.rejected + self.failed:05d}.pkl", "wb"
+            ) as f:
+                pickle.dump(
+                    dict(
+                        involved=involved,
+                        start=start,
+                        after=after,
+                        fix=fix,
+                        pairs=pairs,
+                        gravity=gravity,
+                        height=height,
+                        odometry=odometry,
+                        turns=turns,
+                        scales=scales,
+                        truth={k: self.truth[k] for k in involved if k in self.truth},
+                        tracking={k: self.tracking.get(k) for k in involved},
+                    ),
+                    f,
+                )
         return start, after
 
     def _dense(self, edges, involved, local):
