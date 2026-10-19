@@ -83,6 +83,16 @@ VISION = os.environ.get("ITO_SLAM") == "vision"
 # a later change would grow or shrink the whole room about its first camera.
 VISION_SCALE_READINGS = int(os.environ.get("ITO_VISION_SCALE_READINGS", "40"))
 SCALE_LOG = os.environ.get("ITO_SCALE_LOG") == "1"
+# ITO_VISION_SCALE=gated (default): readings only while the camera is nearly still, mapping after
+# SCALE_START of them, fixed at SCALE_FINAL with at most one global rescale; =first40: the old held
+# median of the first 40 readings.
+VISION_SCALE = os.environ.get("ITO_VISION_SCALE", "gated")
+# Emulated on two live recordings from every start time 0-85 s: 16 still readings land within
+# 0.94-1.10 of the true scale, the old first-40 within 0.98-1.26; later readings drift (ToF low,
+# floor high), so no later refinement by default (ITO_VISION_SCALE_FINAL > 16 rescales once).
+SCALE_START = 16
+SCALE_FINAL = int(os.environ.get("ITO_VISION_SCALE_FINAL", "16"))
+STILL_TURN, STILL_MOVE = math.radians(12), 0.06  # per second
 DEPTH = "da3" if TRACKER == "map" else os.environ.get("ITO_DEPTH", "mast3r")
 # ITO_ALIGN=1 (always with ITO_TRACKER=map) lays each frame's depth onto the map's surfaces
 # (align.py): where it was placed tells fusion where the camera was.
@@ -808,7 +818,9 @@ class SLAMBackend(GaussianBackend):
         log = getattr(self, "vision_scale_log", None)
         if log is None:
             log = self.vision_scale_log = []
-        if cloud is not None and (len(readings) < VISION_SCALE_READINGS or SCALE_LOG):
+        ranged = below = None
+        collecting = VISION_SCALE == "gated" and not getattr(self, "vision_final", False)
+        if cloud is not None and (len(readings) < VISION_SCALE_READINGS or SCALE_LOG or collecting):
             robot = self.motion.at(exposure)
             ranged = self.sensors.range_scale(cloud, exposure, self.motion)
             below = floor_scale(cloud, robot[:3, :3].T @ UP, float(robot[1, 3]))
@@ -821,9 +833,89 @@ class SLAMBackend(GaussianBackend):
                 if below is not None:
                     readings.append(math.log(below))
                 self.scale_readings += (ranged is not None) + (below is not None)
+        if VISION_SCALE == "gated":
+            return self.gated_scale(cloud, exposure, ranged, below)
         if len(readings) < min(VISION_SCALE_READINGS, 12):
             return None
         return math.exp(float(np.median(readings)))
+
+    def gated_scale(self, cloud, exposure, ranged, below):
+        """ITO_VISION_SCALE=gated: metres per vision unit from readings taken while the camera is
+        nearly still (ToF and floor each, every frame that has them). Live, the first 40 readings
+        were only ~10 frames from wherever tracking happened to start, and the held scale came out
+        0.79-1.08 of the truth run to run, where replays of the same recordings (starting still)
+        were within 1.5%. Mapping starts after SCALE_START gated readings; at SCALE_FINAL the
+        estimate is fixed for good, and if it moved more than 2% the map (splats, views) is
+        rescaled once about the first camera."""
+        gated = getattr(self, "vision_gated", None)
+        if gated is None:
+            gated = self.vision_gated = []
+            self.vision_held = None
+            self.vision_final = False
+        if cloud is not None and not self.vision_final and self.camera_still(exposure):
+            gated.extend(math.log(v) for v in (ranged, below) if v is not None)
+        if self.vision_held is None:
+            if len(gated) < SCALE_START:
+                return None
+            self.vision_held = math.exp(float(np.median(gated[:SCALE_START])))
+            self.vision_final = SCALE_FINAL <= SCALE_START
+            self.report(
+                f"Vision scale {self.vision_held:.3f} m/unit from {SCALE_START} still readings"
+            )
+        elif not self.vision_final and len(gated) >= SCALE_FINAL:
+            self.vision_final = True
+            final = math.exp(float(np.median(gated)))
+            if abs(math.log(final / self.vision_held)) > math.log(1.02):
+                self.rescale_map(final / self.vision_held)
+            self.report(
+                f"Vision scale fixed at {final:.3f} m/unit from {len(gated)} still readings "
+                f"(provisional {self.vision_held:.3f})"
+            )
+            self.vision_held = final
+        return self.vision_held
+
+    def camera_still(self, t, span=0.15):
+        """The robot's camera turned less than STILL_TURN and moved less than STILL_MOVE per second
+        around t (kinematics: precise over short spans)."""
+        if not (self.motion.covers(t - span) and self.motion.covers(t + span)):
+            return False
+        a, b = self.motion.at(t - span), self.motion.at(t + span)
+        turn = np.arccos(np.clip((np.trace(a[:3, :3].T @ b[:3, :3]) - 1) / 2, -1, 1)) / (2 * span)
+        move = np.linalg.norm(b[:3, 3] - a[:3, 3]) / (2 * span)
+        return turn < STILL_TURN and move < STILL_MOVE
+
+    def rescale_map(self, factor):
+        """One global similarity about the vision world's first camera: every live splat and
+        retained view follows a corrected metric scale; fused volume and ToF field start over."""
+        origin = self.vision_world[:3, 3]
+        live = np.flatnonzero(self.keys >= 0)
+        self.records[live, 0, :3] = origin + (self.records[live, 0, :3] - origin) * factor
+        self.records[live, 1, :3] *= factor
+        self.dirty[live] = True
+        self.fresh[live] = True
+        for view in self.views:
+            for name in ("pose", "fitting_pose", "estimated_pose", "estimated_map_pose"):
+                pose = getattr(view, name, None)
+                if pose is not None:
+                    pose = pose.copy()
+                    pose[:3, 3] = origin + (pose[:3, 3] - origin) * factor
+                    setattr(view, name, pose)
+            for name in ("depth", "raw_depth"):
+                depth = getattr(view, name, None)
+                if isinstance(depth, np.ndarray):
+                    setattr(view, name, depth * factor)
+        if self.volume is not None:
+            from .volume import Volume
+
+            self.volume = Volume()
+        if self.range_field is not None:
+            from .rangefield import RangeField
+
+            self.range_field = RangeField()
+        if self.fitter is not None and hasattr(self.fitter, "rescaled"):
+            self.fitter.rescaled()
+        self.recover()
+        self.report(f"Map rescaled by {factor:.3f} (vision metric scale)")
 
     def pose_at(self, captured):
         if VISION:

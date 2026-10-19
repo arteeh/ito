@@ -131,6 +131,11 @@ class MapFit:
         thread.start()
         return thread
 
+    def rescaled(self):
+        """The worker rescaled the map (all slots fresh): view pose corrections start over."""
+        self.deltas.clear()
+        self.pose_optimizer = None
+
     def reset(self):
         """Forget the GPU copy; the next sync takes the whole map in afresh."""
         self.capacity = 0
