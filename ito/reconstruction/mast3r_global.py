@@ -61,8 +61,13 @@ PAIR_ITERATIONS = 10
 # The gauge: ITO_SLAM_GAUGE=settled (default) holds the keyframe the pilot tracks against if a
 # solve has placed it before, else the settled keyframe it was tracked from, so a solve moves the
 # new keyframe into the room rather than the room about it; =reference holds the pilot's
-# keyframe always (before 18 Oct).
-GAUGE = os.environ.get("ITO_SLAM_GAUGE", "settled")
+# keyframe always (before 18 Oct); =world holds the oldest keyframe (upstream: the room stays where
+# it was built, a solve moves the newest, least constrained keyframes into it). Vision-led full SLAM
+# (ITO_SLAM_LEAD=vision) defaults to =world: held at the pilot's keyframe, the whole room followed
+# each new keyframe's small error, drifting 1.2 deg / 4.8 cm (median) on the loop replay.
+GAUGE = os.environ.get(
+    "ITO_SLAM_GAUGE", "world" if os.environ.get("ITO_SLAM_LEAD") == "vision" else "settled"
+)
 # ITO_SLAM_EDGES=pose: each edge enters the global solve as the relative pose its matches alone
 # give (the edge check's two-keyframe solve, redone as the keyframes' pointmaps fill in): rotation
 # sigma EDGE_DEG, camera centre EDGE_CM plus EDGE_BASELINE of the pair's baseline, Cauchy-robust,
@@ -72,7 +77,10 @@ GAUGE = os.environ.get("ITO_SLAM_GAUGE", "settled")
 # =dense: upstream's per-pixel Gauss-Newton.
 # Upstream's kernel counts each matched pixel as an independent 1 px measurement, so its dense solve
 # (=dense) trusts an edge to ~0.001 degrees and the robot's factors count for nothing beside it.
-EDGES = os.environ.get("ITO_SLAM_EDGES", "pose")
+# Vision-led full SLAM (ITO_SLAM_LEAD=vision) solves upstream's way: =dense by default.
+EDGES = os.environ.get(
+    "ITO_SLAM_EDGES", "dense" if os.environ.get("ITO_SLAM_LEAD") == "vision" else "pose"
+)
 EDGE_DEG = float(os.environ.get("ITO_SLAM_EDGE_DEG", "0.1"))
 EDGE_CM = float(os.environ.get("ITO_SLAM_EDGE_CM", "0.5"))
 EDGE_BASELINE = float(os.environ.get("ITO_SLAM_EDGE_BASELINE", "0.05"))
@@ -732,7 +740,9 @@ class GlobalGraph:
             return
         local = {k: i for i, k in enumerate(involved)}
         gauge = self.reference if self.reference in local else involved[-1]
-        if GAUGE == "settled" and (gauge not in self.owned or gauge in self.unsettled):
+        if GAUGE == "world":
+            gauge = involved[0]  # pinned in the solve: the correction is the solve's own
+        elif GAUGE == "settled" and (gauge not in self.owned or gauge in self.unsettled):
             parent = self.tracking.get(gauge)
             if parent in local and parent in self.owned and parent not in self.unsettled:
                 gauge = parent

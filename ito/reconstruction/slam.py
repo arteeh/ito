@@ -83,6 +83,12 @@ TRACKER = os.environ.get("ITO_TRACKER", "mast3r")
 # graph place every frame; the robot seeds each frame's turn, the ToF/floor set one metric scale and
 # the first frame ties the vision world to the robot's. Fusion's robot-first window is not used.
 VISION = os.environ.get("ITO_SLAM") == "vision"
+# ITO_SLAM=full ITO_SLAM_LEAD=vision (vision_full.py): frames placed by the images as with
+# ITO_SLAM=vision, keyframes by full SLAM's global graph (mast3r_global.py: every keyframe, dense
+# calibrated Gauss-Newton, retrieval loop closure, relocalisation), the map following them. Unset
+# (=robot): full SLAM's robot-first frames (fusion.py's window).
+VISION_FULL = os.environ.get("ITO_SLAM") == "full" and os.environ.get("ITO_SLAM_LEAD") == "vision"
+VISION_LED = VISION or VISION_FULL
 # The metric scale (metres per vision unit) is pooled over this many ToF/floor readings, then held:
 # a later change would grow or shrink the whole room about its first camera.
 VISION_SCALE_READINGS = int(os.environ.get("ITO_VISION_SCALE_READINGS", "40"))
@@ -217,10 +223,11 @@ class SLAMBackend(GaussianBackend):
     ):
         if frontend is None and TRACKER == "map":
             frontend = MapFrontend(intrinsics, input_resolution)
-        if frontend is None and VISION:
+        if frontend is None and VISION_LED:
+            from .vision_full import VisionFullTracker
             from .vision_track import VisionTracker
 
-            frontend = VisionTracker(
+            frontend = (VisionFullTracker if VISION_FULL else VisionTracker)(
                 intrinsics,
                 report,
                 precision=precision,
@@ -310,6 +317,11 @@ class SLAMBackend(GaussianBackend):
         self.global_change = (0.0, 0.0)
         self.map_poses = {}  # full: keyframe -> its pose (Ito axes) its surfaces were placed by
         self.first_pose = None  # full: keyframe 0's rigid pose when it was made
+        # Vision-led full: keyframe -> its rigid vision-world pose its surfaces were placed by;
+        # frame node -> (keyframe, pose relative to it) (diagnostic); the last placed frame's node.
+        self.keyframe_vision = {}
+        self.vision_anchor = {}
+        self.last_node = None
         self.imu_priors = 0  # ITO_HEAD_IMU: frames tracked with the gyro's rotation prior
         # Full with ITO_FUSE: every fused frame's input, by keyframe, to fuse the field afresh
         # where the global graph moved keyframes (rebuild_volume) instead of keeping its old room.
@@ -342,6 +354,13 @@ class SLAMBackend(GaussianBackend):
     def world_alignment(self):
         """Full SLAM: the rigid move taking today's world (the gauge follows the keyframe the
         pilot looks from) back to the robot's starting frame, as keyframe 0 was placed in it."""
+        if VISION_FULL:
+            if self.global_graph is None or self.first_pose is None or not self.frontend.frames:
+                return None
+            now, _ = self.frontend.placed(self.frontend.frames[0].T_WC)
+            if now is None or getattr(self, "vision_metres_now", None) is None:
+                return None
+            return self.vision_delta(self.first_pose @ np.linalg.inv(now))
         if self.global_graph is None or not self.frontend.frames or 0 not in self.map_poses:
             return None
         from .mast3r_global import EDGES, level_correction, sim3_matrix, to_ito
@@ -440,20 +459,102 @@ class SLAMBackend(GaussianBackend):
                     self.map_poses[k] = now
             self.global_change = (moved, turned)
             self.global_applied += 1
-            if deltas:
-                self.repose(deltas, self.node_keyframe)
-                if self.volume is not None:
-                    self.move_fused(deltas)
-                    # A rebuild takes seconds and holds two fields: rebuilt after nearly every
-                    # solve the CUDA peak reached 10.4 GiB (hp-fullptn-loop). Only once keyframes
-                    # have moved 2 cm or 1.5 degrees since, and at most every FIELD_INTERVAL.
-                    shift, turn = self.field_moved
-                    self.field_moved = (shift + moved, turn + turned)
-                    far = self.field_moved[0] > FIELD_MOVE[0] or self.field_moved[1] > FIELD_MOVE[1]
-                    if far and time.monotonic() - self.field_rebuilt >= FIELD_INTERVAL:
-                        self.field_moved = (0.0, 0.0)
-                        self.field_rebuilt = time.monotonic()
-                        self.rebuild_volume()
+            self._follow(deltas, moved, turned)
+
+    def _follow(self, deltas, moved, turned):
+        """Full SLAM: surfaces, views and fused depth anchored to moved keyframes move with them
+        (deltas: keyframe -> world similarity, Ito axes, map world)."""
+        if not deltas:
+            return
+        self.repose(deltas, self.node_keyframe)
+        if self.volume is not None:
+            self.move_fused(deltas)
+            # A rebuild takes seconds and holds two fields: rebuilt after nearly every
+            # solve the CUDA peak reached 10.4 GiB (hp-fullptn-loop). Only once keyframes
+            # have moved 2 cm or 1.5 degrees since, and at most every FIELD_INTERVAL.
+            shift, turn = self.field_moved
+            self.field_moved = (shift + moved, turn + turned)
+            far = self.field_moved[0] > FIELD_MOVE[0] or self.field_moved[1] > FIELD_MOVE[1]
+            if far and time.monotonic() - self.field_rebuilt >= FIELD_INTERVAL:
+                self.field_moved = (0.0, 0.0)
+                self.field_rebuilt = time.monotonic()
+                self.rebuild_volume()
+
+    # --- ITO_SLAM=full ITO_SLAM_LEAD=vision -------------------------------------------------
+
+    def vision_map(self, pose):
+        """A rigid pose in the vision world (Ito axes, vision units) in the map's world, by the
+        held metric scale and the tie of the first frame; None before the scale is known."""
+        world = getattr(self, "vision_world", None)
+        metres = getattr(self, "vision_metres_now", None)
+        if world is None or metres is None:
+            return None
+        placed = np.eye(4)
+        placed[:3, :3] = world[:3, :3] @ pose[:3, :3]
+        placed[:3, 3] = world[:3, :3] @ (pose[:3, 3] * metres) + world[:3, 3]
+        return placed
+
+    def vision_delta(self, delta):
+        """A similarity of the vision world (Ito axes, vision units) as one of the map's world:
+        its rotation and scale as they are, its translation in metres."""
+        world = self.vision_world
+        tie = np.eye(4)
+        tie[:3, :3] = world[:3, :3] * self.vision_metres_now
+        tie[:3, 3] = world[:3, 3]
+        return tie @ delta @ np.linalg.inv(tie)
+
+    def keyframe_similarity(self, k):
+        """Keyframe k's world-from-camera Sim(3) now, as a 4x4 in Ito axes and vision units."""
+        from .mast3r_global import sim3_matrix, to_ito
+
+        data = self.frontend.frames[k].T_WC.data.reshape(8).double().cpu().numpy()
+        m = to_ito(sim3_matrix(data)[0])
+        return m if np.isfinite(m).all() else None
+
+    def apply_global_vision(self):
+        """Vision-led full SLAM, on the tracking thread: finished global solves to the keyframes
+        (the tracker, VisionFullTracker.apply_global) and to every surface, view and fused frame
+        anchored to a keyframe that moved."""
+        moved_keyframes = self.frontend.apply_global()
+        if moved_keyframes:
+            self.global_applied += 1
+            # The map follows each keyframe's whole Sim(3) correction: a frame's cloud is its
+            # pointmap at the scale its alignment to the keyframe gave, so it scales with it.
+            deltas, moved, turned = {}, 0.0, 0.0
+            for k in sorted(moved_keyframes):
+                now = self.keyframe_similarity(k)
+                before = self.keyframe_vision.get(k)
+                if now is None:
+                    continue
+                if before is None or getattr(self, "vision_metres_now", None) is None:
+                    self.keyframe_vision[k] = now
+                    continue
+                delta = self.vision_delta(now @ np.linalg.inv(before))
+                centre = self.vision_map(_rigid(before))[:3, 3]
+                shift = float(np.linalg.norm(delta[:3, :3] @ centre + delta[:3, 3] - centre))
+                scale = float(np.cbrt(np.linalg.det(delta[:3, :3])))
+                rotation = delta[:3, :3] / scale
+                angle = math.degrees(math.acos(np.clip((np.trace(rotation) - 1) / 2, -1, 1)))
+                moved, turned = max(moved, shift), max(turned, angle)
+                if shift > MAP_MOVE[0] or angle > MAP_MOVE[1] or abs(math.log(scale)) > MAP_MOVE[2]:
+                    deltas[k] = delta
+                    self.keyframe_vision[k] = now
+            self.global_change = (moved, turned)
+            self._follow(deltas, moved, turned)
+
+    def vision_final_poses(self):
+        """A diagnostic: every placed frame's map pose by its keyframe's pose now (the pose its
+        surfaces follow), node -> 4x4."""
+        from .gaussian import _moved_camera
+
+        out = {}
+        for node, (k, then, pose) in getattr(self, "vision_anchor", {}).items():
+            now = self.keyframe_similarity(k)
+            if now is not None:
+                placed = self.vision_map(_moved_camera(now @ np.linalg.inv(then), pose))
+                if placed is not None:
+                    out[node] = placed
+        return out
 
     def remember_fused(self, depth, trust, pose, intrinsics, node):
         self.fused_frames.append(
@@ -610,7 +711,7 @@ class SLAMBackend(GaussianBackend):
         truth: (world-from-camera or None, exposure on the pilot clock, axial depth or None)
         to publish and map this frame by instead of the estimates; the estimator still runs,
         unchanged, beside them."""
-        if VISION:
+        if VISION_LED:
             return self.integrate_vision(rgb, now, captured)
         started = clock.now()
         if EXPOSURE_INPUT:
@@ -1131,11 +1232,15 @@ class SLAMBackend(GaussianBackend):
         self.waiting = False
         if ROLLING_SHUTTER:
             rgb = self.unroll(rgb, exposure)
+        if self.global_graph is not None:
+            self.apply_global_vision()
+        self.last_node = None
         robot = self.motion.at(exposure)
+        self.robot_camera = robot
         last = getattr(self, "vision_robot", None)
         turn = None if last is None else last[:3, :3].T @ robot[:3, :3]
         self.vision_robot = robot
-        pose, unit, cloud, _, tracked = self.frontend.track(rgb, turn)
+        pose, unit, cloud, keyframe, tracked = self.frontend.track(rgb, turn)
         if pose is None:
             return
         if getattr(self, "vision_world", None) is None:
@@ -1143,6 +1248,13 @@ class SLAMBackend(GaussianBackend):
             self.vision_world = robot @ np.linalg.inv(pose)
             self.vision_metres = []
         metres = self.vision_scale(cloud, exposure)
+        self.vision_metres_now = metres
+        frontend = self.frontend
+        if self.global_graph is not None and keyframe:
+            k = len(frontend.frames) - 1
+            self.keyframe_vision[k] = self.keyframe_similarity(k)
+            if k == 0:
+                self.first_pose = pose
         world = self.vision_world
         placed = np.eye(4)
         placed[:3, :3] = world[:3, :3] @ pose[:3, :3]
@@ -1157,7 +1269,8 @@ class SLAMBackend(GaussianBackend):
         self.lost = not tracked
         self.report(
             f"Vision tracking | {self.tracked} frames, {self.matched / self.tracked:.0%} tracked, "
-            f"{len(self.frontend.keyframes)} keyframes, {self.frontend.solves} solves, "
+            f"{len(self.frontend.keyframes)} keyframes, "
+            f"{(self.global_graph or self.frontend).solves} solves, "
             f"scale {metres or 0:.3f} m/unit from {len(self.vision_metres)} readings"
         )
         if cloud is None or metres is None:
@@ -1167,6 +1280,17 @@ class SLAMBackend(GaussianBackend):
             cloud = self.bend_to_ranges(cloud, exposure)
         node = getattr(self, "vision_node", 0)
         self.vision_node = node + 1
+        if self.global_graph is not None:
+            # Its surfaces follow the keyframe it was tracked against (or is).
+            k = frontend.reference
+            self.node_keyframe[node] = k
+            then = self.keyframe_similarity(k)
+            if then is not None:
+                self.vision_anchor[node] = (k, then, pose)
+                # Its surfaces are placed by the keyframe as it is now; a correction smaller than
+                # MAP_MOVE since the keyframe's last one is not followed (MAP_MOVE is ~mm).
+                self.keyframe_vision.setdefault(k, then)
+        self.last_node = node
         self.place(cloud, placed, now + clock.now() - started, node=node, rgb=rgb)
 
     def vision_scale(self, cloud, exposure):
@@ -1188,7 +1312,7 @@ class SLAMBackend(GaussianBackend):
         return math.exp(float(np.median(readings)))
 
     def pose_at(self, captured):
-        if VISION:
+        if VISION_LED:
             published = getattr(self, "vision_published", None)
             if not published:
                 return None
