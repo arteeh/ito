@@ -182,6 +182,7 @@ FLIP4 = np.diag([1.0, -1.0, -1.0, 1.0])
 # with ITO_SLAM=full its turns and tilt join the global graph. Unset: as before.
 HEAD_IMU = os.environ.get("ITO_HEAD_IMU", "0") != "0"
 MAP_MOVE = (0.002, 0.05, 0.002)  # metres, degrees, log-scale: a keyframe's move the map follows
+KEYFRAME_AGE = float(os.environ.get("ITO_SLAM_KEYFRAME_AGE", "20"))  # s, full SLAM
 FIELD_MOVE = (0.02, 1.5)  # metres, degrees: keyframe moves that rebuild the fused field
 FIELD_INTERVAL = 20.0  # seconds: the least time from one field rebuild to the next
 
@@ -649,8 +650,13 @@ class SLAMBackend(GaussianBackend):
             graph.solve_frame()
             self._publish(node)
             return
-        # ...and the next frame that tracks becomes a keyframe, so the window has one again.
-        force = self.global_graph is not None and hold
+        # ...and the next frame that tracks becomes a keyframe, so the window has one again. Full
+        # SLAM also keeps one at least every KEYFRAME_AGE seconds while the robot dwells on known
+        # views: chained from an old keyframe, frames drift with the head's gear play (2.5-4.5 deg
+        # by the end of a close-up replay) and the window empties.
+        force = self.global_graph is not None and (
+            hold or (last is not None and captured - graph.nodes[last].time > KEYFRAME_AGE)
+        )
         result = self.frontend.track(
             rgb, node, predicted, prior_sigma, **({"force": True} if force else {})
         )
