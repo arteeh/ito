@@ -82,6 +82,7 @@ VISION = os.environ.get("ITO_SLAM") == "vision"
 # The metric scale (metres per vision unit) is pooled over this many ToF/floor readings, then held:
 # a later change would grow or shrink the whole room about its first camera.
 VISION_SCALE_READINGS = int(os.environ.get("ITO_VISION_SCALE_READINGS", "40"))
+SCALE_LOG = os.environ.get("ITO_SCALE_LOG") == "1"
 DEPTH = "da3" if TRACKER == "map" else os.environ.get("ITO_DEPTH", "mast3r")
 # ITO_ALIGN=1 (always with ITO_TRACKER=map) lays each frame's depth onto the map's surfaces
 # (align.py): where it was placed tells fusion where the camera was.
@@ -804,16 +805,22 @@ class SLAMBackend(GaussianBackend):
         """Metres per vision unit: the median of the first VISION_SCALE_READINGS ToF and floor
         readings (ToF weighed in four times), then held; None until there are enough."""
         readings = self.vision_metres
-        if cloud is not None and len(readings) < VISION_SCALE_READINGS:
+        log = getattr(self, "vision_scale_log", None)
+        if log is None:
+            log = self.vision_scale_log = []
+        if cloud is not None and (len(readings) < VISION_SCALE_READINGS or SCALE_LOG):
             robot = self.motion.at(exposure)
             ranged = self.sensors.range_scale(cloud, exposure, self.motion)
-            if ranged is not None:
-                readings.extend([math.log(ranged)] * 4)
-                self.range_readings += 1
             below = floor_scale(cloud, robot[:3, :3].T @ UP, float(robot[1, 3]))
-            if below is not None:
-                readings.append(math.log(below))
-            self.scale_readings += (ranged is not None) + (below is not None)
+            # Research: every reading with its time and the vision keyframe count (ITO_SCALE_LOG=1).
+            log.append((exposure, ranged, below, len(self.frontend.keyframes)))
+            if len(readings) < VISION_SCALE_READINGS:
+                if ranged is not None:
+                    readings.extend([math.log(ranged)] * 4)
+                    self.range_readings += 1
+                if below is not None:
+                    readings.append(math.log(below))
+                self.scale_readings += (ranged is not None) + (below is not None)
         if len(readings) < min(VISION_SCALE_READINGS, 12):
             return None
         return math.exp(float(np.median(readings)))
