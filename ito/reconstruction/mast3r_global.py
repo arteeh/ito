@@ -81,6 +81,17 @@ GAUGE = os.environ.get(
 EDGES = os.environ.get(
     "ITO_SLAM_EDGES", "dense" if os.environ.get("ITO_SLAM_LEAD") == "vision" else "pose"
 )
+# ITO_SLAM_EDGE_WEIGHT (=dense): every dense edge's normal equations times this. Upstream counts each
+# matched pixel as an independent measurement, so an edge claims its relative scale to ~1e-4 while
+# MASt3R's pairs are biased by ~1% (monocular scale drift: 0.82 along the loop's first leg); at 1 no
+# ToF/floor scale prior can correct that drift. Relative weights among edges do not change. Vision-led
+# full SLAM defaults to 1e-3 (loop replay: published scale 0.96-1.08 along the route, was 0.69-0.82
+# at 1; 1e-2 still 0.79; 1e-4 0.90-1.03; co-visible consistency unchanged at every weight).
+EDGE_WEIGHT = float(
+    os.environ.get(
+        "ITO_SLAM_EDGE_WEIGHT", "1e-3" if os.environ.get("ITO_SLAM_LEAD") == "vision" else "1"
+    )
+)
 EDGE_DEG = float(os.environ.get("ITO_SLAM_EDGE_DEG", "0.1"))
 EDGE_CM = float(os.environ.get("ITO_SLAM_EDGE_CM", "0.5"))
 EDGE_BASELINE = float(os.environ.get("ITO_SLAM_EDGE_BASELINE", "0.05"))
@@ -954,10 +965,10 @@ class GlobalGraph:
                     float(cfg["C_conf"]),
                     float(cfg["Q_conf"]),
                 )
-                blocks.append(Hs.reshape(-1, 7, 7).cpu())
+                blocks.append(Hs.reshape(-1, 7, 7).cpu() * EDGE_WEIGHT)
                 rows.append(torch.cat((li, li, lj, lj)).cpu())
                 cols.append(torch.cat((li, lj, li, lj)).cpu())
-                gradients.append(gs.reshape(-1, 7).cpu())
+                gradients.append(gs.reshape(-1, 7).cpu() * EDGE_WEIGHT)
                 which.append(torch.cat((li, lj)).cpu())
             A, ai, aj, b, bk = self._priors(poses.double().cpu().numpy(), local)
             if A:

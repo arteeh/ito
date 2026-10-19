@@ -89,6 +89,12 @@ VISION = os.environ.get("ITO_SLAM") == "vision"
 # (=robot): full SLAM's robot-first frames (fusion.py's window).
 VISION_FULL = os.environ.get("ITO_SLAM") == "full" and os.environ.get("ITO_SLAM_LEAD") == "vision"
 VISION_LED = VISION or VISION_FULL
+# Vision-led full SLAM: each frame's ToF and floor readings, once the metric scale is held, tie the
+# Sim(3) scale of the keyframe it tracked against to metres (the global graph's scale priors).
+# Monocular tracking drifts in scale: on the loop replay the vision world shrank to 0.82 (0.70 with
+# the room held at the oldest keyframe) along the first leg, so surfaces were seeded 15-30% too
+# near, and closing the loop asked a 1.23x rescale of settled keyframes. ITO_SLAM_TIE_SCALE=0: off.
+TIE_SCALE = os.environ.get("ITO_SLAM_TIE_SCALE", "1") != "0"
 # The metric scale (metres per vision unit) is pooled over this many ToF/floor readings, then held:
 # a later change would grow or shrink the whole room about its first camera.
 VISION_SCALE_READINGS = int(os.environ.get("ITO_VISION_SCALE_READINGS", "40"))
@@ -320,6 +326,7 @@ class SLAMBackend(GaussianBackend):
         # Vision-led full: keyframe -> its rigid vision-world pose its surfaces were placed by;
         # frame node -> (keyframe, pose relative to it) (diagnostic); the last placed frame's node.
         self.keyframe_vision = {}
+        self.tied_scales = 0  # vision-led full: ToF/floor readings given to the global graph
         self.vision_anchor = {}
         self.last_node = None
         self.imu_priors = 0  # ITO_HEAD_IMU: frames tracked with the gyro's rotation prior
@@ -398,6 +405,7 @@ class SLAMBackend(GaussianBackend):
             else [round(float(v), 3) for v in self.robot_camera[:3, 3]]
             + [round(math.degrees(heading(self.robot_camera[:3, :3])), 1)],
             field_rebuilds=self.volume_rebuilds,
+            tied_scales=self.tied_scales,
             field_rebuild_ms=round(self.rebuild_seconds * 1000),
             fused_frames=len(self.fused_frames),
         )
@@ -1249,6 +1257,8 @@ class SLAMBackend(GaussianBackend):
             self.vision_metres = []
         metres = self.vision_scale(cloud, exposure)
         self.vision_metres_now = metres
+        if TIE_SCALE and self.global_graph is not None and tracked:
+            self.vision_tie_scale(cloud, exposure, metres)
         frontend = self.frontend
         if self.global_graph is not None and keyframe:
             k = len(frontend.frames) - 1
@@ -1310,6 +1320,26 @@ class SLAMBackend(GaussianBackend):
         if len(readings) < min(VISION_SCALE_READINGS, 12):
             return None
         return math.exp(float(np.median(readings)))
+
+    def vision_tie_scale(self, cloud, exposure, metres):
+        """Vision-led full SLAM: this frame's ToF and floor readings as metres per unit of its
+        reference keyframe's pointmap, over the held metric scale, for the global graph."""
+        k = self.frontend.reference
+        if cloud is None or metres is None or k is None:
+            return
+        if len(self.vision_metres) < VISION_SCALE_READINGS:
+            return  # the metric scale is still being pooled (and may change)
+        from .mast3r_global import sim3_matrix
+
+        data = self.frontend.frames[k].T_WC.data.reshape(8).double().cpu().numpy()
+        own = float(np.cbrt(np.linalg.det(sim3_matrix(data)[0][:3, :3])))
+        robot = self.motion.at(exposure)
+        ranged = self.sensors.range_scale(cloud, exposure, self.motion)
+        below = floor_scale(cloud, robot[:3, :3].T @ UP, float(robot[1, 3]))
+        for value in (ranged, below):
+            if value is not None and value > 0 and own > 0:
+                self.global_graph.add_scale(k, math.log(own * value / metres))
+                self.tied_scales += 1
 
     def pose_at(self, captured):
         if VISION_LED:
