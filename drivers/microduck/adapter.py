@@ -24,7 +24,7 @@ from ito.protocol import (
 )
 from ito.rates import Rate
 
-from . import frames, gaze, sensors, truth
+from . import frames, gaze, record, sensors, truth
 from .camera import Camera, Track
 from .remote import Remote, RemoteError
 
@@ -171,6 +171,8 @@ class MicroduckAdapter(Adapter):
         self._gaze = None
         self._head_at = 0.0
         self._held = None
+        self._recorder = record.from_env()
+        self._last_truth = None
 
     def _exposure(self):
         told = os.environ.get("ITO_MICRODUCK_EXPOSURE")
@@ -202,6 +204,7 @@ class MicroduckAdapter(Adapter):
                 await self.remote.call("media.video"),
                 self._frame_metadata,
                 truth=self._true_pose if self._truth else None,
+                record=self._record_frame if self._recorder else None,
             )
             self._description = RobotDescription(
                 name="Microduck",
@@ -229,6 +232,21 @@ class MicroduckAdapter(Adapter):
             self._telemetry.update(
                 camera_calibration=self.camera.source, camera_timestamp="driver receive time"
             )
+            if self._recorder:
+                c = self.camera
+                self._recorder.meta(
+                    width=c.width,
+                    height=c.height,
+                    matrix=c.matrix,
+                    distortion=c.distortion,
+                    rectified=c.rectified,
+                    intrinsics=c.intrinsics,
+                    source=c.source,
+                    motion_noise=MOTION_NOISE,
+                    frame_delay=FRAME_DELAY,
+                    exposure=self._exposure(),
+                    tof_fov=self._tof_fov,
+                )
             await self.remote.call("robot.stop")
             if self.head_imu is not False:
                 self._imu_chip = await self._stream("head_imu.stream", required=self.head_imu)
@@ -512,7 +530,10 @@ class MicroduckAdapter(Adapter):
             )
         if not imu and not grids:
             return
-        if self.publish_sensors(Sensors(camera="head", imu=imu, ranges=grids)):
+        message = Sensors(camera="head", imu=imu, ranges=grids)
+        if self.publish_sensors(message):
+            if self._recorder:
+                self._recorder.sensors(message)
             self._imu_pending.clear()
             self._ranges_pending.clear()
         self._telemetry.update(head_imu_hz=self._imu_rate.hz(), tof_hz=self._tof_rate.hz())
@@ -536,14 +557,15 @@ class MicroduckAdapter(Adapter):
                 else (0.0, 0.0, 0.0)
             )
         self._previous_motion = (source, pose[1])
-        self._motion.append(
-            MotionSample(
-                time=source,
-                camera_pose=Pose(position=pose[0], orientation=pose[1]),
-                angular_velocity=gyro,
-                state=motion_state(data),
-            )
+        sample = MotionSample(
+            time=source,
+            camera_pose=Pose(position=pose[0], orientation=pose[1]),
+            angular_velocity=gyro,
+            state=motion_state(data),
         )
+        if self._recorder:
+            self._recorder.motion(sample)
+        self._motion.append(sample)
         if self.publish_motion(Motion(samples=tuple(self._motion))):
             self._motion.clear()
         self._motion_rate.tick()
@@ -559,11 +581,19 @@ class MicroduckAdapter(Adapter):
         position, orientation, body_yaw = frames.at(self._poses, clock.now() - FRAME_DELAY)
         return dict(camera_pose=Pose(position=position, orientation=orientation), body_yaw=body_yaw)
 
+    def _record_frame(self, raw, received, rtp):
+        found = self._last_truth
+        self._recorder.frame(
+            raw, received, rtp, found[1:] if found is not None and found[0] == rtp else None
+        )
+
     def _true_pose(self, rgb, rtp):
         row = self._truth.match(rgb, rtp)
+        self._last_truth = None
         if row is None or self._origin is None:
             return {}
         position, orientation = truth.in_world(row, self._origin)
+        self._last_truth = (rtp, row, position, orientation)
         self._compare_kinematics(row["time"], position, orientation)
         # A pilot that does not know true_pose (main) rejects the whole frame message.
         if os.environ.get("ITO_MICRODUCK_SEND_TRUTH") != "1":
@@ -615,4 +645,6 @@ class MicroduckAdapter(Adapter):
             await self.remote.call("robot.pose", {"active": False})
         if self.camera:
             self.camera.close()
+        if self._recorder:
+            self._recorder.close()
         await self.remote.close()
