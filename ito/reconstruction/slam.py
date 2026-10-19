@@ -384,7 +384,10 @@ class SLAMBackend(GaussianBackend):
             # (MAP_MOVE); smaller corrections wait, adding up, so a solve does not resend the map.
             deltas, moved, turned = {}, 0.0, 0.0
             for k, (_, pose) in changes.items():
-                now = to_ito(pose)
+                # Rigid only: surfaces and fused depth are metric (each frame scaled by its ToF or
+                # the floor); a keyframe's Sim3 scale is its pointmap's unit. Following it stretched
+                # a keyframe's splats 1.7-2.2x when a solve first set a new keyframe's scale.
+                now = _rigid(to_ito(pose))
                 before = self.map_poses.get(k)
                 if before is None:
                     self.map_poses[k] = now
@@ -535,8 +538,10 @@ class SLAMBackend(GaussianBackend):
             )
             first[:3, :3] /= np.cbrt(np.linalg.det(first[:3, :3]))
             self.first_pose = first
-        self.map_poses[index] = to_ito(
-            sim3_matrix(frontend.frames[index].T_WC.data.reshape(8).double().cpu().numpy())[0]
+        self.map_poses[index] = _rigid(
+            to_ito(
+                sim3_matrix(frontend.frames[index].T_WC.data.reshape(8).double().cpu().numpy())[0]
+            )
         )
         lost = frontend.lost
         self.global_graph.add_keyframe(
@@ -1224,6 +1229,13 @@ class SLAMBackend(GaussianBackend):
             raw_depth=raw_depth if self.consensus is not None else None,
             keyframe=self.node_keyframe.get(node) if self.global_graph is not None else None,
         )
+
+
+def _rigid(pose):
+    """A similarity's rigid part: its rotation without the scale."""
+    pose = np.array(pose, float)
+    pose[:3, :3] /= np.cbrt(np.linalg.det(pose[:3, :3]))
+    return pose
 
 
 def _reserve(volume, capacity):
