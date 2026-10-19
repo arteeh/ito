@@ -23,14 +23,13 @@ FULL = os.environ.get("ITO_SLAM") == "full"
 REACH = math.radians(30)
 NEAR = 1.5  # metres: farther keyframes are only tried when retrieval names them
 # Full: how sure a tracked frame's pose against its keyframe is, for the robot-first window
-# (ITO_SLAM_FRAME_DEG, ITO_SLAM_FRAME_CM; unset: the defaults' 0.5 deg / 2 cm). MASt3R's pairs
-# measure ~0.1 deg; the robot's prior carries 1.5-3 deg of gear play, so at 0.5 deg the window
-# pulls frames off what the images agree on.
-# Full: the robot's prior in the frame tracker is loosened by this factor (ITO_SLAM_TRACK_PRIOR).
-TRACK_PRIOR = float(os.environ.get("ITO_SLAM_TRACK_PRIOR", "1"))
+# (ITO_SLAM_FRAME_DEG, ITO_SLAM_FRAME_CM). MASt3R's pairs measure ~0.1 deg; the robot's prior
+# carries 1.5-3 deg of gear play: at the defaults' 0.5 deg / 2 cm the window pulled frames off
+# what the images agree on (close replay: co-visible rotation p50 0.50 / p90 1.58 deg; at 0.1 deg /
+# 0.5 cm 0.31 / 0.79, defaults 1.48 / 4.01).
 FRAME_SIGMA = (
-    math.radians(float(os.environ.get("ITO_SLAM_FRAME_DEG", "0.5"))),
-    float(os.environ.get("ITO_SLAM_FRAME_CM", "2")) / 100,
+    math.radians(float(os.environ.get("ITO_SLAM_FRAME_DEG", "0.1"))),
+    float(os.environ.get("ITO_SLAM_FRAME_CM", "0.5")) / 100,
 )
 
 
@@ -211,8 +210,6 @@ class MASt3RFrontend:
                 [SCALE_PRIOR],
             )
         )
-        if FULL:
-            sigma[:6] *= TRACK_PRIOR
         return self.K.new_tensor(1 / sigma**2)
 
     def track(self, rgb, node, predicted, prior_sigma, force=False):
