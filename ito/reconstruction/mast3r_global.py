@@ -64,17 +64,18 @@ PAIR_ITERATIONS = 10
 # keyframe always (before 18 Oct).
 GAUGE = os.environ.get("ITO_SLAM_GAUGE", "settled")
 # ITO_SLAM_EDGES=pose: each edge enters the global solve as the relative pose its matches alone
-# give (the edge check's two-keyframe solve, redone as the keyframes' pointmaps fill in) with the
-# robot-first window's trust in a tracked frame: rotation EDGE_DEG, camera centre EDGE_CM plus
-# EDGE_BASELINE of the pair's baseline (MASt3R's translation is off by its depth error, 5-14 cm on
-# half-metre pairs on the loop route, its rotation better than the robot's), Cauchy-robust, solved
-# with the robot's factors by least squares (default). =dense: upstream's per-pixel Gauss-Newton.
+# give (the edge check's two-keyframe solve, redone as the keyframes' pointmaps fill in): rotation
+# sigma EDGE_DEG, camera centre EDGE_CM plus EDGE_BASELINE of the pair's baseline, Cauchy-robust,
+# solved with the robot's factors by least squares (default). Offline against the sim's exact poses
+# a pair's median error is ~0.1-0.4 deg / 0.2-1 cm with a long tail; replaying recorded solves,
+# 0.1 deg / 0.5 cm + 5% put keyframes 4x closer to their true relative turn than 0.5 / 2 / 10%.
+# =dense: upstream's per-pixel Gauss-Newton.
 # Upstream's kernel counts each matched pixel as an independent 1 px measurement, so its dense solve
 # (=dense) trusts an edge to ~0.001 degrees and the robot's factors count for nothing beside it.
 EDGES = os.environ.get("ITO_SLAM_EDGES", "pose")
-EDGE_DEG = float(os.environ.get("ITO_SLAM_EDGE_DEG", "0.5"))
-EDGE_CM = float(os.environ.get("ITO_SLAM_EDGE_CM", "2"))
-EDGE_BASELINE = float(os.environ.get("ITO_SLAM_EDGE_BASELINE", "0.1"))
+EDGE_DEG = float(os.environ.get("ITO_SLAM_EDGE_DEG", "0.1"))
+EDGE_CM = float(os.environ.get("ITO_SLAM_EDGE_CM", "0.5"))
+EDGE_BASELINE = float(os.environ.get("ITO_SLAM_EDGE_BASELINE", "0.05"))
 EDGE_SCALE = 0.05  # log-scale sigma of a pair's relative scale
 REFRESH = 8  # edges whose keyframes' pointmaps have filled in since, re-solved per global solve
 # ITO_SLAM_LOG=<file>: one JSON line per solve and per checked edge (a diagnostic).
