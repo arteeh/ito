@@ -22,7 +22,7 @@ from .depth import (
     scale_to,
 )
 from .fusion import HEIGHT_SIGMA, UP, PoseGraph
-from .gaussian import GaussianBackend
+from .gaussian import EXPOSURE_INPUT, GaussianBackend, exposed
 from .motion import MotionBuffer
 from .sensors import HeadSensors
 from .slam_vision import RESTART_CAUSES
@@ -583,6 +583,9 @@ class SLAMBackend(GaussianBackend):
         to publish and map this frame by instead of the estimates; the estimator still runs,
         unchanged, beside them."""
         started = clock.now()
+        if EXPOSURE_INPUT:
+            self.input_exposure_used = getattr(self, "input_exposure", np.zeros(3)).copy()
+            rgb = exposed(rgb, self.input_exposure_used)
         self.truth = truth
         self.from_da3 = False
         graph = self.graph

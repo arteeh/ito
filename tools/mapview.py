@@ -66,7 +66,7 @@ def aligned(dump):
     return records
 
 
-def draw(records, camera):
+def draw(records, camera, antialiased=False, gain=None):
     r = torch.as_tensor(records, device="cuda", dtype=torch.float32)
     focal = WIDTH / 2 / math.tan(math.radians(HFOV / 2))
     K = torch.tensor([[focal, 0, WIDTH / 2], [0, focal, HEIGHT / 2], [0, 0, 1]], device="cuda")
@@ -83,11 +83,20 @@ def draw(records, camera):
         width=WIDTH,
         height=HEIGHT,
         near_plane=0.02,
+        rasterize_mode="antialiased" if antialiased else "classic",
     )
     background = torch.tensor([0.04, 0.04, 0.06], device="cuda")
-    image = image[0] + (1 - alpha[0]) * background
+    image = image[0]
+    if gain is not None:  # ITO_EXPOSURE: as the pilot draws it, at the camera's usual exposure
+        image = image * torch.as_tensor(np.exp(gain), device="cuda", dtype=torch.float32)
+    image = image + (1 - alpha[0]) * background
     rgb = (image.clamp(0, 1) * 255).byte().cpu().numpy()
     return np.ascontiguousarray(rgb[..., ::-1])
+
+
+def set_size(width):
+    global WIDTH, HEIGHT
+    WIDTH, HEIGHT = width, width * 9 // 16
 
 
 def main():
@@ -95,15 +104,32 @@ def main():
     p.add_argument("out", type=Path)
     p.add_argument("maps", nargs="+", type=Path)
     p.add_argument("--labels", nargs="+")
+    p.add_argument(
+        "--width",
+        type=int,
+        default=WIDTH,
+        help="cell width in pixels (same field of view): above 960 renders finer than the"
+        " sheets, as a headset eye does",
+    )
+    p.add_argument(
+        "--antialiased",
+        nargs="*",
+        type=int,
+        default=[],
+        help="columns (from 0) whose maps were trained with ITO_AA=1",
+    )
     a = p.parse_args()
+    set_size(a.width)
     labels = a.labels or [m.parent.name for m in a.maps]
-    maps = [aligned(np.load(m)) for m in a.maps]
+    loaded = [np.load(m) for m in a.maps]
+    maps = [aligned(z) for z in loaded]
+    gains = [z["color_gain"] if "color_gain" in z.files else None for z in loaded]
     rows = []
     for name, position, target in VIEWS:
         camera = pose(position, target)
         cells = []
-        for records, label in zip(maps, labels, strict=True):
-            img = draw(records, camera)
+        for column, (records, label) in enumerate(zip(maps, labels, strict=True)):
+            img = draw(records, camera, column in a.antialiased, gains[column])
             cv2.rectangle(img, (0, HEIGHT - 30), (WIDTH, HEIGHT), (0, 0, 0), -1)
             cv2.putText(
                 img,

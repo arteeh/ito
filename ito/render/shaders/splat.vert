@@ -1,6 +1,10 @@
 #version 430
 layout(std430, binding = 1) readonly buffer Scene { vec4 attributes[]; };
+layout(std430, binding = 4) readonly buffer Previous { vec4 previous[]; };
 uniform float scene_time;
+uniform float ease;
+uniform int antialiased;
+uniform vec3 color_gain;  // ITO_EXPOSURE: the camera's usual exposure against the map
 uniform float fade_seconds;
 uniform uint stride;
 uniform int sh_degree;
@@ -42,6 +46,20 @@ vec3 color(uint id, vec3 direction) {
 void main() {
     uint id = order[gl_InstanceID].y;
     vec4 p = attribute_at(id, 0u);
+    vec3 s = attribute_at(id, 1u).xyz;
+    vec4 q = attribute_at(id, 2u); // wxyz
+    float glide = 1.0;
+    if (ease > 0) {
+        // update.glsl: glide from previous[] to the record since previous[1].w
+        uint b = id * 4u;
+        glide = smoothstep(0.0, 1.0, clamp((scene_time - previous[b + 1u].w) / ease, 0.0, 1.0));
+        if (glide < 1.0) {
+            p = mix(previous[b], p, glide);
+            s = mix(previous[b + 1u].xyz, s, glide);
+            vec4 q0 = previous[b + 2u];
+            q = normalize(mix(dot(q0, q) < 0.0 ? -q0 : q0, q, glide));
+        }
+    }
     if (fade_seconds > 0)
         p.w *= clamp((attribute_at(id, 1u).w - scene_time) / fade_seconds, 0.0, 1.0);
     vec4 center = view * vec4(p.xyz, 1);
@@ -51,8 +69,6 @@ void main() {
     gl_Position = vec4(2, 2, 2, 1);
     if (clip.w <= 0 || clip.z < -clip.w || clip.z > clip.w || p.w < 1.0/255.0) return;
 
-    vec3 s = attribute_at(id, 1u).xyz;
-    vec4 q = attribute_at(id, 2u); // wxyz
     float w = q.x, x = q.y, y = q.z, z = q.w;
     mat3 rotation = mat3(
         1-2*(y*y+z*z), 2*(x*y+w*z), 2*(x*z-w*y),
@@ -72,6 +88,12 @@ void main() {
     float a = dot(jx, covariance * jx) + 0.3;
     float b = dot(jx, covariance * jy);
     float c = dot(jy, covariance * jy) + 0.3;
+    if (antialiased != 0) {
+        // The dilation keeps the splat's energy, as gsplat's "antialiased" mode trains it.
+        float bare = (a - 0.3) * (c - 0.3) - b * b;
+        p.w *= sqrt(clamp(bare / (a * c - b * b), 0.0, 1.0));
+        if (p.w < 1.0/255.0) return;
+    }
     float mid = 0.5*(a+c);
     float radius = length(vec2(0.5*(a-c), b));
     float major = sqrt(max(mid + radius, 0.3));
@@ -83,5 +105,11 @@ void main() {
     gaussian_uv = corner * 3.0;
     vec2 offset = 3.0 * (corner.x * major * axis + corner.y * minor * vec2(-axis.y, axis.x));
     gl_Position = clip + vec4(offset * 2.0 / viewport * clip.w, 0, 0);
-    color_opacity = vec4(color(id, normalize(p.xyz - eye)), p.w);
+    vec3 rgb = color(id, normalize(p.xyz - eye));
+    if (glide < 1.0) {
+        // live scenes are SH degree 0: the colour glides with the rest
+        vec3 rgb0 = max(vec3(0.5) + 0.2820947918 * previous[id * 4u + 3u].rgb, vec3(0));
+        rgb = mix(rgb0, rgb, glide);
+    }
+    color_opacity = vec4(rgb * color_gain, p.w);
 }

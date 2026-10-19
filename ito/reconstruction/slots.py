@@ -1,11 +1,14 @@
 """Stable Gaussian slots and acknowledged retirement shared by all live inputs."""
 
+import os
 import sys
 from contextlib import nullcontext
 
 import numpy as np
 
 KEEP = 1e30
+# ITO_EASE (render/renderer.py): the pilot keeps a retired splat whole this long before its fade.
+EASE = max(0.0, float(os.environ.get("ITO_EASE", "0") or 0))
 FIRST_SLOTS = 65_536
 MOVED = 1 << 62
 SLOT_FIELDS = {
@@ -144,7 +147,7 @@ class GaussianSlots:
     def expire(self, now, acknowledged):
         accepted = self.retiring & (self.retire_revision <= acknowledged)
         self.release_after[accepted] = np.minimum(
-            self.release_after[accepted], now + self.fade + 0.05
+            self.release_after[accepted], now + self.fade + EASE + 0.05
         )
         expired = (self.keys >= 0) & self.retiring & (self.release_after <= now)
         self.refined[expired] = False

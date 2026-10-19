@@ -28,7 +28,8 @@ from scipy.spatial.transform import Rotation
 from .slots import KEEP, GaussianSlots
 
 C0 = 0.28209479177387814
-MAX_VIEWS = 24
+# ITO_FIT_VIEWS (an experiment): retained views training refines the map against.
+MAX_VIEWS = int(os.environ.get("ITO_FIT_VIEWS", "24"))
 DEPTH_TOLERANCE = 0.08  # Of depth: two estimates closer than this are one surface.
 COVERED = 0.85  # Rendered opacity above which a pixel is explained by the map.
 BLEND = 0.2  # Colour difference below which a view's light refines a surface's colour.
@@ -40,6 +41,33 @@ AXES = np.diag([1.0, -1.0, -1.0, 1.0])  # Ito camera (-Z forward, +Y up) to Open
 # Training: whole retained views on a thread of its own (training.py); ITO_FIT=local trains
 # 32-pixel patches inline instead (fitting.py), as before.
 FIT = os.environ.get("ITO_FIT", "view")
+# ITO_EXPOSURE=1 (an experiment): a camera's auto exposure and white balance change a frame's
+# colours. Each frame's per-channel gain against the map (median log ratio where both agree)
+# is divided out before it seeds or blends colour, and training keeps refining each retained
+# view's gain and offset beside the map instead of baking them into surfaces.
+EXPOSURE = os.environ.get("ITO_EXPOSURE", "0") != "0"
+# ITO_EXPOSURE=input: also divide the gain known so far out of each whole frame as it arrives,
+# before depth, tracking and mapping see it, so they compare frames at one exposure.
+EXPOSURE_INPUT = os.environ.get("ITO_EXPOSURE") == "input"
+EXPOSURE_SAMPLES = 300
+EXPOSURE_LIMIT = 0.7  # log gain: a camera's exposure swing between neighbouring frames
+# The map keeps the colours of the frames it began with; the pilot draws it at the camera's
+# usual exposure since, the running mean of frame gains against it (frames, 1/e).
+EXPOSURE_MEMORY = 300
+
+
+def exposed(image, log_gain):
+    """uint8 image with a per-channel log gain divided out."""
+    if log_gain is None or not np.any(log_gain):
+        return image
+    scale = np.exp(-np.asarray(log_gain, np.float32))
+    table = np.clip(np.arange(256, dtype=np.float32)[:, None] * scale, 0, 255).astype(np.uint8)
+    try:
+        import cv2
+
+        return cv2.LUT(np.ascontiguousarray(image), table[:, None, :])
+    except ImportError:
+        return np.stack([table[image[..., c], c] for c in range(3)], -1)
 
 
 @dataclass
@@ -64,6 +92,8 @@ class Observation:
     # The network's own depth before views agreed on it: later views may yet confirm it.
     raw_depth: np.ndarray | None = None
     filled: int = 0  # retained views there were when training last filled this view's holes
+    exposure: np.ndarray | None = None  # ITO_EXPOSURE: log gain (3) and offset (3) of its colours
+    exposure_prior: np.ndarray | None = None  # what the frame's own estimate said
 
 
 def _moved_camera(delta, camera):
@@ -267,12 +297,15 @@ class GaussianBackend(GaussianSlots):
                 calibration = torch.tensor(
                     [[fx, 0, cx], [0, fy, cy], [0, 0, 1]], device="cuda", dtype=torch.float32
                 )
+                channels = torch.as_tensor(size, device="cuda", dtype=torch.float32)[:, None]
+                if EXPOSURE:  # the map's own colour as drawn, to measure a frame's exposure by
+                    channels = torch.cat((channels, records[:, 3, :3] * C0 + 0.5), 1)
                 image, alpha, _ = rasterization(
                     means=records[:, 0, :3],
                     quats=records[:, 2],
                     scales=records[:, 1, :3],
                     opacities=records[:, 0, 3],
-                    colors=torch.as_tensor(size, device="cuda", dtype=torch.float32)[:, None],
+                    colors=channels,
                     viewmats=view.float()[None],
                     Ks=calibration[None],
                     width=width,
@@ -285,7 +318,9 @@ class GaussianBackend(GaussianSlots):
                 image = image[0].cpu().numpy()
             seen = alpha > 0.01
             pixels = np.where(seen, image[..., 0] / np.maximum(alpha, 0.01), 0)
-            return alpha, np.where(seen, image[..., 1], 0), pixels
+            if EXPOSURE:
+                self.drawn_colour = image[..., 1:4] / np.maximum(alpha, 0.01)[..., None]
+            return alpha, np.where(seen, image[..., -1], 0), pixels
         if not len(ids):
             return (np.zeros(shape, np.float32),) * 3
         # Without CUDA: nearest centre per pixel, spread over its projected footprint.
@@ -366,6 +401,31 @@ class GaussianBackend(GaussianSlots):
             # into surfaces that already match, never across texture a view misplaces.
             seen = image[pv[agree], pu[agree]].astype(np.float32) / 255
             color = self.records[supported, 3, :3] * C0 + 0.5
+            if EXPOSURE and getattr(self, "drawn_colour", None) is not None:
+                # Against the map as drawn (composited), not single splats: training lifts a
+                # splat's own colour where coverage is thin, which reads as a darker frame.
+                drawn = self.drawn_colour
+                self.drawn_colour = None
+                covered = (
+                    (alpha > 0.95) & valid & (np.abs(depth - mapped) <= DEPTH_TOLERANCE * mapped)
+                )
+                frame = image[covered].astype(np.float32) / 255
+                model = drawn[covered]
+                usable = ((frame > 0.04) & (frame < 0.96) & (model > 0.04) & (model < 0.96)).all(-1)
+                if usable.sum() >= EXPOSURE_SAMPLES:
+                    ratio = np.log(frame[usable]) - np.log(model[usable])
+                    self.frame_exposure = np.clip(
+                        np.median(ratio, axis=0), -EXPOSURE_LIMIT, EXPOSURE_LIMIT
+                    )
+                    seen = np.clip(seen * np.exp(-self.frame_exposure), 0, 1)
+                    total = self.frame_exposure.copy()
+                    if EXPOSURE_INPUT:
+                        total += self.input_exposure_used
+                        self.input_exposure = np.clip(total, -1.5, 1.5)
+                    usual = getattr(self, "exposure_mean", None)
+                    self.exposure_mean = (
+                        total if usual is None else usual + (total - usual) / EXPOSURE_MEMORY
+                    )
             change = np.abs(seen - color).max(-1)
             near = np.flatnonzero((change < BLEND) & (change > 0.01))
             near = near[np.argsort(-change[near])[:BLENDED]]
@@ -402,7 +462,16 @@ class GaussianBackend(GaussianSlots):
         # nearest and farthest surface belongs to neither and would seed a streak.
         farthest = maximum_filter(depth, size=3)
         missing &= ~((depth > closest * EDGE) & (depth * EDGE < farthest))
-        self.seed(points, image, depth, missing, camera, intrinsics, now, keyframe=keyframe)
+        self.seed(
+            points,
+            exposed(image, getattr(self, "frame_exposure", None)) if EXPOSURE else image,
+            depth,
+            missing,
+            camera,
+            intrinsics,
+            now,
+            keyframe=keyframe,
+        )
         self.keep_view(camera, image, depth, intrinsics, node, photo, raw_depth)
 
     def seed(self, points, image, depth, missing, camera, intrinsics, now, keyframe=None):
@@ -520,6 +589,9 @@ class GaussianBackend(GaussianSlots):
                 photo=None if photo is None else photo[0],
                 photo_intrinsics=None if photo is None else photo[1],
                 raw_depth=None if raw_depth is None else raw_depth.copy(),
+                exposure=np.concatenate((getattr(self, "frame_exposure", np.zeros(3)), np.zeros(3)))
+                if EXPOSURE
+                else None,
             )
         )
         if len(self.views) > MAX_VIEWS:

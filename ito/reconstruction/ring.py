@@ -25,6 +25,8 @@ class SplatUpdate:
     observations: tuple[tuple[int, float], ...] = ()
     observed_at: np.ndarray | None = None
     coordinate_frame: str = "world"
+    # ITO_EXPOSURE: per-channel log gain to draw the map at the camera's usual exposure.
+    color_gain: tuple = (0.0, 0.0, 0.0)
     # Records are baked into the persistent root anchor before entering the ring.
     anchors: tuple = (
         (0, (1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0)),
@@ -53,6 +55,7 @@ class UpdateRing:
         self.ready = context.RawArray("b", slots)
         self.locks = [context.Lock() for _ in range(slots)]
         self.read_position = self.write_position = 0
+        self.color_gain = context.RawArray("d", 3)
         self.acknowledged = context.RawValue("q", -1)
         self.ack_lock = context.Lock()
 
@@ -161,6 +164,7 @@ class UpdateRing:
                 observations,
                 captures.copy(),
                 self.coordinate_frame,
+                color_gain=tuple(self.color_gain),
             )
         finally:
             self.locks[slot].release()

@@ -17,12 +17,13 @@ import time
 
 import numpy as np
 
-from .gaussian import AXES, C0
+from .gaussian import AXES, C0, EXPOSURE, exposed
 
 log = logging.getLogger(__name__)
 
-STEPS = 30
-PARTNERS = 2  # overlapping views trained beside the chosen one
+STEPS = int(os.environ.get("ITO_FIT_STEPS", "30"))  # per unit
+# Overlapping views trained beside the chosen one (ITO_FIT_PARTNERS, an experiment).
+PARTNERS = int(os.environ.get("ITO_FIT_PARTNERS", "2"))
 MAX_UNIT = 400_000
 SSIM_WEIGHT = 0.2
 DEPTH_WEIGHT = 0.1
@@ -57,6 +58,54 @@ FILL_ALPHA = 0.5
 # view's frames would otherwise queue behind; at full duty they missed about 5% of 60 Hz
 # deadlines, against 2% without training.
 DUTY = float(os.environ.get("ITO_FIT_DUTY", "0.5"))
+# Every GLOBAL-th unit starts from the least trained of all retained views, the others from
+# the least trained of the last three (ITO_FIT_GLOBAL, an experiment; 1: always all views).
+GLOBAL = max(1, int(os.environ.get("ITO_FIT_GLOBAL", "4")))
+# ITO_FIT_IDLE=1 (an experiment): while the last three retained views stand within IDLE_MOVE
+# of each other (the robot holds still), every unit starts from all views: the recent ones are
+# trained already and the rest of the room waits.
+IDLE = os.environ.get("ITO_FIT_IDLE", "0") != "0"
+IDLE_MOVE = (0.03, math.radians(3))  # metres, radians
+# ITO_AA=1 (an experiment), Mip-Splatting's two filters: training renders "antialiased" (the
+# 0.3 px screen dilation keeps a splat's energy, as the pilot's renderer then draws it), and
+# no axis of a Gaussian shrinks below MIP_3D of a pixel of the finest view that sees it, so
+# nothing is finer than any photo could show (sparkle and gaps up close in the headset).
+AA = os.environ.get("ITO_AA", "0") != "0"
+MIP_3D = math.sqrt(0.2)
+MODE = "antialiased" if AA else "classic"
+# ITO_FIT_DIVERSE=1 (an experiment): a unit's views stand at least DIVERSE apart (metres,
+# radians) where the overlapping views allow it. The nearest views (the default choice) are
+# near-duplicates up close: no parallax to settle depth, only their millimetre pose jitter,
+# which training then paints into streaks.
+DIVERSE = (0.1, math.radians(10)) if os.environ.get("ITO_FIT_DIVERSE", "0") != "0" else None
+# ITO_FIT_NEAR=1 (an experiment): a Gaussian's position steps shrink with its distance from
+# the unit's chosen view, below NEAR_DEPTH, as 3DGS scales position steps by the scene's size:
+# up close the views' millimetre pose errors are large against the surface, and full-size
+# steps paint them into streaks across books and plain walls.
+NEAR = os.environ.get("ITO_FIT_NEAR", "0") != "0"
+NEAR_DEPTH = 2.0  # metres
+# ITO_FIT_BA=1 (an experiment): the partner views' poses train with the map, as MonoGS and
+# MoonSplat map (the chosen view holds the frame): a view a few millimetres off stops dragging
+# surfaces into streaks across the others. Larger corrections than ALIGN_LIMIT are dropped.
+BA = os.environ.get("ITO_FIT_BA", "0") != "0"
+BA_RATES = (2e-4, 2e-4)  # radians, metres per Adam step
+BA_WEIGHT = 1e-3  # L2 on the correction, in units of ALIGN_LIMIT
+# ITO_FIT_SPARSE=<weight> (an experiment): 3DGS-MCMC's L1 on opacity. A Gaussian the photos
+# do not need fades below PRUNE_OPACITY and retires: floaters and doubled layers thin out.
+SPARSE = float(os.environ.get("ITO_FIT_SPARSE", "0") or 0)
+# ITO_FLOATERS=1 (an experiment): a frame only ever tests the map it finds, so what a bad frame
+# seeds is never tested against the views before it. Every FLOATER_EVERY units all live
+# Gaussians are tested against every retained view's depth: one that at least FLOATER_VIEWS
+# views see through (the nearest depth around its pixel lies beyond it), and twice as many
+# as see it on their surface, retires.
+FLOATERS = os.environ.get("ITO_FLOATERS", "0") != "0"
+FLOATER_EVERY = 8
+FLOATER_VIEWS = 2
+FLOATER_MARGIN = 0.1  # of depth, beyond the Gaussian's own extent
+# ITO_EXPOSURE=1: each view's colours are the map's times its gain plus its offset; both
+# train beside the map and stay near what the frame's own estimate said (gaussian.py).
+EXPOSURE_RATES = (2e-3, 1e-3)  # log gain, offset per Adam step
+EXPOSURE_WEIGHT = 0.05
 
 
 def ssim(a, b, torch):
@@ -95,6 +144,8 @@ class ViewFit:
         self.pruned = 0
         self.aligned = 0
         self.filled = 0
+        self.floaters = 0
+        self.adjusted = 0
         self.seconds = dict(prepare=0.0, finish=0.0)  # CPU time outside the Adam steps
         self.threaded = False
 
@@ -158,7 +209,16 @@ class ViewFit:
         b = self.backend
         views = list(b.views)
         recent = views[-3:]
-        pool = recent if self.serial % 4 else views
+        pool = recent if self.serial % GLOBAL else views
+        if IDLE and len(views) > 3:
+            first = recent[0].pose
+            still = all(
+                np.linalg.norm(v.pose[:3, 3] - first[:3, 3]) < IDLE_MOVE[0]
+                and float(v.pose[:3, 2] @ first[:3, 2]) > math.cos(IDLE_MOVE[1])
+                for v in recent[1:]
+            )
+            if still:
+                pool = views
         self.serial += 1
         return min(pool, key=lambda v: v.steps)
 
@@ -175,7 +235,21 @@ class ViewFit:
             if cosine > 0.7 and distance < 0.8:
                 scored.append((other.steps + 50 * (1 - cosine) + 20 * distance, other))
         scored.sort(key=lambda item: item[0])
-        return [other for _, other in scored[:PARTNERS]]
+        if DIVERSE is None:
+            return [other for _, other in scored[:PARTNERS]]
+        chosen, poses = [], [pose]
+        for _, other in scored:
+            o = other.fitting_pose if other.fitting_pose is not None else other.pose
+            if all(
+                np.linalg.norm(o[:3, 3] - q[:3, 3]) >= DIVERSE[0]
+                or float(o[:3, 2] @ q[:3, 2]) <= math.cos(DIVERSE[1])
+                for q in poses
+            ):
+                chosen.append(other)
+                poses.append(o)
+            if len(chosen) == PARTNERS:
+                break
+        return chosen or [other for _, other in scored[:PARTNERS]]
 
     def visible(self, centers, reach, pose, intrinsics, shape):
         """Mask of centers (N x 3, map frame, on CUDA) whose footprint (reach, metres) falls in
@@ -190,6 +264,51 @@ class ViewFit:
         r = 3 * fx * reach / safe
         inside = (z > 0.01) & (u > -r) & (u < width + r) & (v > -r) & (v < height + r)
         return inside
+
+    def sweep(self):
+        """ITO_FLOATERS: retire Gaussians the retained views see through."""
+        b, torch = self.backend, self.torch
+        with b.lock:
+            live = np.flatnonzero((b.keys >= 0) & ~b.retiring)
+            if not len(live) or len(b.views) < 2:
+                return
+            centers = b.records[live, 0, :3].copy()
+            extent = b.records[live, 1, :3].max(-1).copy()
+            keys = b.keys[live].copy()
+            views = [
+                (v.fitting_pose if v.fitting_pose is not None else v.pose, v.depth, v.intrinsics)
+                for v in b.views
+            ]
+        c = self.tensor(centers)
+        r = self.tensor(extent)
+        through = torch.zeros(len(live), dtype=torch.int32, device="cuda")
+        surface = torch.zeros(len(live), dtype=torch.int32, device="cuda")
+        pool = torch.nn.functional.max_pool2d
+        for pose, depth, (fx, fy, cx, cy) in views:
+            d = self.tensor(depth)
+            # Nearest depth around each pixel: a silhouette a pixel off is not free space.
+            nearest = -pool(-torch.where(d > 0, d, 1e6)[None, None], 3, 1, 1)[0, 0]
+            local = (c - self.tensor(pose[:3, 3])) @ self.tensor(pose[:3, :3])
+            z = -local[:, 2]
+            u = torch.round(cx + fx * local[:, 0] / z.clamp_min(0.01)).long()
+            v = torch.round(cy - fy * local[:, 1] / z.clamp_min(0.01)).long()
+            h, w = d.shape
+            on = (z > 0.05) & (u >= 0) & (u < w) & (v >= 0) & (v < h)
+            uu, vv = u.clamp(0, w - 1), v.clamp(0, h - 1)
+            observed = d[vv, uu]
+            margin = FLOATER_MARGIN * z + 2 * r
+            seen = on & (observed > 0)
+            through += (seen & (nearest[vv, uu] > z + margin) & (nearest[vv, uu] < 1e5)).int()
+            surface += (seen & ((observed - z).abs() <= margin)).int()
+        gone = ((through >= FLOATER_VIEWS) & (through >= 2 * surface)).cpu().numpy()
+        if not gone.any():
+            return
+        with b.lock:
+            ids = live[gone]
+            ids = ids[(b.keys[ids] == keys[gone]) & ~b.retiring[ids]]
+            if len(ids):
+                b.retire(ids)
+                self.floaters += len(ids)
 
     def prepare(self):
         """Pick a view and its partners and copy the Gaussians they see. The map's lock is held
@@ -238,6 +357,31 @@ class ViewFit:
             original[:, 1, :3].clamp_min(1e-6) * GROWTH,
             torch.maximum(widest[:, None], original[:, 1, :3]),
         ).log()
+        smallest = None
+        if AA:
+            finest = torch.full((len(chosen),), float("inf"), device="cuda")
+            for observation in targets:
+                pose = (
+                    observation.fitting_pose
+                    if observation.fitting_pose is not None
+                    else observation.pose
+                )
+                fine = observation.photo_intrinsics or observation.intrinsics
+                z = (-(original[:, 0, :3] - self.tensor(pose[:3, 3])) @ self.tensor(pose[:3, :3]))[
+                    :, 2
+                ]
+                inside = self.visible(
+                    original[:, 0, :3],
+                    original[:, 1, :3].max(-1).values,
+                    pose,
+                    observation.intrinsics,
+                    observation.depth.shape,
+                )
+                finest = torch.where(
+                    inside, torch.minimum(finest, z.clamp_min(0.01) / fine[0]), finest
+                )
+            smallest = torch.where(torch.isfinite(finest), MIP_3D * finest, 0.0).clamp_min(1e-7)
+            smallest = torch.minimum(smallest[:, None].log(), largest)
         p = {
             "means": torch.nn.Parameter(original[:, 0, :3].clone()),
             "scales": torch.nn.Parameter(original[:, 1, :3].clamp_min(1e-6).log()),
@@ -245,10 +389,8 @@ class ViewFit:
             "opacity": torch.nn.Parameter(torch.logit(original[:, 0, 3].clamp(0.001, 0.999))),
             "color": torch.nn.Parameter(original[:, 3, :3].clone()),
         }
-        optimizer = torch.optim.Adam(
-            [{"params": [value], "lr": RATES[key]} for key, value in p.items()], eps=1e-15
-        )
         prepared = []
+        exposures = []
         for observation in targets:
             pose = (
                 observation.fitting_pose
@@ -262,9 +404,17 @@ class ViewFit:
             depth = self.tensor(observation.depth)
             if depth.shape != (h, w):
                 depth = torch.nn.functional.interpolate(depth[None, None], (h, w))[0, 0]
+            exposure = None
+            if EXPOSURE and observation.exposure is not None:
+                if observation.exposure_prior is None:
+                    observation.exposure_prior = observation.exposure.copy()
+                prior = self.tensor(observation.exposure_prior)
+                exposure = (torch.nn.Parameter(self.tensor(observation.exposure)), prior)
+                exposures.append(exposure[0])
             prepared.append(
                 dict(
                     view=observation,
+                    exposure=exposure,
                     camera=self.tensor(np.linalg.inv(pose @ AXES))[None],
                     calibration=self.tensor([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])[None],
                     target=self.tensor(image).permute(2, 0, 1) / 255,
@@ -273,6 +423,18 @@ class ViewFit:
                     focal=fx,
                 )
             )
+        groups = [{"params": [value], "lr": RATES[key]} for key, value in p.items()]
+        if exposures:
+            groups.append({"params": exposures, "lr": EXPOSURE_RATES[0]})
+        if BA and len(prepared) > 1:
+            for target in prepared[1:]:
+                target["delta"] = (
+                    torch.nn.Parameter(torch.zeros(3, device="cuda")),
+                    torch.nn.Parameter(torch.zeros(3, device="cuda")),
+                )
+            groups.append({"params": [t["delta"][0] for t in prepared[1:]], "lr": BA_RATES[0]})
+            groups.append({"params": [t["delta"][1] for t in prepared[1:]], "lr": BA_RATES[1]})
+        optimizer = torch.optim.Adam(groups, eps=1e-15)
         self.active = dict(
             ids=ids,
             keys=keys[chosen],
@@ -287,6 +449,8 @@ class ViewFit:
             seen=torch.zeros(len(ids), device="cuda"),
             pixels=torch.zeros(len(ids), device="cuda"),
             largest=largest,
+            smallest=smallest,
+            near=(distance / NEAR_DEPTH).clamp(0.1, 1.0)[:, None] if NEAR else None,
         )
         if POSES:
             rotation = torch.nn.Parameter(torch.zeros(3, device="cuda"))
@@ -361,9 +525,10 @@ class ViewFit:
         ).astype(np.float32)
         with b.lock:
             before = b.count
+            image = view.image if view.exposure is None else exposed(view.image, view.exposure[:3])
             b.seed(
                 points,
-                view.image,
+                image,
                 depth,
                 holes,
                 pose,
@@ -465,6 +630,9 @@ class ViewFit:
         target = a["targets"][a["steps"] % len(a["targets"])]
         w, h = target["size"]
         with self.chunk("fit_forward"):
+            camera = target["camera"]
+            if "delta" in target:
+                camera = (self.moved(target["delta"]) @ camera[0])[None]
             rendered, alpha, info = self.rasterize(
                 means=p["means"],
                 quats=p["quats"],
@@ -472,7 +640,7 @@ class ViewFit:
                 opacities=p["opacity"].sigmoid(),
                 colors=p["color"][:, None],
                 sh_degree=0,
-                viewmats=target["camera"],
+                viewmats=camera,
                 Ks=target["calibration"],
                 width=w,
                 height=h,
@@ -481,12 +649,19 @@ class ViewFit:
                 far_plane=1000,
                 render_mode="RGB+ED",
                 absgrad=True,
+                rasterize_mode=MODE,
             )
             info["means2d"].retain_grad()
             rgb = rendered[0, ..., :3].permute(2, 0, 1)
             observed = target["target"]
+            regular = 0
+            if target["exposure"] is not None:
+                exposure, start = target["exposure"]
+                rgb = rgb * exposure[:3].exp()[:, None, None] + exposure[3:, None, None]
+                regular = EXPOSURE_WEIGHT * ((exposure - start) ** 2).sum()
             l1 = (rgb - observed).abs().mean()
             loss = (1 - SSIM_WEIGHT) * l1 + SSIM_WEIGHT * (1 - ssim(rgb, observed, torch))
+            loss = loss + regular
             known = target["depth"]
             drawn = rendered[0, ..., 3]
             mask = (known > 0) & (alpha[0, ..., 0].detach() > 0.5)
@@ -497,6 +672,14 @@ class ViewFit:
             loss = loss + SCALE_WEIGHT * (axes[:, 0] / axes[:, 1].clamp_min(1e-6)).mean()
             needle = (axes[:, 2] / axes[:, 1].clamp_min(1e-6) - NEEDLE).clamp_min(0)
             loss = loss + NEEDLE_WEIGHT * needle.mean()
+            if SPARSE:
+                loss = loss + SPARSE * p["opacity"].sigmoid().mean()
+            if "delta" in target:
+                rotation, translation = target["delta"]
+                loss = loss + BA_WEIGHT * (
+                    rotation.square().sum() / ALIGN_LIMIT[0] ** 2
+                    + translation.square().sum() / ALIGN_LIMIT[1] ** 2
+                )
         with self.chunk("fit_backward"):
             loss.backward()
             with torch.no_grad():
@@ -514,13 +697,20 @@ class ViewFit:
                 if radius.dim() > 1:
                     radius = radius.max(-1).values
                 a["pixels"] = torch.maximum(a["pixels"], radius.float())
+            if a["near"] is not None:
+                before = p["means"].detach().clone()
             a["optimizer"].step()
+            if a["near"] is not None:
+                with torch.no_grad():
+                    p["means"].copy_(before + (p["means"] - before) * a["near"])
             a["optimizer"].zero_grad(set_to_none=True)
             with torch.no_grad():
                 p["quats"].copy_(torch.nn.functional.normalize(p["quats"], dim=-1))
                 p["opacity"].clamp_(-7, 7)
                 p["color"].clamp_(-0.5 / C0, 0.5 / C0)
                 p["scales"].copy_(torch.minimum(p["scales"], a["largest"]))
+                if a["smallest"] is not None:
+                    p["scales"].copy_(torch.maximum(p["scales"], a["smallest"]))
         target["view"].steps += 1
         b.fit_steps += 1
         a["steps"] += 1
@@ -551,6 +741,26 @@ class ViewFit:
             pixels = a["pixels"].cpu().numpy()
             records = records.cpu().numpy()
         self.units += 1
+        if FLOATERS and self.units % FLOATER_EVERY == 0:
+            try:
+                self.sweep()
+            except Exception:
+                log.exception("Floater sweep failed")
+        for target in a["targets"]:
+            if target["exposure"] is not None:
+                target["view"].exposure = target["exposure"][0].detach().cpu().numpy()
+            if "delta" in target:
+                with torch.no_grad():
+                    rotation, translation = target["delta"]
+                    if (
+                        float(rotation.norm()) <= ALIGN_LIMIT[0]
+                        and float(translation.norm()) <= ALIGN_LIMIT[1]
+                    ):
+                        camera = self.moved(target["delta"]) @ target["camera"][0]
+                        target["view"].fitting_pose = (
+                            np.linalg.inv(camera.double().cpu().numpy()) @ AXES
+                        )
+                        self.adjusted += 1
         old = a["snapshot"]
         records[:, 1, 3] = old[:, 1, 3]
         records[:, 3, 3] = old[:, 3, 3]

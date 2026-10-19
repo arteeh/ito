@@ -27,6 +27,34 @@ MAP_DUMP = os.environ.get("ITO_DUMP_MAP")
 MAP_DUMP_EVERY = 30.0
 
 
+# ITO_FAKE_EXPOSURE=1 (a diagnostic): mapped frames as an auto-exposing, auto-white-balancing
+# camera would give them; a simulator renders every frame at one exposure.
+FAKE_EXPOSURE = os.environ.get("ITO_FAKE_EXPOSURE", "0") != "0"
+
+
+class FakeExposure:
+    TARGET = 0.45  # mean brightness auto exposure aims for
+    SETTLE = 0.6  # seconds
+    BALANCE = 0.08  # white balance drift per channel
+
+    def __init__(self):
+        self.gain = None
+        self.last = None
+
+    def __call__(self, rgb, captured_at):
+        mean = max(float(rgb[::8, ::8].mean()) / 255, 0.02)
+        wanted = np.log(np.clip(self.TARGET / mean, 0.5, 2.0))
+        if self.gain is None:
+            self.gain = wanted
+        else:
+            step = 1 - np.exp(-max(0.0, captured_at - self.last) / self.SETTLE)
+            self.gain += step * (wanted - self.gain)
+        self.last = captured_at
+        balance = 1 + self.BALANCE * np.sin(0.25 * captured_at + np.array([0.0, 2.1, 4.2]))
+        scale = (np.exp(self.gain) * balance).astype(np.float32)
+        return np.clip(rgb * scale, 0, 255).astype(np.uint8)
+
+
 def dump_map(backend, now):
     folder = Path(MAP_DUMP)
     folder.mkdir(parents=True, exist_ok=True)
@@ -34,7 +62,14 @@ def dump_map(backend, now):
     # ITO_SLAM=full: the world the map was drawn in, back to the robot's starting frame.
     world = getattr(backend, "world_alignment", lambda: None)()
     extra = {} if world is None else dict(world=world)
-    np.savez(folder / f"map-{now:07.1f}.npz", records=backend.records[live], seconds=now, **extra)
+    usual = getattr(backend, "exposure_mean", None)
+    np.savez(
+        folder / f"map-{now:07.1f}.npz",
+        records=backend.records[live],
+        seconds=now,
+        color_gain=np.zeros(3) if usual is None else usual,
+        **extra,
+    )
 
 
 __all__ = ["Reconstruction", "SplatUpdate", "default_budget"]
@@ -370,6 +405,8 @@ def _run(recon):
                                     "pruned",
                                     "aligned",
                                     "filled",
+                                    "floaters",
+                                    "adjusted",
                                     "seconds",
                                 )
                                 if hasattr(backend.fitter, k)
@@ -427,6 +464,9 @@ def _run(recon):
                         if contributing.any()
                         else published_capture,
                     )
+                    usual = getattr(backend, "exposure_mean", None)
+                    if usual is not None:
+                        recon.ring.color_gain[:] = usual
                     if not recon.ring.publish(
                         indices,
                         backend.records[indices],
@@ -820,6 +860,10 @@ class Reconstruction:
         captured_at = clock.now() if captured_at is None else captured_at
         if not np.isfinite(captured_at):
             raise ValueError("Capture time must be finite")
+        if FAKE_EXPOSURE:
+            if getattr(self, "fake_exposure", None) is None:
+                self.fake_exposure = FakeExposure()
+            rgb = self.fake_exposure(rgb, captured_at)
         if not self.input_lock.acquire(False):
             return False
         try:
