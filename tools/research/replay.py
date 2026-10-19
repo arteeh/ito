@@ -247,6 +247,7 @@ def main():
                     tracked=int(backend.tracked),
                     matched=int(backend.matched),
                     keyframes=len(backend.graph.keyframes),
+                    fit_steps=int(backend.fit_steps),
                     vram_gib=round(torch.cuda.max_memory_reserved() / 2**30, 2),
                 )
             )
@@ -286,7 +287,15 @@ def main():
 
 def dump(backend, out, now):
     live = np.flatnonzero((backend.keys >= 0) & ~backend.retiring)
-    np.savez(out / f"map-{now:07.1f}.npz", records=backend.records[live], seconds=now)
+    np.savez(
+        out / f"map-{now:07.1f}.npz",
+        records=backend.records[live],
+        seconds=now,
+        captures=backend.captures[live],
+        sequences=backend.sequences[live],
+        support=backend.support[live],
+        owners=backend.owners[live],
+    )
 
 
 if __name__ == "__main__":

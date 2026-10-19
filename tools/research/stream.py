@@ -60,7 +60,15 @@ def main():
     rec = Recording(a.rec)
     size = tuple(int(v) for v in a.size.split("x"))
     w, h = size
-    frames = [f for f in rec.between(a.start, a.end) if f.get("depth")]
+    dumped_seqs = (
+        {int(q.stem) - 1 for q in Path(a.depth).glob("*.npz")} if a.depth != "truth" else None
+    )
+    # Exact depth: frames the sim rendered depth for; Ito's depth: the frames Ito mapped.
+    frames = [
+        f
+        for f in rec.between(a.start, a.end)
+        if (f.get("depth") if dumped_seqs is None else f["seq"] in dumped_seqs)
+    ]
     if a.poses != "truth":
         # Given poses (any frames): interpolated in time to the frames with exact depth.
         from scipy.spatial.transform import Rotation, Slerp

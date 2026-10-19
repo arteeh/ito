@@ -45,7 +45,7 @@ def main():
     p.add_argument("--camera_num_iterations", type=int, default=4)
     p.add_argument("--use_sdpa", action="store_true", default=False)
     p.add_argument("--compile", action="store_true", default=False)
-    p.add_argument("--offload_to_cpu", action="store_true", default=True)
+    p.add_argument("--offload_to_cpu", action="store_true", default=False)
     p.add_argument("--window_size", type=int, default=64)
     p.add_argument("--overlap_size", type=int, default=16)
     p.add_argument("--overlap_keyframes", type=int, default=None)
@@ -57,6 +57,11 @@ def main():
         image_size=args.image_size, patch_size=args.patch_size, rotate_clockwise_90=False,
     )
     device = torch.device("cuda")
+    if os.environ.get("SDPA_MATH") == "1":
+        # 'CUDA driver error: device not ready' inside SDPA on WSL: try the plain math kernel.
+        torch.backends.cuda.enable_flash_sdp(False)
+        torch.backends.cuda.enable_mem_efficient_sdp(False)
+        torch.backends.cuda.enable_math_sdp(True)
     model = demo.load_model(args, device)
     dtype = torch.bfloat16
     if getattr(model, "aggregator", None) is not None:
