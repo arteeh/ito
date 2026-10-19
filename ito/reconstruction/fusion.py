@@ -7,6 +7,7 @@ was exposed at t - td) and the front end's log-scale (metres per unit, from floo
 observations) are estimated apart from the poses."""
 
 import math
+import os
 from collections import deque
 from dataclasses import dataclass
 
@@ -20,7 +21,9 @@ ANCHOR_ROTATION = math.radians(2)
 ANCHOR_POSITION = 0.05
 CAUCHY = 2.0
 SCALE_SIGMA = 0.2
-VISUAL_SCALE = 0.3
+VISUAL_SCALE = float(os.environ.get("ITO_VISUAL_SCALE", "0.3"))
+# ITO_ROBOT_SIGMA=F (research): robot relative-motion, gravity and height sigmas times F.
+ROBOT_SIGMA = float(os.environ.get("ITO_ROBOT_SIGMA", "1"))
 SCALE_MEMORY = 20
 DELAY_MEMORY = 60
 DELAY_TURN = math.radians(20)
@@ -351,11 +354,13 @@ class PoseGraph:
                 relative_p = measured_inv.apply(robot_p[cj] - robot_p[ci])
                 rotation = (relative_r.inv() * ri_inv * rotations[cj]).as_rotvec()
                 moved = ri_inv.apply(positions[cj] - positions[ci]) - relative_p
-                blocks.append((np.hstack((rotation, moved)) / robot_sigma).ravel())
+                blocks.append((np.hstack((rotation, moved)) / (ROBOT_SIGMA * robot_sigma)).ravel())
             if len(rows):
                 error = (rotations[rows] * robot_r[rows].inv()).as_rotvec()
-                blocks.append((error[:, [0, 2]] / gravity_sigma[:, None]).ravel())
-                blocks.append((positions[rows, 1] - robot_p[rows, 1]) / height_sigma)
+                blocks.append((error[:, [0, 2]] / (ROBOT_SIGMA * gravity_sigma[:, None])).ravel())
+                blocks.append(
+                    (positions[rows, 1] - robot_p[rows, 1]) / (ROBOT_SIGMA * height_sigma)
+                )
             if turns:
                 error = (turn_inv * rotations[ti].inv() * rotations[tj]).as_rotvec()
                 blocks.append(_cauchy(error / turn_sigma).ravel())

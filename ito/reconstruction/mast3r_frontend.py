@@ -1,4 +1,5 @@
 import math
+import os
 
 import numpy as np
 
@@ -10,8 +11,17 @@ MIN_MATCH = 0.05
 UNMATCHED_KEYFRAME = 3
 NEWEST_PREFERENCE = math.radians(10)
 RETRY_ANGLE = math.radians(30)
-VISUAL_ROTATION = math.radians(0.5)
-VISUAL_TRANSLATION = 0.02
+# ITO_VISUAL_SIGMA=F (research): visual relative poses' sigmas times F. MASt3R-SLAM's dense
+# matching pins co-visible frames to ~0.07 deg (original MASt3R-SLAM on recorded sim routes), far
+# tighter than 0.5 deg; robot priors with gear-play bias then win where they should not.
+VISUAL_SIGMA = float(os.environ.get("ITO_VISUAL_SIGMA", "1"))
+VISUAL_ROTATION = math.radians(0.5) * VISUAL_SIGMA
+VISUAL_TRANSLATION = 0.02 * VISUAL_SIGMA
+# ITO_TRACK_FILTER (research): MASt3R-SLAM's keyframe pointmap filtering ('recent' here; upstream
+# 'weighted_pointmap' averages every tracked frame into its keyframe). ITO_TRACK_PRIOR=0: the
+# tracker's Gauss-Newton gets no robot prior.
+TRACK_FILTER = os.environ.get("ITO_TRACK_FILTER", "recent")
+TRACK_PRIOR = os.environ.get("ITO_TRACK_PRIOR", "1") != "0"
 SCALE_PRIOR = 0.1
 UNKNOWN = np.full(6, np.inf)
 
@@ -47,7 +57,7 @@ class MASt3RFrontend:
         load_config(str(source / "config/base.yaml"))
         config["single_thread"] = True
         config["use_calib"] = True
-        config["tracking"]["filtering_mode"] = "recent"
+        config["tracking"]["filtering_mode"] = TRACK_FILTER
         config["local_opt"]["max_iters"] = 5
         self.config = config
         self.model = load_model(
@@ -120,7 +130,8 @@ class MASt3RFrontend:
         keyframe = self.frames[reference]
         keyframe_pose, keyframe_scale = self.placed(keyframe.T_WC)
         frame.T_WC = self.unplaced(predicted, keyframe_scale)
-        self.tracker.prior = (frame.T_WC, self._prior_weight(prior_sigma, keyframe_scale))
+        if TRACK_PRIOR:
+            self.tracker.prior = (frame.T_WC, self._prior_weight(prior_sigma, keyframe_scale))
         try:
             new_keyframe, _, lost = self.tracker.track(frame)
         finally:
