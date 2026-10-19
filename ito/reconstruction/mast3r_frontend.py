@@ -75,7 +75,10 @@ class MASt3RFrontend:
         load_config(str(source / "config/base.yaml"))
         config["single_thread"] = True
         config["use_calib"] = True
-        config["tracking"]["filtering_mode"] = "weighted_pointmap" if FULL else "recent"
+        # ITO_SLAM_FILTER: how full SLAM keeps a keyframe's pointmap as frames track against it
+        # (upstream's modes; an experiment: heavily used keyframes' edges have the worst tail).
+        filtering = os.environ.get("ITO_SLAM_FILTER", "weighted_pointmap")
+        config["tracking"]["filtering_mode"] = filtering if FULL else "recent"
         config["local_opt"]["max_iters"] = 5
         self.config = config
         if FULL:
