@@ -62,10 +62,21 @@ def main():
     w, h = size
     frames = [f for f in rec.between(a.start, a.end) if f.get("depth")]
     if a.poses != "truth":
+        # Given poses (any frames): interpolated in time to the frames with exact depth.
+        from scipy.spatial.transform import Rotation, Slerp
+
         given = np.load(a.poses)
-        lookup = {int(s): q for s, q in zip(given["seq"], given["poses"], strict=True)}
-        frames = [f for f in frames if f["seq"] in lookup]
-        poses = np.array([lookup[f["seq"]] for f in frames])
+        received = {f["seq"]: f["received"] for f in rec.frames}
+        order = np.argsort([received[int(q)] for q in given["seq"]])
+        gt = np.array([received[int(given["seq"][i])] for i in order])
+        gp = np.asarray(given["poses"])[order]
+        slerp = Slerp(gt, Rotation.from_matrix(gp[:, :3, :3]))
+        frames = [f for f in frames if gt[0] <= f["received"] <= gt[-1]]
+        poses = np.tile(np.eye(4), (len(frames), 1, 1))
+        times = np.array([f["received"] for f in frames])
+        poses[:, :3, :3] = slerp(times).as_matrix()
+        for k in range(3):
+            poses[:, k, 3] = np.interp(times, gt, gp[:, k, 3])
     else:
         poses = np.array([f["pose"] for f in frames])
     if a.noise:

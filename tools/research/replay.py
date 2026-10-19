@@ -1,7 +1,10 @@
 """Replay a driver recording (tools/research/data.py) through Ito's own reconstruction backend
 (SLAMBackend, robot-first tracking), offline and frame-exact: every K-th frame, in order, with the
-robot's motion and head sensors as they had arrived by then, and N inline training steps per mapped
-frame instead of the trainer thread. Deterministic up to GPU nondeterminism.
+robot's motion and head sensors as they had arrived by then. Training runs on its own thread as live
+(ITO_FIT_THREAD), and the replay is paced in real time (each frame no earlier than its stream time),
+so the trainer gets the share of time it gets live. (--inline-fit N: N inline training steps per frame
+instead, unpaced; that path grows dark pillars of splats by the table on close: do not use for maps.)
+Poses are deterministic up to GPU nondeterminism; maps vary a little with the trainer's timing.
 
 Run with a Windows build's Python (it has MASt3R, gsplat and CuPy), the worktree first on the path:
 
@@ -48,7 +51,9 @@ def main():
     p.add_argument("rec")
     p.add_argument("out")
     p.add_argument("--every", type=int, default=10)
-    p.add_argument("--fit", type=int, default=15)
+    p.add_argument("--fit", type=int, default=0, help="ignored (old inline steps)")
+    p.add_argument("--inline-fit", type=int, default=0)
+    p.add_argument("--speed", type=float, default=1.0, help="stream seconds per second; 0: unpaced")
     p.add_argument("--start", type=float)
     p.add_argument("--end", type=float)
     p.add_argument("--truth", default="")
@@ -60,7 +65,7 @@ def main():
     a = p.parse_args()
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
-    os.environ.setdefault("ITO_FIT_THREAD", "0")
+    os.environ["ITO_FIT_THREAD"] = "0" if a.inline_fit else "1"
 
     from ito.protocol import Intrinsics, MotionNoise
     from ito.reconstruction.ring import MOTION_STATES
@@ -166,7 +171,17 @@ def main():
     import torch
 
     began_all = time.perf_counter()
+    trainer = None
+    if not a.inline_fit:
+        stopped = [False]
+        trainer = backend.start_training(lambda: True, lambda: stopped[0], lambda exc: None)
+    stream_start = frames[0]["received"]
     for f in frames:
+        if a.speed and not a.inline_fit:
+            due = began_all + (f["received"] - stream_start) / a.speed
+            wait = due - time.perf_counter()
+            if wait > 0:
+                time.sleep(wait)
         captured = f["received"]
         while motion_cursor < len(times) and times[motion_cursor] <= captured + LOOKAHEAD:
             motion_cursor += 1
@@ -199,14 +214,19 @@ def main():
         backend.source_sequence = f["seq"] + 1
         backend.source_captured = captured
         began = time.perf_counter()
-        backend.integrate(rgb, None, np.eye(4, dtype=np.float32), now, captured=captured, truth=truth)
+        # As live: everything the worker does to the map holds the map's lock; the trainer thread
+        # takes it only between its steps.
+        with backend.lock:
+            backend.integrate(
+                rgb, None, np.eye(4, dtype=np.float32), now, captured=captured, truth=truth
+            )
+            backend.expire(now, 1 << 60)
         work = time.perf_counter() - began
         fit_began = time.perf_counter()
-        for _ in range(a.fit):
+        for _ in range(a.inline_fit):
             if not backend.fit():
                 break
         fit = time.perf_counter() - fit_began
-        backend.expire(now, 1 << 60)
         if backend.tracked != tracked:
             published.append(
                 (
@@ -234,8 +254,13 @@ def main():
         )
         if now >= next_dump:
             next_dump += a.dump_every
-            dump(backend, out, now)
-    dump(backend, out, frames[-1]["received"] - t0)
+            with backend.lock:
+                dump(backend, out, now)
+    if trainer is not None:
+        stopped[0] = True
+        trainer.join(timeout=10)
+    with backend.lock:
+        dump(backend, out, frames[-1]["received"] - t0)
     np.savez(
         out / "poses.npz",
         seq=np.array([row[0] for row in published]),

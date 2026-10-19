@@ -44,6 +44,18 @@ def frames(a):
                 f"{f['received']:.6f} {c2w[0, 3]:.6f} {c2w[1, 3]:.6f} {c2w[2, 3]:.6f} "
                 f"{q[0]:.8f} {q[1]:.8f} {q[2]:.8f} {q[3]:.8f}\n"
             )
+    if a.depth:
+        # TUM-style exact depth (uint16, metres x 5000) of every frame with depth in the range,
+        # for systems whose loaders want depth beside the images (evaluation only).
+        (out / "depth").mkdir(exist_ok=True)
+        with (out / "depth.txt").open("w") as listing:
+            for f in rec.between(a.start, a.end):
+                if not f.get("depth"):
+                    continue
+                d = rec.depth(f, size)
+                name = f"{f['seq']:06d}.png"
+                cv2.imwrite(str(out / "depth" / name), np.clip(d * 5000, 0, 65535).astype(np.uint16))
+                listing.write(f"{f['received']:.6f} depth/{name}\n")
     (out / "calib.txt").write_text(f"{K[0, 0]:.6f} {K[1, 1]:.6f} {K[0, 2]:.6f} {K[1, 2]:.6f}\n")
     (out / "intrinsics.yaml").write_text(
         f"width: {size[0]}\nheight: {size[1]}\n"
@@ -110,6 +122,7 @@ def main():
     f.add_argument("--every", type=int, default=2)
     f.add_argument("--start", type=float)
     f.add_argument("--end", type=float)
+    f.add_argument("--depth", action="store_true", help="also TUM-style exact depth")
     i = sub.add_parser("import")
     i.add_argument("rec")
     i.add_argument("traj")
