@@ -42,6 +42,9 @@ AXES = np.diag([1.0, -1.0, -1.0, 1.0])  # Ito camera (-Z forward, +Y up) to Open
 # 32-pixel patches inline instead (fitting.py), as before; ITO_FIT=stream (research) one optimiser
 # over the whole map with view poses refined (streamfit.py).
 FIT = os.environ.get("ITO_FIT", "view")
+# ITO_FIT=map trains every live splat's colour against the retained views itself; the worker's
+# per-view colour blend would reset what it learnt (a worker write wins) on every frame.
+BLEND_WITH_FIT = FIT != "map" or os.environ.get("ITO_MAPFIT_BLEND") == "1"
 
 
 @dataclass
@@ -125,7 +128,11 @@ class GaussianBackend(GaussianSlots):
         if not self.can_fit or not self.views:
             return False
         if self.fitter is None:
-            if FIT == "stream":
+            if FIT == "map":
+                from .mapfit import MapFit
+
+                self.fitter = MapFit(self)
+            elif FIT == "stream":
                 from .streamfit import StreamFit
 
                 self.fitter = StreamFit(self)
@@ -143,9 +150,13 @@ class GaussianBackend(GaussianSlots):
         """With ITO_FIT=view, train on a thread of its own beside tracking; the thread, or
         None when training stays inline (fit())."""
         thread = os.environ.get("ITO_FIT_THREAD", "1") != "0"
-        if FIT not in ("view", "stream") or not self.can_fit or not thread:
+        if FIT not in ("view", "stream", "map") or not self.can_fit or not thread:
             return None
-        if FIT == "stream":
+        if FIT == "map":
+            from .mapfit import MapFit
+
+            self.fitter = MapFit(self)
+        elif FIT == "stream":
             from .streamfit import StreamFit
 
             self.fitter = StreamFit(self)
@@ -310,11 +321,14 @@ class GaussianBackend(GaussianSlots):
             change = np.abs(seen - color).max(-1)
             near = np.flatnonzero((change < BLEND) & (change > 0.01))
             near = near[np.argsort(-change[near])[:BLENDED]]
+            if not BLEND_WITH_FIT:
+                near = near[:0]
             blended = supported[near]
             weight = 1 / np.minimum(self.support[blended], 10)[:, None]
             color = color[near] + weight * (seen[near] - color[near])
             self.records[blended, 3, :3] = (color - 0.5) / C0
             self.dirty[blended] = True
+            self.fresh[blended] = True
             self.captures[blended] = self.source_captured
             self.sequences[blended] = self.source_sequence
             contradicted = ids[through]
@@ -437,6 +451,7 @@ class GaussianBackend(GaussianSlots):
         self.captures[slots] = self.source_captured
         self.sequences[slots] = self.source_sequence
         self.dirty[slots] = True
+        self.fresh[slots] = True
         owners = set(self.owners[self.keys >= 0])
         self.anchors = {k: v for k, v in self.anchors.items() if k in owners}
 

@@ -16,6 +16,7 @@ SLOT_FIELDS = {
     "pressure_victims": (bool, False, ()),
     "dirty": (bool, False, ()),
     "refined": (bool, False, ()),  # changed by training: publishes after dirty slots
+    "fresh": (bool, False, ()),  # written by the worker since ITO_FIT=map's trainer last looked
     "retire_revision": (np.float64, np.inf, ()),
     "release_after": (np.float64, np.inf, ()),
     "sequences": (np.uint64, 0, ()),
@@ -116,6 +117,7 @@ class GaussianSlots:
                 array[target] = array[source]
             self.sequences[target] = 0
             self.dirty[target] = True
+            self.fresh[target] = True
             self.keys[source] = MOVED + source
             self.retire(source, pressure=True)
         if (self.keys[self.budget :] >= 0).any():
@@ -137,6 +139,7 @@ class GaussianSlots:
         self.pressure_victims[indices] = pressure
         self.sequences[indices] = 0
         self.dirty[indices] = True
+        self.fresh[indices] = True
 
     def expire(self, now, acknowledged):
         accepted = self.retiring & (self.retire_revision <= acknowledged)
@@ -153,3 +156,4 @@ class GaussianSlots:
         self.retire_revision[expired] = np.inf
         self.release_after[expired] = np.inf
         self.dirty[expired] = True
+        self.fresh[expired] = True
