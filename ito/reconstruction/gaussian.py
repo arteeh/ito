@@ -28,7 +28,8 @@ from scipy.spatial.transform import Rotation
 from .slots import KEEP, GaussianSlots
 
 C0 = 0.28209479177387814
-MAX_VIEWS = 24
+# ITO_MAX_VIEWS (research): retained views; a whole-map trainer (ITO_FIT=stream) wants more.
+MAX_VIEWS = int(os.environ.get("ITO_MAX_VIEWS", "24"))
 DEPTH_TOLERANCE = 0.08  # Of depth: two estimates closer than this are one surface.
 COVERED = 0.85  # Rendered opacity above which a pixel is explained by the map.
 BLEND = 0.2  # Colour difference below which a view's light refines a surface's colour.
@@ -38,7 +39,8 @@ EDGE = 1.08  # Depth ratio to both neighbours that marks a pixel as between two 
 COARSE = 4.5  # Pixels: a mapped Gaussian this large is refined by the view (seeds are ~2).
 AXES = np.diag([1.0, -1.0, -1.0, 1.0])  # Ito camera (-Z forward, +Y up) to OpenCV.
 # Training: whole retained views on a thread of its own (training.py); ITO_FIT=local trains
-# 32-pixel patches inline instead (fitting.py), as before.
+# 32-pixel patches inline instead (fitting.py), as before; ITO_FIT=stream (research) one optimiser
+# over the whole map with view poses refined (streamfit.py).
 FIT = os.environ.get("ITO_FIT", "view")
 
 
@@ -123,7 +125,11 @@ class GaussianBackend(GaussianSlots):
         if not self.can_fit or not self.views:
             return False
         if self.fitter is None:
-            if FIT == "view":
+            if FIT == "stream":
+                from .streamfit import StreamFit
+
+                self.fitter = StreamFit(self)
+            elif FIT == "view":
                 from .training import ViewFit
 
                 self.fitter = ViewFit(self)
@@ -136,11 +142,17 @@ class GaussianBackend(GaussianSlots):
     def start_training(self, available, stopped, failed):
         """With ITO_FIT=view, train on a thread of its own beside tracking; the thread, or
         None when training stays inline (fit())."""
-        if FIT != "view" or not self.can_fit or os.environ.get("ITO_FIT_THREAD", "1") == "0":
+        thread = os.environ.get("ITO_FIT_THREAD", "1") != "0"
+        if FIT not in ("view", "stream") or not self.can_fit or not thread:
             return None
-        from .training import ViewFit
+        if FIT == "stream":
+            from .streamfit import StreamFit
 
-        self.fitter = ViewFit(self)
+            self.fitter = StreamFit(self)
+        else:
+            from .training import ViewFit
+
+            self.fitter = ViewFit(self)
         return self.fitter.start(available, stopped, failed)
 
     def recover(self):

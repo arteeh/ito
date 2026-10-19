@@ -63,6 +63,9 @@ def main():
     p.add_argument("--code", help="checkout root whose ito package to replay")
     p.add_argument("--max-splats", type=int, default=1_000_000)
     a = p.parse_args()
+    import logging
+
+    logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(name)s: %(message)s")
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     os.environ["ITO_FIT_THREAD"] = "0" if a.inline_fit else "1"

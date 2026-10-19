@@ -25,7 +25,7 @@ STEPS = 30
 PARTNERS = 2  # overlapping views trained beside the chosen one
 MAX_UNIT = 400_000
 SSIM_WEIGHT = 0.2
-DEPTH_WEIGHT = 0.1
+DEPTH_WEIGHT = float(os.environ.get("ITO_FIT_DEPTH", "0.1"))  # research switch
 SCALE_WEIGHT = 0.01  # flatness: a surface's Gaussians stay thin across it, discs not balls
 NEEDLE_WEIGHT = 0.1  # and no axis grows past NEEDLE times the next: no needles
 NEEDLE = 3.0
@@ -36,7 +36,8 @@ GROWTH = 3.0
 WIDEST = 12.0
 RATES = dict(means=2e-4, scales=5e-3, quats=1e-3, opacity=5e-2, color=2.5e-3)
 GROW_GRADIENT = 8e-4  # mean absolute screen-space gradient (normalised) asking for detail
-GROW_SHARE = 0.05  # at most this share of a unit's Gaussians is cloned or split per unit
+# at most this share of a unit's Gaussians is cloned or split per unit (ITO_FIT_GROW, research)
+GROW_SHARE = float(os.environ.get("ITO_FIT_GROW", "0.05"))
 SPLIT_PIXELS = 6.0  # a Gaussian larger than this in its view splits; smaller ones clone
 PRUNE_OPACITY = 0.01
 CHANGED = (1e-4, 1 / 255)  # metres, colour: smaller changes are not worth publishing

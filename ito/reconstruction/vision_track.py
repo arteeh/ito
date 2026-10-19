@@ -17,6 +17,7 @@ first keyframe pinned. Poses here are world-from-camera in Ito axes in the visio
 keyframe's camera, MASt3R's units); slam.py maps them into the robot's world."""
 
 import math
+import os
 
 import numpy as np
 
@@ -27,6 +28,10 @@ NEIGHBOURS = 3  # older keyframes linked to a new one, besides its predecessor
 NEIGHBOUR_ANGLE = math.radians(35)
 NEIGHBOUR_DISTANCE = 1.0  # vision units: metres at the start's scale
 MIN_MATCH = 0.1  # upstream local_opt min_match_frac
+# Each solve moves only the newest WINDOW keyframes; older ones linked to them hold still (pinned),
+# and edges among old keyframes alone leave the graph. Upstream re-solves every keyframe on every
+# new one: on the sim's loop route (62 keyframes) that took 2.5 s and 12 GB at its worst.
+WINDOW = int(os.environ.get("ITO_VISION_WINDOW", "15"))
 
 
 class VisionTracker:
@@ -166,8 +171,29 @@ class VisionTracker:
         older = [i for _, i in sorted(scored)[:NEIGHBOURS]]
         ii = [new - 1] + older
         self.graph.add_factors(ii, [new] * len(ii), MIN_MATCH)
+        self.prune(new)
         self.graph.solve_GN_calib()
         self.solves += 1
+
+    def prune(self, new):
+        """Keep the edges touching the newest WINDOW keyframes; pin the older ones they reach."""
+        torch, graph = self.torch, self.graph
+        first = max(0, new - WINDOW + 1)
+        keep = (graph.ii >= first) | (graph.jj >= first)
+        if not bool(keep.all()):
+            for name in (
+                "ii",
+                "jj",
+                "idx_ii2jj",
+                "idx_jj2ii",
+                "valid_match_j",
+                "valid_match_i",
+                "Q_ii2jj",
+                "Q_jj2ii",
+            ):
+                setattr(graph, name, getattr(graph, name)[keep])
+        unique = torch.unique(torch.cat([graph.ii, graph.jj]))
+        graph.cfg["pin"] = max(1, int((unique < first).sum()))
 
     def forget(self, nodes):
         """Keyframes are kept for good (the worker calls this after an out-of-memory)."""
