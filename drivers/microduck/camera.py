@@ -54,7 +54,7 @@ def rectified(matrix, distortion, width, height):
 
 
 class Camera:
-    def __init__(self, info, measured=dict, truth=None):
+    def __init__(self, info, measured=dict, truth=None, record=None):
         import cv2
 
         self.cv = cv2
@@ -108,6 +108,7 @@ class Camera:
         self.source = geometry["source"]
         self.measured = measured
         self.truth = truth
+        self.record = record
         self.latest = None
         self.revision = 0
         self.changed = asyncio.Event()
@@ -163,6 +164,9 @@ class Camera:
             if self.truth is not None and frame.pts is not None:
                 # The sim's thumbnails are of the frame it sent, not of the rectified one.
                 measured = measured | self.truth(raw, float(frame.pts * frame.time_base))
+            if self.record is not None:
+                rtp = None if frame.pts is None else float(frame.pts * frame.time_base)
+                self.record(raw, received, rtp)
             self.latest = (rgb, received, measured)
             self.revision += 1
             self.changed.set()

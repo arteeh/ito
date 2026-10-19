@@ -79,6 +79,13 @@ HYBRID_AGREE = 0.08
 # laid onto the map's surfaces (align.py), instead of MASt3R's pairwise depth. ITO_TRACKER=map
 # also drops the MASt3R tracker: frames are placed by the robot's motion and the map alone.
 TRACKER = os.environ.get("ITO_TRACKER", "mast3r")
+# ITO_SLAM=vision: vision-first tracking (vision_track.py): MASt3R-SLAM's own tracker and keyframe
+# graph place every frame; the robot seeds each frame's turn, the ToF/floor set one metric scale and
+# the first frame ties the vision world to the robot's. Fusion's robot-first window is not used.
+VISION = os.environ.get("ITO_SLAM") == "vision"
+# The metric scale (metres per vision unit) is pooled over this many ToF/floor readings, then held:
+# a later change would grow or shrink the whole room about its first camera.
+VISION_SCALE_READINGS = int(os.environ.get("ITO_VISION_SCALE_READINGS", "40"))
 DEPTH = "da3" if TRACKER == "map" else os.environ.get("ITO_DEPTH", "mast3r")
 # ITO_ALIGN=1 (always with ITO_TRACKER=map) lays each frame's depth onto the map's surfaces
 # (align.py): where it was placed tells fusion where the camera was.
@@ -210,6 +217,16 @@ class SLAMBackend(GaussianBackend):
     ):
         if frontend is None and TRACKER == "map":
             frontend = MapFrontend(intrinsics, input_resolution)
+        if frontend is None and VISION:
+            from .vision_track import VisionTracker
+
+            frontend = VisionTracker(
+                intrinsics,
+                report,
+                precision=precision,
+                input_resolution=input_resolution,
+                precision_report=precision_report,
+            )
         if frontend is None:
             from .mast3r_frontend import MASt3RFrontend
 
@@ -593,6 +610,8 @@ class SLAMBackend(GaussianBackend):
         truth: (world-from-camera or None, exposure on the pilot clock, axial depth or None)
         to publish and map this frame by instead of the estimates; the estimator still runs,
         unchanged, beside them."""
+        if VISION:
+            return self.integrate_vision(rgb, now, captured)
         started = clock.now()
         if EXPOSURE_INPUT:
             self.input_exposure_used = getattr(self, "input_exposure", np.zeros(3)).copy()
@@ -1099,7 +1118,84 @@ class SLAMBackend(GaussianBackend):
             valid=torch.as_tensor((d > 0).ravel(), device=device),
         )
 
+    def integrate_vision(self, rgb, now, captured):
+        """ITO_SLAM=vision: the frame placed by the images (vision_track.py), in the robot world."""
+        started = clock.now()
+        self.from_da3 = False
+        exposure = captured - self.graph.td
+        if not self.motion.covers(exposure):
+            if not self.waiting:
+                self.report("Vision tracking waiting for the robot's motion")
+            self.waiting = True
+            return
+        self.waiting = False
+        if ROLLING_SHUTTER:
+            rgb = self.unroll(rgb, exposure)
+        robot = self.motion.at(exposure)
+        last = getattr(self, "vision_robot", None)
+        turn = None if last is None else last[:3, :3].T @ robot[:3, :3]
+        self.vision_robot = robot
+        pose, unit, cloud, _, tracked = self.frontend.track(rgb, turn)
+        if pose is None:
+            return
+        if getattr(self, "vision_world", None) is None:
+            # The vision world's first camera is where the robot says it was.
+            self.vision_world = robot @ np.linalg.inv(pose)
+            self.vision_metres = []
+        metres = self.vision_scale(cloud, exposure)
+        world = self.vision_world
+        placed = np.eye(4)
+        placed[:3, :3] = world[:3, :3] @ pose[:3, :3]
+        placed[:3, 3] = world[:3, :3] @ (pose[:3, 3] * (metres or 1.0)) + world[:3, 3]
+        self.camera_pose = placed.astype(np.float32)
+        self.correction = (placed @ np.linalg.inv(robot)).astype(np.float32)
+        published = getattr(self, "vision_published", [])
+        published.append((captured, self.correction.astype(np.float64)))
+        self.vision_published = published[-600:]
+        self.tracked += 1
+        self.matched += bool(tracked)
+        self.lost = not tracked
+        self.report(
+            f"Vision tracking | {self.tracked} frames, {self.matched / self.tracked:.0%} tracked, "
+            f"{len(self.frontend.keyframes)} keyframes, {self.frontend.solves} solves, "
+            f"scale {metres or 0:.3f} m/unit from {len(self.vision_metres)} readings"
+        )
+        if cloud is None or metres is None:
+            return
+        cloud = cloud._replace(points=cloud.points * metres)
+        if self.range_field is not None:
+            cloud = self.bend_to_ranges(cloud, exposure)
+        node = getattr(self, "vision_node", 0)
+        self.vision_node = node + 1
+        self.place(cloud, placed, now + clock.now() - started, node=node, rgb=rgb)
+
+    def vision_scale(self, cloud, exposure):
+        """Metres per vision unit: the median of the first VISION_SCALE_READINGS ToF and floor
+        readings (ToF weighed in four times), then held; None until there are enough."""
+        readings = self.vision_metres
+        if cloud is not None and len(readings) < VISION_SCALE_READINGS:
+            robot = self.motion.at(exposure)
+            ranged = self.sensors.range_scale(cloud, exposure, self.motion)
+            if ranged is not None:
+                readings.extend([math.log(ranged)] * 4)
+                self.range_readings += 1
+            below = floor_scale(cloud, robot[:3, :3].T @ UP, float(robot[1, 3]))
+            if below is not None:
+                readings.append(math.log(below))
+            self.scale_readings += (ranged is not None) + (below is not None)
+        if len(readings) < min(VISION_SCALE_READINGS, 12):
+            return None
+        return math.exp(float(np.median(readings)))
+
     def pose_at(self, captured):
+        if VISION:
+            published = getattr(self, "vision_published", None)
+            if not published:
+                return None
+            times = [t for t, _ in published]
+            i = int(np.clip(np.searchsorted(times, captured), 0, len(times) - 1))
+            correction = published[i][1]
+            return correction @ self.motion.at(captured - self.graph.td)
         pose = self.graph.pose_at(captured)
         return None if pose is None else self.registration.map_from_estimator @ pose
 
@@ -1202,9 +1298,10 @@ class SLAMBackend(GaussianBackend):
             photo = self.photo(rgb, intrinsics, (height, width))
         self.observation_estimate = pose
         self.observation_map_estimate = self.registration.map_from_estimator @ pose
-        if self.global_graph is not None:
+        if self.global_graph is not None or VISION:
             # The global graph keeps the map consistent; its corrections move the map with the
-            # keyframes (apply_global), so frames are placed where the graph has them.
+            # keyframes (apply_global), so frames are placed where the graph has them. Vision-first
+            # poses are the images' own: registration would only pull them off.
             mapped, scale = pose, 1.0
         else:
             mapped, scale = self.registration.align(

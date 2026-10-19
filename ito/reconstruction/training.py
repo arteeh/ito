@@ -26,7 +26,7 @@ STEPS = int(os.environ.get("ITO_FIT_STEPS", "30"))  # per unit
 PARTNERS = int(os.environ.get("ITO_FIT_PARTNERS", "2"))
 MAX_UNIT = 400_000
 SSIM_WEIGHT = 0.2
-DEPTH_WEIGHT = 0.1
+DEPTH_WEIGHT = float(os.environ.get("ITO_FIT_DEPTH", "0.1"))  # research switch
 SCALE_WEIGHT = 0.01  # flatness: a surface's Gaussians stay thin across it, discs not balls
 NEEDLE_WEIGHT = 0.1  # and no axis grows past NEEDLE times the next: no needles
 NEEDLE = 3.0
@@ -37,7 +37,8 @@ GROWTH = 3.0
 WIDEST = 12.0
 RATES = dict(means=2e-4, scales=5e-3, quats=1e-3, opacity=5e-2, color=2.5e-3)
 GROW_GRADIENT = 8e-4  # mean absolute screen-space gradient (normalised) asking for detail
-GROW_SHARE = 0.05  # at most this share of a unit's Gaussians is cloned or split per unit
+# at most this share of a unit's Gaussians is cloned or split per unit (ITO_FIT_GROW, research)
+GROW_SHARE = float(os.environ.get("ITO_FIT_GROW", "0.05"))
 SPLIT_PIXELS = 6.0  # a Gaussian larger than this in its view splits; smaller ones clone
 PRUNE_OPACITY = 0.01
 CHANGED = (1e-4, 1 / 255)  # metres, colour: smaller changes are not worth publishing
@@ -48,6 +49,13 @@ ALIGN_STEPS = 25
 ALIGN_RATES = (1.5e-3, 1.5e-3)  # radians, metres per Adam step at first, decaying tenfold
 ALIGN_COVERED = 0.3  # of the view the map must cover to align it
 ALIGN_LIMIT = (math.radians(3), 0.05)  # a larger correction is a mismatch, not an alignment
+# ITO_FIT_JOINT=1 (research): every view of a unit but its most-trained one (the gauge) gets a pose
+# correction trained WITH the splats, as offline 3DGS with pose refinement and MonoGS map. On the
+# sim's close route a live-budget mapper so absorbed 1.5 degrees of per-frame pose noise and most of
+# Ito's own pose error, where splats trained against fixed poses melted or doubled.
+JOINT = os.environ.get("ITO_FIT_JOINT", "0") != "0"
+JOINT_RATES = (2e-4, 2e-4)  # radians, metres per Adam step
+JOINT_PRIOR = 1.0  # weight of the corrections' squared size (radians, metres) in the loss
 # Holes: where the map shows nothing in a view, its own depth from before the views agreed is
 # checked again against every retained view that now faces it (later ones too), and what
 # they agree on is seeded. A first glimpse that the next frame missed is not lost for good.
@@ -452,6 +460,30 @@ class ViewFit:
             smallest=smallest,
             near=(distance / NEAR_DEPTH).clamp(0.1, 1.0)[:, None] if NEAR else None,
         )
+        if JOINT and len(prepared) > 1:
+            gauge = max(range(len(prepared)), key=lambda k: prepared[k]["view"].steps)
+            deltas = []
+            for k, target in enumerate(prepared):
+                if k == gauge:
+                    deltas.append(None)
+                    continue
+                deltas.append(
+                    (
+                        torch.nn.Parameter(torch.zeros(3, device="cuda")),
+                        torch.nn.Parameter(torch.zeros(3, device="cuda")),
+                    )
+                )
+                target["delta_index"] = k
+            free = [d for d in deltas if d is not None]
+            self.active |= dict(
+                deltas=deltas,
+                joint_optimizer=torch.optim.Adam(
+                    [
+                        {"params": [d[0] for d in free], "lr": JOINT_RATES[0]},
+                        {"params": [d[1] for d in free], "lr": JOINT_RATES[1]},
+                    ]
+                ),
+            )
         if POSES:
             rotation = torch.nn.Parameter(torch.zeros(3, device="cuda"))
             translation = torch.nn.Parameter(torch.zeros(3, device="cuda"))
@@ -627,12 +659,16 @@ class ViewFit:
         if a.get("align"):
             self.align(a)
             return True
-        target = a["targets"][a["steps"] % len(a["targets"])]
+        index = a["steps"] % len(a["targets"])
+        target = a["targets"][index]
         w, h = target["size"]
+        delta = a["deltas"][index] if "deltas" in a else None
         with self.chunk("fit_forward"):
             camera = target["camera"]
             if "delta" in target:
                 camera = (self.moved(target["delta"]) @ camera[0])[None]
+            if delta is not None:
+                camera = (self.moved(delta) @ camera[0])[None]
             rendered, alpha, info = self.rasterize(
                 means=p["means"],
                 quats=p["quats"],
@@ -680,6 +716,8 @@ class ViewFit:
                     rotation.square().sum() / ALIGN_LIMIT[0] ** 2
                     + translation.square().sum() / ALIGN_LIMIT[1] ** 2
                 )
+            if delta is not None:
+                loss = loss + JOINT_PRIOR * (delta[0].square().sum() + delta[1].square().sum())
         with self.chunk("fit_backward"):
             loss.backward()
             with torch.no_grad():
@@ -704,6 +742,9 @@ class ViewFit:
                 with torch.no_grad():
                     p["means"].copy_(before + (p["means"] - before) * a["near"])
             a["optimizer"].zero_grad(set_to_none=True)
+            if "joint_optimizer" in a:
+                a["joint_optimizer"].step()
+                a["joint_optimizer"].zero_grad(set_to_none=True)
             with torch.no_grad():
                 p["quats"].copy_(torch.nn.functional.normalize(p["quats"], dim=-1))
                 p["opacity"].clamp_(-7, 7)
@@ -774,7 +815,20 @@ class ViewFit:
         changed = finite & (moved | recoloured | reshaped | refaded)
         faded = finite & (records[:, 0, 3] < PRUNE_OPACITY)
         children, parents, split_parents = self.children(records, gradient, pixels, finite)
+        corrected = []
+        for target, delta in zip(a["targets"], a.get("deltas", ()), strict=False):
+            if delta is None:
+                continue
+            with torch.no_grad():
+                angle, shift = float(delta[0].norm()), float(delta[1].norm())
+                if angle > ALIGN_LIMIT[0] or shift > ALIGN_LIMIT[1]:
+                    continue
+                camera = (self.moved(delta) @ target["camera"][0]).double().cpu().numpy()
+            corrected.append((target["view"], np.linalg.inv(camera) @ AXES))
         with b.lock:
+            for view, pose in corrected:
+                view.fitting_pose = pose
+                self.aligned += 1
             safe = np.minimum(ids, len(b.keys) - 1)
             live = (ids < len(b.keys)) & ~b.retiring[safe] & (b.keys[safe] == a["keys"])
             live &= b.moves[safe] == a["moves"]
