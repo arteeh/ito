@@ -358,9 +358,17 @@ class GlobalGraph:
         graph = self.FactorGraph(
             self.frontend.model, self.frontend.frames, self.frontend.K, device="cuda"
         )
-        added = graph.add_factors(
-            [i for i, _ in pairs], [j for _, j in pairs], min_match_frac, is_reloc=is_reloc
-        )
+        if is_reloc:
+            added = graph.add_factors(
+                [i for i, _ in pairs], [j for _, j in pairs], min_match_frac, is_reloc=True
+            )
+        else:
+            # One pair per decoder batch: four at once held about a GiB of activations on this
+            # thread's stream beside tracking's (dwm.exe leaves ~6.5 of the card's 12 GiB).
+            added = False
+            for i, j in pairs:
+                self._wait()
+                added |= bool(graph.add_factors([i], [j], min_match_frac))
         if not added:
             return False
         for e, (i, j) in enumerate(zip(graph.ii.tolist(), graph.jj.tolist(), strict=True)):
