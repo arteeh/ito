@@ -184,6 +184,12 @@ def main():
         metavar="NAME=VALUE",
         help="an environment variable for Ito, e.g. ITO_CONSENSUS=1 (an experiment); repeatable",
     )
+    parser.add_argument(
+        "--wrap",
+        default="",
+        help="a Windows command line to run Ito under, e.g. a profiler: "
+        '"py-spy record --subprocesses -o C:\\x.json --format speedscope --"',
+    )
     args = parser.parse_args()
 
     exe = ROOT / "builds" / args.build / "ito" / "ito.exe"
@@ -313,7 +319,8 @@ def main():
             f"&& set ITO_TIMELINE={windows(out / 'timeline.jsonl')}"
             f"{correction_env}"
             # The build's own Python rather than ito.exe, whose log never reaches a pipe.
-            f"&& runtime\\python.exe -I -X utf8 {entry} {ip}:8081 --code {code}"
+            f"&& {args.wrap + ' ' if args.wrap else ''}runtime\\python.exe -I -X utf8 {entry}"
+            f" {ip}:8081 --code {code}"
             f" --capture-dir {windows(out / 'captures')}"
             f" --metrics {windows(out / 'metrics.jsonl')}"
         )
