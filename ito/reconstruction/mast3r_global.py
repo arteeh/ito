@@ -30,6 +30,8 @@ import time
 
 import numpy as np
 
+from .mode import LEAD
+
 log = logging.getLogger(__name__)
 
 AXES = np.array([1.0, -1.0, -1.0])  # Ito world/camera axes to MASt3R's (OpenCV) and back.
@@ -65,9 +67,7 @@ PAIR_ITERATIONS = 10
 # it was built, a solve moves the newest, least constrained keyframes into it). Vision-led full SLAM
 # (ITO_SLAM_LEAD=vision) defaults to =world: held at the pilot's keyframe, the whole room followed
 # each new keyframe's small error, drifting 1.2 deg / 4.8 cm (median) on the loop replay.
-GAUGE = os.environ.get(
-    "ITO_SLAM_GAUGE", "world" if os.environ.get("ITO_SLAM_LEAD") == "vision" else "settled"
-)
+GAUGE = os.environ.get("ITO_SLAM_GAUGE", "world" if LEAD == "vision" else "settled")
 # ITO_SLAM_EDGES=pose: each edge enters the global solve as the relative pose its matches alone
 # give (the edge check's two-keyframe solve, redone as the keyframes' pointmaps fill in): rotation
 # sigma EDGE_DEG, camera centre EDGE_CM plus EDGE_BASELINE of the pair's baseline, Cauchy-robust,
@@ -78,20 +78,14 @@ GAUGE = os.environ.get(
 # Upstream's kernel counts each matched pixel as an independent 1 px measurement, so its dense solve
 # (=dense) trusts an edge to ~0.001 degrees and the robot's factors count for nothing beside it.
 # Vision-led full SLAM (ITO_SLAM_LEAD=vision) solves upstream's way: =dense by default.
-EDGES = os.environ.get(
-    "ITO_SLAM_EDGES", "dense" if os.environ.get("ITO_SLAM_LEAD") == "vision" else "pose"
-)
+EDGES = os.environ.get("ITO_SLAM_EDGES", "dense" if LEAD == "vision" else "pose")
 # ITO_SLAM_EDGE_WEIGHT (=dense): every dense edge's normal equations times this. Upstream counts each
 # matched pixel as an independent measurement, so an edge claims its relative scale to ~1e-4 while
 # MASt3R's pairs are biased by ~1% (monocular scale drift: 0.82 along the loop's first leg); at 1 no
 # ToF/floor scale prior can correct that drift. Relative weights among edges do not change. Vision-led
 # full SLAM defaults to 1e-3 (loop replay: published scale 0.96-1.08 along the route, was 0.69-0.82
 # at 1; 1e-2 still 0.79; 1e-4 0.90-1.03; co-visible consistency unchanged at every weight).
-EDGE_WEIGHT = float(
-    os.environ.get(
-        "ITO_SLAM_EDGE_WEIGHT", "1e-3" if os.environ.get("ITO_SLAM_LEAD") == "vision" else "1"
-    )
-)
+EDGE_WEIGHT = float(os.environ.get("ITO_SLAM_EDGE_WEIGHT") or (1e-3 if LEAD == "vision" else 1))
 EDGE_DEG = float(os.environ.get("ITO_SLAM_EDGE_DEG", "0.1"))
 EDGE_CM = float(os.environ.get("ITO_SLAM_EDGE_CM", "0.5"))
 EDGE_BASELINE = float(os.environ.get("ITO_SLAM_EDGE_BASELINE", "0.05"))

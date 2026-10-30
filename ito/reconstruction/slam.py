@@ -23,6 +23,7 @@ from .depth import (
 )
 from .fusion import HEIGHT_SIGMA, UP, PoseGraph
 from .gaussian import EXPOSURE_INPUT, GaussianBackend, exposed
+from .mode import FULL, VISION, VISION_FULL, VISION_LED
 from .motion import MotionBuffer
 from .sensors import HeadSensors
 from .slam_vision import RESTART_CAUSES
@@ -79,16 +80,11 @@ HYBRID_AGREE = 0.08
 # laid onto the map's surfaces (align.py), instead of MASt3R's pairwise depth. ITO_TRACKER=map
 # also drops the MASt3R tracker: frames are placed by the robot's motion and the map alone.
 TRACKER = os.environ.get("ITO_TRACKER", "mast3r")
-# ITO_SLAM=vision: vision-first tracking (vision_track.py): MASt3R-SLAM's own tracker and keyframe
-# graph place every frame; the robot seeds each frame's turn, the ToF/floor set one metric scale and
-# the first frame ties the vision world to the robot's. Fusion's robot-first window is not used.
-VISION = os.environ.get("ITO_SLAM") == "vision"
-# ITO_SLAM=full ITO_SLAM_LEAD=vision (vision_full.py): frames placed by the images as with
-# ITO_SLAM=vision, keyframes by full SLAM's global graph (mast3r_global.py: every keyframe, dense
-# calibrated Gauss-Newton, retrieval loop closure, relocalisation), the map following them. Unset
-# (=robot): full SLAM's robot-first frames (fusion.py's window).
-VISION_FULL = os.environ.get("ITO_SLAM") == "full" and os.environ.get("ITO_SLAM_LEAD") == "vision"
-VISION_LED = VISION or VISION_FULL
+# How frames are placed: mode.py. Default VISION_FULL (camera-first full SLAM, vision_full.py):
+# frames placed by the images, keyframes by the global graph, the map following them. VISION
+# (ITO_SLAM=vision): the same tracker without the global graph. Neither uses fusion.py's robot-first
+# window; the robot seeds each frame's turn, the ToF/floor set one metric scale and the first frame
+# ties the vision world to the robot's.
 # Vision-led full SLAM: each frame's ToF and floor readings, once the metric scale is held, tie the
 # Sim(3) scale of the keyframe it tracked against to metres (the global graph's scale priors).
 # Monocular tracking drifts in scale: on the loop replay the vision world shrank to 0.82 (0.70 with
@@ -190,15 +186,14 @@ DUMP = os.environ.get("ITO_DUMP")
 # for photometric training, which then refines splats finer than the network sees
 # (ITO_DETAIL=1: the network's own grid).
 DETAIL = float(os.environ.get("ITO_DETAIL", "2"))
-# ITO_SLAM=full: upstream MASt3R-SLAM's whole backend (mast3r_global.py): every keyframe in one
-# global Sim(3) graph with the robot's factors, retrieval loop closure, relocalisation; the map
-# anchored to keyframes and moved with them. Unset: the 30-keyframe pose graph alone, as before.
-FULL = os.environ.get("ITO_SLAM") == "full"
+# FULL (default, mode.py): upstream MASt3R-SLAM's whole backend (mast3r_global.py): every keyframe
+# in one global Sim(3) graph, retrieval loop closure, relocalisation; the map anchored to keyframes
+# and moved with them. ITO_SLAM=window: the robot-first 30-keyframe pose graph alone.
 FLIP = np.diag([1.0, -1.0, -1.0])  # Ito axes <-> MASt3R's (OpenCV), for the global graph
 FLIP4 = np.diag([1.0, -1.0, -1.0, 1.0])
 # ITO_HEAD_IMU=1 (stone P3): the head IMU's gyro turn since the last keyframe sets the frame
 # tracker's rotation prior (the kinematic one rides up to 2 degrees past the servos' play), and
-# with ITO_SLAM=full its turns and tilt join the global graph. Unset: as before.
+# with ITO_SLAM_LEAD=robot its turns and tilt join the global graph. Unset: as before.
 HEAD_IMU = os.environ.get("ITO_HEAD_IMU", "0") != "0"
 MAP_MOVE = (0.002, 0.05, 0.002)  # metres, degrees, log-scale: a keyframe's move the map follows
 KEYFRAME_AGE = float(os.environ.get("ITO_SLAM_KEYFRAME_AGE", "20"))  # s, full SLAM
@@ -488,7 +483,7 @@ class SLAMBackend(GaussianBackend):
                 self.field_rebuilt = time.monotonic()
                 self.rebuild_volume()
 
-    # --- ITO_SLAM=full ITO_SLAM_LEAD=vision -------------------------------------------------
+    # --- camera-first full SLAM (the default) ---------------------------------------------
 
     def vision_map(self, pose):
         """A rigid pose in the vision world (Ito axes, vision units) in the map's world, by the

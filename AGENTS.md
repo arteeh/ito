@@ -5,7 +5,7 @@ What Ito is and why: the intro of [README.md](README.md). The plan being built: 
 ## Where things are
 
 - `ito/app` pilot app entry, menus, the link loop (`pilot.py`) · `ito/desktop` window, input, overlay, recorder · `ito/xr` OpenXR · `ito/render` splat renderer · `ito/ui` theme
-- `ito/reconstruction` worker process: robot-first SLAM (`slam.py`, `fusion.py`, `mast3r_frontend.py`), RGB-D fusion (`rgbd.py`), VRAM (`memory.py`)
+- `ito/reconstruction` worker process: camera-first full MASt3R-SLAM by default (`mode.py`, `vision_full.py`, `mast3r_global.py`, `slam.py`; robot-first `fusion.py`/`mast3r_frontend.py` only as opt-outs), RGB-D fusion (`rgbd.py`), VRAM (`memory.py`)
 - `ito/protocol` wire messages · `ito/link` WebRTC · `ito/driver` what every robot driver builds on
 - `drivers/microduck` Microduck driver and its simulator (`sim.py`, `setup-sim.sh`) · `drivers/mujoco` generic MJCF robot
 - `third_party/` microduck and microduck_rl pins · `release/` Windows packaging · `tools/` session recorder and frame viewer

@@ -1,5 +1,5 @@
-"""Vision-led full MASt3R-SLAM (ITO_SLAM=full ITO_SLAM_LEAD=vision): frames placed by the images,
-keyframes by one global graph with loop closure.
+"""Camera-first full MASt3R-SLAM (the default, mode.py): frames placed by the images, keyframes by
+one global graph with loop closure.
 
 Why: robot-first full SLAM (mast3r_frontend.py + fusion.py's window) ties every frame to the one
 before it by the robot's motion, whose head gear play (1.5-3 degrees, depending on the head's

@@ -3,6 +3,7 @@ import os
 
 import numpy as np
 
+from .mode import FULL
 from .tracking import Cloud, VisualResult
 
 AXES = np.array([1.0, -1.0, -1.0])  # OpenCV camera/world axes (+Y down, +Z forward) to Ito.
@@ -24,10 +25,9 @@ TRACK_FILTER = os.environ.get("ITO_TRACK_FILTER", "recent")
 TRACK_PRIOR = os.environ.get("ITO_TRACK_PRIOR", "1") != "0"
 SCALE_PRIOR = 0.1
 UNKNOWN = np.full(6, np.inf)
-# ITO_SLAM=full (mast3r_global.py): every keyframe kept in one global graph, upstream's
-# weighted pointmap filtering, a reference chosen by place as well as direction, retrieval when
-# tracking is lost. Unset: the frontend as before (local graph, forgetting keyframes).
-FULL = os.environ.get("ITO_SLAM") == "full"
+# Full SLAM (mode.py; this frontend serves its ITO_SLAM_LEAD=robot opt-out): every keyframe kept in
+# one global graph, upstream's weighted pointmap filtering, a reference chosen by place as well as
+# direction, retrieval when tracking is lost. ITO_SLAM=window: local graph, forgetting keyframes.
 # Full: a keyframe a metre from the predicted camera counts like one turned this far away.
 REACH = math.radians(30)
 NEAR = 1.5  # metres: farther keyframes are only tried when retrieval names them
