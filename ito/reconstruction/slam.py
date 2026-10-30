@@ -22,7 +22,7 @@ from .depth import (
     scale_to,
 )
 from .fusion import HEIGHT_SIGMA, UP, PoseGraph
-from .gaussian import EXPOSURE_INPUT, GaussianBackend, exposed
+from .gaussian import EXPOSURE_INPUT, GaussianBackend, exposed, unlocked
 from .motion import MotionBuffer
 from .sensors import HeadSensors
 from .slam_vision import RESTART_CAUSES
@@ -785,9 +785,10 @@ class SLAMBackend(GaussianBackend):
         force = self.global_graph is not None and (
             hold or (last is not None and captured - graph.nodes[last].time > KEYFRAME_AGE)
         )
-        result = self.frontend.track(
-            rgb, node, predicted, prior_sigma, **({"force": True} if force else {})
-        )
+        with unlocked(self.lock):
+            result = self.frontend.track(
+                rgb, node, predicted, prior_sigma, **({"force": True} if force else {})
+            )
         self.robot_camera = self.motion.at(exposure)
         cloud = result.cloud
         if self.global_graph is not None:
@@ -1248,7 +1249,8 @@ class SLAMBackend(GaussianBackend):
         last = getattr(self, "vision_robot", None)
         turn = None if last is None else last[:3, :3].T @ robot[:3, :3]
         self.vision_robot = robot
-        pose, unit, cloud, keyframe, tracked = self.frontend.track(rgb, turn)
+        with unlocked(self.lock):
+            pose, unit, cloud, keyframe, tracked = self.frontend.track(rgb, turn)
         if pose is None:
             return
         if getattr(self, "vision_world", None) is None:

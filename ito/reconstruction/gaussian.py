@@ -10,6 +10,7 @@ evidence; Gaussians at the observed surface gather support. A revisit therefore 
 the room it finds instead of laying a second one over it.
 """
 
+import contextlib
 import os
 import threading
 from dataclasses import dataclass
@@ -109,6 +110,22 @@ def _moved_camera(delta, camera):
     moved[:3, :3] = (delta[:3, :3] / scale) @ camera[:3, :3]
     moved[:3, 3] = delta[:3, :3] @ camera[:3, 3] + delta[:3, 3]
     return moved.astype(np.asarray(camera).dtype)
+
+
+@contextlib.contextmanager
+def unlocked(lock):
+    """The map's lock let go while this thread works on something else (MASt3R tracking), so
+    the trainer thread can start and finish units meanwhile; taken again after. A no-op where
+    the caller does not hold it (offline replays)."""
+    try:
+        lock.release()
+    except RuntimeError:
+        yield
+        return
+    try:
+        yield
+    finally:
+        lock.acquire()
 
 
 class GaussianBackend(GaussianSlots):
