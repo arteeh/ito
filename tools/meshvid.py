@@ -37,6 +37,7 @@ FFMPEG = os.environ.get("ITO_FFMPEG", str(Path.home() / ".unii/work/HappyParrot/
 # The world's input, as the live worker sends it: depth on a coarse grid, RGB finer.
 DEPTH_SIZE = (320, 180)
 RGB_SIZE = (960, 540)
+CLEAR = tuple(float(v) for v in os.environ.get("MESHVID_CLEAR", "0.02,0.025,0.04,1").split(","))
 
 
 def offset_pose(x, y, z, yaw, pitch):
@@ -225,7 +226,7 @@ def main():
         for memory_only in (False, True):
             if memory_only:
                 saved, world.show_now = world.show_now, False
-            world.draw(world_from_eye, projection, target, clear=(0.02, 0.025, 0.04, 1))
+            world.draw(world_from_eye, projection, target, clear=CLEAR)
             if memory_only:
                 world.show_now = saved
             pixels = np.frombuffer(target.read(components=3, alignment=1), np.uint8)
