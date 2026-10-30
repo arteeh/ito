@@ -62,6 +62,9 @@ def main():
     p.add_argument("--dump-every", type=float, default=30.0)
     p.add_argument("--code", help="checkout root whose ito package to replay")
     p.add_argument("--max-splats", type=int, default=1_000_000)
+    p.add_argument(
+        "--trace", type=float, help="tracemalloc: Python allocations grown from T s to the end"
+    )
     a = p.parse_args()
     import logging
 
@@ -130,9 +133,7 @@ def main():
             )
             for g in message["ranges"]
         ]
-        last = max(
-            [s[0] for u in imu for s in u["samples"]] + [g["time"] for g in ranges] or [0]
-        )
+        last = max([s[0] for u in imu for s in u["samples"]] + [g["time"] for g in ranges] or [0])
         sensors.append((last, imu, ranges))
     sensors.sort(key=lambda item: item[0])
     frames = [f for f in rec.frames if f.get("file")]
@@ -167,12 +168,18 @@ def main():
             m[:3, :3] = slerp([t]).as_matrix()[0]
             m[:3, 3] = [np.interp(t, times_given, poses_given[:, k, 3]) for k in range(3)]
             return m
+
     motion_cursor = sensor_cursor = 0
     published = []
     log = (out / "frames.jsonl").open("w")
     next_dump = a.dump_every
     import torch
 
+    if a.trace is not None:
+        import tracemalloc
+
+        tracemalloc.start(8)
+    traced = None
     began_all = time.perf_counter()
     trainer = None
     if not a.inline_fit:
@@ -188,7 +195,7 @@ def main():
         captured = f["received"]
         while motion_cursor < len(times) and times[motion_cursor] <= captured + LOOKAHEAD:
             motion_cursor += 1
-        backend.add_motion(motion_rows[: motion_cursor][-512:])
+        backend.add_motion(motion_rows[:motion_cursor][-512:])
         while sensor_cursor < len(sensors) and sensors[sensor_cursor][0] <= captured + LOOKAHEAD:
             backend.add_sensors(*sensors[sensor_cursor][1:])
             sensor_cursor += 1
@@ -252,10 +259,13 @@ def main():
                     keyframes=len(backend.graph.keyframes),
                     fit_steps=int(backend.fit_steps),
                     vram_gib=round(torch.cuda.max_memory_reserved() / 2**30, 2),
+                    **memory(torch, backend),
                 )
             )
             + "\n"
         )
+        if a.trace is not None and traced is None and now >= a.trace:
+            traced = tracemalloc.take_snapshot()
         if now >= next_dump:
             next_dump += a.dump_every
             with backend.lock:
@@ -285,7 +295,59 @@ def main():
             indent=1,
         )
     )
+    if traced is not None:
+        grown = tracemalloc.take_snapshot().compare_to(traced, "traceback")
+        with (out / "trace.txt").open("w") as file:
+            for stat in grown[:25]:
+                file.write(f"{stat.size_diff / 2**20:+.1f} MiB {stat.count_diff:+d}\n")
+                file.write("".join(f"    {line}\n" for line in stat.traceback.format()[-6:]))
     print("done", out)
+
+
+def memory(torch, backend):
+    """Host and CUDA memory of this process now, GiB: working set and private bytes (Windows; RSS
+    elsewhere), Torch allocated / reserved, CuPy's pool, and the allocator's retries (each one a
+    cache flush on reaching its cap)."""
+    gib = 2**30
+    out = {}
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        class Counters(ctypes.Structure):
+            _fields_ = [("cb", wintypes.DWORD), ("faults", wintypes.DWORD)] + [
+                (name, ctypes.c_size_t)
+                for name in (
+                    "peak_ws",
+                    "ws",
+                    "a",
+                    "b",
+                    "c",
+                    "d",
+                    "pagefile",
+                    "peak_pagefile",
+                    "private",
+                )
+            ]
+
+        c = Counters()
+        c.cb = ctypes.sizeof(c)
+        kernel = ctypes.windll.kernel32
+        kernel.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel.K32GetProcessMemoryInfo.argtypes = (wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD)
+        kernel.K32GetProcessMemoryInfo(kernel.GetCurrentProcess(), ctypes.byref(c), c.cb)
+        out.update(ws_gib=round(c.ws / gib, 3), private_gib=round(c.private / gib, 3))
+    else:
+        rss = int(Path("/proc/self/statm").read_text().split()[1]) * os.sysconf("SC_PAGE_SIZE")
+        out.update(ws_gib=round(rss / gib, 3))
+    out.update(
+        allocated_gib=round(torch.cuda.memory_allocated() / gib, 3),
+        reserved_now_gib=round(torch.cuda.memory_reserved() / gib, 3),
+        retries=int(torch.cuda.memory_stats().get("num_alloc_retries", 0)),
+    )
+    if backend.xp is not np:
+        out.update(cupy_gib=round(backend.xp.get_default_memory_pool().total_bytes() / gib, 3))
+    return out
 
 
 def dump(backend, out, now):
