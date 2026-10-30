@@ -193,6 +193,7 @@ def _run(recon):
             backend.lock.acquire()
             try:
                 now = clock.now() - recon.epoch
+                recon.fit_steps.value = getattr(backend, "fit_steps", 0)
                 if network is not None and now >= next_network_stats:
                     next_network_stats = now + 1
                     count = network.statistics()
@@ -639,6 +640,7 @@ class Reconstruction:
         self.output_captured = context.RawValue("d", 0)
         self.tracked = context.RawValue("Q", 0)
         self.integrated = context.RawValue("Q", 0)
+        self.fit_steps = context.RawValue("Q", 0)
         self.matched = context.RawValue("Q", 0)
         self.blurred = context.RawValue("Q", 0)
         self.scene_slots = context.RawValue("I", 0)
@@ -727,6 +729,7 @@ class Reconstruction:
             network_nonfinite_points=self.nonfinite_points.value,
             worker_epoch=self.epoch,
             backend_calls=self.integrated.value,
+            fit_steps=self.fit_steps.value,
             matched_pct=100 * self.matched.value / tracked
             if tracked and self.tracking_mode == "robot"
             else None,

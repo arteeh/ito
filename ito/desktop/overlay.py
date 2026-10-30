@@ -217,6 +217,7 @@ class Overlay:
                 ("Reconstruction", "scene_hz", "frames/s"),
                 ("Capture to visible", "capture_to_visible_ms", "ms"),
                 ("GPU busy", "gpu_busy_pct", "%"),
+                ("Map training", "fit_hz", "steps/s"),
             ):
                 value = values.get(key)
                 text = "--" if value is None else f"{value:.1f}"
