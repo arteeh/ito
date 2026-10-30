@@ -286,7 +286,7 @@ class Reconstruction:
         backend="rgbd",
         precision="full",
         input_resolution=100,
-        keyframes=256,
+        keyframes=128,
     ):
         if not 1 <= max_splats <= MAX_SLOT_COUNT:
             raise ValueError(f"Max splats must be between 1 and {MAX_SLOT_COUNT:,}")

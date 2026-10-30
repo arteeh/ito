@@ -138,7 +138,7 @@ class SLAMBackend(RGBDBackend):
         report,
         precision="full",
         input_resolution=100,
-        keyframes=256,
+        keyframes=128,
         precision_report=None,
         **options,
     ):
