@@ -192,6 +192,18 @@ class Pilot:
         finally:
             self.worker_lock.release()
 
+    def poll_mesh(self):
+        """ITO_MESH: the worker's frames and corrections for the window's mesh world."""
+        if not self.worker_lock.acquire(False):
+            return []
+        try:
+            worker = self.worker
+            if worker is None or self.failure or not hasattr(worker, "poll_mesh"):
+                return []
+            return worker.poll_mesh()
+        finally:
+            self.worker_lock.release()
+
     def _status(self, link, detail=None, *, status=None, peer=None):
         old = self.state.status
         diagnostics.event("link_state", interval=0 if old.link != link else 1, state=link)
