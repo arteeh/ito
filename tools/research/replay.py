@@ -289,6 +289,7 @@ def main():
                     splats=int(backend.count),
                     tracked=int(backend.tracked),
                     matched=int(backend.matched),
+                    lost=bool(getattr(backend, "lost", False)),
                     keyframes=len(backend.graph.keyframes),
                     fit_steps=int(backend.fit_steps),
                     vram_gib=round(torch.cuda.max_memory_reserved() / 2**30, 2),
