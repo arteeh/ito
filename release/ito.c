@@ -21,6 +21,22 @@ static HANDLE inheritable(DWORD which, const wchar_t *device, DWORD access) {
                        OPEN_EXISTING, 0, NULL);
 }
 
+/* A launcher script that runs `start "" ito.exe` and ends would leave its console window open
+   for the whole session if this process attached before the script's cmd.exe exited (it does
+   when the PC is busy). Keep a console only while another process, the terminal's shell, still
+   uses it; a launcher's cmd.exe is gone within a moment. */
+static BOOL lasting_console(void) {
+    DWORD attached[4];
+    for (int waited = 0; waited < 600; waited += 20) {
+        if (GetConsoleProcessList(attached, 4) <= 1) {
+            FreeConsole();
+            return FALSE;
+        }
+        Sleep(20);
+    }
+    return TRUE;
+}
+
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR arguments, int show) {
     static wchar_t folder[LONGEST], python[LONGEST], command[LONGEST], message[LONGEST];
     (void)instance, (void)previous, (void)show;
@@ -29,7 +45,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR arguments, int
     if (!length || length >= LONGEST || !name) return 1;
     *name = 0;
 
-    BOOL console = AttachConsole(ATTACH_PARENT_PROCESS);
+    BOOL console = AttachConsole(ATTACH_PARENT_PROCESS) && lasting_console();
     swprintf(python, LONGEST, L"%ls\\runtime\\%ls", folder,
              console ? L"python.exe" : L"pythonw.exe");
     if (GetFileAttributesW(python) == INVALID_FILE_ATTRIBUTES) {
