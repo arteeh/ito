@@ -109,6 +109,9 @@ VISION_GRAVITY_SIGMA = math.radians(float(os.environ.get("ITO_VISION_GRAVITY_DEG
 # Frames taken while the head turns faster than this (rad/s; the sim's routes: p99 94-200 deg/s)
 # are tracked but not mapped (ITO_VISION_SHAKE); blur by exposure is gated by BLUR_PIXELS.
 VISION_SHAKE = float(os.environ.get("ITO_VISION_SHAKE", "3.5"))
+# Seconds of frames no keyframe matched before vision-led tracking reports itself lost (the pilot
+# then shows the camera feed); in between, frames follow the gyro and the robot.
+VISION_LOST = float(os.environ.get("ITO_VISION_LOST", "3"))
 # ITO_VISION_SCALE=gated (default): readings only while the camera is nearly still, mapping after
 # SCALE_START of them, fixed at SCALE_FINAL with at most one global rescale; =first40: the old held
 # median of the first 40 readings.
@@ -359,6 +362,7 @@ class SLAMBackend(GaussianBackend):
         self.tied_scales = 0  # vision-led full: ToF/floor readings given to the global graph
         self.gyro_seeds = 0  # vision-led: frames whose turn the head gyro seeded
         self.smeared_frames = 0  # vision-led: frames tracked but not mapped (blur, shake)
+        self.unplaced_frames = 0  # vision-led full: not mapped, their keyframe not relocalised
         self.levelled_by = None  # vision-led: degrees the IMU tilted the first camera
         self.vision_anchor = {}
         self.last_node = None
@@ -444,6 +448,9 @@ class SLAMBackend(GaussianBackend):
             gravity_keyframes=len(self.global_graph.gravity),
             gyro_seeds=self.gyro_seeds,
             smeared_frames=self.smeared_frames,
+            unplaced_frames=self.unplaced_frames,
+            lost_keyframes=len(self.global_graph.lost),
+            relocalised_keyframes=len(self.global_graph.relocalised),
             levelled_deg=self.levelled_by,
             field_rebuild_ms=round(self.rebuild_seconds * 1000),
             fused_frames=len(self.fused_frames),
@@ -1333,7 +1340,15 @@ class SLAMBackend(GaussianBackend):
         self.vision_published = published[-600:]
         self.tracked += 1
         self.matched += bool(tracked)
-        self.lost = not tracked
+        # Lost only after VISION_LOST seconds of frames no keyframe matched: one dead-reckoned
+        # frame in a fast turn (the gyro still turns the view and the map stays) flipped the
+        # pilot to the raw camera (configs 10/11, "falls back to camera when I turn").
+        if tracked:
+            self.vision_untracked_since = None
+        elif getattr(self, "vision_untracked_since", None) is None:
+            self.vision_untracked_since = captured
+        since = getattr(self, "vision_untracked_since", None)
+        self.lost = since is not None and captured - since > VISION_LOST
         self.report(
             f"Vision tracking | {self.tracked} frames, {self.matched / self.tracked:.0%} tracked, "
             f"{len(self.frontend.keyframes)} keyframes, "
@@ -1345,6 +1360,11 @@ class SLAMBackend(GaussianBackend):
         if smeared:
             # Tracked (the next frame is seeded from it) but not mapped: its pixels are streaks.
             self.smeared_frames += 1
+            return
+        if self.unplaced_reference():
+            # Its keyframe was started where the robot guessed (tracking lost) and the graph has
+            # not relocalised it: surfaces there could turn a room section sideways (config 10).
+            self.unplaced_frames += 1
             return
         cloud = cloud._replace(points=cloud.points * metres)
         if self.range_field is not None:
@@ -1363,6 +1383,15 @@ class SLAMBackend(GaussianBackend):
                 self.keyframe_vision.setdefault(k, then)
         self.last_node = node
         self.place(cloud, placed, now + clock.now() - started, node=node, rgb=rgb)
+
+    def unplaced_reference(self):
+        """Vision-led full: the keyframe this frame was tracked against was started lost and no
+        solve has relocalised it yet."""
+        graph = self.global_graph
+        k = getattr(self.frontend, "reference", None)
+        if graph is None or k is None or k not in graph.lost:
+            return False
+        return not any(n == k for n, _ in graph.relocalised)
 
     def levelled(self, robot, exposure):
         """The robot's camera pose with its tilt (roll and pitch) from the head IMU's gravity
