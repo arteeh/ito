@@ -37,16 +37,24 @@ MOVED = 0.005  # a keyframe the solve moved by more than this share of its depth
 SPILLING = 256 << 20
 
 
+def crop_size(width, height):
+    """Half width and half height of mast3r_utils.resize_img's centre crop of a resized image:
+    multiples of 8, so the crop lies on MASt3R's 16-pixel patch grid. A square image is cropped
+    to 4:3 as upstream does; Ito also rounds that height down to the grid, which changes nothing
+    at upstream's 512 and keeps the other long sides on it (368: 276 rows would not be)."""
+    cx, cy = width // 2, height // 2
+    halfw, halfh = ((2 * cx) // 16) * 8, ((2 * cy) // 16) * 8
+    if width == height:
+        halfh = 3 * halfw // 4 // 8 * 8
+    return halfw, halfh
+
+
 def input_shape(width, height, percent):
     """Width and height of the frames MASt3R sees for a camera (see crop)."""
     long = LONG_SIDE[percent]
     size = max(width, height)
-    resized = [int(round(x * long / size)) for x in (width, height)]
-    half_width = 2 * (resized[0] // 2) // 16 * 8
-    half_height = 2 * (resized[1] // 2) // 16 * 8
-    if resized[0] == resized[1]:
-        half_height = 3 * half_width / 4
-    return 2 * half_width, int(2 * half_height)
+    halfw, halfh = crop_size(*(int(round(x * long / size)) for x in (width, height)))
+    return 2 * halfw, 2 * halfh
 
 
 def map_bytes(keyframes, width, height, percent):
@@ -64,9 +72,7 @@ def crop(image, long):
     image = _resize_pil_image(image, long)
     W, H = image.size
     cx, cy = W // 2, H // 2
-    halfw, halfh = ((2 * cx) // 16) * 8, ((2 * cy) // 16) * 8
-    if W == H:
-        halfh = 3 * halfw / 4
+    halfw, halfh = crop_size(W, H)
     image = image.crop((cx - halfw, cy - halfh, cx + halfw, cy + halfh))
     return image, (W1 / W, H1 / H, (W - image.size[0]) / 2, (H - image.size[1]) / 2)
 
