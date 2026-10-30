@@ -196,11 +196,22 @@ void main() {
     // A silhouette pixel lies between foreground and background: it neither places a surface
     // nor clears space (it would carve the foreground object).
     if (bend(depth, q) > edge) return;
-    float trunc = clamp(0.04 * d, 2.0 * voxel, 0.12);
-    float sdf = d - range;
-    if (sdf < -trunc) return;
     vec2 tangent = (pixel - calibration.zw) / calibration.xy;
     float radial = 1.0 / (1.0 + dot(tangent, tangent));      // cos^2 of the ray to the axis
+    // The surface's normal from the depth around the pixel. The field holds distances across
+    // the surface, not along the ray: seen at a grazing angle (the floor from a low camera) a
+    // band along the ray is thinner than a voxel across it, and the floor came out in holes.
+    vec3 pc = vec3((pixel.x - calibration.z) / calibration.x,
+                   (calibration.w - pixel.y) / calibration.y, -1.0) * d;
+    vec3 px = vec3((pixel.x + 1.0 - calibration.z) / calibration.x,
+                   (calibration.w - pixel.y) / calibration.y, -1.0) * dr;
+    vec3 py = vec3((pixel.x - calibration.z) / calibration.x,
+                   (calibration.w - pixel.y - 1.0) / calibration.y, -1.0) * dd;
+    vec3 n = normalize(cross(px - pc, py - pc));
+    float facing = abs(dot(n, normalize(pc)));
+    float trunc = clamp(0.04 * d, 2.0 * voxel, 0.12);
+    float sdf = (d - range) * inversesqrt(radial) * max(facing, 0.1);
+    if (sdf < -trunc) return;
     float w = radial * radial * min(1.0, 1.0 / (d * d));
     // Stored weighted (distance x weight, weight): interpolated, a voxel nobody saw adds
     // nothing, instead of a false empty sample just behind a surface.
@@ -214,14 +225,6 @@ void main() {
     imageStore(field, c, vec4((old.r + t * w) / (old.g + w) * W, W, 0, 0));
     if (abs(sdf) > 1.5 * voxel) return;
     // Colour: head-on, near and recent views win.
-    vec3 pc = vec3((pixel.x - calibration.z) / calibration.x,
-                   (calibration.w - pixel.y) / calibration.y, -1.0) * d;
-    vec3 px = vec3((pixel.x + 1.0 - calibration.z) / calibration.x,
-                   (calibration.w - pixel.y) / calibration.y, -1.0) * dr;
-    vec3 py = vec3((pixel.x - calibration.z) / calibration.x,
-                   (calibration.w - pixel.y - 1.0) / calibration.y, -1.0) * dd;
-    vec3 n = normalize(cross(px - pc, py - pc));
-    float facing = abs(dot(n, normalize(pc)));
     float quality = clamp(facing * facing * radial * min(1.0, 0.8 / d), 0.004, 1.0);
     vec4 oc = imageLoad(colors, c);
     float claim = oc.a * exp(-(now - imageLoad(stamps, c).r) / color_age);
