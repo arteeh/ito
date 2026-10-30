@@ -272,6 +272,10 @@ def main():
         corrections=np.array([row[2] for row in published]),
         t=np.array([row[3] for row in published]),
     )
+    scale_log = getattr(backend, "vision_scale_log", None)
+    if scale_log:
+        # ITO_SCALE_LOG=1: every vision-scale reading (exposure, ToF, floor m/unit, keyframes).
+        (out / "vision_scale.json").write_text(json.dumps(scale_log))
     (out / "summary.json").write_text(
         json.dumps(
             dict(
