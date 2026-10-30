@@ -86,72 +86,166 @@ def source(cache, work, name, url, digest, report):
     return root
 
 
-# Robot-first tracking (ito/reconstruction/mast3r_frontend.py): FrameTracker.solve adds the
-# fused prediction as a prior to its Gauss-Newton normal equations, so a frame with few
-# matches yields a pose leaning on the robot instead of being dropped as lost. Without a
-# prior (the vision-only tracker) upstream's behaviour is unchanged.
-RELATIVE_SETUP = (
-    "        # Solving for relative pose without scale!\n        T_CkCf = T_WCk.inv() * T_WCf\n"
-)
-TRACKER_ADAPTATIONS = (
+RETRIEVAL_BASE = "https://download.europe.naverlabs.com/ComputerVision/MASt3R"
+RETRIEVAL_NAME = "MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric_retrieval"
+# Upstream's load_retriever: the retrieval head and, beside it, the ASMK codebook it names.
+RETRIEVAL_FILES = {
+    f"{RETRIEVAL_NAME}_trainingfree.pth": (
+        "000a324f06f9369ab3e32d03dd4b8a838d48e98e3f3bf9d7dd034dce1bfd4c50"
+    ),
+    f"{RETRIEVAL_NAME}_codebook.pkl": (
+        "700af9e31ad0ca6159955dc80b4fd6e14234780b52f5c91884f6553991933c1a"
+    ),
+}
+
+# Ito's changes to upstream MASt3R-SLAM's Python, each with its reason (ATTRIBUTION.txt names
+# them). Everything else runs as upstream ships it.
+#
+# FactorGraph (global_opt.py) keeps its edges and its solve's inputs in buffers allocated once,
+# as SharedKeyframes keeps keyframes. Upstream concatenates them anew for every keyframe, so
+# every solve asks Torch for blocks bigger than any it has cached: Torch's cache then grows
+# without end, and on Windows, whose driver backs VRAM overflow with system memory instead of
+# failing, into host RAM. Edges are stored two-way, each edge's forward and backward rows side
+# by side, so a solve reads a view where upstream concatenates [all forward; all backward]: the
+# same rows, so the same normal equations, summed in another order. Rays are constrained in
+# place with constrain_points_to_ray's arithmetic.
+FACTOR_GRAPH = (
     (
-        "        self.device = device\n\n        self.reset_idx_f2k()\n",
-        "        self.device = device\n\n        self.reset_idx_f2k()\n"
-        "        # Ito: (predicted T_WCf Sim3, 7 information weights) or None.\n"
-        "        self.prior = None\n"
-        "        self.prior_relative = None\n"
-        "        self.match_frac = 0.0\n",
+        "    constrain_points_to_ray,\n)",
+        "    constrain_points_to_ray,\n    get_pixel_coords,\n)",
     ),
     (
-        "        match_frac = valid_opt.sum() / valid_opt.numel()\n"
-        '        if match_frac < self.cfg["min_match_frac"]:\n',
-        "        match_frac = valid_opt.sum() / valid_opt.numel()\n"
-        "        self.match_frac = float(match_frac)\n"
-        '        if match_frac < self.cfg["min_match_frac"] and self.prior is None:\n',
+        '    def __init__(self, model, frames: SharedKeyframes, K=None, device="cuda"):\n',
+        "    def __init__(\n"
+        '        self, model, frames: SharedKeyframes, K=None, device="cuda", max_edges=None\n'
+        "    ):\n",
     ),
     (
-        "        self.keyframes[len(self.keyframes) - 1] = keyframe\n",
-        '        if getattr(self.keyframes, "reference", None) is None:\n'
-        "            self.keyframes[len(self.keyframes) - 1] = keyframe\n",
+        """\
+        self.ii = torch.as_tensor([], dtype=torch.long, device=self.device)
+        self.jj = torch.as_tensor([], dtype=torch.long, device=self.device)
+        self.idx_ii2jj = torch.as_tensor([], dtype=torch.long, device=self.device)
+        self.idx_jj2ii = torch.as_tensor([], dtype=torch.long, device=self.device)
+        self.valid_match_j = torch.as_tensor([], dtype=torch.bool, device=self.device)
+        self.valid_match_i = torch.as_tensor([], dtype=torch.bool, device=self.device)
+        self.Q_ii2jj = torch.as_tensor([], dtype=torch.float32, device=self.device)
+        self.Q_jj2ii = torch.as_tensor([], dtype=torch.float32, device=self.device)
+""",
+        """\
+        # Ito: allocated once (ito/build.py FACTOR_GRAPH); backend edges <= 1 + k per keyframe.
+        rows = 2 * (4 * frames.buffer if max_edges is None else max_edges)
+        n = frames.h * frames.w
+        self.n_edges = 0
+        self.ii2 = torch.zeros(rows, dtype=torch.long, device=self.device)
+        self.jj2 = torch.zeros(rows, dtype=torch.long, device=self.device)
+        self.idx2 = torch.zeros(rows, n, dtype=torch.long, device=self.device)
+        self.valid2 = torch.zeros(rows, n, 1, dtype=torch.bool, device=self.device)
+        self.Q2 = torch.zeros(rows, n, 1, dtype=torch.float32, device=self.device)
+        self.Xs = torch.zeros(frames.buffer, n, 3, dtype=torch.float32, device=self.device)
+        self.Cs = torch.zeros(frames.buffer, n, 1, dtype=torch.float32, device=self.device)
+        self.rays = None
+""",
     ),
     (
-        "    def solve(self, sqrt_info, r, J):\n",
-        "    def solve(self, sqrt_info, r, J, T_CkCf=None):\n",
+        """\
+        self.ii = torch.cat([self.ii, ii_tensor])
+        self.jj = torch.cat([self.jj, jj_tensor])
+        self.idx_ii2jj = torch.cat([self.idx_ii2jj, idx_i2j])
+        self.idx_jj2ii = torch.cat([self.idx_jj2ii, idx_j2i])
+        self.valid_match_j = torch.cat([self.valid_match_j, valid_match_j])
+        self.valid_match_i = torch.cat([self.valid_match_i, valid_match_i])
+        self.Q_ii2jj = torch.cat([self.Q_ii2jj, Qj])
+        self.Q_jj2ii = torch.cat([self.Q_jj2ii, Qi])
+""",
+        """\
+        start = 2 * self.n_edges
+        end = start + 2 * len(ii_tensor)
+        if end > len(self.ii2):
+            raise RuntimeError("FactorGraph is full")
+        for rows, forward, backward in (
+            (self.ii2, ii_tensor, jj_tensor),
+            (self.jj2, jj_tensor, ii_tensor),
+            (self.idx2, idx_i2j, idx_j2i),
+            (self.valid2, valid_match_j, valid_match_i),
+            (self.Q2, Qj, Qi),
+        ):
+            rows[start:end:2] = forward
+            rows[start + 1 : end : 2] = backward
+        self.n_edges += len(ii_tensor)
+""",
     ),
     (
-        "        cost = 0.5 * (b.T @ b).item()\n",
-        "        cost = 0.5 * (b.T @ b).item()\n"
-        "        if self.prior_relative is not None and T_CkCf is not None:\n"
-        "            # retr is Exp(tau) * X: the prior's residual moves one for one with tau.\n"
-        "            weight = self.prior[1].to(H.dtype)\n"
-        "            r_p = (T_CkCf * self.prior_relative.inv()).log().view(-1, 1).to(H.dtype)\n"
-        "            H = H + torch.diag(weight)\n"
-        "            g = g - weight.view(-1, 1) * r_p\n"
-        "            cost += 0.5 * (weight.view(-1, 1) * r_p * r_p).sum().item()\n",
+        """\
+    def get_unique_kf_idx(self):
+        return torch.unique(torch.cat([self.ii, self.jj]), sorted=True)
+""",
+        """\
+    @property
+    def ii(self):
+        return self.ii2[: 2 * self.n_edges : 2]
+
+    @property
+    def jj(self):
+        return self.jj2[: 2 * self.n_edges : 2]
+
+    def get_unique_kf_idx(self):
+        return torch.unique(self.ii2[: 2 * self.n_edges], sorted=True)
+""",
     ),
     (
-        RELATIVE_SETUP,
-        RELATIVE_SETUP + "        self.prior_relative = (\n"
-        "            None if self.prior is None else T_WCk.inv() * self.prior[0]\n"
-        "        )\n",
+        """\
+        ii = torch.cat((self.ii, self.jj), dim=0)
+        jj = torch.cat((self.jj, self.ii), dim=0)
+        idx_ii2jj = torch.cat((self.idx_ii2jj, self.idx_jj2ii), dim=0)
+        valid_match = torch.cat((self.valid_match_j, self.valid_match_i), dim=0)
+        Q_ii2jj = torch.cat((self.Q_ii2jj, self.Q_jj2ii), dim=0)
+        return ii, jj, idx_ii2jj, valid_match, Q_ii2jj
+""",
+        """\
+        rows = 2 * self.n_edges
+        edges = self.ii2, self.jj2, self.idx2, self.valid2, self.Q2
+        return tuple(edge[:rows] for edge in edges)
+""",
     ),
     (
-        "            tau_ij_sim3, new_cost = self.solve(sqrt_info, r, J)\n",
-        "            tau_ij_sim3, new_cost = self.solve(sqrt_info, r, J, T_CkCf)\n",
+        """\
+        kfs = [self.frames[idx] for idx in unique_kf_idx]
+        Xs = torch.stack([kf.X_canon for kf in kfs])
+        T_WCs = lietorch.Sim3(torch.stack([kf.T_WC.data for kf in kfs]))
+
+        Cs = torch.stack([kf.get_average_conf() for kf in kfs])
+""",
+        """\
+        n = len(unique_kf_idx)
+        with self.frames.lock:
+            Xs = torch.index_select(self.frames.X, 0, unique_kf_idx, out=self.Xs[:n])
+            T_WCs = lietorch.Sim3(self.frames.T_WC[unique_kf_idx])
+            Cs = torch.index_select(self.frames.C, 0, unique_kf_idx, out=self.Cs[:n])
+            Cs /= self.frames.N[unique_kf_idx].view(-1, 1, 1)
+""",
     ),
     (
-        "            tau_ij_sim3, new_cost = self.solve(sqrt_info2, r, J)\n",
-        "            tau_ij_sim3, new_cost = self.solve(sqrt_info2, r, J, T_CkCf)\n",
+        """\
+        img_size = self.frames[0].img.shape[-2:]
+        Xs = constrain_points_to_ray(img_size, Xs, K)
+""",
+        """\
+        img_size = self.frames[0].img.shape[-2:]
+        if self.rays is None:
+            uv = get_pixel_coords(1, img_size, device=Xs.device, dtype=Xs.dtype).view(-1, 2)
+            self.rays = ((uv[:, 0] - K[0, 2]) / K[0, 0], (uv[:, 1] - K[1, 2]) / K[1, 1])
+        for axis, ray in enumerate(self.rays):
+            Xs[..., axis].copy_(Xs[..., 2]).mul_(ray)
+""",
     ),
 )
 
 
-def adapt_tracker(path):
+def adapt(path, replacements):
     code = path.read_text(encoding="utf-8")
-    for old, new in TRACKER_ADAPTATIONS:
-        expected = 2 if old == RELATIVE_SETUP else 1
-        if code.count(old) != expected:
-            raise RuntimeError(f"MASt3R-SLAM tracker changed upstream; cannot adapt {path}")
+    for old, new in replacements:
+        if code.count(old) != 1:
+            raise RuntimeError(f"MASt3R-SLAM changed upstream; cannot adapt {path}")
         code = code.replace(old, new)
     path.write_text(code, encoding="utf-8")
 
@@ -256,7 +350,38 @@ def compile_extensions(cache, work):
     )
     croco = slam / "thirdparty/mast3r/dust3r/croco/models/curope"
     build("curope", [croco / "curope.cpp", croco / "kernels.cu"])
+    native["asmk.hamming"] = compile_hamming(slam, cache, work)
     return native, str(torch.__version__)
+
+
+def compile_hamming(slam, cache, work):
+    """asmk's `hamming` module (ASMK, the retrieval behind MASt3R-SLAM's loop closure and
+    relocalisation), from the C its authors generated (cython/hamming.c), built as asmk's own
+    setup.py builds it. Loaded as asmk.hamming by mast3r_runtime.prepare."""
+    from setuptools import Distribution, Extension
+
+    report("Building asmk's hamming module", -1)
+    output = work / "native" / "asmk"
+    if output.exists():
+        shutil.rmtree(output)
+    source = slam / "thirdparty/mast3r/asmk/cython/hamming.c"
+    try:
+        command = Distribution(
+            dict(name="asmk", ext_modules=[Extension("asmk.hamming", [str(source)])])
+        ).get_command_obj("build_ext")
+        command.build_lib = str(output / "lib")
+        command.build_temp = str(output / "temp")
+        command.ensure_finalized()
+        command.run()
+        (built,) = (output / "lib" / "asmk").glob("hamming*")
+    except Exception as exc:
+        import traceback
+
+        traceback.print_exc()
+        raise RuntimeError("Could not build asmk's hamming module; check the C compiler") from exc
+    target = cache / "native" / built.name
+    shutil.copy2(built, target)
+    return target.relative_to(cache).as_posix()
 
 
 def main():
@@ -293,17 +418,8 @@ def main():
         "7a246279efcaf15464aac710ca36fde772000fa0a16082a8c03dfe78c15dce93",
         report,
     )
-    utils = slam / "mast3r_slam/mast3r_utils.py"
-    code = utils.read_text(encoding="utf-8")
-    eager = "from mast3r_slam.retrieval_database import RetrievalDatabase\n"
-    if eager.rstrip() in code.splitlines():
-        code = code.replace(eager, "").replace(
-            "    retriever_path = (",
-            "    from mast3r_slam.retrieval_database import RetrievalDatabase\n"
-            "    retriever_path = (",
-        )
-        utils.write_text(code, encoding="utf-8")
-    adapt_tracker(slam / "mast3r_slam/tracker.py")
+    adapt(slam / "mast3r_slam/global_opt.py", FACTOR_GRAPH)
+    # Windows' `long` is 32 bits; the kernels index with it.
     for path in (slam / "mast3r_slam/backend/src").glob("*.cu"):
         original = path.read_text(encoding="utf-8")
         fixed = re.sub(r"\blong\b", "int64_t", original)
@@ -332,6 +448,14 @@ def main():
         "MASt3R weights (CC BY-NC-SA; non-commercial)",
         MODEL_FILES["model.safetensors"],
     )
+    for name, digest in RETRIEVAL_FILES.items():
+        download(
+            f"{RETRIEVAL_BASE}/{name}",
+            cache / "retrieval" / name,
+            report,
+            f"MASt3R retrieval {name.rsplit('_', 1)[-1]} (CC BY-NC-SA; non-commercial)",
+            digest,
+        )
     for name in ("LICENSE", "NOTICE", "CHECKPOINTS_NOTICE"):
         shutil.copy2(slam / "thirdparty/mast3r" / name, weights / name)
     (weights / "ATTRIBUTION.txt").write_text(
@@ -339,9 +463,11 @@ def main():
         f"https://huggingface.co/{MODEL}/tree/{MODEL_REV}\n"
         "Unmodified safetensors weights. CC BY-NC-SA 4.0; see LICENSE, NOTICE and "
         "CHECKPOINTS_NOTICE for attribution and training-dataset restrictions.\n"
-        "Ito source adaptations: lazy retrieval import, fixed-width CUDA indices, "
-        "distinct lietorch CPU kernel symbols, current-stream CUDA launches, "
-        "and a pose prior in the frame tracker.\n",
+        f"retrieval/: MASt3R's retrieval head and ASMK codebook, {RETRIEVAL_BASE}/"
+        f"{RETRIEVAL_NAME}_*. Unmodified. CC BY-NC-SA 4.0, as above.\n"
+        f"slam/: MASt3R-SLAM revision {SLAM_REV}. Ito source adaptations: FactorGraph keeps "
+        "its edges and solve inputs in buffers allocated once (global_opt.py), fixed-width "
+        "CUDA indices, distinct lietorch CPU kernel symbols, current-stream CUDA launches.\n",
         encoding="utf-8",
     )
     if (cache / "native").exists():

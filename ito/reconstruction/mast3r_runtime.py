@@ -20,21 +20,27 @@ def models_directory():
 
 
 MODELS = models_directory()
-BUNDLE_VERSION = 5
-EXTENSIONS = ("lietorch_backends", "mast3r_slam_backends", "curope")
+# 6: MASt3R-SLAM in full (retrieval, asmk, FactorGraph in fixed buffers); no tracker prior.
+BUNDLE_VERSION = 6
+# asmk.hamming: asmk's C module, loaded under the name its package imports it by.
+EXTENSIONS = ("lietorch_backends", "mast3r_slam_backends", "curope", "asmk.hamming")
 MODEL_FILES = {
     "model.safetensors": "0a615eb05fa9db654050aa655945ee5696e7c6c1b7f93f1ee8c37249010f6feb",
     "config.json": "718eb93dc4f9e4332b60cc0041af962d712cbd346d7770ce35c5b22cff68eae4",
 }
+RETRIEVAL = "retrieval/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric_retrieval_trainingfree.pth"
+CODEBOOK = "retrieval/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric_retrieval_codebook.pkl"
+ASMK = "slam/thirdparty/mast3r/asmk"
 
 
 def abi():
     return [sys.implementation.cache_tag, sys.platform, platform.machine()]
 
 
-def prepare(report):
+def verify(models=MODELS):
+    """Everything MASt3R-SLAM needs is in MODELS, whole: the manifest ito.build wrote."""
     for name, expected in MODEL_FILES.items():
-        path = MODELS / name
+        path = models / name
         try:
             with path.open("rb") as stream:
                 digest = hashlib.file_digest(stream, "sha256").hexdigest()
@@ -46,33 +52,47 @@ def prepare(report):
             raise RuntimeError(f"MASt3R model checksum failed at {path}")
 
     try:
-        manifest = json.loads((MODELS / "manifest.json").read_text(encoding="utf-8"))
+        manifest = json.loads((models / "manifest.json").read_text(encoding="utf-8"))
         if manifest["version"] != BUNDLE_VERSION or manifest["abi"] != abi():
-            raise RuntimeError("MASt3R bundle needs rebuilding for current-stream CUDA kernels")
+            raise RuntimeError(
+                f"MASt3R bundle in {models} is not bundle {BUNDLE_VERSION} for {abi()}; "
+                "rebuild it with ito.build"
+            )
         required = {
             *MODEL_FILES,
             "LICENSE",
             "NOTICE",
             "CHECKPOINTS_NOTICE",
             "ATTRIBUTION.txt",
+            RETRIEVAL,
+            CODEBOOK,
             "slam/config/base.yaml",
+            "slam/mast3r_slam/global_opt.py",
+            "slam/mast3r_slam/retrieval_database.py",
             "slam/mast3r_slam/tracker.py",
+            f"{ASMK}/asmk/kernel.py",
             "lie/lietorch/__init__.py",
         }
         if not required <= manifest["files"].keys():
             raise ValueError("missing assets")
         for name, size in manifest["files"].items():
-            path = MODELS / name
-            if not path.resolve().is_relative_to(MODELS.resolve()) or path.stat().st_size != size:
+            path = models / name
+            if not path.resolve().is_relative_to(models.resolve()) or path.stat().st_size != size:
                 raise ValueError("incomplete assets")
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
-        raise RuntimeError(f"MASt3R files missing or damaged in {MODELS}") from exc
+        raise RuntimeError(f"MASt3R files missing or damaged in {models}") from exc
     try:
         if not all(manifest["native"][name] in manifest["files"] for name in EXTENSIONS):
             raise ValueError("missing kernels")
     except (KeyError, TypeError, ValueError) as exc:
-        raise RuntimeError(f"MASt3R CUDA extensions missing from {MODELS / 'native'}") from exc
+        raise RuntimeError(f"MASt3R native extensions missing from {models / 'native'}") from exc
+    return manifest
 
+
+def prepare(report):
+    """Load the bundle's native extensions and put its sources on the path. Returns the
+    bundle's MASt3R-SLAM directory, the weights directory and the retrieval checkpoint."""
+    manifest = verify()
     try:
         import torch
     except (ImportError, OSError) as exc:
@@ -96,8 +116,13 @@ def prepare(report):
             f"MASt3R CUDA extensions could not load from {MODELS / 'native'}"
         ) from exc
     slam = MODELS / "slam"
-    sys.path[:0] = [str(slam), str(MODELS / "lie"), str(slam / "thirdparty/mast3r")]
-    return slam, MODELS
+    sys.path[:0] = [
+        str(slam),
+        str(MODELS / "lie"),
+        str(slam / "thirdparty/mast3r"),
+        str(MODELS / ASMK),
+    ]
+    return slam, MODELS, MODELS / RETRIEVAL
 
 
 def load_model(weights, report, *, precision="full", precision_report=None):

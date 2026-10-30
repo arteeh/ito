@@ -17,7 +17,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from ito.reconstruction.mast3r_runtime import BUNDLE_VERSION, abi
+from ito.reconstruction.mast3r_runtime import BUNDLE_VERSION, abi, verify
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -76,12 +76,13 @@ def models(stage, source):
     else:
         print(f"Copying models from {source}", flush=True)
         shutil.copytree(source, target, ignore=shutil.ignore_patterns("__pycache__"))
-    manifest = json.loads((target / "manifest.json").read_text(encoding="utf-8"))
-    if manifest["version"] != BUNDLE_VERSION or manifest["abi"] != abi() or not manifest["native"]:
-        raise SystemExit(f"{target} is not a complete bundle {BUNDLE_VERSION} for {abi()}")
-    for name, size in manifest["files"].items():
-        if (target / name).stat().st_size != size:
-            raise SystemExit(f"Damaged model file: {target / name}")
+    try:
+        manifest = verify(target)
+    except RuntimeError as exc:
+        cause = f": {exc.__cause__}" if exc.__cause__ else ""
+        raise SystemExit(
+            f"{target} is not a complete bundle {BUNDLE_VERSION} for {abi()}: {exc}{cause}"
+        ) from exc
     for name in manifest["native"].values():
         found = []
         for kind in ("elf", "ptx"):
@@ -188,10 +189,15 @@ def check(stage):
     run(
         stage / "runtime/python.exe", "-I", "-c",
         "import sys, pathlib, torch, cupy, mujoco, aiortc, xr, imgui_bundle, ito.app.__main__\n"
-        "from ito.reconstruction.mast3r_runtime import MODELS\n"
+        "import importlib.util, faiss\n"
+        "from ito.reconstruction.mast3r_runtime import MODELS, verify\n"
         "root = pathlib.Path(sys.argv[1])\n"
         "assert MODELS == root / 'models', MODELS\n"
-        "for module in (torch, cupy, mujoco, aiortc, xr, imgui_bundle, ito):\n"
+        "# The default SLAM path's files: weights, retrieval, MASt3R-SLAM, kernels, asmk.\n"
+        "hamming = MODELS / verify()['native']['asmk.hamming']\n"
+        "spec = importlib.util.spec_from_file_location('asmk.hamming', hamming)\n"
+        "spec.loader.exec_module(importlib.util.module_from_spec(spec))\n"
+        "for module in (torch, cupy, mujoco, aiortc, xr, imgui_bundle, ito, faiss):\n"
         "    assert pathlib.Path(module.__file__).is_relative_to(root), module.__file__\n"
         "assert torch.version.cuda, 'torch without CUDA'\n",
         stage, env=env, cwd=stage,

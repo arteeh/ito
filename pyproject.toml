@@ -54,6 +54,8 @@ slam = [
     "ninja==1.11.1.4",
     "psutil==7.1.3",
     "setuptools==75.8.0",
+    # MASt3R-SLAM's retrieval (loop closure, relocalisation) runs asmk, which indexes with faiss.
+    "faiss-cpu==1.13.2",
 ]
 
 [tool.uv]
