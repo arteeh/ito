@@ -46,6 +46,7 @@ NOW_BIAS = 0.03  # NOW wins over memory within this share of its depth
 NOW_FADE = float(os.environ.get("ITO_MESH_FADE", "0.25"))  # s a new NOW frame fades in over
 # A surface the newest frame sees through keeps this share of its weight per such look.
 RETIRE_SHARE = float(os.environ.get("ITO_MESH_RETIRE", "0.6"))
+FUSE_FAR = float(os.environ.get("ITO_MESH_FUSE_FAR", "5"))  # m
 # A voxel counts as seen above this weight (one head-on look from 1 m weighs 1).
 MIN_WEIGHT = float(os.environ.get("ITO_MESH_MIN_WEIGHT", "0.05"))
 # A frame becomes a memory view (keyframe) once it moved this far (m) or turned (degrees).
@@ -169,6 +170,7 @@ uniform float now;
 uniform float color_age;
 uniform float max_weight;
 uniform float retire;
+uniform float far;
 """
     + EDGE
     + """
@@ -185,7 +187,7 @@ void main() {
     if (any(lessThan(pixel, vec2(1.0))) || any(greaterThan(pixel, size - 1.0))) return;
     ivec2 q = ivec2(pixel);
     float d = texelFetch(depth, q, 0).r;
-    if (d < 0.05) return;
+    if (d < 0.05 || d > far) return;
     float dr = texelFetch(depth, q + ivec2(1, 0), 0).r;
     float dd = texelFetch(depth, q + ivec2(0, 1), 0).r;
     // A silhouette pixel lies between foreground and background: it neither places a surface
@@ -457,6 +459,7 @@ class MeshWorld:
         self.free_layers = list(range(KEYFRAMES))
         self.last_key = None
         self.key_count = 0
+        self.add_seconds = 0.0
         if memory in ("tsdf", "ibr"):
             self.integrate = ctx.compute_shader(INTEGRATE)
             self.raycast = ctx.program(vertex_shader=FULLSCREEN_VERTEX, fragment_shader=RAYCAST)
@@ -487,15 +490,28 @@ class MeshWorld:
             self.epoch = frame.captured
         if frame.key is None:
             frame.key = self._is_key(frame.pose)
-        if self.show_now:
-            self._set_now(frame)
+        began = time.perf_counter()
+        textures = self._frame_textures(frame)
         if self.memory in ("tsdf", "ibr"):
             if self.field is None:
                 self._allocate_field(frame.pose)
-            self._integrate(frame)
+            self._integrate(frame, textures)
+        if self.show_now:
+            self._set_now(frame, textures)
+        else:
+            textures[0].release()
+            textures[1].release()
         if frame.key:
             self._add_key(frame)
         self.frames += 1
+        self.add_seconds += time.perf_counter() - began
+
+    def _frame_textures(self, frame):
+        rgb = self._texture(frame.rgb, 3)
+        rgb.filter = (moderngl.LINEAR, moderngl.LINEAR)
+        d = self._texture(frame.depth * frame.scale, 1, "f4")
+        d.filter = (moderngl.NEAREST, moderngl.NEAREST)
+        return rgb, d
 
     def _is_key(self, pose):
         last = self.last_key
@@ -545,16 +561,12 @@ class MeshWorld:
         t.repeat_x = t.repeat_y = False
         return t
 
-    def _set_now(self, frame):
+    def _set_now(self, frame, textures):
         while len(self.nows) >= 2:
             old = self.nows.pop(0)
             old[0].release()
             old[1].release()
-        rgb = self._texture(frame.rgb, 3)
-        rgb.filter = (moderngl.LINEAR, moderngl.LINEAR)
-        d = self._texture(frame.depth * frame.scale, 1, "f4")
-        d.filter = (moderngl.NEAREST, moderngl.NEAREST)
-        self.nows.append((rgb, d, frame, self.clock()))
+        self.nows.append((*textures, frame, self.clock()))
 
     def _allocate_field(self, first_pose):
         half, below, above = BOUNDS
@@ -587,8 +599,10 @@ class MeshWorld:
         depth = depth * frame.scale
         h, w = depth.shape
         fx, fy, cx, cy = frame.intrinsics
-        far = float(np.percentile(depth[depth > 0], 99)) + 0.15 if (depth > 0).any() else 0
-        if far <= 0.1:
+        # Fusion takes depth only up to FUSE_FAR: far guesses are the least sure, and a far
+        # frustum is a big box of voxels to visit.
+        far = min(float(depth[::4, ::4].max()), FUSE_FAR) + 0.15
+        if far <= 0.2:
             return None
         corners = [np.zeros(3)]
         for u, v in ((0, 0), (w, 0), (0, h), (w, h)):
@@ -602,16 +616,14 @@ class MeshWorld:
             return None
         return lo, hi - lo
 
-    def _integrate(self, frame):
+    def _integrate(self, frame, textures=None):
         depth, pose = frame.depth, frame.pose
         box = self._frustum_box(frame, depth, pose)
         if box is None:
             return
         offset, extent = box
-        rgb = self._texture(frame.rgb, 3)
-        rgb.filter = (moderngl.LINEAR, moderngl.LINEAR)
-        d = self._texture(depth * frame.scale, 1, "f4")
-        d.filter = (moderngl.NEAREST, moderngl.NEAREST)
+        own = textures is None
+        rgb, d = self._frame_textures(frame) if own else textures
         d.use(0)
         rgb.use(1)
         p = self.integrate
@@ -631,10 +643,12 @@ class MeshWorld:
         self.field.bind_to_image(0, read=True, write=True)
         self.colors.bind_to_image(1, read=True, write=True)
         self.stamps.bind_to_image(2, read=True, write=True)
+        _set(p, "far", FUSE_FAR)
         p.run(*((int(e) + 7) // 8 for e in extent))
         self.ctx.memory_barrier()
-        rgb.release()
-        d.release()
+        if own:
+            rgb.release()
+            d.release()
 
     def _add_key(self, frame):
         # tsdf keeps its views too, untextured: a correction rebuilds the field from them.
@@ -951,18 +965,30 @@ class TapeFilm:
         self.world = MeshWorld(self.ctx, memory=memory)
         self.under = self.ctx.texture(self.size, 3)
         self.target = self.ctx.framebuffer([self.under])
-        self.frames = self.moves = 0
+        self.frames = self.moves = self.draws = 0
+        self.feed_seconds = self.draw_seconds = 0.0
 
     def feed(self, worker):
+        began = time.perf_counter()
         for kind, item in worker.poll_mesh():
             if kind == "frame":
                 self.world.add(item)
                 self.frames += 1
+                if self.frames % 100 == 0:
+                    print(
+                        f"mesh film: {self.frames} frames, {self.moves} corrections, add"
+                        f" {1000 * self.world.add_seconds / self.frames:.1f} ms, feed"
+                        f" {1000 * self.feed_seconds / self.frames:.1f} ms, draw"
+                        f" {1000 * self.draw_seconds / max(1, self.draws):.1f} ms per frame",
+                        flush=True,
+                    )
             else:
                 self.world.repose(item)
                 self.moves += 1
+        self.feed_seconds += time.perf_counter() - began
 
     def draw(self, camera, K, under=None, background=(0.04, 0.04, 0.06)):
+        began = time.perf_counter()
         width, height = self.size
         clear = None
         if under is not None and self.mode == "over":
@@ -976,4 +1002,6 @@ class TapeFilm:
             clear=clear,
         )
         rgb = np.frombuffer(self.target.read(components=3, alignment=1), np.uint8)
+        self.draws += 1
+        self.draw_seconds += time.perf_counter() - began
         return np.ascontiguousarray(np.flipud(rgb.reshape(height, width, 3))[..., ::-1])
