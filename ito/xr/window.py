@@ -283,7 +283,7 @@ class XRWindow(DesktopWindow):
                 if commands:
                     request = f"{commands[-1].replace('_', '-').upper()} requested"
                     log.info("Command: %s", commands[-1])
-                current = self.glided(state(), now, value.head)
+                current = self.glided(state(), now)
                 applied = []
                 for _ in range(PUBLICATION_PACKETS):
                     update = pending if pending is not None else source.poll()

@@ -413,7 +413,6 @@ class Pilot:
                     keyframes=self.settings.keyframes,
                     backend=self.backend,
                 )
-            self.state = replace(self.state, correction=pose())
 
         if self.backend != "video":
             reconstruct()
