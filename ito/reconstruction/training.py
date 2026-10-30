@@ -176,10 +176,15 @@ class ViewFit:
                         continue
                     try:
                         began = time.perf_counter()
+                        aside = self.seconds["prepare"] + self.seconds["finish"]
                         progressed = self.step()
                         torch.cuda.current_stream().synchronize()
+                        # The rest matches the Adam steps only: starting and finishing a unit is
+                        # mostly the CPU and waits for the map's lock, which the rest doubled.
+                        aside = self.seconds["prepare"] + self.seconds["finish"] - aside
+                        worked = time.perf_counter() - began - aside
                         if progressed and 0 < DUTY < 1:
-                            time.sleep((time.perf_counter() - began) * (1 / DUTY - 1))
+                            time.sleep(max(0.0, worked) * (1 / DUTY - 1))
                         errors = 0
                     except torch.cuda.OutOfMemoryError as exc:
                         self.active = None
