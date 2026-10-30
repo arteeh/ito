@@ -1,6 +1,6 @@
 # Ito, for agents
 
-What Ito is and why: the intro of [README.md](README.md). The plan being built: [docs/big-picture.md](docs/big-picture.md).
+What Ito is and why: the intro of [README.md](README.md).
 
 ## Where things are
 
