@@ -222,6 +222,9 @@ class SLAMBackend(GaussianBackend):
         aligner=None,
         **options,
     ):
+        from .memory import cap_torch
+
+        cap_torch()
         if frontend is None and TRACKER == "map":
             frontend = MapFrontend(intrinsics, input_resolution)
         if frontend is None and VISION_LED:
