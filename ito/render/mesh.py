@@ -78,6 +78,7 @@ uniform sampler2D depth;
 uniform vec4 calibration;   // fx fy cx cy, depth pixels
 uniform mat4 world_from_camera;
 uniform mat4 view;
+uniform float depth_scale;
 out VS { vec3 uvz; vec3 view_pos; float z; float bend; } v;
 """
     + EDGE
@@ -85,7 +86,7 @@ out VS { vec3 uvz; vec3 view_pos; float z; float bend; } v;
 void main() {
     ivec2 size = textureSize(depth, 0);
     ivec2 cell = ivec2(gl_VertexID % size.x, gl_VertexID / size.x);
-    float z = texelFetch(depth, cell, 0).r;
+    float z = texelFetch(depth, cell, 0).r * depth_scale;
     vec2 pixel = vec2(cell) + 0.5;
     vec3 local = vec3((pixel.x - calibration.z) / calibration.x,
                       (calibration.w - pixel.y) / calibration.y, -1.0) * z;
@@ -326,7 +327,7 @@ void main() {
             vec4 cal = key[k].calibration;   // fx fy cx cy as shares of the image
             vec2 uv = vec2(cal.x * q.x / range + cal.z, cal.w - cal.y * q.y / range);
             if (any(lessThan(uv, vec2(0.005))) || any(greaterThan(uv, vec2(0.995)))) continue;
-            float seen = texture(key_depth, vec3(uv, k)).r;
+            float seen = texture(key_depth, vec3(uv, k)).r * key[k].info.y;
             if (seen < 0.05 || abs(seen - range) > 0.03 + 0.05 * range) continue;
             vec3 toward = normalize(-(transpose(mat3(key[k].camera_from_world)) * q));
             float facing = max(dot(n, toward), 0.0);
@@ -459,6 +460,8 @@ class MeshWorld:
         self.free_layers = list(range(KEYFRAMES))
         self.last_key = None
         self.key_count = 0
+        self.anchor_slots = {}
+        self.ease = None
         self.add_seconds = 0.0
         if memory in ("tsdf", "ibr"):
             self.integrate = ctx.compute_shader(INTEGRATE)
@@ -486,6 +489,13 @@ class MeshWorld:
         depth = np.where(np.isfinite(depth) & (depth > 0.05) & (depth < 30), depth, 0)
         frame.depth = np.ascontiguousarray(depth, dtype="f4")
         frame.pose = np.asarray(frame.pose, dtype="f4")
+        slot = self._slot(frame.anchor, frame.pose)
+        # The frame as placed in its anchor's frame before any correction: what it is drawn
+        # from (anchor similarity, eased) @ placed.
+        frame.placed = (
+            np.linalg.inv(self.ease.target[slot]) @ frame.pose if slot else frame.pose
+        ).astype(np.float64)
+        frame.fused_pose = frame.pose
         if self.epoch is None:
             self.epoch = frame.captured
         if frame.key is None:
@@ -522,33 +532,63 @@ class MeshWorld:
         return True
 
     def repose(self, deltas: dict[int, np.ndarray]) -> None:
-        """Corrections from SLAM's global graph: anchor (keyframe) -> 4x4 world similarity.
-        Every stored view and the NOW frame anchored to a moved keyframe follow it at once; the
-        field is rebuilt from the stored views when one of them moved by more than a voxel."""
-        moved = False
-        frames = [k.frame for k in self.keys.values()]
-        frames += [n[2] for n in self.nows if all(n[2] is not f for f in frames)]
-        for frame in frames:
-            delta = deltas.get(frame.anchor)
-            if delta is None:
+        """Corrections from SLAM's global graph: anchor (keyframe) -> 4x4 world similarity
+        since its last one. What follows an anchor glides to it at a limited rate (A4's
+        anchors.AnchorEase, 2 deg/s, 3 cm/s); the field cannot glide, so it is rebuilt from the
+        stored views once one of them is a voxel or more off where it was fused."""
+        for anchor, delta in deltas.items():
+            slot = self._slot(int(anchor), None)
+            if not slot:
                 continue
-            scale, rotation, shift = _similarity_parts(np.asarray(delta, np.float64))
-            pose = np.eye(4)
-            pose[:3, :3] = rotation @ frame.pose[:3, :3]
-            pose[:3, 3] = scale * rotation @ frame.pose[:3, 3] + shift
-            if np.linalg.norm(pose[:3, 3] - frame.pose[:3, 3]) > VOXEL:
-                moved = True
-            moved |= _turn_degrees(pose, frame.pose) > math.degrees(VOXEL / 2)
-            moved |= abs(scale - 1) > 0.01
-            frame.pose = pose.astype("f4")
-            frame.scale *= scale
+            self.ease.target[slot] = np.asarray(delta, np.float64) @ self.ease.target[slot]
+            self.ease.changed = True
+        if self.field is None:
+            return
+        stale = False
         for key in self.keys.values():
-            if key.frame.anchor in deltas:
-                self._upload_key(key)
-        if moved and self.field is not None:
+            pose, _ = self._pose(key.frame, self.ease.target)
+            fused = key.frame.fused_pose
+            if np.linalg.norm(pose[:3, 3] - fused[:3, 3]) > VOXEL or _turn_degrees(
+                pose, fused
+            ) > math.degrees(VOXEL / 2):
+                stale = True
+        if stale:
             self._clear_field()
             for key in sorted(self.keys.values(), key=lambda k: k.frame.captured):
+                key.frame.fused_pose, _ = self._pose(key.frame, self.ease.target)
                 self._integrate(key.frame)
+
+    def _slot(self, anchor, pose):
+        """The AnchorEase entry of an anchor (0: none), made at its first frame."""
+        if anchor < 0:
+            return 0
+        slot = self.anchor_slots.get(anchor)
+        if slot is None:
+            if self.ease is None:
+                from .anchors import AnchorEase
+
+                self.ease = AnchorEase(4096)
+            slot = len(self.anchor_slots) + 1
+            if slot >= len(self.ease.current):
+                return 0
+            self.anchor_slots[anchor] = slot
+            self.ease.count = max(self.ease.count, slot + 1)
+            if pose is not None:
+                self.ease.centres[slot] = pose[:3, 3]
+            self.ease.seen[slot] = True
+        return slot
+
+    def _pose(self, frame, table=None):
+        """A frame's rigid world-from-camera pose and depth scale as drawn now (or by table)."""
+        slot = self.anchor_slots.get(frame.anchor, 0) if self.ease is not None else 0
+        if not slot:
+            return np.asarray(frame.pose, np.float32), 1.0
+        m = (self.ease.current if table is None else table)[slot] @ frame.placed
+        scale, rotation, shift = _similarity_parts(m)
+        pose = np.eye(4, dtype=np.float32)
+        pose[:3, :3] = rotation
+        pose[:3, 3] = shift
+        return pose, scale
 
     def _texture(self, image, components, dtype="f1"):
         h, w = image.shape[:2]
@@ -617,7 +657,7 @@ class MeshWorld:
         return lo, hi - lo
 
     def _integrate(self, frame, textures=None):
-        depth, pose = frame.depth, frame.pose
+        depth, pose = frame.depth, frame.fused_pose
         box = self._frustum_box(frame, depth, pose)
         if box is None:
             return
@@ -721,13 +761,13 @@ class MeshWorld:
         _set(r, "new_cal", self._calibration(new.frame))
         _set(r, "jump", JUMP)
         self.alive.bind_to_image(0, read=True, write=True)
-        inverse = _inverse_rigid(new.frame.pose)
+        inverse = _inverse_rigid(self._pose(new.frame)[0])
         for key in self.keys.values():
             if key is new:
                 continue
             _set(r, "old_layer", key.layer)
             _set(r, "old_cal", self._calibration(key.frame))
-            _set(r, "new_from_old", _gl(inverse @ key.frame.pose), raw=True)
+            _set(r, "new_from_old", _gl(inverse @ self._pose(key.frame)[0]), raw=True)
             r.run((KEY_DEPTH[0] + 15) // 16, (KEY_DEPTH[1] + 15) // 16)
         self.ctx.memory_barrier()
 
@@ -748,7 +788,19 @@ class MeshWorld:
         return self.grid_vao
 
     def _draw_grid(
-        self, rgb, depth, intrinsics, pose, view, projection, *, layer, bias, feather, opacity=1.0
+        self,
+        rgb,
+        depth,
+        intrinsics,
+        pose,
+        view,
+        projection,
+        *,
+        layer,
+        bias,
+        feather,
+        opacity=1.0,
+        depth_scale=1.0,
     ):
         vao = self._grid_for(depth.size)
         depth.use(0)
@@ -761,6 +813,7 @@ class MeshWorld:
         _set(g, "layer", layer)
         _set(g, "calibration", tuple(float(v) for v in intrinsics))
         _set(g, "world_from_camera", _gl(pose), raw=True)
+        _set(g, "depth_scale", depth_scale)
         _set(g, "view", _gl(view), raw=True)
         _set(g, "projection", _gl(projection), raw=True)
         _set(g, "edge", EDGE_BEND)
@@ -794,6 +847,8 @@ class MeshWorld:
     ) -> None:
         """Draw for one eye. clear=None composites over what target holds (splats)."""
         ctx = self.ctx
+        if self.ease is not None:
+            self.ease.advance(self.clock())
         viewport = viewport if viewport is not None else (0, 0, *target.size)
         size = (max(1, int(viewport[2] * scale)), max(1, int(viewport[3] * scale)))
         color, _, fbo = self._layer_target(size)
@@ -814,17 +869,19 @@ class MeshWorld:
             age = self.clock() - self.nows[-1][3]
             fading = len(self.nows) > 1 and NOW_FADE > 0 and age < NOW_FADE
             for rgb, depth, frame, _ in self.nows[-2:] if fading else self.nows[-1:]:
+                pose, scale = self._pose(frame)
                 self._draw_grid(
                     rgb,
                     depth,
                     frame.intrinsics,
-                    np.asarray(frame.pose, "f4"),
+                    pose,
                     view,
                     projection,
                     layer=-1,
                     bias=NOW_BIAS if self.memory != "none" else 0.0,
                     feather=0.05,
                     opacity=age / NOW_FADE if fading and frame is self.nows[-1][2] else 1.0,
+                    depth_scale=scale,
                 )
         target.use()
         ctx.viewport = viewport
@@ -871,16 +928,18 @@ class MeshWorld:
         elif self.memory == "atlas":
             for key in sorted(self.keys.values(), key=lambda k: -k.frame.captured):
                 rgb, depth = self.key_textures[key.layer]
+                pose, scale = self._pose(key.frame)
                 self._draw_grid(
                     rgb,
                     depth,
                     key.frame.intrinsics,
-                    key.frame.pose,
+                    pose,
                     view,
                     projection,
                     layer=key.layer,
                     bias=0.0,
                     feather=0.0,
+                    depth_scale=scale,
                 )
 
     def _upload_keys(self, world_from_eye):
@@ -888,12 +947,14 @@ class MeshWorld:
         chosen = []
         forward = -world_from_eye[:3, 2]
         for key in self.keys.values():
-            camera_from_world = _inverse_rigid(key.frame.pose)
+            pose, scale = self._pose(key.frame)
+            camera_from_world = _inverse_rigid(pose)
             records[key.layer, :16] = camera_from_world.T.ravel()
             records[key.layer, 16:20] = self._calibration(key.frame)
             records[key.layer, 20] = key.frame.captured - self.epoch
+            records[key.layer, 21] = scale
             # A keyframe looking away from where this eye looks cannot colour what it sees.
-            if float(np.dot(-key.frame.pose[:3, 2], forward)) > -0.2:
+            if float(np.dot(-pose[:3, 2], forward)) > -0.2:
                 chosen.append(key.layer)
         self.key_buffer.write(records.tobytes())
         order = np.array(chosen or [0], np.int32)
