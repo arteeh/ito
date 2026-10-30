@@ -9,6 +9,9 @@ PUBLICATION_PACKETS = 2
 MATCH_QUERIES = 4096
 MAX_PENDING_CHUNKS = 4
 MAX_BACKOFF_FRAME_SHARE = 0.25
+# torch.cuda.memory_reserved() flattens the allocator's whole statistics tree in Python
+# (~0.3 ms); read per chunk (~250 chunks a frame) it took 18% of the worker's wall time.
+MEMORY_CHECK_SECONDS = 0.05
 GPU_STAGES = (
     "inference",
     "iter_proj",
@@ -60,6 +63,7 @@ class Admission:
         self.overruns = context.RawValue("Q", 0)
         self.wake = Wake(context)
         self.memory_used = None
+        self.memory_checked = 0.0
         self.pending = deque()
         self.cooldown = 0.0
         self.recovered_at = 0.0
@@ -106,8 +110,12 @@ class Admission:
         else:
             self.stream = xp.cuda.Stream(non_blocking=True)
 
-    def check_memory(self):
-        if self.memory_used is not None:
+    def check_memory(self, force=False):
+        now = clock.now()
+        if self.memory_used is not None and (
+            force or now - self.memory_checked >= MEMORY_CHECK_SECONDS
+        ):
+            self.memory_checked = now
             used = self.memory_used()
             self.memory_peak.value = max(used, self.memory_peak.value)
 
@@ -179,7 +187,7 @@ class Admission:
             finally:
                 self.stream.synchronize()
                 self.collect()
-                self.check_memory()
+                self.check_memory(force=True)
                 self.last_progress.value = clock.now()
 
 
