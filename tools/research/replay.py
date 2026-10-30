@@ -63,6 +63,9 @@ def main():
     p.add_argument("--code", help="checkout root whose ito package to replay")
     p.add_argument("--max-splats", type=int, default=1_000_000)
     p.add_argument(
+        "--max-ws", type=float, default=6.5, help="GiB: stop when this process's RAM passes it"
+    )
+    p.add_argument(
         "--trace", type=float, help="tracemalloc: Python allocations grown from T s to the end"
     )
     a = p.parse_args()
@@ -259,11 +262,14 @@ def main():
                     keyframes=len(backend.graph.keyframes),
                     fit_steps=int(backend.fit_steps),
                     vram_gib=round(torch.cuda.max_memory_reserved() / 2**30, 2),
-                    **memory(torch, backend),
+                    **(used := memory(torch, backend)),
                 )
             )
             + "\n"
         )
+        if used["ws_gib"] > a.max_ws:
+            log.close()
+            sys.exit(f"stopped at {now:.1f} s: working set {used['ws_gib']:.2f} GiB > --max-ws")
         if a.trace is not None and traced is None and now >= a.trace:
             traced = tracemalloc.take_snapshot()
         if now >= next_dump:
