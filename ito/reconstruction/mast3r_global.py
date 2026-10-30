@@ -271,6 +271,11 @@ class GlobalGraph:
                 self.turns.append((turn[0], index, *turn[1:]))
         self.tasks.put(index)
 
+    def add_gravity(self, index, seen, sigma):
+        """Keyframe index's up as its camera sees it (MASt3R axes; the head IMU), sigma radians."""
+        with self.lock:
+            self.gravity[index] = (np.asarray(seen, float), float(sigma))
+
     def add_scale(self, index, log_scale):
         with self.lock:
             self.scales.setdefault(index, []).append(float(log_scale))

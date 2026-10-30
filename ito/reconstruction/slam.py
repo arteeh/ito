@@ -99,6 +99,16 @@ TIE_SCALE = os.environ.get("ITO_SLAM_TIE_SCALE", "1") != "0"
 # a later change would grow or shrink the whole room about its first camera.
 VISION_SCALE_READINGS = int(os.environ.get("ITO_VISION_SCALE_READINGS", "40"))
 SCALE_LOG = os.environ.get("ITO_SCALE_LOG") == "1"
+# Vision-led tracking through turns (A3). ITO_VISION_SEED=gyro (default): each frame's turn from the
+# last is seeded by the head gyro where it has one, =robot by the head's kinematics (gear play).
+VISION_SEED = os.environ.get("ITO_VISION_SEED", "gyro")
+# ITO_VISION_GRAVITY=1 (default): the head IMU's gravity tilts the vision world's first camera and
+# holds every keyframe's tilt in the global graph (sigma in degrees, ITO_VISION_GRAVITY_DEG).
+VISION_GRAVITY = os.environ.get("ITO_VISION_GRAVITY", "1") != "0"
+VISION_GRAVITY_SIGMA = math.radians(float(os.environ.get("ITO_VISION_GRAVITY_DEG", "2")))
+# Frames taken while the head turns faster than this (rad/s; the sim's routes: p99 94-200 deg/s)
+# are tracked but not mapped (ITO_VISION_SHAKE); blur by exposure is gated by BLUR_PIXELS.
+VISION_SHAKE = float(os.environ.get("ITO_VISION_SHAKE", "3.5"))
 # ITO_VISION_SCALE=gated (default): readings only while the camera is nearly still, mapping after
 # SCALE_START of them, fixed at SCALE_FINAL with at most one global rescale; =first40: the old held
 # median of the first 40 readings.
@@ -347,6 +357,9 @@ class SLAMBackend(GaussianBackend):
         # frame node -> (keyframe, pose relative to it) (diagnostic); the last placed frame's node.
         self.keyframe_vision = {}
         self.tied_scales = 0  # vision-led full: ToF/floor readings given to the global graph
+        self.gyro_seeds = 0  # vision-led: frames whose turn the head gyro seeded
+        self.smeared_frames = 0  # vision-led: frames tracked but not mapped (blur, shake)
+        self.levelled_by = None  # vision-led: degrees the IMU tilted the first camera
         self.vision_anchor = {}
         self.last_node = None
         self.imu_priors = 0  # ITO_HEAD_IMU: frames tracked with the gyro's rotation prior
@@ -426,6 +439,12 @@ class SLAMBackend(GaussianBackend):
             + [round(math.degrees(heading(self.robot_camera[:3, :3])), 1)],
             field_rebuilds=self.volume_rebuilds,
             tied_scales=self.tied_scales,
+            session_scale=round(math.exp(getattr(self.global_graph, "session_scale", 0.0)), 4),
+            session_offset=getattr(self.global_graph, "session_offset", None),
+            gravity_keyframes=len(self.global_graph.gravity),
+            gyro_seeds=self.gyro_seeds,
+            smeared_frames=self.smeared_frames,
+            levelled_deg=self.levelled_by,
             field_rebuild_ms=round(self.rebuild_seconds * 1000),
             fused_frames=len(self.fused_frames),
         )
@@ -1267,17 +1286,30 @@ class SLAMBackend(GaussianBackend):
         self.robot_camera = robot
         last = getattr(self, "vision_robot", None)
         turn = None if last is None else last[:3, :3].T @ robot[:3, :3]
-        self.vision_robot = robot
+        previous = getattr(self, "vision_exposure", None)
+        if VISION_SEED == "gyro" and previous is not None:
+            # The head gyro's turn since the last frame: past the gear play the kinematics miss
+            # (1.5-3 degrees, more on a reversal), which is most of a fast turn's seed error.
+            turned = self.sensors.turn(previous, exposure)
+            if turned is not None:
+                turn = turned[0].as_matrix()
+                self.gyro_seeds += 1
+        self.vision_robot, self.vision_exposure = robot, exposure
         pose, unit, cloud, keyframe, tracked = self.frontend.track(rgb, turn)
         if pose is None:
             return
         if getattr(self, "vision_world", None) is None:
-            # The vision world's first camera is where the robot says it was.
-            self.vision_world = robot @ np.linalg.inv(pose)
+            # The vision world's first camera is where the robot says it was, tilted as the
+            # head IMU sees it (the kinematics' tilt is off by the head's gear play).
+            self.vision_world = self.levelled(robot, exposure) @ np.linalg.inv(pose)
             self.vision_metres = []
+            if self.global_graph is not None:
+                up = self.vision_world[:3, :3].T @ UP
+                self.global_graph.up = up * np.array([1.0, -1.0, -1.0])
         metres = self.vision_scale(cloud, exposure)
         self.vision_metres_now = metres
-        if TIE_SCALE and self.global_graph is not None and tracked:
+        smeared = self.smeared(exposure)
+        if TIE_SCALE and self.global_graph is not None and tracked and not smeared:
             self.vision_tie_scale(cloud, exposure, metres)
         frontend = self.frontend
         if self.global_graph is not None and keyframe:
@@ -1285,6 +1317,11 @@ class SLAMBackend(GaussianBackend):
             self.keyframe_vision[k] = self.keyframe_similarity(k)
             if k == 0:
                 self.first_pose = pose
+            seen = self.sensors.up(exposure) if VISION_GRAVITY else None
+            if seen is not None:
+                # Gravity holds every keyframe's tilt (config 10 turned a room section sideways
+                # from one badly matched keyframe); weak beside the images.
+                self.global_graph.add_gravity(k, FLIP[:3, :3] @ seen[0], VISION_GRAVITY_SIGMA)
         world = self.vision_world
         placed = np.eye(4)
         placed[:3, :3] = world[:3, :3] @ pose[:3, :3]
@@ -1305,6 +1342,10 @@ class SLAMBackend(GaussianBackend):
         )
         if cloud is None or metres is None:
             return
+        if smeared:
+            # Tracked (the next frame is seeded from it) but not mapped: its pixels are streaks.
+            self.smeared_frames += 1
+            return
         cloud = cloud._replace(points=cloud.points * metres)
         if self.range_field is not None:
             cloud = self.bend_to_ranges(cloud, exposure)
@@ -1322,6 +1363,38 @@ class SLAMBackend(GaussianBackend):
                 self.keyframe_vision.setdefault(k, then)
         self.last_node = node
         self.place(cloud, placed, now + clock.now() - started, node=node, rgb=rgb)
+
+    def levelled(self, robot, exposure):
+        """The robot's camera pose with its tilt (roll and pitch) from the head IMU's gravity
+        where it has one, its heading and position kept."""
+        seen = self.sensors.up(exposure) if VISION_GRAVITY else None
+        if seen is None:
+            return robot
+        from scipy.spatial.transform import Rotation
+
+        rotation = robot[:3, :3]
+        now = rotation @ np.asarray(seen[0], float)  # world up as the kinematics put the IMU's
+        axis = np.cross(now, UP)
+        angle = math.atan2(np.linalg.norm(axis), float(now @ UP))
+        if angle < 1e-6:
+            return robot
+        fix = Rotation.from_rotvec(axis / np.linalg.norm(axis) * angle).as_matrix()
+        out = robot.copy()
+        out[:3, :3] = fix @ rotation
+        self.levelled_by = math.degrees(angle)
+        return out
+
+    def smeared(self, exposure):
+        """Vision-led: the camera turned so fast at this frame that its pixels are streaks
+        (turn x exposure x focal past BLUR_PIXELS) or the head was shaking past VISION_SHAKE;
+        such a frame is tracked but not mapped."""
+        spin = self.sensors.angular_velocity(exposure)
+        if spin is None:
+            spin = self.motion.angular_velocity(exposure)
+        if spin is None:
+            return False
+        rate = float(np.linalg.norm(spin))
+        return rate * self.exposure * self.focal > BLUR_PIXELS or rate > VISION_SHAKE
 
     def vision_scale(self, cloud, exposure):
         """Metres per vision unit: the median of the first VISION_SCALE_READINGS ToF and floor
