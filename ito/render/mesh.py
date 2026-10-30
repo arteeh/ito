@@ -21,6 +21,7 @@ own framebuffer and composites onto the target with premultiplied alpha: over sp
 
 import math
 import os
+import time
 from dataclasses import dataclass
 
 import moderngl
@@ -42,6 +43,7 @@ JUMP = (0.02, 0.06)
 # silhouette (see bend() below).
 EDGE_BEND = float(os.environ.get("ITO_MESH_EDGE", "0.08"))
 NOW_BIAS = 0.03  # NOW wins over memory within this share of its depth
+NOW_FADE = float(os.environ.get("ITO_MESH_FADE", "0.25"))  # s a new NOW frame fades in over
 # A surface the newest frame sees through keeps this share of its weight per such look.
 RETIRE_SHARE = float(os.environ.get("ITO_MESH_RETIRE", "0.6"))
 # A voxel counts as seen above this weight (one head-on look from 1 m weighs 1).
@@ -129,6 +131,7 @@ uniform int layer;              // -1: no mask (NOW)
 uniform mat4 projection;
 uniform float bias;             // NOW: pulled toward the eye by this share of its depth
 uniform float feather;          // NOW: alpha falls to 0 over this share at the image border
+uniform float opacity;          // NOW: a new frame fades in over the one before
 out vec4 color;
 void main() {
     vec2 uv = uvz.xy / uvz.z;
@@ -138,6 +141,7 @@ void main() {
         vec2 edge = min(uv, 1.0 - uv);
         a = smoothstep(0.0, feather, min(edge.x, edge.y * 16.0 / 9.0));
     }
+    a *= opacity;
     vec3 c = texture(rgb, uv).rgb;
     color = vec4(c * a, a);
     vec4 clip = projection * vec4(view_pos * (1.0 - bias), 1.0);
@@ -437,7 +441,10 @@ class MeshWorld:
         self.grid_indices = None
         self.composite = ctx.program(vertex_shader=FULLSCREEN_VERTEX, fragment_shader=COMPOSITE)
         self.fullscreen = ctx.vertex_array(self.composite, [])
-        self.now = None  # (rgb texture, depth texture, frame)
+        # NOW: the newest frames as (rgb texture, depth texture, frame, arrival), oldest first:
+        # a new one fades in over the last (ITO_MESH_FADE seconds).
+        self.nows = []
+        self.clock = time.monotonic
         self.field = self.colors = self.stamps = None
         self.origin = None
         self.frames = 0
@@ -504,8 +511,7 @@ class MeshWorld:
         field is rebuilt from the stored views when one of them moved by more than a voxel."""
         moved = False
         frames = [k.frame for k in self.keys.values()]
-        if self.now is not None and all(self.now[2] is not f for f in frames):
-            frames.append(self.now[2])
+        frames += [n[2] for n in self.nows if all(n[2] is not f for f in frames)]
         for frame in frames:
             delta = deltas.get(frame.anchor)
             if delta is None:
@@ -540,14 +546,15 @@ class MeshWorld:
         return t
 
     def _set_now(self, frame):
-        if self.now is not None:
-            self.now[0].release()
-            self.now[1].release()
+        while len(self.nows) >= 2:
+            old = self.nows.pop(0)
+            old[0].release()
+            old[1].release()
         rgb = self._texture(frame.rgb, 3)
         rgb.filter = (moderngl.LINEAR, moderngl.LINEAR)
         d = self._texture(frame.depth * frame.scale, 1, "f4")
         d.filter = (moderngl.NEAREST, moderngl.NEAREST)
-        self.now = (rgb, d, frame)
+        self.nows.append((rgb, d, frame, self.clock()))
 
     def _allocate_field(self, first_pose):
         half, below, above = BOUNDS
@@ -726,7 +733,9 @@ class MeshWorld:
         self.grid_size = size
         return self.grid_vao
 
-    def _draw_grid(self, rgb, depth, intrinsics, pose, view, projection, *, layer, bias, feather):
+    def _draw_grid(
+        self, rgb, depth, intrinsics, pose, view, projection, *, layer, bias, feather, opacity=1.0
+    ):
         vao = self._grid_for(depth.size)
         depth.use(0)
         rgb.use(1)
@@ -743,6 +752,7 @@ class MeshWorld:
         _set(g, "edge", EDGE_BEND)
         _set(g, "bias", bias)
         _set(g, "feather", feather)
+        _set(g, "opacity", opacity)
         vao.render(moderngl.TRIANGLES)
 
     def _layer_target(self, size):
@@ -784,21 +794,24 @@ class MeshWorld:
         ctx.depth_func = "<="
         if not now_only:
             self._draw_memory(world_from_eye, view, projection)
-        if self.show_now and self.now is not None:
+        if self.show_now and self.nows:
             ctx.enable_only(moderngl.DEPTH_TEST | moderngl.BLEND)
             ctx.blend_func = moderngl.ONE, moderngl.ONE_MINUS_SRC_ALPHA
-            rgb, depth, frame = self.now
-            self._draw_grid(
-                rgb,
-                depth,
-                frame.intrinsics,
-                np.asarray(frame.pose, "f4"),
-                view,
-                projection,
-                layer=-1,
-                bias=NOW_BIAS if self.memory != "none" else 0.0,
-                feather=0.05,
-            )
+            age = self.clock() - self.nows[-1][3]
+            fading = len(self.nows) > 1 and NOW_FADE > 0 and age < NOW_FADE
+            for rgb, depth, frame, _ in self.nows[-2:] if fading else self.nows[-1:]:
+                self._draw_grid(
+                    rgb,
+                    depth,
+                    frame.intrinsics,
+                    np.asarray(frame.pose, "f4"),
+                    view,
+                    projection,
+                    layer=-1,
+                    bias=NOW_BIAS if self.memory != "none" else 0.0,
+                    feather=0.05,
+                    opacity=age / NOW_FADE if fading and frame is self.nows[-1][2] else 1.0,
+                )
         target.use()
         ctx.viewport = viewport
         if clear is not None:
@@ -824,7 +837,7 @@ class MeshWorld:
             _set(r, "box", tuple(float(v) for v in self.box))
             _set(r, "voxel", VOXEL)
             _set(r, "min_weight", MIN_WEIGHT)
-            _set(r, "now", float(self.now[2].captured - self.epoch) if self.now else 0.0)
+            _set(r, "now", float(self.nows[-1][2].captured - self.epoch) if self.nows else 0.0)
             keys = 0
             # Every sampler gets its own unit, used or not: two sampler types on one unit
             # make the draw invalid.
@@ -901,9 +914,9 @@ class MeshWorld:
         for t in getattr(self, "key_textures", {}).values():
             t[0].release()
             t[1].release()
-        if self.now is not None:
-            self.now[0].release()
-            self.now[1].release()
+        for n in self.nows:
+            n[0].release()
+            n[1].release()
         if self.target is not None:
             for r in self.target:
                 r.release()

@@ -187,8 +187,17 @@ def _run(recon):
         published_capture = recon.epoch
         fit_credit = 0.0
         parent = mp.parent_process()
-        trainer = backend.start_training(
-            recon.admission.available, lambda: bool(recon.stopped.value), recon.report_oom
+        from ito.meshout import MESH
+
+        # ITO_MESH=only draws no splats: none are trained (the map is still seeded, since
+        # consensus agrees new depth against the views it retains).
+        untrained = MESH == "only" and recon.mesh_frames is not None
+        trainer = (
+            None
+            if untrained
+            else backend.start_training(
+                recon.admission.available, lambda: bool(recon.stopped.value), recon.report_oom
+            )
         )
         next_map_dump = MAP_DUMP_EVERY
         while not recon.stopped.value and parent.is_alive():
@@ -529,6 +538,7 @@ def _run(recon):
                 idle = recon.sequence.value == sequence
                 while (
                     trainer is None
+                    and not untrained
                     and (idle or fit_credit > 0)
                     and np.count_nonzero(backend.dirty) < recon.ring.batch
                     and backend.pending_fit is None

@@ -206,8 +206,11 @@ def main():
         stills.mkdir(parents=True, exist_ok=True)
     written = 0
     t_first = frames[0]["exposed"]
+    clock = [frames[0]["exposed"]]
+    world.clock = lambda: clock[0]
     for f in frames[::step]:
         now = f["exposed"]
+        clock[0] = now
         while cursor < len(inputs) and inputs[cursor][0] + args.latency <= now:
             world.add(inputs[cursor][1]())
             cursor += 1
