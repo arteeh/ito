@@ -485,7 +485,9 @@ def main():
         f"slam/: MASt3R-SLAM revision {SLAM_REV}. Ito source adaptations: FactorGraph keeps "
         "its edges and solve inputs in buffers allocated once (global_opt.py), the frame "
         "tracker re-raises CUDA out-of-memory errors (tracker.py), fixed-width CUDA indices, "
-        "distinct lietorch CPU kernel symbols, current-stream CUDA launches.\n",
+        "distinct lietorch CPU kernel symbols, current-stream CUDA launches. Ito feeds it frames "
+        "of upstream's 512-pixel long side, or, at an Input resolution below 100 %, 448, 368 or "
+        "256 (not upstream's).\n",
         encoding="utf-8",
     )
     if (cache / "native").exists():

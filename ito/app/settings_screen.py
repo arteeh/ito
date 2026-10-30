@@ -91,7 +91,10 @@ class SettingsScreen:
         imgui.same_line()
         if self.layout.button("+##resolution", "resolution plus", plus, disabled=index == 3):
             self.change(input_resolution=steps[index + 1])
-        imgui.text_disabled("Lower: faster, less VRAM, blurrier. Keeps the whole frame.")
+        imgui.text_disabled(
+            "Lower: faster, less VRAM, blurrier. Keeps the whole frame. Below 100% leaves "
+            "upstream MASt3R-SLAM's 512 pixels, which it is tuned for."
+        )
         imgui.text("Map size (keyframes)")
         index = KEYFRAMES.index(s.keyframes)
         minus, value_width, plus = self.layout.row(1, 1.85, 1)

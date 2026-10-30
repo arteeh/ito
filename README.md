@@ -90,16 +90,19 @@ Monocular SLAM needs an NVIDIA GPU. Models and their licence notices are include
 SLAM is MASt3R-SLAM as upstream runs it (`ito/reconstruction/slam.py`): the camera alone,
 tracked against keyframes, linked by retrieval and solved as one global Sim(3) graph; a lost
 camera relocalises and maps nothing meanwhile. The robot's pose places the map once, at the
-first frame. Its large buffers (keyframes, graph edges, the solve's inputs) are allocated once,
-at start: Settings > Map size picks how many keyframes (and shows their VRAM; 512 is
-upstream's). A full map maps nothing new, but tracks and relocalises on: one spare keyframe
-slot is kept for relocalising, reused at every loss. Monocular scale is MASt3R's; a robot with a ToF
-sensor (Microduck) fixes once how many metres a map unit is, for display only, so
-reconstructed distances are not a measurement tool.
+first frame. Frames go in as upstream's dataloader makes them (long side 512, centre crop to
+16-pixel multiples), taken as already undistorted; an Input resolution below 100 % makes them
+smaller (448, 368, 256), which upstream does not do: its matching is tuned at 512. The large
+buffers (keyframes, graph edges, the solve's inputs) are allocated once, at start: Settings >
+Map size picks how many keyframes (and shows their VRAM; 512 is upstream's). A full map maps
+nothing new, but tracks and relocalises on: one spare keyframe slot is kept for relocalising,
+reused at every loss. Monocular scale is MASt3R's; a robot with a ToF sensor (Microduck) fixes
+once how many metres a map unit is, for display only, so reconstructed distances are not a
+measurement tool.
 
 On Microduck, from this checkout: `uv run --project drivers/microduck ito-driver-microduck`; connect with `uv run ito <duck-address>:8081` and enter its printed pairing code.
 Microduck must have robotd/mediad running and be enabled with `robotctl robot enable`; G/right trigger opens the beak, C crouches.
-The driver streams the head camera's pose at robotd's 50 Hz, stamped when robotd read its sensors; The beta's head IMU (robotd) and ToF (tofd) are used when present; `--no-head-imu` and `--no-tof` leave them alone.
+The driver streams the head camera's pose at robotd's 50 Hz, stamped when robotd read its sensors; The beta's head IMU (robotd) and ToF (tofd) are streamed when present (the pilot uses the ToF for the map's display scale only); `--no-head-imu` and `--no-tof` leave them alone.
 
 Virtual Microduck on Ubuntu: `drivers/microduck/setup-sim.sh /path/to/prefix`, then `/path/to/prefix/microduck-sim --viewer`.
 It builds Pollen's stack at the `third_party/` submodule pins (microduck at a release tag, microduck_rl's develop) and runs this checkout's driver.
