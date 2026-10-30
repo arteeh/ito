@@ -102,8 +102,11 @@ EDGE_SCALE = 0.05  # log-scale sigma of a pair's relative scale
 # moving readings 0.79-1.08 live) stays in the room around it while ToF ties pull later keyframes
 # to metres: a scale gradient across the room. After each solve the whole graph is scaled about the
 # world's origin (a gauge move: images measure nothing of it) toward the median of every tied
-# keyframe's ToF/floor readings over its scale, at most SESSION_RATE per solve and only past
-# SESSION_DEADBAND, so the room's one scale settles over a minute or so instead of jumping.
+# keyframe's ToF/floor readings over its scale, at most SESSION_RATE per solve and only by what lies
+# past SESSION_DEADBAND, so the room's one scale settles over a minute or so instead of jumping.
+# The dead band is wide: on the loop replay the ties' median sat 2.6% above the truth while the
+# gated start scale was right (moving all the way made the room 2.9% too big); it is there for a
+# start scale that is clearly off (moving readings: 0.79-1.08 live).
 SESSION_SCALE = (
     os.environ.get(
         "ITO_SLAM_SESSION_SCALE", "1" if os.environ.get("ITO_SLAM_LEAD") == "vision" else "0"
@@ -112,7 +115,7 @@ SESSION_SCALE = (
 )
 SESSION_RATE = 0.005  # |log-scale| per solve
 SESSION_GAIN = 0.3
-SESSION_DEADBAND = 0.01
+SESSION_DEADBAND = 0.04
 SESSION_MIN_KEYFRAMES = 3  # tied keyframes before the session scale moves
 REFRESH = 8  # edges whose keyframes' pointmaps have filled in since, re-solved per global solve
 # ITO_SLAM_LOG=<file>: one JSON line per solve and per checked edge (a diagnostic).
@@ -883,7 +886,8 @@ class GlobalGraph:
         self.session_offset = offset
         if abs(offset) < SESSION_DEADBAND:
             return after
-        step = float(np.clip(SESSION_GAIN * offset, -SESSION_RATE, SESSION_RATE))
+        excess = math.copysign(abs(offset) - SESSION_DEADBAND, offset)
+        step = float(np.clip(SESSION_GAIN * excess, -SESSION_RATE, SESSION_RATE))
         self.session_scale += step
         c = math.exp(step)
         scaled = after.copy()
