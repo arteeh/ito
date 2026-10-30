@@ -57,6 +57,7 @@ class Performance:
         self.started = clock.now()
         self.visible_rate = Rate(window=5, cap=1024)
         self.backend_rate = CounterRate(window=5)
+        self.fit_rate = CounterRate(window=5)
         self.latency = Distribution(1, 60_000)
         self.render = Distribution(0.1, 1000)
         self.service = Distribution(0.1, 1000)
@@ -110,10 +111,12 @@ class Performance:
         if epoch != self.worker_epoch:
             self.last_backend = 0
             self.backend_rate = CounterRate(window=5)
+            self.fit_rate = CounterRate(window=5)
             self.worker_epoch = epoch
         self.total_backend += max(0, calls - self.last_backend)
         self.last_backend = calls
         backend_hz = self.backend_rate.hz(calls, now)
+        fit_hz = self.fit_rate.hz(statistics.get("fit_steps", 0), now)
         if now < self.next_snapshot:
             return self.last
         self.next_snapshot = now + 0.5
@@ -129,6 +132,7 @@ class Performance:
             scene_hz=self.visible_rate.hz(now),
             scene_frames=self.visible_frames,
             backend_hz=backend_hz,
+            fit_hz=fit_hz,
             capture_to_visible_ms=self.latest_latency,
             capture_to_visible_p50_ms=p50,
             capture_to_visible_p95_ms=p95,
