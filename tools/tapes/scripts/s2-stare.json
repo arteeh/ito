@@ -1,0 +1,136 @@
+[
+ {
+  "for": 19,
+  "note": "connect and settle"
+ },
+ {
+  "for": 1,
+  "do": "recenter",
+  "note": "view on the robot's heading"
+ },
+ {
+  "for": 2,
+  "do": "resume",
+  "note": "resume"
+ },
+ {
+  "for": 0.4,
+  "note": "flick left ~60 deg toward the bookshelf",
+  "turn": -150
+ },
+ {
+  "for": 10,
+  "note": "stare at the bookshelf, hands off"
+ },
+ {
+  "for": 0.15,
+  "note": "tiny mouse jiggle",
+  "turn": 40
+ },
+ {
+  "for": 0.15,
+  "note": "jiggle back",
+  "turn": -40
+ },
+ {
+  "for": 6,
+  "note": "keep staring"
+ },
+ {
+  "for": 2.5,
+  "note": "walk closer",
+  "keys": "w"
+ },
+ {
+  "for": 10,
+  "note": "stare close"
+ },
+ {
+  "for": 0.3,
+  "note": "flick down at the shelf's lower books",
+  "tilt": -90
+ },
+ {
+  "for": 8,
+  "note": "stare low"
+ },
+ {
+  "for": 0.3,
+  "note": "flick back up",
+  "tilt": 90
+ },
+ {
+  "for": 0.5,
+  "note": "flick right ~90 deg toward the table",
+  "turn": 180
+ },
+ {
+  "for": 10,
+  "note": "stare at the table"
+ },
+ {
+  "for": 0.4,
+  "note": "flick down onto the table top",
+  "tilt": -100
+ },
+ {
+  "for": 8,
+  "note": "stare down at the table"
+ },
+ {
+  "for": 0.4,
+  "note": "back up",
+  "tilt": 100
+ },
+ {
+  "for": 0.7,
+  "note": "flick right ~120 deg toward the sofa",
+  "turn": 170
+ },
+ {
+  "for": 10,
+  "note": "stare at the sofa"
+ },
+ {
+  "for": 0.15,
+  "note": "jiggle",
+  "turn": -40
+ },
+ {
+  "for": 0.15,
+  "note": "jiggle",
+  "turn": 40
+ },
+ {
+  "for": 0.1,
+  "note": "jiggle",
+  "tilt": 40
+ },
+ {
+  "for": 0.1,
+  "note": "jiggle",
+  "tilt": -40
+ },
+ {
+  "for": 6,
+  "note": "keep staring"
+ },
+ {
+  "for": 1.0,
+  "note": "turn back toward the bookshelf, 180 deg",
+  "turn": -180
+ },
+ {
+  "for": 12,
+  "note": "stare at the bookshelf again: compare with the first look"
+ },
+ {
+  "for": 8,
+  "note": "final: hands off, watch the map settle"
+ },
+ {
+  "for": 2,
+  "note": "stop and finish",
+  "do": "stop"
+ }
+]

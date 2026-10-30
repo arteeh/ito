@@ -1,0 +1,200 @@
+[
+ {
+  "for": 19,
+  "note": "connect and settle"
+ },
+ {
+  "for": 1,
+  "do": "recenter",
+  "note": "view on the robot's heading"
+ },
+ {
+  "for": 2,
+  "do": "resume",
+  "note": "resume"
+ },
+ {
+  "for": 0.4,
+  "note": "flick left ~60 deg toward the bookshelf",
+  "turn": -150
+ },
+ {
+  "for": 4,
+  "note": "hold"
+ },
+ {
+  "for": 3,
+  "note": "forward toward the bookshelf",
+  "keys": "w"
+ },
+ {
+  "for": 1.5,
+  "note": "stop"
+ },
+ {
+  "for": 3,
+  "note": "back away (s)",
+  "keys": "s"
+ },
+ {
+  "for": 1.5,
+  "note": "stop"
+ },
+ {
+  "for": 3,
+  "note": "forward again",
+  "keys": "w"
+ },
+ {
+  "for": 0.5,
+  "note": "stop"
+ },
+ {
+  "for": 3,
+  "note": "back again",
+  "keys": "s"
+ },
+ {
+  "for": 2,
+  "note": "stop"
+ },
+ {
+  "for": 2,
+  "note": "forward while looking left",
+  "keys": "w",
+  "turn": -40
+ },
+ {
+  "for": 2,
+  "note": "back while looking right",
+  "keys": "s",
+  "turn": 40
+ },
+ {
+  "for": 2,
+  "note": "stop"
+ },
+ {
+  "for": 2,
+  "note": "strafe left (a)",
+  "keys": "a"
+ },
+ {
+  "for": 1,
+  "note": "stop"
+ },
+ {
+  "for": 2,
+  "note": "strafe right (d)",
+  "keys": "d"
+ },
+ {
+  "for": 1.5,
+  "note": "stop"
+ },
+ {
+  "for": 2.5,
+  "note": "forward",
+  "keys": "w"
+ },
+ {
+  "for": 0.4,
+  "note": "flick right while stopped",
+  "turn": 150
+ },
+ {
+  "for": 0.4,
+  "note": "flick back",
+  "turn": -150
+ },
+ {
+  "for": 2.5,
+  "note": "back",
+  "keys": "s"
+ },
+ {
+  "for": 2,
+  "note": "stop"
+ },
+ {
+  "for": 1.5,
+  "note": "forward + look down",
+  "keys": "w",
+  "tilt": -25
+ },
+ {
+  "for": 1.5,
+  "note": "back + look up",
+  "keys": "s",
+  "tilt": 25
+ },
+ {
+  "for": 2,
+  "note": "stop"
+ },
+ {
+  "for": 1.0,
+  "note": "turn around 180 deg",
+  "turn": 180
+ },
+ {
+  "for": 3,
+  "note": "hold: body follows"
+ },
+ {
+  "for": 3,
+  "note": "forward the other way",
+  "keys": "w"
+ },
+ {
+  "for": 1.5,
+  "note": "stop"
+ },
+ {
+  "for": 3,
+  "note": "back",
+  "keys": "s"
+ },
+ {
+  "for": 1.5,
+  "note": "stop"
+ },
+ {
+  "for": 1.0,
+  "note": "turn back 180 deg",
+  "turn": -180
+ },
+ {
+  "for": 3,
+  "note": "hold"
+ },
+ {
+  "for": 2,
+  "note": "forward",
+  "keys": "w"
+ },
+ {
+  "for": 2,
+  "note": "back",
+  "keys": "s"
+ },
+ {
+  "for": 2,
+  "note": "forward",
+  "keys": "w"
+ },
+ {
+  "for": 2,
+  "note": "back",
+  "keys": "s"
+ },
+ {
+  "for": 8,
+  "note": "final: hands off, watch the map settle"
+ },
+ {
+  "for": 2,
+  "note": "stop and finish",
+  "do": "stop"
+ }
+]

@@ -1,0 +1,381 @@
+[
+ {
+  "for": 19,
+  "note": "connect and settle"
+ },
+ {
+  "for": 1,
+  "do": "recenter",
+  "note": "view on the robot's heading"
+ },
+ {
+  "for": 2,
+  "do": "resume",
+  "note": "resume"
+ },
+ {
+  "for": 0.35,
+  "note": "flick left ~60 deg",
+  "turn": -180
+ },
+ {
+  "for": 1.5,
+  "note": "hold"
+ },
+ {
+  "for": 0.6,
+  "note": "flick right ~120 deg (overshoot)",
+  "turn": 200
+ },
+ {
+  "for": 0.8,
+  "note": "hold"
+ },
+ {
+  "for": 0.4,
+  "note": "flick back left ~60 deg",
+  "turn": -150
+ },
+ {
+  "for": 2.5,
+  "note": "hold, body catches up"
+ },
+ {
+  "for": 0.2,
+  "note": "head shake +-32 deg 1/8",
+  "turn": 160
+ },
+ {
+  "for": 0.2,
+  "note": "head shake +-32 deg 2/8",
+  "turn": -160
+ },
+ {
+  "for": 0.2,
+  "note": "head shake +-32 deg 3/8",
+  "turn": 160
+ },
+ {
+  "for": 0.2,
+  "note": "head shake +-32 deg 4/8",
+  "turn": -160
+ },
+ {
+  "for": 0.2,
+  "note": "head shake +-32 deg 5/8",
+  "turn": 160
+ },
+ {
+  "for": 0.2,
+  "note": "head shake +-32 deg 6/8",
+  "turn": -160
+ },
+ {
+  "for": 0.2,
+  "note": "head shake +-32 deg 7/8",
+  "turn": 160
+ },
+ {
+  "for": 0.2,
+  "note": "head shake +-32 deg 8/8",
+  "turn": -160
+ },
+ {
+  "for": 2.5,
+  "note": "hold after shake"
+ },
+ {
+  "for": 0.3,
+  "note": "flick down ~35 deg",
+  "tilt": -120
+ },
+ {
+  "for": 1.5,
+  "note": "hold down"
+ },
+ {
+  "for": 0.3,
+  "note": "flick up",
+  "tilt": 120
+ },
+ {
+  "for": 1.5,
+  "note": "hold"
+ },
+ {
+  "for": 1.0,
+  "note": "fast turn around to the right, 180 deg",
+  "turn": 180
+ },
+ {
+  "for": 3.5,
+  "note": "hold: body follows the gaze"
+ },
+ {
+  "for": 0.5,
+  "note": "walk + flick left",
+  "keys": "w",
+  "turn": -120
+ },
+ {
+  "for": 1.0,
+  "note": "walk",
+  "keys": "w"
+ },
+ {
+  "for": 1.0,
+  "note": "walk + flick right",
+  "keys": "w",
+  "turn": 120
+ },
+ {
+  "for": 0.5,
+  "note": "walk + flick back",
+  "keys": "w",
+  "turn": -120
+ },
+ {
+  "for": 1.5,
+  "note": "walk",
+  "keys": "w"
+ },
+ {
+  "for": 2.0,
+  "note": "hold"
+ },
+ {
+  "for": 0.4,
+  "note": "diagonal flick down-left",
+  "turn": -150,
+  "tilt": -60
+ },
+ {
+  "for": 1.2,
+  "note": "hold"
+ },
+ {
+  "for": 0.4,
+  "note": "diagonal flick up-right",
+  "turn": 150,
+  "tilt": 60
+ },
+ {
+  "for": 1.5,
+  "note": "hold"
+ },
+ {
+  "for": 0.2,
+  "note": "shake while walking 1/6",
+  "turn": 150,
+  "keys": "w"
+ },
+ {
+  "for": 0.2,
+  "note": "shake while walking 2/6",
+  "turn": -150,
+  "keys": "w"
+ },
+ {
+  "for": 0.2,
+  "note": "shake while walking 3/6",
+  "turn": 150,
+  "keys": "w"
+ },
+ {
+  "for": 0.2,
+  "note": "shake while walking 4/6",
+  "turn": -150,
+  "keys": "w"
+ },
+ {
+  "for": 0.2,
+  "note": "shake while walking 5/6",
+  "turn": 150,
+  "keys": "w"
+ },
+ {
+  "for": 0.2,
+  "note": "shake while walking 6/6",
+  "turn": -150,
+  "keys": "w"
+ },
+ {
+  "for": 2.5,
+  "note": "hold"
+ },
+ {
+  "for": 1.0,
+  "note": "fast turn around to the left, 180 deg",
+  "turn": -180
+ },
+ {
+  "for": 3.5,
+  "note": "hold: body follows"
+ },
+ {
+  "for": 0.25,
+  "note": "small twitch right",
+  "turn": 120
+ },
+ {
+  "for": 0.25,
+  "note": "small twitch left",
+  "turn": -120
+ },
+ {
+  "for": 0.25,
+  "note": "twitch right",
+  "turn": 120
+ },
+ {
+  "for": 0.25,
+  "note": "twitch left",
+  "turn": -120
+ },
+ {
+  "for": 2.0,
+  "note": "hold"
+ },
+ {
+  "for": 0.5,
+  "note": "flick right ~90 deg",
+  "turn": 180
+ },
+ {
+  "for": 0.3,
+  "note": "flick down",
+  "tilt": -100
+ },
+ {
+  "for": 1.5,
+  "note": "hold"
+ },
+ {
+  "for": 0.3,
+  "note": "flick up",
+  "tilt": 100
+ },
+ {
+  "for": 0.5,
+  "note": "flick back left ~90 deg",
+  "turn": -180
+ },
+ {
+  "for": 2.0,
+  "note": "hold"
+ },
+ {
+  "for": 0.15,
+  "note": "fast head shake +-30 deg 1/10",
+  "turn": 200
+ },
+ {
+  "for": 0.15,
+  "note": "fast head shake +-30 deg 2/10",
+  "turn": -200
+ },
+ {
+  "for": 0.15,
+  "note": "fast head shake +-30 deg 3/10",
+  "turn": 200
+ },
+ {
+  "for": 0.15,
+  "note": "fast head shake +-30 deg 4/10",
+  "turn": -200
+ },
+ {
+  "for": 0.15,
+  "note": "fast head shake +-30 deg 5/10",
+  "turn": 200
+ },
+ {
+  "for": 0.15,
+  "note": "fast head shake +-30 deg 6/10",
+  "turn": -200
+ },
+ {
+  "for": 0.15,
+  "note": "fast head shake +-30 deg 7/10",
+  "turn": 200
+ },
+ {
+  "for": 0.15,
+  "note": "fast head shake +-30 deg 8/10",
+  "turn": -200
+ },
+ {
+  "for": 0.15,
+  "note": "fast head shake +-30 deg 9/10",
+  "turn": 200
+ },
+ {
+  "for": 0.15,
+  "note": "fast head shake +-30 deg 10/10",
+  "turn": -200
+ },
+ {
+  "for": 3.0,
+  "note": "hold after shake"
+ },
+ {
+  "for": 2.0,
+  "note": "walk forward",
+  "keys": "w"
+ },
+ {
+  "for": 0.6,
+  "note": "flick right ~110 deg",
+  "turn": 180
+ },
+ {
+  "for": 1.0,
+  "note": "hold"
+ },
+ {
+  "for": 1.2,
+  "note": "walk toward it",
+  "keys": "w"
+ },
+ {
+  "for": 0.6,
+  "note": "flick back left",
+  "turn": -180
+ },
+ {
+  "for": 2.0,
+  "note": "hold"
+ },
+ {
+  "for": 1.0,
+  "note": "fast turn around, 180 deg",
+  "turn": 180
+ },
+ {
+  "for": 3.0,
+  "note": "hold"
+ },
+ {
+  "for": 2.5,
+  "note": "walk back",
+  "keys": "w"
+ },
+ {
+  "for": 1.0,
+  "note": "fast turn around, 180 deg",
+  "turn": -180
+ },
+ {
+  "for": 3.0,
+  "note": "hold"
+ },
+ {
+  "for": 8,
+  "note": "final: hands off, watch the map settle"
+ },
+ {
+  "for": 2,
+  "note": "stop and finish",
+  "do": "stop"
+ }
+]
