@@ -4,6 +4,8 @@ layout(std430, binding = 1) buffer Scene { vec4 attributes[]; };
 layout(std430, binding = 2) readonly buffer Changes { vec4 changes[]; };
 layout(std430, binding = 3) readonly buffer Slots { uint slots[]; };
 layout(std430, binding = 4) buffer Previous { vec4 previous[]; };
+layout(std430, binding = 5) readonly buffer ChangeAnchors { uint change_anchors[]; };
+layout(std430, binding = 6) buffer SlotAnchors { uint slot_anchors[]; };
 uniform uint count;
 uniform float ease;
 uniform float scene_time;
@@ -35,4 +37,5 @@ void main() {
         previous[s + 1u].w = scene_time;
     }
     for (uint j = 0u; j < 4u; ++j) attributes[s + j] = changes[i * 4u + j];
+    slot_anchors[slots[i]] = change_anchors[i];
 }

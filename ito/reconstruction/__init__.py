@@ -180,6 +180,7 @@ def _run(recon):
         motion_cursor = 0
         revision = 0
         published_slots = len(backend.keys)
+        anchors_sent = 0  # backend.anchor_revision the ring has (ITO_ANCHORED)
         captured = recon.epoch
         published_capture = recon.epoch
         fit_credit = 0.0
@@ -462,7 +463,20 @@ def _run(recon):
                     elif not len(indices):
                         # Refinement publishes only once fresh geometry has gone out.
                         indices = np.flatnonzero(backend.refined)[: recon.ring.batch]
-                    if not len(indices) and len(backend.keys) == published_slots:
+                    table = getattr(backend, "anchor_table", None)
+                    anchors_due = table is not None and backend.anchor_revision != anchors_sent
+                    if anchors_due and recon.ring.publish_anchors(
+                        backend.anchor_table[: backend.anchor_count],
+                        backend.anchor_centres[: backend.anchor_count],
+                    ):
+                        anchors_sent = backend.anchor_revision
+                    else:
+                        anchors_due = False
+                    if (
+                        not len(indices)
+                        and len(backend.keys) == published_slots
+                        and not anchors_due
+                    ):
                         break
                     contributing = backend.sequences[indices] > 0
                     packet_capture = max(
@@ -474,15 +488,21 @@ def _run(recon):
                     usual = getattr(backend, "exposure_mean", None)
                     if usual is not None:
                         recon.ring.color_gain[:] = usual
+                    records, anchor_ids = (
+                        backend.published(indices)
+                        if hasattr(backend, "published")
+                        else (backend.records[indices], None)
+                    )
                     if not recon.ring.publish(
                         indices,
-                        backend.records[indices],
+                        records,
                         len(backend.keys),
                         backend.count,
                         revision,
                         packet_capture,
                         backend.sequences[indices],
                         backend.captures[indices],
+                        anchors=anchor_ids,
                     ):
                         break
                     if timeline:
