@@ -1,6 +1,7 @@
 import json
 import logging
 import math
+import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -11,6 +12,8 @@ import pygame
 from OpenGL import GL
 
 from ito import clock, diagnostics
+from ito.meshout import ENABLED as MESH_ENABLED
+from ito.meshout import MESH
 from ito.reconstruction import SplatUpdate, default_budget
 from ito.reconstruction.admission import PUBLICATION_PACKETS
 from ito.render import GaussianRenderer, SceneSource, current_context, perspective, pose
@@ -59,7 +62,7 @@ class DesktopWindow:
         max_splats: int | None = None,
     ):
         self.context = self.renderer = self.overlay = self.input = self.video_panel = None
-        self.gpu = None
+        self.gpu = self.mesh = None
         if (
             min(size) < 64
             or fps < 1
@@ -110,6 +113,14 @@ class DesktopWindow:
             self.map_target = None
             self.renderer = GaussianRenderer(self.context)
             self.video_panel = VideoPanel(self.context)
+            self.mesh, self.mesh_only = None, False
+            if MESH_ENABLED:
+                # ITO_MESH (ito/meshout.py): the mesh world over the splats, or alone.
+                from ito.render.mesh import MeshWorld
+
+                self.mesh_only = MESH == "only"
+                memory = os.environ.get("ITO_MESH_MEMORY", "tsdf" if self.mesh_only else "none")
+                self.mesh = MeshWorld(self.context, memory=memory)
             self.max_splats = min(
                 self.splat_limit,
                 max_splats or load_budget(default_budget(self.context.info["GL_RENDERER"])),
@@ -188,9 +199,17 @@ class DesktopWindow:
                         self.map_target.release()
                     self.map_target = self.context.simple_framebuffer((width, height))
                 fov = 2 * math.atan(math.tan(current.video_fov / 2) * height / width)
-                self.renderer.draw(
-                    current.mapped[0], pose(), perspective(fov, width / height), self.map_target
-                )
+                if self.mesh_only:
+                    self.mesh.draw(
+                        current.mapped[0],
+                        perspective(fov, width / height),
+                        self.map_target,
+                        clear=(0.025, 0.035, 0.055, 1.0),
+                    )
+                else:
+                    self.renderer.draw(
+                        current.mapped[0], pose(), perspective(fov, width / height), self.map_target
+                    )
                 pixels = self.map_target.read(components=3, alignment=1)
                 recorder.map(camera, pixels, (width, height), current.mapped[1])
                 self.screen.use()
@@ -258,6 +277,7 @@ class DesktopWindow:
                     applied.append(frame)
                 pending = None
                 revision, captured_at = frame.revision, frame.captured_at
+            self.poll_mesh(source)
             current = self.glided(state(), now, pilot.head)
             size = pygame.display.get_window_size()
             if min(size) > 0:
@@ -380,6 +400,15 @@ class DesktopWindow:
                     time.sleep(remaining)
             pacing.tick(0)
 
+    def poll_mesh(self, source):
+        if self.mesh is None or not hasattr(source, "poll_mesh"):
+            return
+        for kind, item in source.poll_mesh():
+            if kind == "frame":
+                self.mesh.add(item)
+            else:
+                self.mesh.repose(item)
+
     def glided(self, current, now, head=None):
         anchor = self.glide(current.robot_camera, now)
         return replace(current, robot_camera=self.ease(current.correction, anchor, head, now))
@@ -397,12 +426,28 @@ class DesktopWindow:
                 fov=current.video_fov,
             )
         else:
-            self.renderer.draw(
-                current.robot_camera, head, projection, target, viewport=viewport, sort=sort
-            )
+            if not self.mesh_only:
+                self.renderer.draw(
+                    current.robot_camera, head, projection, target, viewport=viewport, sort=sort
+                )
+            if self.mesh is not None:
+                self.mesh.draw(
+                    current.robot_camera @ head,
+                    projection,
+                    target,
+                    viewport,
+                    clear=(0.025, 0.035, 0.055, 1.0) if self.mesh_only else None,
+                )
 
     def close(self) -> None:
-        for resource in (self.input, self.overlay, self.video_panel, self.renderer, self.gpu):
+        for resource in (
+            self.input,
+            self.overlay,
+            self.video_panel,
+            self.mesh,
+            self.renderer,
+            self.gpu,
+        ):
             if resource is not None:
                 resource.close()
         if self.context is not None:

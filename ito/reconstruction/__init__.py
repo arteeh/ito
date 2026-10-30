@@ -158,6 +158,10 @@ def _run(recon):
                 recon.budget.value, recon.intrinsics, precision=recon.precision, **recon.options
             )
         backend.bind_admission(recon.admission)
+        if recon.mesh_frames is not None and hasattr(backend, "mesh_sink"):
+            from ito.meshout import MeshSink
+
+            backend.mesh_sink = MeshSink(recon.mesh_frames)
         if (torch := sys.modules.get("torch")) is not None:
             torch.set_num_threads(1)
         if backend.xp is not np:
@@ -636,6 +640,10 @@ class Reconstruction:
         self.output_correction = context.RawArray("f", np.eye(4).ravel().tolist())
         self.motion_ring = MotionRing(context)
         self.sensor_queue = context.Queue(maxsize=256)
+        from ito.meshout import ENABLED as MESH_ENABLED
+
+        # ITO_MESH: placed frames and keyframe corrections for the mesh world (ito/meshout.py).
+        self.mesh_frames = context.Queue(maxsize=8) if MESH_ENABLED and backend == "slam" else None
         self.output_captured = context.RawValue("d", 0)
         self.tracked = context.RawValue("Q", 0)
         self.integrated = context.RawValue("Q", 0)
@@ -925,6 +933,15 @@ class Reconstruction:
             raise RuntimeError(f"Reconstruction process exited ({self.process.exitcode})")
         return self.ring.poll()
 
+    def poll_mesh(self):
+        """ITO_MESH: what the worker sent the mesh world since the last call, in order:
+        ("frame", meshout.MeshFrame) and ("move", {keyframe: 4x4 similarity})."""
+        if self.mesh_frames is None or self.closed:
+            return []
+        from ito.meshout import drain
+
+        return drain(self.mesh_frames)
+
     def close(self):
         if not self.closed:
             self.closed = True
@@ -944,6 +961,9 @@ class Reconstruction:
                     log.error("Reconstruction process %d did not exit", self.process.pid)
             self.sensor_queue.cancel_join_thread()
             self.sensor_queue.close()
+            if self.mesh_frames is not None:
+                self.mesh_frames.cancel_join_thread()
+                self.mesh_frames.close()
             self.errors.close()
             self.notes.close()
 

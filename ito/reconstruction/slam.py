@@ -319,6 +319,7 @@ class SLAMBackend(GaussianBackend):
         self.field_rebuilt = -math.inf  # time.monotonic() of the last rebuild started
         self.keyframe_exposure = {}  # full: keyframe index -> exposure time (pilot clock)
         self.node_keyframe = {}  # full: frame node -> keyframe index its surfaces follow
+        self.mesh_sink = None  # ITO_MESH: meshout.MeshSink, set by the worker
         self.global_applied = 0
         self.global_change = (0.0, 0.0)
         self.map_poses = {}  # full: keyframe -> its pose (Ito axes) its surfaces were placed by
@@ -474,6 +475,8 @@ class SLAMBackend(GaussianBackend):
         (deltas: keyframe -> world similarity, Ito axes, map world)."""
         if not deltas:
             return
+        if self.mesh_sink is not None:
+            self.mesh_sink.moved(deltas)
         self.repose(deltas, self.node_keyframe)
         if self.volume is not None:
             self.move_fused(deltas)
@@ -1553,6 +1556,16 @@ class SLAMBackend(GaussianBackend):
         self.registration.remember(
             node, pose, self.registration.map_from_estimator @ pose, self.graph.nodes
         )
+        if self.mesh_sink is not None:
+            # ITO_MESH (ito/meshout.py): the frame as placed, for the mesh world.
+            self.mesh_sink.frame(
+                raw_depth,
+                mapped,
+                intrinsics,
+                photo[0] if photo is not None else image,
+                self.source_captured,
+                self.node_keyframe.get(node, -1) if self.global_graph is not None else -1,
+            )
         self.observe(
             points * scale,
             image,

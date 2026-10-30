@@ -21,10 +21,12 @@ own framebuffer and composites onto the target with premultiplied alpha: over sp
 
 import math
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import moderngl
 import numpy as np
+
+from ito.meshout import MeshFrame
 
 MEMORY = os.environ.get("ITO_MESH_MEMORY", "tsdf")
 VOXEL = float(os.environ.get("ITO_MESH_VOXEL", "0.02"))  # metres
@@ -40,19 +42,10 @@ JUMP = (0.02, 0.06)
 # silhouette (see bend() below).
 EDGE_BEND = float(os.environ.get("ITO_MESH_EDGE", "0.08"))
 NOW_BIAS = 0.03  # NOW wins over memory within this share of its depth
+# A frame becomes a memory view (keyframe) once it moved this far (m) or turned (degrees).
+KEY_MOVE = (0.15, 12.0)
 KEY_RGB = (640, 360)  # keyframe texture size (width, height)
 KEY_DEPTH = (256, 144)
-
-
-@dataclass
-class MeshFrame:
-    rgb: np.ndarray  # H x W x 3 uint8
-    depth: np.ndarray  # h x w float32 axial metres, 0 where unknown; same view as rgb
-    intrinsics: tuple  # fx, fy, cx, cy in depth pixels
-    pose: np.ndarray  # 4x4 world-from-camera
-    captured: float
-    key: int = -1  # >= 0: a keyframe's id (its pose can be corrected later by repose())
-    extra: dict = field(default_factory=dict)
 
 
 EDGE = """
@@ -408,10 +401,17 @@ def _gl(m):
 class Key:
     id: int
     layer: int
-    pose: np.ndarray
-    calibration: tuple  # shares of the image: fx/w, fy/h, cx/w, cy/h
-    captured: float
-    frame: MeshFrame | None  # kept for a field rebuild after corrections
+    frame: MeshFrame  # its pose and scale follow corrections of its anchor
+
+
+def _similarity_parts(m):
+    scale = float(np.cbrt(np.linalg.det(m[:3, :3])))
+    return scale, m[:3, :3] / scale, m[:3, 3]
+
+
+def _turn_degrees(a, b):
+    cos = (np.trace(a[:3, :3].T @ b[:3, :3]) - 1) / 2
+    return math.degrees(math.acos(float(np.clip(cos, -1, 1))))
 
 
 class MeshWorld:
@@ -439,6 +439,8 @@ class MeshWorld:
         self.dummy_depth = ctx.texture_array((1, 1, 1), 1, bytes(4), dtype="f4")
         self.keys: dict[int, Key] = {}
         self.free_layers = list(range(KEYFRAMES))
+        self.last_key = None
+        self.key_count = 0
         if memory in ("tsdf", "ibr"):
             self.integrate = ctx.compute_shader(INTEGRATE)
             self.raycast = ctx.program(vertex_shader=FULLSCREEN_VERTEX, fragment_shader=RAYCAST)
@@ -461,43 +463,61 @@ class MeshWorld:
     # --- input ---------------------------------------------------------------------------
 
     def add(self, frame: MeshFrame) -> None:
-        depth = np.ascontiguousarray(frame.depth, dtype="f4")
-        depth = np.where(np.isfinite(depth) & (depth > 0.05) & (depth < 30), depth, 0).astype("f4")
-        frame.depth = depth
-        pose = np.asarray(frame.pose, dtype="f4")
+        depth = np.asarray(frame.depth, dtype="f4")
+        depth = np.where(np.isfinite(depth) & (depth > 0.05) & (depth < 30), depth, 0)
+        frame.depth = np.ascontiguousarray(depth, dtype="f4")
+        frame.pose = np.asarray(frame.pose, dtype="f4")
         if self.epoch is None:
             self.epoch = frame.captured
+        if frame.key is None:
+            frame.key = self._is_key(frame.pose)
         if self.show_now:
-            self._set_now(frame, depth)
+            self._set_now(frame)
         if self.memory in ("tsdf", "ibr"):
             if self.field is None:
-                self._allocate_field(pose)
-            self._integrate(frame, depth, pose)
-        if self.memory in ("ibr", "atlas") and frame.key >= 0:
-            self._add_key(frame, depth, pose)
+                self._allocate_field(frame.pose)
+            self._integrate(frame)
+        if frame.key:
+            self._add_key(frame)
         self.frames += 1
 
-    def repose(self, poses: dict[int, np.ndarray]) -> None:
-        """Keyframe corrections from SLAM's global graph: keyframe images and meshes follow at
-        once; the field is rebuilt from the stored keyframes when one moved more than a voxel."""
+    def _is_key(self, pose):
+        last = self.last_key
+        if last is not None and np.linalg.norm(pose[:3, 3] - last[:3, 3]) < KEY_MOVE[0]:
+            if _turn_degrees(pose, last) < KEY_MOVE[1]:
+                return False
+        self.last_key = pose
+        return True
+
+    def repose(self, deltas: dict[int, np.ndarray]) -> None:
+        """Corrections from SLAM's global graph: anchor (keyframe) -> 4x4 world similarity.
+        Every stored view and the NOW frame anchored to a moved keyframe follow it at once; the
+        field is rebuilt from the stored views when one of them moved by more than a voxel."""
         moved = False
-        for kid, pose in poses.items():
-            key = self.keys.get(kid)
-            if key is None:
+        frames = [k.frame for k in self.keys.values()]
+        if self.now is not None and all(self.now[2] is not f for f in frames):
+            frames.append(self.now[2])
+        for frame in frames:
+            delta = deltas.get(frame.anchor)
+            if delta is None:
                 continue
-            pose = np.asarray(pose, dtype="f4")
-            if np.linalg.norm(pose[:3, 3] - key.pose[:3, 3]) > VOXEL or (
-                np.trace(pose[:3, :3].T @ key.pose[:3, :3]) < 3 - 1e-4
-            ):
+            scale, rotation, shift = _similarity_parts(np.asarray(delta, np.float64))
+            pose = np.eye(4)
+            pose[:3, :3] = rotation @ frame.pose[:3, :3]
+            pose[:3, 3] = scale * rotation @ frame.pose[:3, 3] + shift
+            if np.linalg.norm(pose[:3, 3] - frame.pose[:3, 3]) > VOXEL:
                 moved = True
-            key.pose = pose
-            if key.frame is not None:
-                key.frame.pose = pose
-        if moved and self.field is not None and self.memory in ("tsdf", "ibr"):
+            moved |= _turn_degrees(pose, frame.pose) > math.degrees(VOXEL / 2)
+            moved |= abs(scale - 1) > 0.01
+            frame.pose = pose.astype("f4")
+            frame.scale *= scale
+        for key in self.keys.values():
+            if key.frame.anchor in deltas:
+                self._upload_key(key)
+        if moved and self.field is not None:
             self._clear_field()
-            for key in sorted(self.keys.values(), key=lambda k: k.captured):
-                if key.frame is not None:
-                    self._integrate(key.frame, key.frame.depth, key.pose)
+            for key in sorted(self.keys.values(), key=lambda k: k.frame.captured):
+                self._integrate(key.frame)
 
     def _texture(self, image, components, dtype="f1"):
         h, w = image.shape[:2]
@@ -510,13 +530,13 @@ class MeshWorld:
         t.repeat_x = t.repeat_y = False
         return t
 
-    def _set_now(self, frame, depth):
+    def _set_now(self, frame):
         if self.now is not None:
             self.now[0].release()
             self.now[1].release()
         rgb = self._texture(frame.rgb, 3)
         rgb.filter = (moderngl.LINEAR, moderngl.LINEAR)
-        d = self._texture(depth, 1, "f4")
+        d = self._texture(frame.depth * frame.scale, 1, "f4")
         d.filter = (moderngl.NEAREST, moderngl.NEAREST)
         self.now = (rgb, d, frame)
 
@@ -548,6 +568,7 @@ class MeshWorld:
         self.stamps.write(bytes(nx * ny * nz * 4))
 
     def _frustum_box(self, frame, depth, pose):
+        depth = depth * frame.scale
         h, w = depth.shape
         fx, fy, cx, cy = frame.intrinsics
         far = float(np.percentile(depth[depth > 0], 99)) + 0.15 if (depth > 0).any() else 0
@@ -565,14 +586,15 @@ class MeshWorld:
             return None
         return lo, hi - lo
 
-    def _integrate(self, frame, depth, pose):
+    def _integrate(self, frame):
+        depth, pose = frame.depth, frame.pose
         box = self._frustum_box(frame, depth, pose)
         if box is None:
             return
         offset, extent = box
         rgb = self._texture(frame.rgb, 3)
         rgb.filter = (moderngl.LINEAR, moderngl.LINEAR)
-        d = self._texture(depth, 1, "f4")
+        d = self._texture(depth * frame.scale, 1, "f4")
         d.filter = (moderngl.NEAREST, moderngl.NEAREST)
         d.use(0)
         rgb.use(1)
@@ -597,22 +619,28 @@ class MeshWorld:
         rgb.release()
         d.release()
 
-    def _add_key(self, frame, depth, pose):
+    def _add_key(self, frame):
+        # tsdf keeps its views too, untextured: a correction rebuilds the field from them.
+        if self.memory == "none":
+            return
+        if not self.free_layers:
+            self._evict()
+        key = Key(self.key_count, self.free_layers.pop(0), frame)
+        self.key_count += 1
+        self.keys[key.id] = key
+        self._upload_key(key)
+        if self.memory == "atlas":
+            ones = np.ones(KEY_DEPTH[::-1], np.uint8)
+            self.alive.write(ones.tobytes(), viewport=(0, 0, key.layer, *KEY_DEPTH, 1))
+            self._retire_older(key)
+
+    def _upload_key(self, key):
         import cv2
 
-        if frame.key in self.keys:
-            key = self.keys[frame.key]
-        else:
-            if not self.free_layers:
-                self._evict()
-            layer = self.free_layers.pop(0)
-            key = Key(frame.key, layer, pose, (0, 0, 0, 0), frame.captured, None)
-            self.keys[frame.key] = key
-        h, w = depth.shape
-        fx, fy, cx, cy = frame.intrinsics
-        key.pose, key.captured = pose, frame.captured
-        key.calibration = (fx / w, fy / h, cx / w, cy / h)
-        key.frame = frame if self.memory != "atlas" else None
+        frame = key.frame
+        if self.memory not in ("ibr", "atlas"):
+            return
+        depth = frame.depth * frame.scale
         rgb = cv2.resize(frame.rgb, KEY_RGB, interpolation=cv2.INTER_AREA)
         rgba = np.concatenate((rgb, np.full(rgb.shape[:2] + (1,), 255, np.uint8)), -1)
         small = cv2.resize(depth, KEY_DEPTH, interpolation=cv2.INTER_NEAREST)
@@ -629,21 +657,22 @@ class MeshWorld:
             t_rgb.filter = (moderngl.LINEAR, moderngl.LINEAR)
             t_depth = self._texture(depth, 1, "f4")
             t_depth.filter = (moderngl.NEAREST, moderngl.NEAREST)
-            self.key_textures[key.layer] = (t_rgb, t_depth, frame.intrinsics)
-            ones = np.ones(KEY_DEPTH[::-1], np.uint8)
-            self.alive.write(ones.tobytes(), viewport=(0, 0, key.layer, *KEY_DEPTH, 1))
-            self._retire_older(key)
+            self.key_textures[key.layer] = (t_rgb, t_depth)
+
+    @staticmethod
+    def _calibration(frame):
+        h, w = frame.depth.shape
+        fx, fy, cx, cy = frame.intrinsics
+        return (fx / w, fy / h, cx / w, cy / h)
 
     def _evict(self):
-        """Drop the keyframe a newer one covers best: the nearest pose to a newer keyframe."""
-        keys = sorted(self.keys.values(), key=lambda k: k.captured)
+        """Drop the view a newer one covers best: the nearest pose to a newer view's."""
+        keys = sorted(self.keys.values(), key=lambda k: k.frame.captured)
         best, victim = None, keys[0]
         for i, k in enumerate(keys[:-1]):
             for n in keys[i + 1 :]:
-                turn = math.degrees(
-                    math.acos(np.clip((np.trace(k.pose[:3, :3].T @ n.pose[:3, :3]) - 1) / 2, -1, 1))
-                )
-                cost = float(np.linalg.norm(k.pose[:3, 3] - n.pose[:3, 3])) + turn / 30
+                cost = float(np.linalg.norm(k.frame.pose[:3, 3] - n.frame.pose[:3, 3]))
+                cost += _turn_degrees(k.frame.pose, n.frame.pose) / 30
                 if best is None or cost < best:
                     best, victim = cost, k
         del self.keys[victim.id]
@@ -658,16 +687,16 @@ class MeshWorld:
         self.key_depth.use(1)
         _set(r, "key_depth", 1)
         _set(r, "new_layer", new.layer)
-        _set(r, "new_cal", new.calibration)
+        _set(r, "new_cal", self._calibration(new.frame))
         _set(r, "jump", JUMP)
         self.alive.bind_to_image(0, read=True, write=True)
-        inverse = _inverse_rigid(new.pose)
+        inverse = _inverse_rigid(new.frame.pose)
         for key in self.keys.values():
             if key is new:
                 continue
             _set(r, "old_layer", key.layer)
-            _set(r, "old_cal", key.calibration)
-            _set(r, "new_from_old", _gl(inverse @ key.pose), raw=True)
+            _set(r, "old_cal", self._calibration(key.frame))
+            _set(r, "new_from_old", _gl(inverse @ key.frame.pose), raw=True)
             r.run((KEY_DEPTH[0] + 15) // 16, (KEY_DEPTH[1] + 15) // 16)
         self.ctx.memory_barrier()
 
@@ -803,13 +832,13 @@ class MeshWorld:
             _set(r, "keys", keys)
             self.raycast_vao.render(moderngl.TRIANGLES, vertices=3)
         elif self.memory == "atlas":
-            for key in sorted(self.keys.values(), key=lambda k: -k.captured):
-                rgb, depth, intrinsics = self.key_textures[key.layer]
+            for key in sorted(self.keys.values(), key=lambda k: -k.frame.captured):
+                rgb, depth = self.key_textures[key.layer]
                 self._draw_grid(
                     rgb,
                     depth,
-                    intrinsics,
-                    key.pose,
+                    key.frame.intrinsics,
+                    key.frame.pose,
                     view,
                     projection,
                     layer=key.layer,
@@ -822,12 +851,12 @@ class MeshWorld:
         chosen = []
         forward = -world_from_eye[:3, 2]
         for key in self.keys.values():
-            camera_from_world = _inverse_rigid(key.pose)
+            camera_from_world = _inverse_rigid(key.frame.pose)
             records[key.layer, :16] = camera_from_world.T.ravel()
-            records[key.layer, 16:20] = key.calibration
-            records[key.layer, 20] = key.captured - self.epoch
+            records[key.layer, 16:20] = self._calibration(key.frame)
+            records[key.layer, 20] = key.frame.captured - self.epoch
             # A keyframe looking away from where this eye looks cannot colour what it sees.
-            if float(np.dot(-key.pose[:3, 2], forward)) > -0.2:
+            if float(np.dot(-key.frame.pose[:3, 2], forward)) > -0.2:
                 chosen.append(key.layer)
         self.key_buffer.write(records.tobytes())
         order = np.array(chosen or [0], np.int32)
@@ -868,3 +897,60 @@ class MeshWorld:
         if self.target is not None:
             for r in self.target:
                 r.release()
+
+
+def projection_from_k(K, width, height, near=0.02, far=100.0):
+    """OpenGL projection of an OpenCV pinhole K (pixel i centred at i) for an Ito camera."""
+    fx, fy, cx, cy = K[0][0], K[1][1], K[0][2] + 0.5, K[1][2] + 0.5
+    return np.array(
+        (
+            (2 * fx / width, 0, 1 - 2 * cx / width, 0),
+            (0, 2 * fy / height, 2 * cy / height - 1, 0),
+            (0, 0, (far + near) / (near - far), 2 * far * near / (near - far)),
+            (0, 0, -1, 0),
+        ),
+        np.float32,
+    )
+
+
+class TapeFilm:
+    """The mesh world for lane tapes' film tool (tools/tapes/replay.py): fed from a
+    Reconstruction's poll_mesh(), drawn at a tape camera (Ito world-from-camera, OpenCV K) as
+    a BGR image, over the splat image (ITO_MESH=over) or alone (ITO_MESH=only)."""
+
+    def __init__(self, width, height):
+        from ito.meshout import MESH
+
+        self.mode = MESH
+        memory = os.environ.get("ITO_MESH_MEMORY", "tsdf" if MESH == "only" else "none")
+        self.size = (width, height)
+        self.ctx = moderngl.create_standalone_context(require=430)
+        self.world = MeshWorld(self.ctx, memory=memory)
+        self.under = self.ctx.texture(self.size, 3)
+        self.target = self.ctx.framebuffer([self.under])
+        self.frames = self.moves = 0
+
+    def feed(self, worker):
+        for kind, item in worker.poll_mesh():
+            if kind == "frame":
+                self.world.add(item)
+                self.frames += 1
+            else:
+                self.world.repose(item)
+                self.moves += 1
+
+    def draw(self, camera, K, under=None, background=(0.04, 0.04, 0.06)):
+        width, height = self.size
+        clear = None
+        if under is not None and self.mode == "over":
+            self.under.write(np.ascontiguousarray(np.flipud(under[..., ::-1])).tobytes())
+        else:
+            clear = (*background, 1.0)
+        self.world.draw(
+            np.asarray(camera, np.float32),
+            projection_from_k(K, width, height),
+            self.target,
+            clear=clear,
+        )
+        rgb = np.frombuffer(self.target.read(components=3, alignment=1), np.uint8)
+        return np.ascontiguousarray(np.flipud(rgb.reshape(height, width, 3))[..., ::-1])

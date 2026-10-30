@@ -70,24 +70,6 @@ def orthonormal(m):
     return m
 
 
-class Keyframes:
-    """A frame is a keyframe once it moved 15 cm or turned 12 degrees from the last one."""
-
-    def __init__(self):
-        self.last = None
-        self.count = 0
-
-    def __call__(self, pose):
-        if self.last is not None:
-            moved = np.linalg.norm(pose[:3, 3] - self.last[:3, 3])
-            cos = (np.trace(self.last[:3, :3].T @ pose[:3, :3]) - 1) / 2
-            if moved < 0.15 and math.degrees(math.acos(np.clip(cos, -1, 1))) < 12:
-                return -1
-        self.last = pose
-        self.count += 1
-        return self.count - 1
-
-
 def tape_inputs(rec, frames, every):
     """(capture time, MeshFrame factory) from the sim's exact depth and pose."""
     from ito.render.mesh import MeshFrame
@@ -95,20 +77,17 @@ def tape_inputs(rec, frames, every):
     K = rec.K_at(DEPTH_SIZE)
     intrinsics = (K[0, 0], K[1, 1], K[0, 2] + 0.5, K[1, 2] + 0.5)
     with_depth = [f for f in frames if f.get("depth")][::every]
-    keys = Keyframes()
     out = []
     for f in with_depth:
         pose = orthonormal(f["pose"])
-        key = keys(pose)
 
-        def make(f=f, pose=pose, key=key):
+        def make(f=f, pose=pose):
             return MeshFrame(
                 rgb=rec.rgb(f, RGB_SIZE),
                 depth=rec.depth(f, DEPTH_SIZE),
                 intrinsics=intrinsics,
                 pose=pose,
                 captured=f["exposed"],
-                key=key,
             )
 
         out.append((f["exposed"], make))
@@ -121,7 +100,6 @@ def dump_inputs(rec, folder, every):
 
     by_seq = {f["seq"]: f for f in rec.frames}
     files = sorted(Path(folder).glob("[0-9]*.npz"))[::every]
-    keys = Keyframes()
     out = []
     for path in files:
         seq = int(path.stem)
@@ -132,16 +110,16 @@ def dump_inputs(rec, folder, every):
             pose = orthonormal(z["pose"])
             depth = z["mapped"].astype(np.float32)
             fx, fy, cx, cy = (float(v) for v in np.ravel(z["intrinsics"])[:4])
-        key = keys(pose)
+        # The network's intrinsics put pixel i's centre at i; the mesh world's at i + 0.5.
+        cal = (fx, fy, cx + 0.5, cy + 0.5)
 
-        def make(f=f, pose=pose, depth=depth, cal=(fx, fy, cx, cy), key=key):
+        def make(f=f, pose=pose, depth=depth, cal=cal):
             return MeshFrame(
                 rgb=rec.rgb(f, RGB_SIZE),
                 depth=depth,
                 intrinsics=cal,
                 pose=pose,
                 captured=f.get("exposed", f["received"]),
-                key=key,
             )
 
         out.append((f.get("exposed", f["received"]), make, pose))

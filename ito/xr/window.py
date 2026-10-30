@@ -305,6 +305,7 @@ class XRWindow(DesktopWindow):
                         applied.append(update)
                     pending = None
                     revision, captured_at = update.revision, update.captured_at
+                self.poll_mesh(source)
                 captures = []
                 rendered = False
                 eye_poses = []
