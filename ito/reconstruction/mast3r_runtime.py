@@ -1,4 +1,5 @@
 import hashlib
+import importlib
 import importlib.util
 import json
 import os
@@ -89,40 +90,70 @@ def verify(models=MODELS):
     return manifest
 
 
-def prepare(report):
-    """Load the bundle's native extensions and put its sources on the path. Returns the
-    bundle's MASt3R-SLAM directory, the weights directory and the retrieval checkpoint."""
-    manifest = verify()
+def torch_for(manifest):
     try:
         import torch
     except (ImportError, OSError) as exc:
         raise RuntimeError("MASt3R CUDA support unavailable") from exc
     if str(torch.__version__) != manifest["torch"]:
         raise RuntimeError("MASt3R CUDA support incompatible with this app")
-    if not torch.cuda.is_available():
-        raise RuntimeError("MASt3R needs an NVIDIA CUDA device and driver")
+    return torch
 
-    report("Loading MASt3R")
-    os.environ["HF_HUB_OFFLINE"] = "1"
-    os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+
+def load(models, manifest):
+    """Load the bundle's native extensions under the names they are imported by (asmk's
+    hamming among them) and put its sources on the path. Needs torch, not a GPU."""
     try:
         for name in EXTENSIONS:
-            spec = importlib.util.spec_from_file_location(name, MODELS / manifest["native"][name])
+            spec = importlib.util.spec_from_file_location(name, models / manifest["native"][name])
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
             sys.modules[name] = module
     except (ImportError, OSError, RuntimeError, AttributeError) as exc:
         raise RuntimeError(
-            f"MASt3R CUDA extensions could not load from {MODELS / 'native'}"
+            f"MASt3R native extensions could not load from {models / 'native'}"
         ) from exc
-    slam = MODELS / "slam"
-    sys.path[:0] = [
-        str(slam),
-        str(MODELS / "lie"),
-        str(slam / "thirdparty/mast3r"),
-        str(MODELS / ASMK),
-    ]
-    return slam, MODELS, MODELS / RETRIEVAL
+    slam = models / "slam"
+    paths = [slam, models / "lie", slam / "thirdparty/mast3r", models / ASMK]
+    sys.path[:0] = [str(path) for path in paths if str(path) not in sys.path]
+
+
+def prepare(report):
+    """Load the bundle's native extensions and put its sources on the path. Returns the
+    bundle's MASt3R-SLAM directory, the weights directory and the retrieval checkpoint."""
+    manifest = verify()
+    torch = torch_for(manifest)
+    if not torch.cuda.is_available():
+        raise RuntimeError("MASt3R needs an NVIDIA CUDA device and driver")
+    report("Loading MASt3R")
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+    load(MODELS, manifest)
+    return MODELS / "slam", MODELS, MODELS / RETRIEVAL
+
+
+# Everything the SLAM worker imports from the bundle and its dependencies: MASt3R-SLAM itself,
+# MASt3R's retrieval (which needs faiss) and asmk.
+IMPORTS = (
+    "faiss",
+    "lietorch",
+    "asmk.asmk_method",
+    "mast3r.retrieval.processor",
+    "mast3r_slam.retrieval_database",
+    "mast3r_slam.global_opt",
+    "mast3r_slam.tracker",
+    "mast3r_slam.mast3r_utils",
+)
+
+
+def check_bundle(models=MODELS):
+    """The release's check that the default SLAM path will load, without a GPU: every bundle
+    file whole (verify), the native extensions, and every import of IMPORTS."""
+    manifest = verify(models)
+    torch_for(manifest)
+    load(models, manifest)
+    for name in IMPORTS:
+        importlib.import_module(name)
 
 
 def load_model(weights, report, *, precision="full", precision_report=None):

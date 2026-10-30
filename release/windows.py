@@ -189,14 +189,13 @@ def check(stage):
     run(
         stage / "runtime/python.exe", "-I", "-c",
         "import sys, pathlib, torch, cupy, mujoco, aiortc, xr, imgui_bundle, ito.app.__main__\n"
-        "import importlib.util, faiss\n"
-        "from ito.reconstruction.mast3r_runtime import MODELS, verify\n"
+        "from ito.reconstruction.mast3r_runtime import MODELS, check_bundle\n"
         "root = pathlib.Path(sys.argv[1])\n"
         "assert MODELS == root / 'models', MODELS\n"
-        "# The default SLAM path's files: weights, retrieval, MASt3R-SLAM, kernels, asmk.\n"
-        "hamming = MODELS / verify()['native']['asmk.hamming']\n"
-        "spec = importlib.util.spec_from_file_location('asmk.hamming', hamming)\n"
-        "spec.loader.exec_module(importlib.util.module_from_spec(spec))\n"
+        "# The default SLAM path, whole: the bundle's files, its native extensions, and the\n"
+        "# imports of MASt3R-SLAM, MASt3R's retrieval, asmk and faiss.\n"
+        "check_bundle()\n"
+        "import faiss\n"
         "for module in (torch, cupy, mujoco, aiortc, xr, imgui_bundle, ito, faiss):\n"
         "    assert pathlib.Path(module.__file__).is_relative_to(root), module.__file__\n"
         "assert torch.version.cuda, 'torch without CUDA'\n",
