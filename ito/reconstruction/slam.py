@@ -39,6 +39,7 @@ MOVED = 0.005  # a keyframe the solve moved by more than this share of its depth
 RETRIES = 2  # keyframes the splat pool could not take whole, offered again per frame
 # Free VRAM after setup below this: the driver is already spilling into system memory.
 SPILLING = 256 << 20
+OOM_SHOWN = 10.0  # seconds the status keeps saying a frame was dropped for VRAM
 
 
 def crop_size(width, height):
@@ -225,6 +226,7 @@ class SLAMBackend(RGBDBackend):
         self.spare = None  # the graph's edge count before a full map's spare keyframe, if any
         self.loops = 0
         self.relocalized = 0
+        self.ooms, self.oom_at = 0, -OOM_SHOWN
         self.tof = RangeScale(self.input.K, (h, w))
         self.scale = 1.0  # metres per map unit, for display; 1 until the ToF fixes it
         self.ranged = None
@@ -249,6 +251,8 @@ class SLAMBackend(RGBDBackend):
             # safe to drop: half a keyframe's backend work leaves upstream's keyframes, graph
             # and retrieval out of step, so that ends this map.
             if (len(self.keyframes), self.graph.n_edges, self.retrieval.kf_counter) == before:
+                self.ooms, self.oom_at = self.ooms + 1, now
+                self.report(self.out_of_memory())
                 raise
             raise RuntimeError(
                 f"Out of VRAM in MASt3R-SLAM's backend at {self.settings}: {self.lower} in Settings"
@@ -256,8 +260,13 @@ class SLAMBackend(RGBDBackend):
         if self.ranged is not None and self.tof.value is None and self.measure(self.ranged):
             self.scale = self.tof.value
             self.shown = 0  # every keyframe again, at the new scale
-        self.publish(self.posed)
+        self.publish(self.posed, now)
         self.draw(now)
+
+    def out_of_memory(self):
+        return (
+            f"Out of VRAM at {self.settings}: {self.ooms} frames dropped; {self.lower} in Settings"
+        )
 
     def add_ranges(self, grid):
         self.tof.add(grid)
@@ -447,7 +456,7 @@ class SLAMBackend(RGBDBackend):
         rigid[:3, 3] = matrix[:3, 3] * AXES * self.scale
         return self.world @ rigid
 
-    def publish(self, posed):
+    def publish(self, posed, now):
         pose = None if posed is None else self.placed(posed)
         self.lost = pose is None
         if pose is not None:
@@ -479,8 +488,13 @@ class SLAMBackend(RGBDBackend):
                 f"; splat budget full: {owed} keyframes not fully shown (raise Max splats, or "
                 "free VRAM)"
             )
-        if self.warning:
-            self.report(f"{self.warning}. MASt3R-SLAM {state}; {counts}")
+        warning = self.warning
+        if now - self.oom_at < OOM_SHOWN:
+            warning = (
+                self.out_of_memory() if warning is None else f"{self.out_of_memory()}. {warning}"
+            )
+        if warning:
+            self.report(f"{warning}. MASt3R-SLAM {state}; {counts}")
         else:
             # The pilot shows any status but the plain "tracking |" one.
             self.report(f"MASt3R-SLAM {state} | {counts}")

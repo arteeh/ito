@@ -243,6 +243,20 @@ FACTOR_GRAPH = (
 )
 
 
+# FrameTracker takes any error in its pose solve for a lost frame, CUDA out of memory too; it
+# then relocalises, which needs more memory still, and nobody is told. Ito re-raises that one, so
+# it reaches the worker's out-of-VRAM handling and its message.
+TRACKER = (
+    (
+        '        except Exception as e:\n            print(f"Cholesky failed {frame.frame_id}")\n',
+        "        except torch.cuda.OutOfMemoryError:\n"
+        "            raise\n"
+        "        except Exception as e:\n"
+        '            print(f"Cholesky failed {frame.frame_id}")\n',
+    ),
+)
+
+
 def adapt(path, replacements):
     code = path.read_text(encoding="utf-8")
     for old, new in replacements:
@@ -421,6 +435,7 @@ def main():
         report,
     )
     adapt(slam / "mast3r_slam/global_opt.py", FACTOR_GRAPH)
+    adapt(slam / "mast3r_slam/tracker.py", TRACKER)
     # Windows' `long` is 32 bits; the kernels index with it.
     for path in (slam / "mast3r_slam/backend/src").glob("*.cu"):
         original = path.read_text(encoding="utf-8")
@@ -468,8 +483,9 @@ def main():
         f"retrieval/: MASt3R's retrieval head and ASMK codebook, {RETRIEVAL_BASE}/"
         f"{RETRIEVAL_NAME}_*. Unmodified. CC BY-NC-SA 4.0, as above.\n"
         f"slam/: MASt3R-SLAM revision {SLAM_REV}. Ito source adaptations: FactorGraph keeps "
-        "its edges and solve inputs in buffers allocated once (global_opt.py), fixed-width "
-        "CUDA indices, distinct lietorch CPU kernel symbols, current-stream CUDA launches.\n",
+        "its edges and solve inputs in buffers allocated once (global_opt.py), the frame "
+        "tracker re-raises CUDA out-of-memory errors (tracker.py), fixed-width CUDA indices, "
+        "distinct lietorch CPU kernel symbols, current-stream CUDA launches.\n",
         encoding="utf-8",
     )
     if (cache / "native").exists():
