@@ -9,6 +9,8 @@ one thread: upstream's single_thread mode, in which the frontend waits for the b
 every keyframe and every relocalisation attempt. Ito's own code is the edges: Input makes
 frames as upstream's dataloader and create_frame do, and the camera pose and the keyframes'
 pointmaps (at their current poses, as upstream's viewer draws them) go out to the pilot.
+Where the robot has a ToF sensor, tof.RangeScale fixes once how many metres a map unit is, and
+the pilot gets the map at that scale; the solve never sees it.
 """
 
 import threading
@@ -17,6 +19,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from .rgbd import RGBDBackend
+from .tof import RangeScale
 
 AXES = np.array([1.0, -1.0, -1.0])  # OpenCV camera/world axes (+Y down, +Z forward) to Ito.
 # MASt3R's input, long side, per Input resolution setting; 512 is upstream's.
@@ -205,6 +208,9 @@ class SLAMBackend(RGBDBackend):
         self.full = False
         self.loops = 0
         self.relocalized = 0
+        self.tof = RangeScale(self.input.K, (h, w))
+        self.scale = 1.0  # metres per map unit, for display; 1 until the ToF fixes it
+        self.ranged = None
         report("MASt3R-SLAM ready; waiting for camera")
 
     def bind_admission(self, admission):
@@ -230,8 +236,23 @@ class SLAMBackend(RGBDBackend):
             raise RuntimeError(
                 f"Out of VRAM in MASt3R-SLAM's backend at {self.settings}: {self.lower} in Settings"
             ) from exc
+        if self.ranged is not None and self.tof.value is None and self.measure(self.ranged):
+            self.scale = self.tof.value
+            self.shown = 0  # every keyframe again, at the new scale
         self.publish(self.posed)
         self.draw(now)
+
+    def add_ranges(self, grid):
+        self.tof.add(grid)
+
+    def measure(self, frame):
+        """Hand the ToF scale a posed frame's depth in map units: its own points' depth times
+        its Sim(3) scale. source_captured: the frame's capture time, set by the worker."""
+        torch = self.torch
+        z = frame.X_canon[:, 2]
+        known = (frame.get_average_conf()[:, 0] > CONFIDENCE) & (z > 0)
+        depth = torch.where(known, z * frame.T_WC.data[0, 7], torch.nan)
+        return self.tof.measure(self.source_captured, depth)
 
     def step(self, rgb, camera):
         Mode, states, keyframes = self.Mode, self.states, self.keyframes
@@ -243,7 +264,7 @@ class SLAMBackend(RGBDBackend):
             else states.get_frame().T_WC
         )
         frame = self.input.frame(self.i, rgb, T_WC)
-        posed = None
+        posed = self.ranged = None
         if mode == Mode.INIT:
             # Initialize via mono inference, and encoded features neeed for database
             X_init, C_init = self.inference(self.model, frame)
@@ -254,6 +275,7 @@ class SLAMBackend(RGBDBackend):
             states.set_frame(frame)
             self.place(camera)
             posed = frame.T_WC
+            self.ranged = frame
         else:
             add_new_kf = False
             if mode == Mode.TRACKING:
@@ -262,6 +284,7 @@ class SLAMBackend(RGBDBackend):
                     states.set_mode(Mode.RELOC)
                 else:
                     posed = frame.T_WC
+                    self.ranged = frame
                 states.set_frame(frame)
             elif mode == Mode.RELOC:
                 X, C = self.inference(self.model, frame)
@@ -385,7 +408,7 @@ class SLAMBackend(RGBDBackend):
         u, _, vh = np.linalg.svd(matrix[:3, :3])
         rigid = np.eye(4)
         rigid[:3, :3] = (u @ vh) * AXES[:, None] * AXES[None, :]
-        rigid[:3, 3] = matrix[:3, 3] * AXES
+        rigid[:3, 3] = matrix[:3, 3] * AXES * self.scale
         return self.world @ rigid
 
     def publish(self, posed):
@@ -397,7 +420,12 @@ class SLAMBackend(RGBDBackend):
         n = len(self.keyframes)
         counts = (
             f"{self.tracked} frames, {n}/{self.capacity} keyframes, {self.graph.n_edges} edges, "
-            f"{self.loops} loop closures, {self.relocalized} relocalised"
+            f"{self.loops} loop closures, {self.relocalized} relocalised, "
+            + (
+                f"{self.scale:.3f} m per map unit (ToF)"
+                if self.tof.value
+                else "unscaled (MASt3R units)"
+            )
         )
         if self.full:
             state = f"map full at {n} keyframes: tracking on, mapping nothing new"
@@ -452,10 +480,10 @@ class SLAMBackend(RGBDBackend):
         if not bool(valid.any()):
             return
         self.depth[k] = z[valid].median()
-        points = self.lietorch.Sim3(pose).act(local) * self.axes
+        points = self.lietorch.Sim3(pose).act(local) * self.axes * self.scale
         points = points @ self.world_rotation.T + self.world_translation
         pixels = 3 * max(1, (400_000 / self.budget) ** 0.5)
-        footprint = z * pose[0, 7] * pixels / float(self.input.K[0, 0])
+        footprint = z * pose[0, 7] * self.scale * pixels / float(self.input.K[0, 0])
         xp = self.xp
         self.integrate_points(
             xp.from_dlpack(points[valid].contiguous()),

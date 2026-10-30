@@ -2,6 +2,7 @@ import json
 import logging
 import multiprocessing as mp
 import os
+import queue
 import sys
 import traceback
 
@@ -99,6 +100,11 @@ def _run(recon):
             if len(backend.keys) > backend.budget and backend.compact():
                 recon.notes.send(f"Splat slots shrunk to {len(backend.keys):,}")
             recon.slot_capacity.value = len(backend.keys)
+            while recon.backend == "slam":
+                try:
+                    backend.add_ranges(recon.range_queue.get_nowait())
+                except queue.Empty:
+                    break
             frame = None
             take = recon.sequence.value != sequence and recon.admission.available()
             if take and recon.input_lock.acquire(False):
@@ -202,6 +208,7 @@ def _run(recon):
                         recon.output_captured.value = captured
                         recon.tracked.value = backend.tracked
                         recon.tracking.value = not backend.lost and backend.tracked > 0
+                        recon.display_scale.value = backend.tof.value or 0.0
                     finally:
                         recon.output_lock.release()
             for _ in range(recon.ring.slots):
@@ -311,6 +318,9 @@ class Reconstruction:
         self.output_lock = context.Lock()
         self.output_camera = context.RawArray("f", 16)
         self.output_captured = context.RawValue("d", 0)
+        # ToF ranges for the map's display scale, until the worker has fixed it (then nonzero).
+        self.range_queue = context.Queue(maxsize=64)
+        self.display_scale = context.RawValue("d", 0)
         self.tracked = context.RawValue("Q", 0)
         self.integrated = context.RawValue("Q", 0)
         self.scene_slots = context.RawValue("I", 0)
@@ -373,6 +383,7 @@ class Reconstruction:
                 self.intrinsics.width, self.intrinsics.height, self.input_resolution
             ),
             slam_keyframes=self.keyframes,
+            slam_display_scale=self.display_scale.value or None,
             reconstruction_oom=self.last_oom.value > 0 and clock.now() - self.last_oom.value < 10,
             network_oom_count=self.oom_count.value,
             network_nonfinite_points=self.nonfinite_points.value,
@@ -450,6 +461,22 @@ class Reconstruction:
             )
         finally:
             self.output_lock.release()
+
+    def ranges(self, grids):
+        """ToF range grids (see tof.RangeScale.add), on the pilot clock. A full queue drops the
+        oldest; once the map's scale is fixed, nothing is sent."""
+        if self.closed or self.backend != "slam" or self.display_scale.value:
+            return
+        for grid in grids:
+            for _ in range(2):
+                try:
+                    self.range_queue.put_nowait(grid)
+                    break
+                except queue.Full:
+                    try:
+                        self.range_queue.get_nowait()
+                    except queue.Empty:
+                        pass
 
     def submit(self, rgb, depth=None, camera=None, captured_at=None):
         """Depth is axial metres; pose is world-from-camera (+Y up, -Z forward).
@@ -534,6 +561,8 @@ class Reconstruction:
                 self.process.join(timeout=3)
                 if self.process.is_alive():
                     log.error("Reconstruction process %d did not exit", self.process.pid)
+            self.range_queue.cancel_join_thread()
+            self.range_queue.close()
             self.errors.close()
             self.notes.close()
 

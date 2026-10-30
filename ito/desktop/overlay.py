@@ -229,9 +229,11 @@ class Overlay:
             with self.theme.font("numeric"):
                 imgui.text(f"Splats: {splats} | VRAM {memory}")
             if values.get("slam_precision"):
+                scale = values.get("slam_display_scale")
                 imgui.text(
                     f"MASt3R: {values['slam_precision']}, "
-                    f"{values.get('slam_keyframes', '--')} keyframes"
+                    f"{values.get('slam_keyframes', '--')} keyframes, "
+                    + (f"{scale:.3f} m per map unit (ToF)" if scale else "unscaled")
                 )
             if values.get("reconstruction_oom"):
                 imgui.text_colored(

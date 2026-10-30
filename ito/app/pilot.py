@@ -13,7 +13,7 @@ from ito.desktop import DesktopState, PilotStatus
 from ito.desktop.settings import load as app_settings
 from ito.link import PairingError, connect
 from ito.link.audio import Audio
-from ito.protocol import Command, FrameMetadata, Motion, Paired, PilotState, Pose, Status
+from ito.protocol import Command, FrameMetadata, Motion, Paired, PilotState, Pose, Sensors, Status
 from ito.rates import CounterRate, Rate
 from ito.reconstruction import Reconstruction
 from ito.render import pose
@@ -298,6 +298,26 @@ class Pilot:
             )
         return fresh
 
+    def _sensors(self, message, peer):
+        """ToF ranges for the map's one-time display scale; nothing else from the head's
+        sensors reaches SLAM."""
+        worker = self.worker
+        if worker is None or self.failure or self.backend != "slam" or not message.ranges:
+            return
+        local = peer.clock.remote_to_local
+        worker.ranges(
+            [
+                dict(
+                    time=local(grid.time),
+                    mount=camera_matrix(grid.mount),
+                    shape=(grid.rows, grid.cols),
+                    field_of_view=grid.field_of_view,
+                    distances=[math.nan if d is None else d for d in grid.distances],
+                )
+                for grid in message.ranges
+            ]
+        )
+
     def _retire(self, worker):
         closer = threading.Thread(target=worker.close, name="ito-reconstruction-close")
         closer.start()
@@ -431,6 +451,8 @@ class Pilot:
                         self._submit(pair, peer)
                 elif isinstance(message, Motion):
                     self._motion(message, peer)
+                elif isinstance(message, Sensors) and message.camera == camera.name:
+                    self._sensors(message, peer)
                 elif isinstance(message, Status):
                     last_status = clock.now()
                     self.telemetry = message.telemetry

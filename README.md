@@ -92,8 +92,9 @@ tracked against keyframes, linked by retrieval and solved as one global Sim(3) g
 camera relocalises and maps nothing meanwhile. The robot's pose places the map once, at the
 first frame. Its buffers are allocated at start, so memory stays flat: Settings > Map size
 picks how many keyframes (and shows their VRAM; 512 is upstream's). When the map is full,
-tracking goes on and nothing new is mapped. Monocular scale is MASt3R's, so reconstructed
-distances are not a measurement tool.
+tracking goes on and nothing new is mapped. Monocular scale is MASt3R's; a robot with a ToF
+sensor (Microduck) fixes once how many metres a map unit is, for display only, so
+reconstructed distances are not a measurement tool.
 
 On Microduck, from this checkout: `uv run --project drivers/microduck ito-driver-microduck`; connect with `uv run ito <duck-address>:8081` and enter its printed pairing code.
 Microduck must have robotd/mediad running and be enabled with `robotctl robot enable`; G/right trigger opens the beak, C crouches.
