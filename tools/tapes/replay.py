@@ -222,14 +222,23 @@ def main():
     events += [(k / a.fps, 3, k) for k in range(ticks + 1)]
     events.sort(key=lambda e: (e[0], e[1]))
 
-    # Frames are decoded and rectified ahead on a thread (the pilot gets them decoded).
-    decoded = queue.Queue(maxsize=60)
+    # Frames are read and rectified ahead by a few threads (the pilot gets them decoded; one
+    # thread reading PNGs over the WSL share falls behind real time).
+    from collections import deque
+    from concurrent.futures import ThreadPoolExecutor
 
-    def decode():
-        for f in frames:
-            decoded.put((f["seq"], rec.rgb(f)))
+    readers = ThreadPoolExecutor(max_workers=6)
+    pending = deque()
+    upcoming = iter(frames)
 
-    threading.Thread(target=decode, daemon=True).start()
+    def refill():
+        while len(pending) < 90:
+            f = next(upcoming, None)
+            if f is None:
+                return
+            pending.append(readers.submit(lambda f=f: (f["seq"], rec.rgb(f))))
+
+    refill()
 
     fourcc = cv2.VideoWriter_fourcc(*"MJPG")
     writers = {
@@ -264,7 +273,7 @@ def main():
     def remote_to_local(driver_time):
         return local(driver_time - t0)
 
-    submitted = accepted = late = 0
+    submitted = accepted = late = ahead = 0
     last_frame = frames[0]["seq"]
     began = time.perf_counter()
     for when, kind, payload in events:
@@ -274,7 +283,9 @@ def main():
         elif kind == 3 and wait < -0.5:
             late += 1
         if kind == 0:
-            seq, rgb = decoded.get()
+            ahead = sum(future.done() for future in pending)
+            seq, rgb = pending.popleft().result()
+            refill()
             truth = None
             if give_truth:
                 pose = payload["pose"]
@@ -346,6 +357,7 @@ def main():
                     frame=int(last_frame),
                     splats=int((records[:, 0, 3] > 1 / 255).sum()) if len(records) else 0,
                     cost=round(clock.now() - now, 3),
+                    ahead=ahead,
                     lag=round(now - local(when), 3),
                     pose=None if published is None else published[0].round(5).tolist(),
                     tracked=None if published is None else int(published[1]),
