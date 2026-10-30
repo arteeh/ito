@@ -1357,8 +1357,10 @@ class SLAMBackend(GaussianBackend):
         k = self.frontend.reference
         if cloud is None or metres is None or k is None:
             return
-        if len(self.vision_metres) < VISION_SCALE_READINGS:
+        if VISION_SCALE != "gated" and len(self.vision_metres) < VISION_SCALE_READINGS:
             return  # the metric scale is still being pooled (and may change)
+        if VISION_SCALE == "gated" and not self.vision_final:
+            return  # one rescale of the map may still come (ITO_VISION_SCALE_FINAL)
         from .mast3r_global import sim3_matrix
 
         data = self.frontend.frames[k].T_WC.data.reshape(8).double().cpu().numpy()
@@ -1387,13 +1389,19 @@ class SLAMBackend(GaussianBackend):
         if cloud is not None and not self.vision_final and self.camera_still(exposure):
             gated.extend(math.log(v) for v in (ranged, below) if v is not None)
         if self.vision_held is None:
-            if len(gated) < SCALE_START:
+            pooled = self.vision_metres
+            if len(gated) < SCALE_START and len(pooled) < VISION_SCALE_READINGS:
                 return None
-            self.vision_held = math.exp(float(np.median(gated[:SCALE_START])))
+            if len(gated) >= SCALE_START:
+                self.vision_held = math.exp(float(np.median(gated[:SCALE_START])))
+                source = f"{SCALE_START} still readings"
+            else:
+                # A pilot who never holds still: the moving readings for now (0.79-1.08 of true
+                # live); the global graph's session scale (mast3r_global) refines it.
+                self.vision_held = math.exp(float(np.median(pooled)))
+                source = f"{len(pooled)} readings while moving"
             self.vision_final = SCALE_FINAL <= SCALE_START
-            self.report(
-                f"Vision scale {self.vision_held:.3f} m/unit from {SCALE_START} still readings"
-            )
+            self.report(f"Vision scale {self.vision_held:.3f} m/unit from {source}")
         elif not self.vision_final and len(gated) >= SCALE_FINAL:
             self.vision_final = True
             final = math.exp(float(np.median(gated)))
