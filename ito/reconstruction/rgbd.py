@@ -24,7 +24,10 @@ SLOT_FIELDS = {
     "release_after": (np.float64, np.inf, ()),
     "sequences": (np.uint64, 0, ()),
     "captures": (np.float64, 0, ()),
-    # What placed a splat, when the scene is made of sources that move (SLAM keyframes).
+    # Whose splat it is, when the scene is made of sources that move (SLAM keyframes): the
+    # source that placed it, or that rescued it while it was being retired. Others that only
+    # refresh it do not take it over, so one source's redraw or removal never takes splats
+    # another source still shows.
     "sources": (np.int32, -1, ()),
 }
 
@@ -164,8 +167,8 @@ class RGBDBackend:
         self.dirty[expired] = True
 
     def retire_source(self, source):
-        """Fade out what one source placed: it is placed anew, and what it places again where it
-        was stays without a flicker (integrate_points rescues it)."""
+        """Fade out the splats one source owns: it is placed anew (or gone), and what it places
+        again where it was stays without a flicker (integrate_points rescues it)."""
         self.retire(np.flatnonzero((self.sources == source) & (self.keys >= 0) & ~self.retiring))
 
     def carve(self, camera, fx, fy, cx, cy, depth, now):
@@ -264,6 +267,7 @@ class RGBDBackend:
         )
         slots = slots[refresh]
         observed = np.flatnonzero(matched)[refresh]
+        self.sources[slots[self.retiring[slots]]] = source
         self.retiring[slots] = False
         self.retire_revision[slots] = np.inf
         self.release_after[slots] = np.inf
@@ -281,7 +285,7 @@ class RGBDBackend:
         slots = np.concatenate((slots, free[:admitted]))
         observed = np.concatenate((observed, selected))
         self.keys[slots] = keys[observed]
-        self.sources[slots] = source
+        self.sources[free[:admitted]] = source
         self.sequences[slots] = self.source_sequence
         self.captures[slots] = self.source_captured
         self.seen[slots] = now

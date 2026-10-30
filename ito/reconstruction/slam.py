@@ -32,6 +32,8 @@ LONG_SIDE = {25: 256, 50: 368, 75: 448, 100: 512}
 # solve's inputs (16) and its graph edges (26 each).
 EDGES_PER_KEYFRAME = 4
 KEYFRAME_BYTES_PER_PIXEL = 44 + 16 + 26 * EDGES_PER_KEYFRAME
+# Keyframe slots beyond the map size, only for relocalising a full map (see relocalization).
+SPARE = 1
 CONFIDENCE = 1.5  # upstream's viewer draws points above this average confidence
 MOVED = 0.005  # a keyframe the solve moved by more than this share of its depth is redrawn
 # Free VRAM after setup below this: the driver is already spilling into system memory.
@@ -61,7 +63,7 @@ def input_shape(width, height, percent):
 def map_bytes(keyframes, width, height, percent):
     """VRAM MASt3R-SLAM's buffers take at start, for a camera and an Input resolution."""
     w, h = input_shape(width, height, percent)
-    return keyframes * KEYFRAME_BYTES_PER_PIXEL * w * h
+    return (keyframes + SPARE) * KEYFRAME_BYTES_PER_PIXEL * w * h
 
 
 def crop(image, long):
@@ -176,22 +178,25 @@ class SLAMBackend(RGBDBackend):
         self.lower = "lower the Map size or Input resolution" + (
             " or choose Half" if precision == "full" else ""
         )
-        self.capacity, self.edges = keyframes, EDGES_PER_KEYFRAME * keyframes
+        self.capacity = keyframes
+        buffer = keyframes + SPARE
         try:
             self.model = load_model(
                 weights, report, precision=precision, precision_report=precision_report
             )
             K = torch.as_tensor(self.input.K, device="cuda")
             manager = Manager()
-            self.keyframes = SharedKeyframes(manager, h, w, buffer=keyframes)
+            self.keyframes = SharedKeyframes(manager, h, w, buffer=buffer)
             self.states = SharedStates(manager, h, w)
             self.keyframes.set_intrinsics(K)
             self.tracker = FrameTracker(self.model, self.keyframes, "cuda")
-            self.graph = FactorGraph(self.model, self.keyframes, K, "cuda", max_edges=self.edges)
+            self.graph = FactorGraph(
+                self.model, self.keyframes, K, "cuda", max_edges=EDGES_PER_KEYFRAME * buffer
+            )
             self.retrieval = load_retriever(self.model, str(retrieval))
             # Ito's own, also once: each keyframe's pose when last drawn, and its depth.
-            self.drawn = torch.zeros(keyframes, 1, lietorch.Sim3.embedded_dim, device="cuda")
-            self.depth = torch.ones(keyframes, device="cuda")
+            self.drawn = torch.zeros(buffer, 1, lietorch.Sim3.embedded_dim, device="cuda")
+            self.depth = torch.ones(buffer, device="cuda")
             free, _ = torch.cuda.mem_get_info()
         except torch.cuda.OutOfMemoryError as exc:
             raise RuntimeError(
@@ -214,7 +219,7 @@ class SLAMBackend(RGBDBackend):
         self.camera_pose = np.eye(4, dtype=np.float32)
         self.tracked = 0
         self.lost = False
-        self.full = False
+        self.spare = None  # the graph's edge count before a full map's spare keyframe, if any
         self.loops = 0
         self.relocalized = 0
         self.tof = RangeScale(self.input.K, (h, w))
@@ -268,7 +273,7 @@ class SLAMBackend(RGBDBackend):
         mode = states.get_mode()
         # get frames last camera pose
         T_WC = (
-            self.lietorch.Sim3.Identity(1, device="cuda")
+            self.lietorch.Sim3.Identity(1, device=self.axes.device)
             if self.i == 0
             else states.get_frame().T_WC
         )
@@ -291,6 +296,7 @@ class SLAMBackend(RGBDBackend):
                 add_new_kf, _, try_reloc = self.tracker.track(frame)
                 if try_reloc:
                     states.set_mode(Mode.RELOC)
+                    self.drop_spare()
                 else:
                     posed = frame.T_WC
                     self.ranged = frame
@@ -299,26 +305,36 @@ class SLAMBackend(RGBDBackend):
                 X, C = self.inference(self.model, frame)
                 frame.update_pointmap(X, C)
                 states.set_frame(frame)
-                # Ito: a relocalisation attempt is a keyframe until it fails; none when full.
-                if self.room(self.config["retrieval"]["k"]) and self.relocalization(
-                    states.get_frame()
-                ):
+                # Ito: a full map relocalises into its spare slot (see relocalization).
+                spare = len(keyframes) >= self.capacity
+                edges = self.graph.n_edges
+                if self.relocalization(states.get_frame(), keep=not spare):
                     states.set_mode(Mode.TRACKING)
                     self.relocalized += 1
                     posed = self.lietorch.Sim3(keyframes.T_WC[len(keyframes) - 1])
+                    if spare:
+                        self.spare = edges
             else:
                 raise RuntimeError(f"Invalid MASt3R-SLAM mode {mode}")
-            if add_new_kf and self.room(1 + self.config["retrieval"]["k"]):
+            # Ito: a full map maps nothing new; upstream's buffer would overflow (IndexError).
+            if add_new_kf and len(keyframes) < self.capacity:
                 keyframes.append(frame)
                 self.optimize(len(keyframes) - 1)
         self.i += 1
         self.posed = posed
 
-    def room(self, edges):
-        """Upstream's buffers would overflow (IndexError) past their size: Ito adds no keyframe
-        then, and says so."""
-        self.full = len(self.keyframes) >= self.capacity or self.graph.n_edges + edges > self.edges
-        return not self.full
+    def drop_spare(self):
+        """A full map's spare keyframe goes when the camera is lost again, so the spare slot is
+        free for the next relocalisation. Its edges are the graph's last (a full map adds no
+        keyframe after it) and retrieval never held it."""
+        if self.spare is None:
+            return
+        k = len(self.keyframes) - 1
+        self.graph.n_edges = self.spare
+        self.keyframes.pop_last()
+        self.retire_source(k)
+        self.shown = min(self.shown, k)
+        self.spare = None
 
     def optimize(self, idx):
         """run_backend's work on one queued keyframe (main.py), which single_thread waits for."""
@@ -355,8 +371,13 @@ class SLAMBackend(RGBDBackend):
         else:
             factor_graph.solve_GN_rays()
 
-    def relocalization(self, frame):
-        """main.py's relocalization, as run_backend runs it for a frame in RELOC mode."""
+    def relocalization(self, frame, keep=True):
+        """main.py's relocalization, as run_backend runs it for a frame in RELOC mode.
+
+        keep=False (Ito, a full map): the relocalised frame becomes a keyframe in the spare slot
+        but not a retrieval entry, as it goes again at the next loss (drop_spare) and
+        retrieval's ids must stay keyframe indices. Upstream has no full map: its buffer
+        overflows instead."""
         config, keyframes = self.config, self.keyframes
         factor_graph, retrieval_database = self.graph, self.retrieval
         # we are adding and then removing from the keyframe, so we need to be careful.
@@ -382,12 +403,13 @@ class SLAMBackend(RGBDBackend):
                     config["reloc"]["min_match_frac"],
                     is_reloc=config["reloc"]["strict"],
                 ):
-                    retrieval_database.update(
-                        frame,
-                        add_after_query=True,
-                        k=config["retrieval"]["k"],
-                        min_thresh=config["retrieval"]["min_thresh"],
-                    )
+                    if keep:
+                        retrieval_database.update(
+                            frame,
+                            add_after_query=True,
+                            k=config["retrieval"]["k"],
+                            min_thresh=config["retrieval"]["min_thresh"],
+                        )
                     successful_loop_closure = True
                     keyframes.T_WC[n_kf - 1] = keyframes.T_WC[kf_idx[0]].clone()
                 else:
@@ -405,8 +427,9 @@ class SLAMBackend(RGBDBackend):
         that pose where the robot says its camera is."""
         torch = self.torch
         self.world = np.asarray(camera, dtype=np.float64)
-        self.world_rotation = torch.as_tensor(self.world[:3, :3], device="cuda").float()
-        self.world_translation = torch.as_tensor(self.world[:3, 3], device="cuda").float()
+        device = self.axes.device
+        self.world_rotation = torch.as_tensor(self.world[:3, :3], device=device).float()
+        self.world_translation = torch.as_tensor(self.world[:3, 3], device=device).float()
 
     def placed(self, transform):
         """A Sim(3) camera pose of upstream's as a rigid world-from-camera pose in Ito's world."""
@@ -426,7 +449,8 @@ class SLAMBackend(RGBDBackend):
         if pose is not None:
             self.camera_pose = pose.astype(np.float32)
             self.tracked += 1
-        n = len(self.keyframes)
+        full = len(self.keyframes) >= self.capacity
+        n = min(len(self.keyframes), self.capacity)
         counts = (
             f"{self.tracked} frames, {n}/{self.capacity} keyframes, {self.graph.n_edges} edges, "
             f"{self.loops} loop closures, {self.relocalized} relocalised, "
@@ -436,10 +460,12 @@ class SLAMBackend(RGBDBackend):
                 else "unscaled (MASt3R units)"
             )
         )
-        if self.full:
-            state = f"map full at {n} keyframes: tracking on, mapping nothing new"
-        elif self.lost:
+        if self.lost:
             state = "lost: look back at a mapped place to relocalise"
+            if full:
+                state = "map full, " + state + "; nothing new is mapped"
+        elif full:
+            state = "map full: tracking, mapping nothing new (a larger Map size maps more)"
         else:
             state = "tracking"
         if self.warning:
@@ -453,7 +479,7 @@ class SLAMBackend(RGBDBackend):
         upstream marked dirty (new, or refined by the tracker) and those the solve moved."""
         torch, lietorch, keyframes = self.torch, self.lietorch, self.keyframes
         n = len(keyframes)
-        redraw = torch.zeros(n, dtype=torch.bool, device="cuda")
+        redraw = torch.zeros(n, dtype=torch.bool, device=self.drawn.device)
         dirty = keyframes.get_dirty_idx()
         redraw[dirty[dirty < n]] = True
         redraw[self.shown :] = True
@@ -480,7 +506,7 @@ class SLAMBackend(RGBDBackend):
             pose = keyframes.T_WC[k].clone()
             z = keyframes.X[k][:, 2].clone()
             confidence = keyframes.C[k][:, 0] / keyframes.N[k]
-            colors = (keyframes.uimg[k].reshape(-1, 3).to("cuda") * 255).to(torch.uint8)
+            colors = (keyframes.uimg[k].reshape(-1, 3).to(z.device) * 255).to(torch.uint8)
         # Constrained to its rays, as use_calib does, and as upstream's viewer draws it.
         local = torch.stack((z * self.rays[0], z * self.rays[1], z), dim=1)
         valid = (confidence > CONFIDENCE) & (z > 0) & torch.isfinite(local).all(dim=1)

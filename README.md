@@ -90,9 +90,10 @@ Monocular SLAM needs an NVIDIA GPU. Models and their licence notices are include
 SLAM is MASt3R-SLAM as upstream runs it (`ito/reconstruction/slam.py`): the camera alone,
 tracked against keyframes, linked by retrieval and solved as one global Sim(3) graph; a lost
 camera relocalises and maps nothing meanwhile. The robot's pose places the map once, at the
-first frame. Its buffers are allocated at start, so memory stays flat: Settings > Map size
-picks how many keyframes (and shows their VRAM; 512 is upstream's). When the map is full,
-tracking goes on and nothing new is mapped. Monocular scale is MASt3R's; a robot with a ToF
+first frame. Its large buffers (keyframes, graph edges, the solve's inputs) are allocated once,
+at start: Settings > Map size picks how many keyframes (and shows their VRAM; 512 is
+upstream's). A full map maps nothing new, but tracks and relocalises on: one spare keyframe
+slot is kept for relocalising, reused at every loss. Monocular scale is MASt3R's; a robot with a ToF
 sensor (Microduck) fixes once how many metres a map unit is, for display only, so
 reconstructed distances are not a measurement tool.
 
