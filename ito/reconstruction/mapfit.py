@@ -104,10 +104,13 @@ class MapFit:
                         continue
                     try:
                         began = time.perf_counter()
+                        aside = self.seconds["sync"]
                         progressed = self.step()
                         torch.cuda.current_stream().synchronize()
+                        # The rest matches the step only, not a sync's wait for the map's lock.
+                        worked = time.perf_counter() - began - (self.seconds["sync"] - aside)
                         if progressed and 0 < DUTY < 1:
-                            time.sleep((time.perf_counter() - began) * (1 / DUTY - 1))
+                            time.sleep(max(0.0, worked) * (1 / DUTY - 1))
                         errors = 0
                     except torch.cuda.OutOfMemoryError as exc:
                         self.reset()
