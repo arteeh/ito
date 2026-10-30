@@ -42,26 +42,29 @@ BACKGROUND = (0.04, 0.04, 0.06)
 
 
 class Mirror:
-    """The pilot renderer's copy of the worker's splat slots (ito/render/renderer.py apply)."""
+    """The pilot renderer's copy of the worker's splat slots (ito/render/renderer.py apply),
+    kept on the GPU."""
 
-    def __init__(self):
-        self.records = np.zeros((0, 4, 4), np.float32)
-        self.live = np.zeros(0, bool)
+    def __init__(self, torch):
+        self.torch = torch
+        self.records = torch.zeros((0, 4, 4), device="cuda")
+        self.live = torch.zeros(0, dtype=torch.bool, device="cuda")
         self.epoch = None
         self.fade = 0.0
         self.count = 0
         self.packets = 0
 
     def apply(self, update, now):
+        torch = self.torch
         if update.capacity != len(self.records):
-            records = np.zeros((update.capacity, 4, 4), np.float32)
-            live = np.zeros(update.capacity, bool)
+            records = torch.zeros((update.capacity, 4, 4), device="cuda")
+            live = torch.zeros(update.capacity, dtype=torch.bool, device="cuda")
             n = min(len(self.records), update.capacity)
             records[:n], live[:n] = self.records[:n], self.live[:n]
             self.records, self.live = records, live
         if self.epoch is not None and update.epoch != self.epoch:
-            self.records[:] = 0
-            self.live[:] = False
+            self.records.zero_()
+            self.live.zero_()
         self.epoch, self.fade, self.count = update.epoch, update.fade_seconds, update.count
         self.packets += 1
         if len(update.indices):
@@ -70,8 +73,10 @@ class Mirror:
             records[retiring, 1, 3] = np.minimum(
                 records[retiring, 1, 3], now - self.epoch + self.fade
             )
-            self.records[update.indices] = records
-            self.live[update.indices] = records[:, 0, 3] > 0
+            index = torch.as_tensor(update.indices.astype(np.int64), device="cuda")
+            values = torch.as_tensor(records, device="cuda")
+            self.records[index] = values
+            self.live[index] = values[:, 0, 3] > 0
         if update.acknowledge is not None:
             update.acknowledge()
 
@@ -79,15 +84,14 @@ class Mirror:
         r = self.records[self.live]
         if self.fade and self.epoch is not None and len(r):
             scene = now - self.epoch
-            r = r.copy()
-            r[:, 0, 3] *= np.clip((r[:, 1, 3] - scene) / self.fade, 0, 1)
+            r[:, 0, 3] *= ((r[:, 1, 3] - scene) / self.fade).clamp(0, 1)
         return r
 
 
 def draw(records, camera, K, torch, rasterization):
     if not len(records):
         return np.full((HEIGHT, WIDTH, 3), [int(255 * c) for c in BACKGROUND[::-1]], np.uint8)
-    r = torch.as_tensor(records, device="cuda", dtype=torch.float32)
+    r = records
     view = torch.as_tensor(np.linalg.inv(camera @ AXES), device="cuda", dtype=torch.float32)
     k = torch.as_tensor(K, device="cuda", dtype=torch.float32)
     image, alpha, _ = rasterization(
@@ -174,7 +178,28 @@ def main():
         input_resolution=settings.get("input_resolution", 100),
     )
     signature = inspect.signature(Reconstruction.__init__).parameters
+    # Capture stamps: A1 tapes carry each frame's capture time (`captured`) and say whether it
+    # is exact. Older tapes: a candidate that takes exact stamps (Camera.capture_exact, A1) gets
+    # the sim's exposure time, as lane base's research replay does; older candidates get the
+    # arrival stamp the pilot mapped frames by then, with the driver's frame delay.
+    if any("captured" in f for f in frames):
+        stamp = "captured"
+        options["capture_exact"] = bool(meta.get("capture_exact", False))
+    elif "capture_exact" in signature and any("exposed" in f for f in frames):
+        stamp = "exposed"
+        options.update(capture_exact=True, frame_delay=0.0)
+    else:
+        stamp = "received"
     options = {k: v for k, v in options.items() if k in signature}
+    exposed = [f["received"] - f["exposed"] for f in frames if "exposed" in f]
+    lag = float(np.median(exposed)) if exposed else 0.0  # for frames the sim gave no truth line
+
+    def stamp_of(f):
+        if stamp == "exposed":
+            return f.get("exposed", f["received"] - lag)
+        return f.get(stamp, f["received"])
+
+    print("frames stamped by", stamp)
     print("ito from", Path(ito.__file__).parent, "options", {k: str(v) for k, v in options.items()})
 
     truth_modes = set(filter(None, a.truth.split(",")))
@@ -211,8 +236,17 @@ def main():
         name: cv2.VideoWriter(str(out / f"{name}.avi"), fourcc, a.fps, (WIDTH, HEIGHT))
         for name in ("path", "overview")
     }
+    # Encoding runs on a thread, off the feed's clock.
+    encode = queue.Queue(maxsize=120)
+
+    def encoder():
+        while (item := encode.get()) is not None:
+            writers[item[0]].write(item[1])
+
+    encoding = threading.Thread(target=encoder, daemon=True)
+    encoding.start()
     tick_log = (out / "ticks.jsonl").open("w")
-    mirror = Mirror()
+    mirror = Mirror(torch)
     # The tape starts once the worker's loop runs (models loaded), so every candidate's film
     # starts at the same tape moment; the load time itself is not filmed.
     loading = clock.now()
@@ -252,7 +286,7 @@ def main():
             if truth is not None:
                 kwargs["truth"] = truth
             submitted += 1
-            if worker.submit(rgb, None, None, remote_to_local(payload["received"]), **kwargs):
+            if worker.submit(rgb, None, None, remote_to_local(stamp_of(payload)), **kwargs):
                 accepted += 1
             last_frame = seq
         elif kind == 1:
@@ -301,8 +335,8 @@ def main():
         records = mirror.drawable(now)
         i = min(np.searchsorted(path_times, when), len(path_times) - 1)
         with torch.no_grad():
-            writers["path"].write(draw(records, path_poses[i], K_path, torch, rasterization))
-            writers["overview"].write(draw(records, overview, K_overview, torch, rasterization))
+            encode.put(("path", draw(records, path_poses[i], K_path, torch, rasterization)))
+            encode.put(("overview", draw(records, overview, K_overview, torch, rasterization)))
         published = worker.pose()
         tick_log.write(
             json.dumps(
@@ -311,6 +345,7 @@ def main():
                     t=round(when, 3),
                     frame=int(last_frame),
                     splats=int((records[:, 0, 3] > 1 / 255).sum()) if len(records) else 0,
+                    cost=round(clock.now() - now, 3),
                     lag=round(now - local(when), 3),
                     pose=None if published is None else published[0].round(5).tolist(),
                     tracked=None if published is None else int(published[1]),
@@ -319,6 +354,8 @@ def main():
             )
             + "\n"
         )
+    encode.put(None)
+    encoding.join()
     for writer in writers.values():
         writer.release()
     tick_log.close()
@@ -332,8 +369,10 @@ def main():
         accepted=accepted,
         late_ticks=late,
         packets=mirror.packets,
-        splats=int(mirror.live.sum()),
+        splats=int(mirror.live.sum().item()),
         status=worker.status(),
+        stamp=stamp,
+        options={k: str(v) for k, v in options.items()},
         vram_peak_gib=round(torch.cuda.max_memory_reserved() / 2**30, 2),
     )
     worker.close()
