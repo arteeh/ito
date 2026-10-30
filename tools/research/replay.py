@@ -293,6 +293,12 @@ def main():
                     keyframes=len(backend.graph.keyframes),
                     fit_steps=int(backend.fit_steps),
                     vram_gib=round(torch.cuda.max_memory_reserved() / 2**30, 2),
+                    allocated_gib=round(torch.cuda.memory_allocated() / 2**30, 2),
+                    reserved_gib=round(torch.cuda.memory_reserved() / 2**30, 2),
+                    vision_keyframes=len(getattr(backend.frontend, "frames", ()) or ()),
+                    edge_mb=round(getattr(backend.global_graph, "edge_bytes", 0) / 2**20)
+                    if getattr(backend, "global_graph", None) is not None
+                    else 0,
                 )
             )
             + "\n"
