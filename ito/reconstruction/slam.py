@@ -37,6 +37,10 @@ SPARE = 1
 CONFIDENCE = 1.5  # upstream's viewer draws points above this average confidence
 MOVED = 0.005  # a keyframe the solve moved by more than this share of its depth is redrawn
 RETRIES = 2  # keyframes the splat pool could not take whole, offered again per frame
+# A loop closure, for the status: an edge the match kept to a keyframe more than this many
+# before the new one (upstream prints every retrieval but the keyframe before: mostly the
+# recent neighbours).
+LOOP_GAP = 5
 # Free VRAM after setup below this: the driver is already spilling into system memory.
 SPILLING = 256 << 20
 OOM_SHOWN = 10.0  # seconds the status keeps saying a frame was dropped for VRAM
@@ -367,17 +371,15 @@ class SLAMBackend(RGBDBackend):
         )
         kf_idx += retrieval_inds
 
-        lc_inds = set(retrieval_inds)
-        lc_inds.discard(idx - 1)
-        if len(lc_inds) > 0:
-            self.loops += 1
-
         kf_idx = set(kf_idx)  # Remove duplicates by using set
         kf_idx.discard(idx)  # Remove current kf idx if included
         kf_idx = list(kf_idx)  # convert to list
         frame_idx = [idx] * len(kf_idx)
+        edges = factor_graph.n_edges
         if kf_idx:
             factor_graph.add_factors(kf_idx, frame_idx, config["local_opt"]["min_match_frac"])
+        kept = factor_graph.ii2[2 * edges : 2 * factor_graph.n_edges : 2].tolist()
+        self.loops += any(i < idx - LOOP_GAP for i in kept)
 
         if config["use_calib"]:
             factor_graph.solve_GN_calib()
