@@ -24,12 +24,13 @@ from .tof import RangeScale
 AXES = np.array([1.0, -1.0, -1.0])  # OpenCV camera/world axes (+Y down, +Z forward) to Ito.
 # MASt3R's input, long side, per Input resolution setting; 512 is upstream's.
 LONG_SIDE = {25: 256, 50: 368, 75: 448, 100: 512}
-# Upstream's buffers, all allocated at start so memory stays flat: the keyframe count is the
-# map size setting (upstream: 512), graph edges per keyframe are fixed (upstream: unbounded, the
-# backend adds 1 to 4 per keyframe). Bytes per input pixel per keyframe: the keyframe (44:
-# image, points, confidence, MASt3R features), its share of the solve's inputs (16) and its
-# graph edges (26 each).
-EDGES_PER_KEYFRAME = 3
+# Upstream's buffers, all allocated at start: the keyframe count is the map size setting
+# (upstream: 512); graph edges get the most the backend can add per keyframe, so they never
+# fill before the keyframes do: run_backend links a keyframe to the one before it and to at most
+# k (base.yaml: 3) that retrieval recalls, a relocalisation to at most k. Bytes per input pixel
+# per keyframe: the keyframe (44: image, points, confidence, MASt3R features), its share of the
+# solve's inputs (16) and its graph edges (26 each).
+EDGES_PER_KEYFRAME = 4
 KEYFRAME_BYTES_PER_PIXEL = 44 + 16 + 26 * EDGES_PER_KEYFRAME
 CONFIDENCE = 1.5  # upstream's viewer draws points above this average confidence
 MOVED = 0.005  # a keyframe the solve moved by more than this share of its depth is redrawn
@@ -153,6 +154,8 @@ class SLAMBackend(RGBDBackend):
         from mast3r_slam.tracker import FrameTracker
 
         load_config(str(source / "config/base.yaml"))
+        if 1 + config["retrieval"]["k"] > EDGES_PER_KEYFRAME:
+            raise RuntimeError("MASt3R-SLAM's retrieval k outgrew Ito's graph edge buffer")
         # On top of base.yaml, what upstream's config/eval_calib.yaml sets: a calibrated camera,
         # and a frontend that waits for the backend.
         config["use_calib"] = True

@@ -132,8 +132,10 @@ FACTOR_GRAPH = (
         self.Q_jj2ii = torch.as_tensor([], dtype=torch.float32, device=self.device)
 """,
         """\
-        # Ito: allocated once (ito/build.py FACTOR_GRAPH); backend edges <= 1 + k per keyframe.
-        rows = 2 * (4 * frames.buffer if max_edges is None else max_edges)
+        # Ito: allocated once (ito/build.py FACTOR_GRAPH). run_backend adds at most 1 + k edges
+        # per keyframe (the one before, k retrieved), relocalization at most k.
+        most = (1 + config["retrieval"]["k"]) * frames.buffer
+        rows = 2 * (most if max_edges is None else max_edges)
         n = frames.h * frames.w
         self.n_edges = 0
         self.ii2 = torch.zeros(rows, dtype=torch.long, device=self.device)
