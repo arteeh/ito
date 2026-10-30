@@ -46,6 +46,8 @@ NOW_BIAS = 0.03  # NOW wins over memory within this share of its depth
 NOW_FADE = float(os.environ.get("ITO_MESH_FADE", "0.25"))  # s a new NOW frame fades in over
 # A surface the newest frame sees through keeps this share of its weight per such look.
 RETIRE_SHARE = float(os.environ.get("ITO_MESH_RETIRE", "0.6"))
+# ITO_MESH_STATS=1: log the GPU time of drawing it every 300 draws.
+STATS = os.environ.get("ITO_MESH_STATS", "0") != "0"
 FUSE_FAR = float(os.environ.get("ITO_MESH_FUSE_FAR", "5"))  # m
 # A voxel counts as seen above this weight (one head-on look from 1 m weighs 1).
 MIN_WEIGHT = float(os.environ.get("ITO_MESH_MIN_WEIGHT", "0.05"))
@@ -462,6 +464,8 @@ class MeshWorld:
         self.key_count = 0
         self.anchor_slots = {}
         self.ease = None
+        self.query = None
+        self.gpu_ns = []
         self.add_seconds = 0.0
         if memory in ("tsdf", "ibr"):
             self.integrate = ctx.compute_shader(INTEGRATE)
@@ -849,6 +853,31 @@ class MeshWorld:
         ctx = self.ctx
         if self.ease is not None:
             self.ease.advance(self.clock())
+        if STATS:
+            if self.query is None:
+                self.query = ctx.query(time=True)
+            with self.query:
+                self._draw(world_from_eye, projection, target, viewport, clear, now_only, scale)
+            self.gpu_ns.append(self.query.elapsed)
+            if len(self.gpu_ns) >= 300:
+                import logging
+
+                logging.getLogger(__name__).info(
+                    "Mesh world (%s): GPU %.2f ms per eye (p50), %.2f (p95); %d frames, %d views,"
+                    " %.1f ms per frame added",
+                    self.memory,
+                    np.percentile(self.gpu_ns, 50) / 1e6,
+                    np.percentile(self.gpu_ns, 95) / 1e6,
+                    self.frames,
+                    len(self.keys),
+                    1000 * self.add_seconds / max(1, self.frames),
+                )
+                self.gpu_ns.clear()
+        else:
+            self._draw(world_from_eye, projection, target, viewport, clear, now_only, scale)
+
+    def _draw(self, world_from_eye, projection, target, viewport, clear, now_only, scale):
+        ctx = self.ctx
         viewport = viewport if viewport is not None else (0, 0, *target.size)
         size = (max(1, int(viewport[2] * scale)), max(1, int(viewport[3] * scale)))
         color, _, fbo = self._layer_target(size)
