@@ -390,6 +390,7 @@ class Pilot:
                     max_splats=min(self.max_splats, self.splat_limit or self.max_splats),
                     precision=self.settings.precision,
                     input_resolution=self.settings.input_resolution,
+                    keyframes=self.settings.keyframes,
                     backend=self.backend,
                 )
             self.state = replace(self.state, correction=pose())

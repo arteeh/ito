@@ -90,9 +90,10 @@ Monocular SLAM needs an NVIDIA GPU. Models and their licence notices are include
 SLAM is MASt3R-SLAM as upstream runs it (`ito/reconstruction/slam.py`): the camera alone,
 tracked against keyframes, linked by retrieval and solved as one global Sim(3) graph; a lost
 camera relocalises and maps nothing meanwhile. The robot's pose places the map once, at the
-first frame. Its buffers (192 keyframes) are allocated at start, so memory stays flat; when
-they are full, tracking goes on and nothing new is mapped. Monocular scale is MASt3R's, so
-reconstructed distances are not a measurement tool.
+first frame. Its buffers are allocated at start, so memory stays flat: Settings > Map size
+picks how many keyframes (and shows their VRAM; 512 is upstream's). When the map is full,
+tracking goes on and nothing new is mapped. Monocular scale is MASt3R's, so reconstructed
+distances are not a measurement tool.
 
 On Microduck, from this checkout: `uv run --project drivers/microduck ito-driver-microduck`; connect with `uv run ito <duck-address>:8081` and enter its printed pairing code.
 Microduck must have robotd/mediad running and be enabled with `robotctl robot enable`; G/right trigger opens the beak, C crouches.

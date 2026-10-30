@@ -229,7 +229,10 @@ class Overlay:
             with self.theme.font("numeric"):
                 imgui.text(f"Splats: {splats} | VRAM {memory}")
             if values.get("slam_precision"):
-                imgui.text(f"MASt3R: {values['slam_precision']}")
+                imgui.text(
+                    f"MASt3R: {values['slam_precision']}, "
+                    f"{values.get('slam_keyframes', '--')} keyframes"
+                )
             if values.get("reconstruction_oom"):
                 imgui.text_colored(
                     self.theme.color("error"), "Out of GPU memory: reconstruction is degraded"

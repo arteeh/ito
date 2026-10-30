@@ -43,6 +43,7 @@ def _run(recon):
                 report=recon.report,
                 precision=recon.precision,
                 input_resolution=recon.input_resolution,
+                keyframes=recon.keyframes,
                 precision_report=recon.report_precision,
                 **recon.options,
             )
@@ -278,6 +279,7 @@ class Reconstruction:
         backend="rgbd",
         precision="full",
         input_resolution=100,
+        keyframes=256,
     ):
         if not 1 <= max_splats <= MAX_SLOT_COUNT:
             raise ValueError(f"Max splats must be between 1 and {MAX_SLOT_COUNT:,}")
@@ -287,8 +289,9 @@ class Reconstruction:
             raise ValueError("Reconstruction backend must be rgbd or slam")
         from ito.desktop.settings import AppSettings
 
-        AppSettings(precision=precision, input_resolution=input_resolution)
+        AppSettings(precision=precision, input_resolution=input_resolution, keyframes=keyframes)
         self.precision, self.input_resolution = precision, input_resolution
+        self.keyframes = keyframes
         self.backend = backend
         self.intrinsics = intrinsics
         self.shape = (intrinsics.height, intrinsics.width)
@@ -369,6 +372,7 @@ class Reconstruction:
             slam_input_size=input_shape(
                 self.intrinsics.width, self.intrinsics.height, self.input_resolution
             ),
+            slam_keyframes=self.keyframes,
             reconstruction_oom=self.last_oom.value > 0 and clock.now() - self.last_oom.value < 10,
             network_oom_count=self.oom_count.value,
             network_nonfinite_points=self.nonfinite_points.value,

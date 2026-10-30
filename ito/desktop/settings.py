@@ -6,11 +6,15 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# MASt3R-SLAM's map size: keyframe slots, all allocated at start. 512 is upstream's.
+KEYFRAMES = (64, 128, 192, 256, 384, 512)
+
 
 class AppSettings(BaseModel):
     model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
     precision: Literal["full", "half"] = "full"
     input_resolution: Literal[25, 50, 75, 100] = 100
+    keyframes: Literal[KEYFRAMES] = 256
     max_splats: int = Field(default=1_000_000, ge=1, le=(1 << 31) - 1)
     diagnostic_logging: bool = False
 

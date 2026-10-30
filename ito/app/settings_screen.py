@@ -4,7 +4,11 @@ from concurrent.futures import ThreadPoolExecutor
 from imgui_bundle import imgui
 
 from ito import diagnostics
-from ito.desktop.settings import AppSettings, load, save
+from ito.desktop.settings import KEYFRAMES, AppSettings, load, save
+from ito.reconstruction.slam import map_bytes
+
+# The settings screen knows no camera: map sizes are costed for a 16:9 one, as Microduck's.
+COSTED = (1280, 720)
 
 
 class SettingsScreen:
@@ -88,6 +92,27 @@ class SettingsScreen:
         if self.layout.button("+##resolution", "resolution plus", plus, disabled=index == 3):
             self.change(input_resolution=steps[index + 1])
         imgui.text_disabled("Lower: faster, less VRAM, blurrier. Keeps the whole frame.")
+        imgui.text("Map size (keyframes)")
+        index = KEYFRAMES.index(s.keyframes)
+        minus, value_width, plus = self.layout.row(1, 1.85, 1)
+        if self.layout.button("-##keyframes", "keyframes minus", minus, disabled=index == 0):
+            self.change(keyframes=KEYFRAMES[index - 1])
+        imgui.same_line()
+        with self.theme.font("numeric"):
+            self.layout.button(str(s.keyframes), "keyframes value", value_width, disabled=True)
+        imgui.same_line()
+        last = len(KEYFRAMES) - 1
+        if self.layout.button("+##keyframes", "keyframes plus", plus, disabled=index == last):
+            self.change(keyframes=KEYFRAMES[index + 1])
+        costs = ", ".join(
+            f"{count}: {map_bytes(count, *COSTED, s.input_resolution) / 1e9:.1f} GB"
+            for count in KEYFRAMES
+        )
+        imgui.text_disabled(f"VRAM at {s.input_resolution}% input (16:9 camera): {costs}.")
+        imgui.text_disabled(
+            "Taken at start, besides MASt3R's weights and retrieval (Full 3.0 GB, Half 1.7 GB). "
+            "512 is upstream's. A full map keeps tracking but adds nothing new."
+        )
         self.theme.heading("Scene")
         imgui.text("Max splats")
         minus, value_width, plus = self.layout.row(1, 1.85, 1)

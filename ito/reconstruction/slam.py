@@ -21,11 +21,13 @@ from .rgbd import RGBDBackend
 AXES = np.array([1.0, -1.0, -1.0])  # OpenCV camera/world axes (+Y down, +Z forward) to Ito.
 # MASt3R's input, long side, per Input resolution setting; 512 is upstream's.
 LONG_SIDE = {25: 256, 50: 368, 75: 448, 100: 512}
-# Upstream's buffers, all allocated at start so memory stays flat. Upstream keeps 512 keyframes
-# and grows its graph; per keyframe Ito holds the keyframe (44 bytes per input pixel), its
-# graph edges (26 bytes per pixel each) and its share of the solve's inputs (16).
-KEYFRAMES = 192
-EDGES = 3 * KEYFRAMES
+# Upstream's buffers, all allocated at start so memory stays flat: the keyframe count is the
+# map size setting (upstream: 512), graph edges per keyframe are fixed (upstream: unbounded, the
+# backend adds 1 to 4 per keyframe). Bytes per input pixel per keyframe: the keyframe (44:
+# image, points, confidence, MASt3R features), its share of the solve's inputs (16) and its
+# graph edges (26 each).
+EDGES_PER_KEYFRAME = 3
+KEYFRAME_BYTES_PER_PIXEL = 44 + 16 + 26 * EDGES_PER_KEYFRAME
 CONFIDENCE = 1.5  # upstream's viewer draws points above this average confidence
 MOVED = 0.005  # a keyframe the solve moved by more than this share of its depth is redrawn
 # Free VRAM after setup below this: the driver is already spilling into system memory.
@@ -42,6 +44,12 @@ def input_shape(width, height, percent):
     if resized[0] == resized[1]:
         half_height = 3 * half_width / 4
     return 2 * half_width, int(2 * half_height)
+
+
+def map_bytes(keyframes, width, height, percent):
+    """VRAM MASt3R-SLAM's buffers take at start, for a camera and an Input resolution."""
+    w, h = input_shape(width, height, percent)
+    return keyframes * KEYFRAME_BYTES_PER_PIXEL * w * h
 
 
 def crop(image, long):
@@ -120,6 +128,7 @@ class SLAMBackend(RGBDBackend):
         report,
         precision="full",
         input_resolution=100,
+        keyframes=256,
         precision_report=None,
         **options,
     ):
@@ -148,25 +157,29 @@ class SLAMBackend(RGBDBackend):
         self.inference = mast3r_inference_mono
         self.input = Input(intrinsics, input_resolution)
         h, w = self.input.height, self.input.width
-        self.settings = f"{precision.title()} precision, {input_resolution}% input resolution"
-        self.lower = "lower the Input resolution" + (
+        self.settings = (
+            f"{precision.title()} precision, {input_resolution}% input resolution, "
+            f"{keyframes} keyframes"
+        )
+        self.lower = "lower the Map size or Input resolution" + (
             " or choose Half" if precision == "full" else ""
         )
+        self.capacity, self.edges = keyframes, EDGES_PER_KEYFRAME * keyframes
         try:
             self.model = load_model(
                 weights, report, precision=precision, precision_report=precision_report
             )
             K = torch.as_tensor(self.input.K, device="cuda")
             manager = Manager()
-            self.keyframes = SharedKeyframes(manager, h, w, buffer=KEYFRAMES)
+            self.keyframes = SharedKeyframes(manager, h, w, buffer=keyframes)
             self.states = SharedStates(manager, h, w)
             self.keyframes.set_intrinsics(K)
             self.tracker = FrameTracker(self.model, self.keyframes, "cuda")
-            self.graph = FactorGraph(self.model, self.keyframes, K, "cuda", max_edges=EDGES)
+            self.graph = FactorGraph(self.model, self.keyframes, K, "cuda", max_edges=self.edges)
             self.retrieval = load_retriever(self.model, str(retrieval))
             # Ito's own, also once: each keyframe's pose when last drawn, and its depth.
-            self.drawn = torch.zeros(KEYFRAMES, 1, lietorch.Sim3.embedded_dim, device="cuda")
-            self.depth = torch.ones(KEYFRAMES, device="cuda")
+            self.drawn = torch.zeros(keyframes, 1, lietorch.Sim3.embedded_dim, device="cuda")
+            self.depth = torch.ones(keyframes, device="cuda")
             free, _ = torch.cuda.mem_get_info()
         except torch.cuda.OutOfMemoryError as exc:
             raise RuntimeError(
@@ -272,7 +285,7 @@ class SLAMBackend(RGBDBackend):
     def room(self, edges):
         """Upstream's buffers would overflow (IndexError) past their size: Ito adds no keyframe
         then, and says so."""
-        self.full = len(self.keyframes) >= KEYFRAMES or self.graph.n_edges + edges > EDGES
+        self.full = len(self.keyframes) >= self.capacity or self.graph.n_edges + edges > self.edges
         return not self.full
 
     def optimize(self, idx):
@@ -383,7 +396,7 @@ class SLAMBackend(RGBDBackend):
             self.tracked += 1
         n = len(self.keyframes)
         counts = (
-            f"{self.tracked} frames, {n}/{KEYFRAMES} keyframes, {self.graph.n_edges} edges, "
+            f"{self.tracked} frames, {n}/{self.capacity} keyframes, {self.graph.n_edges} edges, "
             f"{self.loops} loop closures, {self.relocalized} relocalised"
         )
         if self.full:
