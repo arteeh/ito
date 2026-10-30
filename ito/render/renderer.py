@@ -11,10 +11,10 @@ from ito import clock
 from .pose import validate_pose
 from .scene import FloatArray, GaussianBuffer
 
-# ITO_EASE=<seconds> (an experiment, off by default): every change to a live splat glides
+# ITO_EASE=<seconds> (default 0.4, 0 turns it off): every change to a live splat glides
 # from what is drawn to the new record over this time (new splats fade in), and a retired
 # splat stays whole that long before its fade, so a replacement is in before it goes.
-EASE = max(0.0, float(os.environ.get("ITO_EASE", "0") or 0))
+EASE = max(0.0, float(os.environ.get("ITO_EASE", "0.4") or 0))
 # ITO_UPDATE_STATS=1 (a diagnostic): log every 5 s how the applied packets changed the live
 # splats: born, retired, emptied, and how far the changed ones moved.
 UPDATE_STATS = os.environ.get("ITO_UPDATE_STATS") == "1"

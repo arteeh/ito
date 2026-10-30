@@ -8,7 +8,7 @@ import numpy as np
 
 KEEP = 1e30
 # ITO_EASE (render/renderer.py): the pilot keeps a retired splat whole this long before its fade.
-EASE = max(0.0, float(os.environ.get("ITO_EASE", "0") or 0))
+EASE = max(0.0, float(os.environ.get("ITO_EASE", "0.4") or 0))
 FIRST_SLOTS = 65_536
 MOVED = 1 << 62
 SLOT_FIELDS = {
