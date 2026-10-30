@@ -79,11 +79,21 @@ class VisionFullTracker(VisionTracker):
             seed = last.copy()
             if turn is not None:
                 seed[:3, :3] = last[:3, :3] @ turn
-            reference = len(self.keyframes) - 1
+            # The keyframe the last frame tracked against: the newest, or after a relocalisation
+            # (a revisit) the older one it found, which the next frames keep to while they match
+            # instead of failing on the newest and searching again every frame.
+            newest = len(self.keyframes) - 1
+            reference = self.reference if self.reference is not None else newest
+            reference = min(reference, newest)
             new_keyframe, lost = self._attempt(frame, reference, seed, scale)
+            tried = {reference}
+            if lost and reference != newest:
+                reference = newest
+                tried.add(newest)
+                new_keyframe, lost = self._attempt(frame, reference, seed, scale)
             if lost and self.global_graph is not None:
                 for other in self.global_graph.query(frame):
-                    if other == reference or other >= len(self.keyframes):
+                    if other in tried or other >= len(self.keyframes):
                         continue
                     new_keyframe, lost = self._attempt(frame, other, seed, scale)
                     if not lost:
