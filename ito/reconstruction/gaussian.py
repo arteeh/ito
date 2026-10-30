@@ -25,6 +25,7 @@ from scipy.ndimage import (
 )
 from scipy.spatial.transform import Rotation
 
+from .ring import MAX_ANCHORS
 from .slots import KEEP, GaussianSlots
 
 C0 = 0.28209479177387814
@@ -55,6 +56,13 @@ EXPOSURE = os.environ.get("ITO_EXPOSURE", "0") != "0"
 # before depth, tracking and mapping see it, so they compare frames at one exposure.
 EXPOSURE_INPUT = os.environ.get("ITO_EXPOSURE") == "input"
 EXPOSURE_SAMPLES = 300
+# Keyframe-anchored publication (A4), ITO_ANCHORED=1 (default under ITO_SLAM=full): a surface that
+# follows a keyframe is sent to the pilot in that keyframe's frame as it was when the surface was
+# placed, with one similarity per keyframe (anchor_table). A global solve that moves the keyframe
+# changes its similarity only, which the renderer eases in at a limited rate; its records are not
+# resent. The worker keeps every record in the current world for training and mapping.
+ANCHORED = os.environ.get("ITO_ANCHORED", "1" if os.environ.get("ITO_SLAM") == "full" else "0")
+ANCHORED = ANCHORED != "0"
 EXPOSURE_LIMIT = 0.7  # log gain: a camera's exposure swing between neighbouring frames
 # The map keeps the colours of the frames it began with; the pilot draws it at the camera's
 # usual exposure since, the running mean of frame gains against it (frames, 1/e).
@@ -111,6 +119,20 @@ def _moved_camera(delta, camera):
     return moved.astype(np.asarray(camera).dtype)
 
 
+def similar(records, m):
+    """Splat records (n, 4, 4) carried by a world similarity m (4x4): centres, sizes, turns."""
+    records = np.array(records, copy=True)
+    if not len(records):
+        return records
+    scale = float(np.cbrt(np.linalg.det(m[:3, :3])))
+    records[:, 0, :3] = records[:, 0, :3] @ m[:3, :3].T + m[:3, 3]
+    records[:, 1, :3] *= scale
+    turn = Rotation.from_matrix(m[:3, :3] / scale)
+    quats = Rotation.from_quat(records[:, 2][:, [1, 2, 3, 0]])
+    records[:, 2] = (turn * quats).as_quat()[:, [3, 0, 1, 2]]
+    return records
+
+
 class GaussianBackend(GaussianSlots):
     def __init__(self, *args, precision="full", **options):
         super().__init__(*args, **options)
@@ -123,6 +145,12 @@ class GaussianBackend(GaussianSlots):
         # ITO_SLAM=full: the keyframe each anchor's surfaces follow (slam.py sets seed_keyframe
         # before observing a frame), and how often repose() moved them.
         self.anchor_keyframe = {}
+        # ITO_ANCHORED: per table entry the world similarity its surfaces have moved by since they
+        # were placed, and its keyframe's camera centre in that frame (the renderer eases about it).
+        self.anchor_table = np.tile(np.eye(4), (MAX_ANCHORS, 1, 1)) if ANCHORED else None
+        self.anchor_centres = np.zeros((MAX_ANCHORS, 3)) if ANCHORED else None
+        self.anchor_count = 1
+        self.anchor_revision = 0
         self.reposed = 0
         self.fit_steps = 0
         self.next_key = 0
@@ -172,8 +200,6 @@ class GaussianBackend(GaussianSlots):
         similarity, Ito axes). Every surface anchored to one, and every retained view whose
         frame followed one, moves with it: positions, orientations and sizes, a view's camera
         and depth. Surfaces of other anchors stay."""
-        from scipy.spatial.transform import Rotation
-
         deltas = {k: d for k, d in deltas.items() if not np.allclose(d, np.eye(4), atol=1e-7)}
         if not deltas:
             return 0
@@ -185,23 +211,26 @@ class GaussianBackend(GaussianSlots):
             follows = np.array([self.anchor_keyframe.get(int(a), -1) for a in unique])[inverse]
             for k, delta in deltas.items():
                 slots = live[follows == k]
-                scale = float(np.cbrt(np.linalg.det(delta[:3, :3])))
-                rotation = delta[:3, :3] / scale
+                anchored = self.anchor_table is not None and 0 <= k < MAX_ANCHORS - 1
                 if len(slots):
-                    records = self.records[slots]
-                    records[:, 0, :3] = records[:, 0, :3] @ delta[:3, :3].T + delta[:3, 3]
-                    records[:, 1, :3] *= scale
-                    turn = Rotation.from_matrix(rotation)
-                    quats = Rotation.from_quat(records[:, 2][:, [1, 2, 3, 0]])
-                    records[:, 2] = (turn * quats).as_quat()[:, [3, 0, 1, 2]]
-                    self.records[slots] = records
-                    self.dirty[slots] = True
+                    self.records[slots] = similar(self.records[slots], delta)
+                    # Anchored: the pilot moves them by the keyframe's similarity, eased.
+                    self.dirty[slots] |= not anchored
                     self.fresh[slots] = True  # ITO_FIT=map takes the moved rows in afresh
                     self.moves[slots] += 1
                     moved += len(slots)
+                centre = None
                 for anchor, keyframe in self.anchor_keyframe.items():
                     if keyframe == k and anchor in self.anchors:
                         self.anchors[anchor] = _moved_camera(delta, self.anchors[anchor])
+                        centre = self.anchors[anchor][:3, 3]
+                if anchored:
+                    table = self.anchor_table[k + 1] = delta @ self.anchor_table[k + 1]
+                    if centre is not None:
+                        inverse = np.linalg.inv(table)
+                        self.anchor_centres[k + 1] = inverse[:3, :3] @ centre + inverse[:3, 3]
+                    self.anchor_count = max(self.anchor_count, k + 2)
+                    self.anchor_revision += 1
             for view in self.views:
                 delta = deltas.get(node_keyframe.get(view.node))
                 if delta is None:
@@ -222,6 +251,29 @@ class GaussianBackend(GaussianSlots):
         if moved:
             self.recover()
         return moved
+
+    def published(self, indices):
+        """The records of these slots as the pilot is sent them, and each one's anchor (table
+        entry): a surface following keyframe k in k's frame as placed (ITO_ANCHORED)."""
+        records = self.records[indices]
+        anchors = np.zeros(len(indices), np.uint32)
+        if self.anchor_table is None or not len(indices):
+            return records, anchors
+        owners = self.owners[indices]
+        unique, inverse = np.unique(owners, return_inverse=True)
+        follows = np.array([self.anchor_keyframe.get(int(a), -1) for a in unique])[inverse]
+        follows = np.where((follows >= 0) & (follows < MAX_ANCHORS - 1), follows + 1, 0)
+        records = records.copy()
+        for entry in np.unique(follows):
+            if not entry:
+                continue
+            table = self.anchor_table[entry]
+            mask = follows == entry
+            anchors[mask] = entry
+            if not np.allclose(table, np.eye(4), atol=1e-9):
+                live = mask & (records[:, 0, 3] > 0)
+                records[live] = similar(records[live], np.linalg.inv(table))
+        return records, anchors
 
     def fit(self):
         """One bounded training step; False when there was nothing to train."""

@@ -3,8 +3,10 @@ it offline (a research dataset, not a product feature):
 
     meta.json       camera geometry (raw matrix, distortion, the rectified pinhole Ito is told),
                     motion noise, frame delay, exposure, ToF field of view
-    frames.jsonl    one line per received frame: seq, received (driver clock, the stamp Ito maps
-                    it by), rtp (seconds), and with the sim's truth: its exposure time, exact
+    frames.jsonl    one line per received frame: seq, received (driver clock), captured (the
+                    capture_time Ito was sent: the sim's exposure time when meta.json has
+                    capture_exact, else receive time), rtp (seconds), and with the sim's
+                    truth: its exposure time, exact
                     camera pose in Ito's world (position, xyzw), the MuJoCo row, depth file
     frames/N.png    the frame as received, before rectification (lossless)
     depth/N.png     the sim's exact axial depth, uint16 millimetres, on its own (coarser) grid
@@ -77,14 +79,17 @@ class Recorder:
             self.dropped += 1
             return False
 
-    def frame(self, raw, received, rtp, truth=None):
-        """raw: the RGB frame as received; truth: (row, position, xyzw) or None."""
+    def frame(self, raw, received, rtp, truth=None, captured=None):
+        """raw: the RGB frame as received; truth: (row, position, xyzw) or None; captured: the
+        capture_time sent with it."""
         with self.lock:
             seq = self.seq
             self.seq += 1
         name = f"{seq:06d}.png"
         saved = self._put(self.folder / "frames" / name, raw[..., ::-1].copy())
         line = dict(seq=seq, received=received, rtp=rtp, file=name if saved else None)
+        if captured is not None:
+            line["captured"] = captured
         if truth is not None:
             row, position, orientation = truth
             line |= dict(

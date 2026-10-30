@@ -3,6 +3,9 @@
 layout(local_size_x = 1024) in;
 layout(std430, binding = 1) readonly buffer Scene { vec4 attributes[]; };
 layout(std430, binding = 0) writeonly buffer Order { uvec2 order[]; };
+layout(std430, binding = 6) readonly buffer SlotAnchors { uint slot_anchors[]; };
+layout(std430, binding = 7) readonly buffer Anchors { mat4 anchors[]; };
+uniform int anchored;
 uniform uint count;
 uniform uint stride;
 uniform mat4 view;
@@ -15,7 +18,9 @@ void main() {
     uint lane = gl_LocalInvocationID.x;
     uvec2 key = uvec2(0, 0xffffffffu);
     if (i < count) {
-        float depth = max(0.0, -(view * vec4(attributes[i * stride].xyz, 1)).z);
+        vec4 centre = vec4(attributes[i * stride].xyz, 1);
+        if (anchored != 0) centre = anchors[slot_anchors[i]] * centre;
+        float depth = max(0.0, -(view * centre).z);
         key = uvec2(floatBitsToUint(depth), i);
     }
     tile[lane] = key;

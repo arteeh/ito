@@ -13,6 +13,10 @@ uniform mat4 projection;
 uniform vec3 eye;
 uniform vec2 viewport;
 layout(std430, binding = 0) readonly buffer Order { uvec2 order[]; };
+// ITO_ANCHORED: a slot's record is in its anchor's frame; anchors[] carries it into the world.
+layout(std430, binding = 6) readonly buffer SlotAnchors { uint slot_anchors[]; };
+layout(std430, binding = 7) readonly buffer Anchors { mat4 anchors[]; };
+uniform int anchored;
 out vec2 gaussian_uv;
 flat out vec4 color_opacity;
 
@@ -62,6 +66,12 @@ void main() {
     }
     if (fade_seconds > 0)
         p.w *= clamp((attribute_at(id, 1u).w - scene_time) / fade_seconds, 0.0, 1.0);
+    mat3 anchor = mat3(1.0);  // the anchor's turn and scale
+    if (anchored != 0) {
+        mat4 m = anchors[slot_anchors[id]];
+        p.xyz = (m * vec4(p.xyz, 1)).xyz;
+        anchor = mat3(m);
+    }
     vec4 center = view * vec4(p.xyz, 1);
     vec4 clip = projection * center;
     gaussian_uv = vec2(0);
@@ -74,7 +84,7 @@ void main() {
         1-2*(y*y+z*z), 2*(x*y+w*z), 2*(x*z-w*y),
         2*(x*y-w*z), 1-2*(x*x+z*z), 2*(y*z+w*x),
         2*(x*z+w*y), 2*(y*z-w*x), 1-2*(x*x+y*y));
-    mat3 transform = mat3(view) * rotation * mat3(s.x,0,0, 0,s.y,0, 0,0,s.z);
+    mat3 transform = mat3(view) * anchor * rotation * mat3(s.x,0,0, 0,s.y,0, 0,0,s.z);
     mat3 covariance = transform * transpose(transform);
     // Perspective Jacobian in pixels, including asymmetric stereo frusta.
     vec3 row_w = vec3(projection[0][3], projection[1][3], projection[2][3]);

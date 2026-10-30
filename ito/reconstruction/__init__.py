@@ -138,6 +138,7 @@ def _run(recon):
                 precision_report=recon.report_precision,
                 motion_noise=recon.motion_noise,
                 frame_delay=recon.frame_delay,
+                capture_exact=recon.capture_exact,
                 exposure=recon.exposure,
                 **recon.options,
             )
@@ -183,6 +184,7 @@ def _run(recon):
         motion_cursor = 0
         revision = 0
         published_slots = len(backend.keys)
+        anchors_sent = 0  # backend.anchor_revision the ring has (ITO_ANCHORED)
         captured = recon.epoch
         published_capture = recon.epoch
         fit_credit = 0.0
@@ -474,7 +476,20 @@ def _run(recon):
                     elif not len(indices):
                         # Refinement publishes only once fresh geometry has gone out.
                         indices = np.flatnonzero(backend.refined)[: recon.ring.batch]
-                    if not len(indices) and len(backend.keys) == published_slots:
+                    table = getattr(backend, "anchor_table", None)
+                    anchors_due = table is not None and backend.anchor_revision != anchors_sent
+                    if anchors_due and recon.ring.publish_anchors(
+                        backend.anchor_table[: backend.anchor_count],
+                        backend.anchor_centres[: backend.anchor_count],
+                    ):
+                        anchors_sent = backend.anchor_revision
+                    else:
+                        anchors_due = False
+                    if (
+                        not len(indices)
+                        and len(backend.keys) == published_slots
+                        and not anchors_due
+                    ):
                         break
                     contributing = backend.sequences[indices] > 0
                     packet_capture = max(
@@ -486,15 +501,21 @@ def _run(recon):
                     usual = getattr(backend, "exposure_mean", None)
                     if usual is not None:
                         recon.ring.color_gain[:] = usual
+                    records, anchor_ids = (
+                        backend.published(indices)
+                        if hasattr(backend, "published")
+                        else (backend.records[indices], None)
+                    )
                     if not recon.ring.publish(
                         indices,
-                        backend.records[indices],
+                        records,
                         len(backend.keys),
                         backend.count,
                         revision,
                         packet_capture,
                         backend.sequences[indices],
                         backend.captures[indices],
+                        anchors=anchor_ids,
                     ):
                         break
                     if timeline:
@@ -609,6 +630,7 @@ class Reconstruction:
         tracking="robot",
         motion_noise=None,
         frame_delay=0.0,
+        capture_exact=False,
         exposure=None,
         precision="full",
         input_resolution=100,
@@ -629,6 +651,7 @@ class Reconstruction:
         self.tracking_mode = tracking if motion_noise is not None else "vision"
         self.motion_noise = motion_noise
         self.frame_delay = frame_delay
+        self.capture_exact = capture_exact
         self.exposure = exposure
         self.intrinsics = intrinsics
         self.shape = (intrinsics.height, intrinsics.width)

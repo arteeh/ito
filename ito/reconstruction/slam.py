@@ -98,6 +98,30 @@ TIE_SCALE = os.environ.get("ITO_SLAM_TIE_SCALE", "1") != "0"
 # The metric scale (metres per vision unit) is pooled over this many ToF/floor readings, then held:
 # a later change would grow or shrink the whole room about its first camera.
 VISION_SCALE_READINGS = int(os.environ.get("ITO_VISION_SCALE_READINGS", "40"))
+SCALE_LOG = os.environ.get("ITO_SCALE_LOG") == "1"
+# Vision-led tracking through turns (A3). ITO_VISION_SEED=gyro (default): each frame's turn from the
+# last is seeded by the head gyro where it has one, =robot by the head's kinematics (gear play).
+VISION_SEED = os.environ.get("ITO_VISION_SEED", "gyro")
+# ITO_VISION_GRAVITY=1 (default): the head IMU's gravity tilts the vision world's first camera and
+# holds every keyframe's tilt in the global graph (sigma in degrees, ITO_VISION_GRAVITY_DEG).
+VISION_GRAVITY = os.environ.get("ITO_VISION_GRAVITY", "1") != "0"
+VISION_GRAVITY_SIGMA = math.radians(float(os.environ.get("ITO_VISION_GRAVITY_DEG", "2")))
+# Frames taken while the head turns faster than this (rad/s; the sim's routes: p99 94-200 deg/s)
+# are tracked but not mapped (ITO_VISION_SHAKE); blur by exposure is gated by BLUR_PIXELS.
+VISION_SHAKE = float(os.environ.get("ITO_VISION_SHAKE", "3.5"))
+# Seconds of frames no keyframe matched before vision-led tracking reports itself lost (the pilot
+# then shows the camera feed); in between, frames follow the gyro and the robot.
+VISION_LOST = float(os.environ.get("ITO_VISION_LOST", "3"))
+# ITO_VISION_SCALE=gated (default): readings only while the camera is nearly still, mapping after
+# SCALE_START of them, fixed at SCALE_FINAL with at most one global rescale; =first40: the old held
+# median of the first 40 readings.
+VISION_SCALE = os.environ.get("ITO_VISION_SCALE", "gated")
+# Emulated on two live recordings from every start time 0-85 s: 16 still readings land within
+# 0.94-1.10 of the true scale, the old first-40 within 0.98-1.26; later readings drift (ToF low,
+# floor high), so no later refinement by default (ITO_VISION_SCALE_FINAL > 16 rescales once).
+SCALE_START = 16
+SCALE_FINAL = int(os.environ.get("ITO_VISION_SCALE_FINAL", "16"))
+STILL_TURN, STILL_MOVE = math.radians(12), 0.06  # per second
 DEPTH = "da3" if TRACKER == "map" else os.environ.get("ITO_DEPTH", "mast3r")
 # ITO_ALIGN=1 (always with ITO_TRACKER=map) lays each frame's depth onto the map's surfaces
 # (align.py): where it was placed tells fusion where the camera was.
@@ -208,7 +232,8 @@ FIELD_INTERVAL = 20.0  # seconds: the least time from one field rebuild to the n
 
 class SLAMBackend(GaussianBackend):
     """frame_delay: the driver's estimate of how long before its capture_time a frame was
-    exposed; exposure: how long the sensor integrates one, None if the driver cannot say.
+    exposed; capture_exact: capture_time is the exposure itself (no delay, none estimated);
+    exposure: how long the sensor integrates one, None if the driver cannot say.
     aligner: a tracking.MapAligner, the map's say in every tracked frame's pose."""
 
     def __init__(
@@ -219,6 +244,7 @@ class SLAMBackend(GaussianBackend):
         report,
         motion_noise,
         frame_delay=0.0,
+        capture_exact=False,
         exposure=None,
         frontend=None,
         precision="full",
@@ -260,8 +286,15 @@ class SLAMBackend(GaussianBackend):
         self.motion = MotionBuffer(motion_noise, seconds=60.0)
         self.sensors = HeadSensors(seconds=60.0)
         bounds = (max(0.0, frame_delay + DELAY_RANGE[0]), frame_delay + DELAY_RANGE[1])
+        if capture_exact:
+            frame_delay, bounds = 0.0, (0.0, 0.0)
+        self.capture_exact = capture_exact
         self.graph = PoseGraph(
-            self.motion, td=frame_delay, td_bounds=bounds, estimate_td=True, inertial=self.sensors
+            self.motion,
+            td=frame_delay,
+            td_bounds=bounds,
+            estimate_td=not capture_exact,
+            inertial=self.sensors,
         )
         self.focal = float(intrinsics.fx)
         self.exposure = EXPOSURE if exposure is None else float(exposure)
@@ -328,6 +361,10 @@ class SLAMBackend(GaussianBackend):
         # frame node -> (keyframe, pose relative to it) (diagnostic); the last placed frame's node.
         self.keyframe_vision = {}
         self.tied_scales = 0  # vision-led full: ToF/floor readings given to the global graph
+        self.gyro_seeds = 0  # vision-led: frames whose turn the head gyro seeded
+        self.smeared_frames = 0  # vision-led: frames tracked but not mapped (blur, shake)
+        self.unplaced_frames = 0  # vision-led full: not mapped, their keyframe not relocalised
+        self.levelled_by = None  # vision-led: degrees the IMU tilted the first camera
         self.vision_anchor = {}
         self.last_node = None
         self.imu_priors = 0  # ITO_HEAD_IMU: frames tracked with the gyro's rotation prior
@@ -407,6 +444,15 @@ class SLAMBackend(GaussianBackend):
             + [round(math.degrees(heading(self.robot_camera[:3, :3])), 1)],
             field_rebuilds=self.volume_rebuilds,
             tied_scales=self.tied_scales,
+            session_scale=round(math.exp(getattr(self.global_graph, "session_scale", 0.0)), 4),
+            session_offset=getattr(self.global_graph, "session_offset", None),
+            gravity_keyframes=len(self.global_graph.gravity),
+            gyro_seeds=self.gyro_seeds,
+            smeared_frames=self.smeared_frames,
+            unplaced_frames=self.unplaced_frames,
+            lost_keyframes=len(self.global_graph.lost),
+            relocalised_keyframes=len(self.global_graph.relocalised),
+            levelled_deg=self.levelled_by,
             field_rebuild_ms=round(self.rebuild_seconds * 1000),
             fused_frames=len(self.fused_frames),
         )
@@ -1250,17 +1296,30 @@ class SLAMBackend(GaussianBackend):
         self.robot_camera = robot
         last = getattr(self, "vision_robot", None)
         turn = None if last is None else last[:3, :3].T @ robot[:3, :3]
-        self.vision_robot = robot
+        previous = getattr(self, "vision_exposure", None)
+        if VISION_SEED == "gyro" and previous is not None:
+            # The head gyro's turn since the last frame: past the gear play the kinematics miss
+            # (1.5-3 degrees, more on a reversal), which is most of a fast turn's seed error.
+            turned = self.sensors.turn(previous, exposure)
+            if turned is not None:
+                turn = turned[0].as_matrix()
+                self.gyro_seeds += 1
+        self.vision_robot, self.vision_exposure = robot, exposure
         pose, unit, cloud, keyframe, tracked = self.frontend.track(rgb, turn)
         if pose is None:
             return
         if getattr(self, "vision_world", None) is None:
-            # The vision world's first camera is where the robot says it was.
-            self.vision_world = robot @ np.linalg.inv(pose)
+            # The vision world's first camera is where the robot says it was, tilted as the
+            # head IMU sees it (the kinematics' tilt is off by the head's gear play).
+            self.vision_world = self.levelled(robot, exposure) @ np.linalg.inv(pose)
             self.vision_metres = []
+            if self.global_graph is not None:
+                up = self.vision_world[:3, :3].T @ UP
+                self.global_graph.up = up * np.array([1.0, -1.0, -1.0])
         metres = self.vision_scale(cloud, exposure)
         self.vision_metres_now = metres
-        if TIE_SCALE and self.global_graph is not None and tracked:
+        smeared = self.smeared(exposure)
+        if TIE_SCALE and self.global_graph is not None and tracked and not smeared:
             self.vision_tie_scale(cloud, exposure, metres)
         frontend = self.frontend
         if self.global_graph is not None and keyframe:
@@ -1268,6 +1327,11 @@ class SLAMBackend(GaussianBackend):
             self.keyframe_vision[k] = self.keyframe_similarity(k)
             if k == 0:
                 self.first_pose = pose
+            seen = self.sensors.up(exposure) if VISION_GRAVITY else None
+            if seen is not None:
+                # Gravity holds every keyframe's tilt (config 10 turned a room section sideways
+                # from one badly matched keyframe); weak beside the images.
+                self.global_graph.add_gravity(k, FLIP[:3, :3] @ seen[0], VISION_GRAVITY_SIGMA)
         world = self.vision_world
         placed = np.eye(4)
         placed[:3, :3] = world[:3, :3] @ pose[:3, :3]
@@ -1279,7 +1343,15 @@ class SLAMBackend(GaussianBackend):
         self.vision_published = published[-600:]
         self.tracked += 1
         self.matched += bool(tracked)
-        self.lost = not tracked
+        # Lost only after VISION_LOST seconds of frames no keyframe matched: one dead-reckoned
+        # frame in a fast turn (the gyro still turns the view and the map stays) flipped the
+        # pilot to the raw camera (configs 10/11, "falls back to camera when I turn").
+        if tracked:
+            self.vision_untracked_since = None
+        elif getattr(self, "vision_untracked_since", None) is None:
+            self.vision_untracked_since = captured
+        since = getattr(self, "vision_untracked_since", None)
+        self.lost = since is not None and captured - since > VISION_LOST
         self.report(
             f"Vision tracking | {self.tracked} frames, {self.matched / self.tracked:.0%} tracked, "
             f"{len(self.frontend.keyframes)} keyframes, "
@@ -1287,6 +1359,15 @@ class SLAMBackend(GaussianBackend):
             f"scale {metres or 0:.3f} m/unit from {len(self.vision_metres)} readings"
         )
         if cloud is None or metres is None:
+            return
+        if smeared:
+            # Tracked (the next frame is seeded from it) but not mapped: its pixels are streaks.
+            self.smeared_frames += 1
+            return
+        if self.unplaced_reference():
+            # Its keyframe was started where the robot guessed (tracking lost) and the graph has
+            # not relocalised it: surfaces there could turn a room section sideways (config 10).
+            self.unplaced_frames += 1
             return
         cloud = cloud._replace(points=cloud.points * metres)
         if self.range_field is not None:
@@ -1306,20 +1387,71 @@ class SLAMBackend(GaussianBackend):
         self.last_node = node
         self.place(cloud, placed, now + clock.now() - started, node=node, rgb=rgb)
 
+    def unplaced_reference(self):
+        """Vision-led full: the keyframe this frame was tracked against was started lost and no
+        solve has relocalised it yet."""
+        graph = self.global_graph
+        k = getattr(self.frontend, "reference", None)
+        if graph is None or k is None or k not in graph.lost:
+            return False
+        return not any(n == k for n, _ in graph.relocalised)
+
+    def levelled(self, robot, exposure):
+        """The robot's camera pose with its tilt (roll and pitch) from the head IMU's gravity
+        where it has one, its heading and position kept."""
+        seen = self.sensors.up(exposure) if VISION_GRAVITY else None
+        if seen is None:
+            return robot
+        from scipy.spatial.transform import Rotation
+
+        rotation = robot[:3, :3]
+        now = rotation @ np.asarray(seen[0], float)  # world up as the kinematics put the IMU's
+        axis = np.cross(now, UP)
+        angle = math.atan2(np.linalg.norm(axis), float(now @ UP))
+        if angle < 1e-6:
+            return robot
+        fix = Rotation.from_rotvec(axis / np.linalg.norm(axis) * angle).as_matrix()
+        out = robot.copy()
+        out[:3, :3] = fix @ rotation
+        self.levelled_by = math.degrees(angle)
+        return out
+
+    def smeared(self, exposure):
+        """Vision-led: the camera turned so fast at this frame that its pixels are streaks
+        (turn x exposure x focal past BLUR_PIXELS) or the head was shaking past VISION_SHAKE;
+        such a frame is tracked but not mapped."""
+        spin = self.sensors.angular_velocity(exposure)
+        if spin is None:
+            spin = self.motion.angular_velocity(exposure)
+        if spin is None:
+            return False
+        rate = float(np.linalg.norm(spin))
+        return rate * self.exposure * self.focal > BLUR_PIXELS or rate > VISION_SHAKE
+
     def vision_scale(self, cloud, exposure):
         """Metres per vision unit: the median of the first VISION_SCALE_READINGS ToF and floor
         readings (ToF weighed in four times), then held; None until there are enough."""
         readings = self.vision_metres
-        if cloud is not None and len(readings) < VISION_SCALE_READINGS:
+        log = getattr(self, "vision_scale_log", None)
+        if log is None:
+            log = self.vision_scale_log = []
+        ranged = below = None
+        collecting = VISION_SCALE == "gated" and not getattr(self, "vision_final", False)
+        if cloud is not None and (len(readings) < VISION_SCALE_READINGS or SCALE_LOG or collecting):
             robot = self.motion.at(exposure)
             ranged = self.sensors.range_scale(cloud, exposure, self.motion)
-            if ranged is not None:
-                readings.extend([math.log(ranged)] * 4)
-                self.range_readings += 1
             below = floor_scale(cloud, robot[:3, :3].T @ UP, float(robot[1, 3]))
-            if below is not None:
-                readings.append(math.log(below))
-            self.scale_readings += (ranged is not None) + (below is not None)
+            # Research: every reading with its time and the vision keyframe count (ITO_SCALE_LOG=1).
+            log.append((exposure, ranged, below, len(self.frontend.keyframes)))
+            if len(readings) < VISION_SCALE_READINGS:
+                if ranged is not None:
+                    readings.extend([math.log(ranged)] * 4)
+                    self.range_readings += 1
+                if below is not None:
+                    readings.append(math.log(below))
+                self.scale_readings += (ranged is not None) + (below is not None)
+        if VISION_SCALE == "gated":
+            return self.gated_scale(cloud, exposure, ranged, below)
         if len(readings) < min(VISION_SCALE_READINGS, 12):
             return None
         return math.exp(float(np.median(readings)))
@@ -1330,8 +1462,10 @@ class SLAMBackend(GaussianBackend):
         k = self.frontend.reference
         if cloud is None or metres is None or k is None:
             return
-        if len(self.vision_metres) < VISION_SCALE_READINGS:
+        if VISION_SCALE != "gated" and len(self.vision_metres) < VISION_SCALE_READINGS:
             return  # the metric scale is still being pooled (and may change)
+        if VISION_SCALE == "gated" and not self.vision_final:
+            return  # one rescale of the map may still come (ITO_VISION_SCALE_FINAL)
         from .mast3r_global import sim3_matrix
 
         data = self.frontend.frames[k].T_WC.data.reshape(8).double().cpu().numpy()
@@ -1343,6 +1477,90 @@ class SLAMBackend(GaussianBackend):
             if value is not None and value > 0 and own > 0:
                 self.global_graph.add_scale(k, math.log(own * value / metres))
                 self.tied_scales += 1
+
+    def gated_scale(self, cloud, exposure, ranged, below):
+        """ITO_VISION_SCALE=gated: metres per vision unit from readings taken while the camera is
+        nearly still (ToF and floor each, every frame that has them). Live, the first 40 readings
+        were only ~10 frames from wherever tracking happened to start, and the held scale came out
+        0.79-1.08 of the truth run to run, where replays of the same recordings (starting still)
+        were within 1.5%. Mapping starts after SCALE_START gated readings; at SCALE_FINAL the
+        estimate is fixed for good, and if it moved more than 2% the map (splats, views) is
+        rescaled once about the first camera."""
+        gated = getattr(self, "vision_gated", None)
+        if gated is None:
+            gated = self.vision_gated = []
+            self.vision_held = None
+            self.vision_final = False
+        if cloud is not None and not self.vision_final and self.camera_still(exposure):
+            gated.extend(math.log(v) for v in (ranged, below) if v is not None)
+        if self.vision_held is None:
+            pooled = self.vision_metres
+            if len(gated) < SCALE_START and len(pooled) < VISION_SCALE_READINGS:
+                return None
+            if len(gated) >= SCALE_START:
+                self.vision_held = math.exp(float(np.median(gated[:SCALE_START])))
+                source = f"{SCALE_START} still readings"
+            else:
+                # A pilot who never holds still: the moving readings for now (0.79-1.08 of true
+                # live); the global graph's session scale (mast3r_global) refines it.
+                self.vision_held = math.exp(float(np.median(pooled)))
+                source = f"{len(pooled)} readings while moving"
+            self.vision_final = SCALE_FINAL <= SCALE_START
+            self.report(f"Vision scale {self.vision_held:.3f} m/unit from {source}")
+        elif not self.vision_final and len(gated) >= SCALE_FINAL:
+            self.vision_final = True
+            final = math.exp(float(np.median(gated)))
+            if abs(math.log(final / self.vision_held)) > math.log(1.02):
+                self.rescale_map(final / self.vision_held)
+            self.report(
+                f"Vision scale fixed at {final:.3f} m/unit from {len(gated)} still readings "
+                f"(provisional {self.vision_held:.3f})"
+            )
+            self.vision_held = final
+        return self.vision_held
+
+    def camera_still(self, t, span=0.15):
+        """The robot's camera turned less than STILL_TURN and moved less than STILL_MOVE per second
+        around t (kinematics: precise over short spans)."""
+        if not (self.motion.covers(t - span) and self.motion.covers(t + span)):
+            return False
+        a, b = self.motion.at(t - span), self.motion.at(t + span)
+        turn = np.arccos(np.clip((np.trace(a[:3, :3].T @ b[:3, :3]) - 1) / 2, -1, 1)) / (2 * span)
+        move = np.linalg.norm(b[:3, 3] - a[:3, 3]) / (2 * span)
+        return turn < STILL_TURN and move < STILL_MOVE
+
+    def rescale_map(self, factor):
+        """One global similarity about the vision world's first camera: every live splat and
+        retained view follows a corrected metric scale; fused volume and ToF field start over."""
+        origin = self.vision_world[:3, 3]
+        live = np.flatnonzero(self.keys >= 0)
+        self.records[live, 0, :3] = origin + (self.records[live, 0, :3] - origin) * factor
+        self.records[live, 1, :3] *= factor
+        self.dirty[live] = True
+        self.fresh[live] = True
+        for view in self.views:
+            for name in ("pose", "fitting_pose", "estimated_pose", "estimated_map_pose"):
+                pose = getattr(view, name, None)
+                if pose is not None:
+                    pose = pose.copy()
+                    pose[:3, 3] = origin + (pose[:3, 3] - origin) * factor
+                    setattr(view, name, pose)
+            for name in ("depth", "raw_depth"):
+                depth = getattr(view, name, None)
+                if isinstance(depth, np.ndarray):
+                    setattr(view, name, depth * factor)
+        if self.volume is not None:
+            from .volume import Volume
+
+            self.volume = Volume()
+        if self.range_field is not None:
+            from .rangefield import RangeField
+
+            self.range_field = RangeField()
+        if self.fitter is not None and hasattr(self.fitter, "rescaled"):
+            self.fitter.rescaled()
+        self.recover()
+        self.report(f"Map rescaled by {factor:.3f} (vision metric scale)")
 
     def pose_at(self, captured):
         if VISION_LED:

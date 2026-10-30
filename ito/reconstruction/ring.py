@@ -10,6 +10,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+MAX_ANCHORS = 8192  # gaussian.MAX_ANCHORS: table entries, 0 the world, keyframe k at k + 1
+
 
 @dataclass(frozen=True)
 class SplatUpdate:
@@ -31,6 +33,12 @@ class SplatUpdate:
     anchors: tuple = (
         (0, (1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0)),
     )
+    # ITO_ANCHORED (A4): each record's anchor (an anchor_table entry; 0 = the world), and the
+    # newest table if it changed since the last packet: (n, 4, 4) world-from-anchor similarities
+    # whose last row holds the anchor's centre (x, y, z, 1) instead of (0, 0, 0, 1). A record's
+    # world form is its table entry applied to it (anchors.world_records).
+    anchor_ids: np.ndarray | None = None
+    anchor_table: np.ndarray | None = None
 
 
 class UpdateRing:
@@ -56,6 +64,11 @@ class UpdateRing:
         self.locks = [context.Lock() for _ in range(slots)]
         self.read_position = self.write_position = 0
         self.color_gain = context.RawArray("d", 3)
+        self.anchor_ids = context.RawArray("I", slots * batch)
+        self.anchor_table = context.RawArray("f", MAX_ANCHORS * 16)
+        self.anchor_header = context.RawArray("q", 2)  # revision, entries
+        self.anchor_lock = context.Lock()
+        self.anchors_seen = 0
         self.acknowledged = context.RawValue("q", -1)
         self.ack_lock = context.Lock()
 
@@ -69,6 +82,7 @@ class UpdateRing:
         captured_at,
         sequences=None,
         captures=None,
+        anchors=None,
     ):
         slot = self.write_position % self.slots
         if not self.locks[slot].acquire(False):
@@ -91,6 +105,9 @@ class UpdateRing:
             np.frombuffer(self.captures).reshape(self.slots, self.batch)[slot, :n] = (
                 captures if captures is not None else captured_at
             )
+            np.frombuffer(self.anchor_ids, np.uint32).reshape(self.slots, self.batch)[slot, :n] = (
+                anchors if anchors is not None else 0
+            )
             np.frombuffer(self.headers).reshape(self.slots, 6)[slot] = (
                 n,
                 capacity,
@@ -104,6 +121,37 @@ class UpdateRing:
             return True
         finally:
             self.locks[slot].release()
+
+    def publish_anchors(self, table, centres):
+        """ITO_ANCHORED: the whole anchor table (n, 4, 4 world similarities; centres n, 3), for
+        the next packet the pilot polls. False if the pilot holds it (try again)."""
+        n = min(len(table), MAX_ANCHORS)
+        if not self.anchor_lock.acquire(False):
+            return False
+        try:
+            out = np.frombuffer(self.anchor_table, np.float32).reshape(MAX_ANCHORS, 4, 4)
+            out[:n] = table[:n]
+            out[:n, 3, :3] = centres[:n]
+            out[:n, 3, 3] = 1
+            header = np.frombuffer(self.anchor_header, np.int64)
+            header[1] = n
+            header[0] += 1
+            return True
+        finally:
+            self.anchor_lock.release()
+
+    def _anchor_table(self):
+        if not self.anchor_lock.acquire(False):
+            return None
+        try:
+            revision, n = np.frombuffer(self.anchor_header, np.int64)
+            if revision == self.anchors_seen:
+                return None
+            self.anchors_seen = int(revision)
+            table = np.frombuffer(self.anchor_table, np.float32).reshape(MAX_ANCHORS, 4, 4)
+            return table[: int(n)].copy()
+        finally:
+            self.anchor_lock.release()
 
     def acknowledge(self, revision):
         if self.ack_lock.acquire(False):
@@ -145,6 +193,11 @@ class UpdateRing:
                 slot, :n
             ]
             captures = np.frombuffer(self.captures).reshape(self.slots, self.batch)[slot, :n]
+            anchor_ids = (
+                np.frombuffer(self.anchor_ids, np.uint32)
+                .reshape(self.slots, self.batch)[slot, :n]
+                .copy()
+            )
             unique, first = np.unique(sequences, return_index=True)
             observations = tuple(
                 (int(seq), float(captures[i])) for seq, i in zip(unique, first, strict=True) if seq
@@ -165,6 +218,8 @@ class UpdateRing:
                 captures.copy(),
                 self.coordinate_frame,
                 color_gain=tuple(self.color_gain),
+                anchor_ids=anchor_ids,
+                anchor_table=self._anchor_table(),
             )
         finally:
             self.locks[slot].release()

@@ -96,6 +96,27 @@ EDGE_DEG = float(os.environ.get("ITO_SLAM_EDGE_DEG", "0.1"))
 EDGE_CM = float(os.environ.get("ITO_SLAM_EDGE_CM", "0.5"))
 EDGE_BASELINE = float(os.environ.get("ITO_SLAM_EDGE_BASELINE", "0.05"))
 EDGE_SCALE = 0.05  # log-scale sigma of a pair's relative scale
+# The session's metric scale, refined slowly (ITO_SLAM_SESSION_SCALE=1, default under
+# ITO_SLAM_LEAD=vision; dense edges only). The solve pins the oldest keyframe whole, scale too, so
+# the held metric scale's error at the start (gated still readings: 0.96-1.00 of true in replays;
+# moving readings 0.79-1.08 live) stays in the room around it while ToF ties pull later keyframes
+# to metres: a scale gradient across the room. After each solve the whole graph is scaled about the
+# world's origin (a gauge move: images measure nothing of it) toward the median of every tied
+# keyframe's ToF/floor readings over its scale, at most SESSION_RATE per solve and only by what lies
+# past SESSION_DEADBAND, so the room's one scale settles over a minute or so instead of jumping.
+# The dead band is wide: on the loop replay the ties' median sat 2.6% above the truth while the
+# gated start scale was right (moving all the way made the room 2.9% too big); it is there for a
+# start scale that is clearly off (moving readings: 0.79-1.08 live).
+SESSION_SCALE = (
+    os.environ.get(
+        "ITO_SLAM_SESSION_SCALE", "1" if os.environ.get("ITO_SLAM_LEAD") == "vision" else "0"
+    )
+    == "1"
+)
+SESSION_RATE = 0.005  # |log-scale| per solve
+SESSION_GAIN = 0.3
+SESSION_DEADBAND = 0.04
+SESSION_MIN_KEYFRAMES = 3  # tied keyframes before the session scale moves
 REFRESH = 8  # edges whose keyframes' pointmaps have filled in since, re-solved per global solve
 # ITO_SLAM_LOG=<file>: one JSON line per solve and per checked edge (a diagnostic).
 SOLVE_LOG = os.environ.get("ITO_SLAM_LOG")
@@ -184,6 +205,11 @@ class GlobalGraph:
         self.odometry = []  # (i, j, rotation, translation, sigma[6]) robot motion i -> j
         self.turns = []  # (i, j, rotation, sigma) the head gyro's turn i -> j (ITO_HEAD_IMU)
         self.scales = {}  # keyframe -> list of log metres per pointmap unit (ToF readings)
+        # The graph world's up (MASt3R axes, +y down) for the gravity factors; vision-led full
+        # SLAM's world is the first camera's, set by slam.py from the head IMU.
+        self.up = np.array([0.0, -1.0, 0.0])
+        self.session_scale = 0.0  # log of the whole graph's rescale so far (SESSION_SCALE)
+        self.session_offset = None  # the last measured median ToF offset, log
         self.owned = set()  # keyframes a solve has posed
         self.lock = threading.Lock()  # factors and the retrieval database
         self.tasks = queue.Queue()
@@ -247,6 +273,11 @@ class GlobalGraph:
             if turn is not None:
                 self.turns.append((turn[0], index, *turn[1:]))
         self.tasks.put(index)
+
+    def add_gravity(self, index, seen, sigma):
+        """Keyframe index's up as its camera sees it (MASt3R axes; the head IMU), sigma radians."""
+        with self.lock:
+            self.gravity[index] = (np.asarray(seen, float), float(sigma))
 
     def add_scale(self, index, log_scale):
         with self.lock:
@@ -668,7 +699,7 @@ class GlobalGraph:
             odometry = list(self.odometry)
             turns = list(self.turns)
             scales = {k: list(v) for k, v in self.scales.items()}
-        up = np.array([0.0, -1.0, 0.0])  # MASt3R's world: +y down
+        up = self.up
         for k, (seen, sigma) in gravity.items():
             if k not in local:
                 continue
@@ -772,6 +803,8 @@ class GlobalGraph:
             self.failed += 1
             self.error = "non-finite poses"
             return
+        if SESSION_SCALE and not level:
+            after = self._session_scale(after, involved, local)
         moves = corrections(
             dict(keyframes=involved, before=start, after=after, gauge=gauge, level=level),
             dict(zip(involved, start, strict=True)),
@@ -834,6 +867,33 @@ class GlobalGraph:
                 solve=self.solves,
             )
         )
+
+    def _session_scale(self, after, involved, local):
+        """SESSION_SCALE: the solved poses (n, 8 Sim3 data) with the whole graph scaled about
+        the world's origin a small step toward what the ToF/floor ties say."""
+        with self.lock:
+            scales = {k: list(v) for k, v in self.scales.items() if k in local and v}
+        if len(scales) < SESSION_MIN_KEYFRAMES:
+            return after
+        offsets, weights = [], []
+        for k, readings in scales.items():
+            s, _, _ = split(sim3_matrix(after[local[k]])[0])
+            offsets.append(float(np.median(readings)) - math.log(s))
+            weights.append(len(readings))
+        order = np.argsort(offsets)
+        cumulative = np.cumsum(np.asarray(weights, float)[order])
+        offset = float(np.asarray(offsets)[order][np.searchsorted(cumulative, cumulative[-1] / 2)])
+        self.session_offset = offset
+        if abs(offset) < SESSION_DEADBAND:
+            return after
+        excess = math.copysign(abs(offset) - SESSION_DEADBAND, offset)
+        step = float(np.clip(SESSION_GAIN * excess, -SESSION_RATE, SESSION_RATE))
+        self.session_scale += step
+        c = math.exp(step)
+        scaled = after.copy()
+        scaled[:, 0:3] *= c  # Sim3 data: translation, quaternion (xyzw), scale
+        scaled[:, 7] *= c
+        return scaled
 
     def _pose(self, edges, involved, local, fix):
         """ITO_SLAM_EDGES=pose: solve_pose_graph on the keyframes' poses now, each edge's own

@@ -54,7 +54,7 @@ def rectified(matrix, distortion, width, height):
 
 
 class Camera:
-    def __init__(self, info, measured=dict, truth=None, record=None):
+    def __init__(self, info, stamp, record=None):
         import cv2
 
         self.cv = cv2
@@ -106,8 +106,7 @@ class Camera:
         )
         self.intrinsics = k
         self.source = geometry["source"]
-        self.measured = measured
-        self.truth = truth
+        self.stamp = stamp
         self.record = record
         self.latest = None
         self.revision = 0
@@ -156,18 +155,16 @@ class Camera:
                     frame = await track.recv()
             except TimeoutError as exc:
                 raise RuntimeError("Microduck camera stalled for two seconds") from exc
-            # mediad's WebRTC API exposes no per-frame capture timestamp. This is receive time,
-            # not sensor exposure time; keep that distinction visible in telemetry.
+            # mediad's WebRTC API exposes no per-frame capture timestamp; stamp() says when the
+            # frame was exposed where the driver can know it (the sim's truth), else estimates.
             received = clock.now()
-            measured = self.measured()
             raw, rgb = await asyncio.to_thread(self.rectify, frame)
-            if self.truth is not None and frame.pts is not None:
-                # The sim's thumbnails are of the frame it sent, not of the rectified one.
-                measured = measured | self.truth(raw, float(frame.pts * frame.time_base))
+            rtp = None if frame.pts is None else float(frame.pts * frame.time_base)
+            # The sim's thumbnails are of the frame it sent, not of the rectified one.
+            captured, measured = self.stamp(raw, rtp, received)
             if self.record is not None:
-                rtp = None if frame.pts is None else float(frame.pts * frame.time_base)
-                self.record(raw, received, rtp)
-            self.latest = (rgb, received, measured)
+                self.record(raw, received, rtp, captured)
+            self.latest = (rgb, captured, measured)
             self.revision += 1
             self.changed.set()
 

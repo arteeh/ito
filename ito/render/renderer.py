@@ -8,6 +8,7 @@ from OpenGL import GL
 
 from ito import clock
 
+from .anchors import AnchorEase
 from .pose import validate_pose
 from .scene import FloatArray, GaussianBuffer
 
@@ -15,6 +16,7 @@ from .scene import FloatArray, GaussianBuffer
 # from what is drawn to the new record over this time (new splats fade in), and a retired
 # splat stays whole that long before its fade, so a replacement is in before it goes.
 EASE = max(0.0, float(os.environ.get("ITO_EASE", "0") or 0))
+MAX_ANCHORS = 8192  # reconstruction/ring.py MAX_ANCHORS
 # ITO_UPDATE_STATS=1 (a diagnostic): log every 5 s how the applied packets changed the live
 # splats: born, retired, emptied, and how far the changed ones moved.
 UPDATE_STATS = os.environ.get("ITO_UPDATE_STATS") == "1"
@@ -86,8 +88,20 @@ class GaussianRenderer:
         self.vao = context.vertex_array(self.program, [])
         self.update = context.compute_shader(shaders.joinpath("update.glsl").read_text())
         self.staging = [
-            (context.buffer(reserve=4096 * 64), context.buffer(reserve=4096 * 4)) for _ in range(4)
+            (
+                context.buffer(reserve=4096 * 64),
+                context.buffer(reserve=4096 * 4),
+                context.buffer(reserve=4096 * 4),
+            )
+            for _ in range(4)
         ]
+        # ITO_ANCHORED (anchors.py): each slot's anchor, and every anchor's similarity as drawn.
+        self.slot_anchors = None
+        self.anchors = AnchorEase(MAX_ANCHORS)
+        self.anchor_buffer = context.buffer(
+            np.tile(np.eye(4, dtype=np.float32), (MAX_ANCHORS, 1, 1)).tobytes()
+        )
+        self.anchored = False
         self.staging_fences = [None] * len(self.staging)
         self.staging_cursor = 0
         self.epoch = 0.0
@@ -133,6 +147,11 @@ class GaussianRenderer:
         self.degree = scene.sh_degree
         self.draw_count = self.slot_capacity = count
         self.live = None
+        self.anchored = False
+        if self.slot_anchors is not None:
+            self.slot_anchors.release()
+        self.slot_anchors = self.context.buffer(reserve=max(64, count * 4))
+        self.slot_anchors.clear()
         self.fade_seconds = 0.0
         self.ease = 0.0
         if self.previous is not None:
@@ -158,6 +177,14 @@ class GaussianRenderer:
             previous.clear()
         live = np.zeros(capacity, dtype=bool)
         observed_at = np.zeros(capacity, dtype=np.float64)
+        slot_anchors = self.context.buffer(reserve=capacity * 4)
+        slot_anchors.clear()
+        if self.slot_anchors is not None:
+            if keep and self.scene_buffer is not None:
+                kept = min(capacity, self.slot_capacity)
+                self.context.copy_buffer(slot_anchors, self.slot_anchors, size=kept * 4)
+            self.slot_anchors.release()
+        self.slot_anchors = slot_anchors
         if self.scene_buffer is not None:
             if keep:
                 kept = min(capacity, self.slot_capacity)
@@ -182,6 +209,16 @@ class GaussianRenderer:
         self.capacity = max(1024, 1 << max(0, self.draw_count - 1).bit_length())
 
     def apply(self, update) -> bool:
+        table = getattr(update, "anchor_table", None)
+        if update.epoch > self.epoch and self.anchored:
+            # A new worker's anchors start over.
+            self.anchors = AnchorEase(MAX_ANCHORS)
+            self.anchor_buffer.write(np.tile(np.eye(4, dtype=np.float32), (MAX_ANCHORS, 1, 1)))
+            self.anchored = False
+        if table is not None and update.epoch >= self.epoch:
+            # Taken whatever the packet: the ring hands each new table to one packet only.
+            self.anchors.set(table)
+            self.anchored = True
         if update.epoch < self.epoch or (
             update.epoch == self.epoch and update.revision <= self.revision
         ):
@@ -239,7 +276,7 @@ class GaussianRenderer:
         self.capacity = max(1024, 1 << max(0, self.draw_count - 1).bit_length())
         if self.stats is not None:
             self.stats(update.indices, update.records)
-        changes, slots = self.staging[slot]
+        changes, slots, change_anchors = self.staging[slot]
         records = update.records.copy()
         retiring = records[:, 3, 3] == 1
         records[retiring, 1, 3] = np.minimum(
@@ -247,10 +284,19 @@ class GaussianRenderer:
         )
         changes.write(records)
         slots.write(update.indices)
+        anchor_ids = getattr(update, "anchor_ids", None)
+        if anchor_ids is None:
+            anchor_ids = np.zeros(n, np.uint32)
+        anchor_ids = np.ascontiguousarray(anchor_ids, np.uint32)
+        anchor_ids[anchor_ids >= MAX_ANCHORS] = 0
+        change_anchors.write(anchor_ids)
+        self.anchors.drawn(anchor_ids)
         self.uploaded_bytes += update.records.nbytes + update.indices.nbytes
         self.scene_buffer.bind_to_storage_buffer(1)
         changes.bind_to_storage_buffer(2)
         slots.bind_to_storage_buffer(3)
+        change_anchors.bind_to_storage_buffer(5)
+        self.slot_anchors.bind_to_storage_buffer(6)
         (self.scene_buffer if self.previous is None else self.previous).bind_to_storage_buffer(4)
         self.update["ease"] = self.ease
         self.update["scene_time"] = clock.now() - self.epoch
@@ -267,12 +313,27 @@ class GaussianRenderer:
             update.acknowledge()
         return True
 
+    def _advance_anchors(self) -> None:
+        if not self.anchored:
+            return
+        matrices = self.anchors.advance(clock.now())
+        if matrices is not None:
+            # std430 mat4 is column-major: each matrix transposed.
+            self.anchor_buffer.write(np.ascontiguousarray(matrices.transpose(0, 2, 1)))
+
+    def _bind_anchors(self, program) -> None:
+        self.slot_anchors.bind_to_storage_buffer(6)
+        self.anchor_buffer.bind_to_storage_buffer(7)
+        program["anchored"] = int(self.anchored)
+
     def sort(self, robot_camera: FloatArray, head: FloatArray) -> None:
         if not self.draw_count:
             return
+        self._advance_anchors()
         view = self._view(validate_pose(robot_camera) @ validate_pose(head))
         self.scene_buffer.bind_to_storage_buffer(1)
         self.order.bind_to_storage_buffer(0)
+        self._bind_anchors(self.keys)
         self.keys["view"].write(view.T.copy())
         self.keys["count"] = self.draw_count
         self.keys["stride"] = self.stride
@@ -347,6 +408,9 @@ class GaussianRenderer:
         self.scene_buffer.bind_to_storage_buffer(1)
         (self.scene_buffer if self.previous is None else self.previous).bind_to_storage_buffer(4)
         self.order.bind_to_storage_buffer(0)
+        if not sort:
+            self._advance_anchors()
+        self._bind_anchors(self.program)
         self.program["view"].write(view.T.copy())
         self.program["projection"].write(projection.T.copy())
         self.program["eye"] = tuple(world_from_eye[:3, 3])
@@ -368,9 +432,9 @@ class GaussianRenderer:
         for fence in self.staging_fences:
             if fence is not None:
                 GL.glDeleteSync(fence)
-        for changes, slots in self.staging:
-            changes.release()
-            slots.release()
+        for buffers in self.staging:
+            for buffer in buffers:
+                buffer.release()
         for resource in (
             self.vao,
             self.program,
@@ -380,6 +444,8 @@ class GaussianRenderer:
             self.previous,
             self.order,
             self.update,
+            self.slot_anchors,
+            self.anchor_buffer,
         ):
             if resource is not None:
                 resource.release()

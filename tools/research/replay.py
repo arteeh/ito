@@ -16,6 +16,14 @@ Run with a Windows build's Python (it has MASt3R, gsplat and CuPy), the worktree
 same path exact poses take (--truth poses): Ito's mapper and depth, someone else's poses. Frames
 between the given ones get poses interpolated in time; with --truth depth, the exact depth too.
 
+With ITO_SLAM=full the global graph runs as bind_admission would start it live.
+
+Frames are stamped as A1 does live (--clock exposure, the default): by the capture time the driver
+sent (frames.jsonl "captured", recordings with meta capture_exact), else by the sim's exposure time
+("exposed"; a frame without one by its receive time less the recording's median lag), and the
+backend estimates no frame delay. --clock receive: receive time and the recorded frame_delay, as
+before A1. Pacing and which motion/sensor samples had arrived always follow receive time.
+
 Writes OUT/poses.npz (seq, poses: the published map-frame camera pose of every mapped frame),
 OUT/map-*.npz (the live map every 30 s and at the end, as ITO_DUMP_MAP), OUT/frames.jsonl
 (per frame: work ms, splats, VRAM). Environment switches (ITO_FUSE, ITO_SLAM, ...) apply as live."""
@@ -62,6 +70,7 @@ def main():
     p.add_argument("--dump-every", type=float, default=30.0)
     p.add_argument("--code", help="checkout root whose ito package to replay")
     p.add_argument("--max-splats", type=int, default=1_000_000)
+    p.add_argument("--clock", choices=("exposure", "receive"), default="exposure")
     a = p.parse_args()
     import logging
 
@@ -84,12 +93,26 @@ def main():
     def report(text):
         messages.append(text)
 
+    stamped = [f for f in rec.frames if "captured" in f or "exposed" in f]
+    exact = a.clock == "exposure" and bool(stamped)
+    lag = 0.0
+    if exact and not meta.get("capture_exact"):
+        lag = float(np.median([f["received"] - f["exposed"] for f in stamped if "exposed" in f]))
+
+    def capture_time(f):
+        if not exact:
+            return f["received"]
+        if meta.get("capture_exact") and "captured" in f:
+            return f["captured"]
+        return f["exposed"] if "exposed" in f else f["received"] - lag
+
     backend = SLAMBackend(
         a.max_splats,
         intrinsics,
         report=report,
         motion_noise=noise,
-        frame_delay=meta["frame_delay"],
+        capture_exact=exact,
+        frame_delay=0.0 if exact else meta["frame_delay"],
         exposure=meta["exposure"],
         precision=a.precision,
         input_resolution=100,
@@ -97,6 +120,14 @@ def main():
         fade_seconds=0.5,
         device="cuda",
     )
+    full_stop = [False]
+    if os.environ.get("ITO_SLAM") == "full":
+        from ito.reconstruction.mast3r_global import GlobalGraph
+
+        backend.global_graph = GlobalGraph(
+            backend.frontend, report, lambda: True, lambda: full_stop[0], None
+        )
+        backend.frontend.global_graph = backend.global_graph
     times, poses, gyro, states = rec.motion
     motion_rows = np.zeros((len(times), 21))
     motion_rows[:, 0] = times
@@ -130,9 +161,7 @@ def main():
             )
             for g in message["ranges"]
         ]
-        last = max(
-            [s[0] for u in imu for s in u["samples"]] + [g["time"] for g in ranges] or [0]
-        )
+        last = max([s[0] for u in imu for s in u["samples"]] + [g["time"] for g in ranges] or [0])
         sensors.append((last, imu, ranges))
     sensors.sort(key=lambda item: item[0])
     frames = [f for f in rec.frames if f.get("file")]
@@ -167,8 +196,10 @@ def main():
             m[:3, :3] = slerp([t]).as_matrix()[0]
             m[:3, 3] = [np.interp(t, times_given, poses_given[:, k, 3]) for k in range(3)]
             return m
+
     motion_cursor = sensor_cursor = 0
     published = []
+    node_seq = {}
     log = (out / "frames.jsonl").open("w")
     next_dump = a.dump_every
     import torch
@@ -179,17 +210,24 @@ def main():
         stopped = [False]
         trainer = backend.start_training(lambda: True, lambda: stopped[0], lambda exc: None)
     stream_start = frames[0]["received"]
+    # A frame stuck for HANG seconds (a deadlock): every thread's stack to OUT/hang.txt, then exit,
+    # so a hung replay neither blocks the shared GPU queue nor dies without a trace.
+    import faulthandler
+
+    hang_file = open(out / "hang.txt", "w")
     for f in frames:
+        faulthandler.dump_traceback_later(180, exit=True, file=hang_file)
         if a.speed and not a.inline_fit:
             due = began_all + (f["received"] - stream_start) / a.speed
             wait = due - time.perf_counter()
             if wait > 0:
                 time.sleep(wait)
-        captured = f["received"]
-        while motion_cursor < len(times) and times[motion_cursor] <= captured + LOOKAHEAD:
+        arrived = f["received"]
+        captured = capture_time(f)
+        while motion_cursor < len(times) and times[motion_cursor] <= arrived + LOOKAHEAD:
             motion_cursor += 1
-        backend.add_motion(motion_rows[: motion_cursor][-512:])
-        while sensor_cursor < len(sensors) and sensors[sensor_cursor][0] <= captured + LOOKAHEAD:
+        backend.add_motion(motion_rows[:motion_cursor][-512:])
+        while sensor_cursor < len(sensors) and sensors[sensor_cursor][0] <= arrived + LOOKAHEAD:
             backend.add_sensors(*sensors[sensor_cursor][1:])
             sensor_cursor += 1
         rgb = rec.rgb(f)
@@ -212,7 +250,7 @@ def main():
                 depth,
                 None,
             )
-        now = captured - t0
+        now = arrived - t0
         tracked = backend.tracked
         backend.source_sequence = f["seq"] + 1
         backend.source_captured = captured
@@ -239,6 +277,8 @@ def main():
                     now,
                 )
             )
+            if getattr(backend, "last_node", None) is not None:
+                node_seq[backend.last_node] = f["seq"]
         log.write(
             json.dumps(
                 dict(
@@ -260,11 +300,22 @@ def main():
             next_dump += a.dump_every
             with backend.lock:
                 dump(backend, out, now)
+    faulthandler.dump_traceback_later(300, exit=True, file=hang_file)
     if trainer is not None:
         stopped[0] = True
         trainer.join(timeout=10)
     with backend.lock:
         dump(backend, out, frames[-1]["received"] - t0)
+    final = getattr(backend, "vision_final_poses", lambda: {})()
+    if final:
+        # Vision-led full SLAM: each placed frame by its keyframe's pose at the end (where its
+        # surfaces are now), against the published pose at the time (poses.npz).
+        nodes = sorted(n for n in final if n in node_seq)
+        np.savez(
+            out / "poses_final.npz",
+            seq=np.array([node_seq[n] for n in nodes]),
+            poses=np.array([final[n] for n in nodes]),
+        )
     np.savez(
         out / "poses.npz",
         seq=np.array([row[0] for row in published]),
@@ -285,13 +336,26 @@ def main():
             indent=1,
         )
     )
+    scale_log = getattr(backend, "vision_scale_log", None)
+    if scale_log:
+        # ITO_SCALE_LOG=1: every vision-scale reading (exposure, ToF, floor m/unit, keyframes).
+        (out / "vision_scale.json").write_text(json.dumps(scale_log))
+    full_stop[0] = True
+    graph = getattr(backend, "global_graph", None)
+    if graph is not None:
+        (out / "global.json").write_text(json.dumps(backend.global_statistics(), default=str))
+    faulthandler.cancel_dump_traceback_later()
     print("done", out)
 
 
 def dump(backend, out, now):
     live = np.flatnonzero((backend.keys >= 0) & ~backend.retiring)
+    # Full SLAM: the world the map is drawn in, back to the robot's starting frame (as live dumps).
+    world = getattr(backend, "world_alignment", lambda: None)()
+    extra = {} if world is None else dict(world=world)
     np.savez(
         out / f"map-{now:07.1f}.npz",
+        **extra,
         records=backend.records[live],
         seconds=now,
         captures=backend.captures[live],
