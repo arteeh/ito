@@ -68,6 +68,8 @@ class RGBDBackend:
         self.source_sequence = 0
         self.source_captured = 0.0
         self.budget = budget
+        # Sources (see SLOT_FIELDS) that lost splats to pool pressure since last asked.
+        self.evicted = set()
         self.refreshed = 0
         xp = self.xp
         y, x = xp.mgrid[: intrinsics.height, : intrinsics.width]
@@ -115,7 +117,7 @@ class RGBDBackend:
         excess = max(0, self.count - budget - int(self.retiring.sum()))
         candidates = np.flatnonzero((self.keys >= 0) & ~self.retiring)
         if excess:
-            self.retire(self.oldest(candidates, excess), pressure=True)
+            self.evict(self.oldest(candidates, excess))
         return excess
 
     def compact(self):
@@ -142,6 +144,12 @@ class RGBDBackend:
         if n >= len(candidates):
             return candidates
         return candidates[np.argpartition(self.seen[candidates], n - 1)[:n]]
+
+    def evict(self, indices):
+        """Retire splats for room, and note whose they were."""
+        self.retire(indices, pressure=True)
+        sources = np.unique(self.sources[indices])
+        self.evicted.update(sources[sources >= 0].tolist())
 
     def retire(self, indices, *, pressure=False):
         self.records[indices, 3, 3] = 1
@@ -224,7 +232,13 @@ class RGBDBackend:
         i = self.intrinsics
         self.carve(camera, i.fx, i.fy, i.cx, i.cy, observed, now)
 
-    def integrate_points(self, points, colors, now, sizes=None, source=-1):
+    def integrate_points(
+        self, points, colors, now, sizes=None, source=-1, *, headroom=True, evict=True
+    ):
+        """Splats for these points, one per voxel. Returns how many voxels found no slot: the
+        budget was full, or the voxel's splat is a pressure victim still fading. To make room
+        it evicts the longest-unseen splats (evict): as many as these points lacked, and, with
+        headroom, enough to keep an eighth of the budget free for what comes next."""
         xp = self.xp
         with self.gpu_chunk("voxelize"):
             valid = xp.all(xp.isfinite(points), axis=1)
@@ -245,6 +259,7 @@ class RGBDBackend:
             colors, levels = colors[bounded], levels[bounded]
             keys = (levels << 57) | (cells[:, 0] << 38) | (cells[:, 1] << 19) | cells[:, 2]
             keys, unique = xp.unique(keys, return_index=True)
+            offered = len(keys)
             points, colors, cell = points[unique], colors[unique], cell[unique]
         with self.gpu_chunk("match"):
             occupied = np.flatnonzero(self.keys >= 0)
@@ -296,14 +311,18 @@ class RGBDBackend:
         self.records[slots, 2, 0] = 1
         self.records[slots, 3, :3] = (colors[observed] / 255 - 0.5) / 0.2820947918
         self.dirty[slots] = True
+        dropped = offered - len(slots)
+        if not evict:
+            return dropped
         spare = max(0, self.budget - self.count) + int(self.retiring.sum())
-        wanted = len(new) - admitted + self.budget // 8
+        wanted = len(new) - admitted + (self.budget // 8 if headroom else 0)
         pressure = min(max(0, wanted - spare), max(1, self.budget // 4))
         candidates = np.flatnonzero((self.keys >= 0) & ~self.retiring & (self.seen < now))
         if pressure:
             victims = self.oldest(candidates, pressure)
-            self.retire(victims, pressure=True)
+            self.evict(victims)
             missing = min(pressure - len(victims), len(new) - admitted, len(refreshed_slots))
             if missing > 0:
                 chosen = np.argpartition(previous_seen, missing - 1)[:missing]
-                self.retire(refreshed_slots[chosen], pressure=True)
+                self.evict(refreshed_slots[chosen])
+        return dropped

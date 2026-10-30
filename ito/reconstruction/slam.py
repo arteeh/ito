@@ -36,6 +36,7 @@ KEYFRAME_BYTES_PER_PIXEL = 44 + 16 + 26 * EDGES_PER_KEYFRAME
 SPARE = 1
 CONFIDENCE = 1.5  # upstream's viewer draws points above this average confidence
 MOVED = 0.005  # a keyframe the solve moved by more than this share of its depth is redrawn
+RETRIES = 2  # keyframes the splat pool could not take whole, offered again per frame
 # Free VRAM after setup below this: the driver is already spilling into system memory.
 SPILLING = 256 << 20
 
@@ -197,6 +198,8 @@ class SLAMBackend(RGBDBackend):
             # Ito's own, also once: each keyframe's pose when last drawn, and its depth.
             self.drawn = torch.zeros(buffer, 1, lietorch.Sim3.embedded_dim, device="cuda")
             self.depth = torch.ones(buffer, device="cuda")
+            # ... and whether the splat pool still owes it splats (see draw).
+            self.pending = np.zeros(buffer, bool)
             free, _ = torch.cuda.mem_get_info()
         except torch.cuda.OutOfMemoryError as exc:
             raise RuntimeError(
@@ -333,6 +336,7 @@ class SLAMBackend(RGBDBackend):
         self.graph.n_edges = self.spare
         self.keyframes.pop_last()
         self.retire_source(k)
+        self.pending[k] = False
         self.shown = min(self.shown, k)
         self.spare = None
 
@@ -451,9 +455,11 @@ class SLAMBackend(RGBDBackend):
             self.tracked += 1
         full = len(self.keyframes) >= self.capacity
         n = min(len(self.keyframes), self.capacity)
+        owed = int(self.pending[: len(self.keyframes)].sum())
         counts = (
             f"{self.tracked} frames, {n}/{self.capacity} keyframes, {self.graph.n_edges} edges, "
             f"{self.loops} loop closures, {self.relocalized} relocalised, "
+            f"{owed} keyframes owed splats, "
             + (
                 f"{self.scale:.3f} m per map unit (ToF)"
                 if self.tof.value
@@ -468,6 +474,11 @@ class SLAMBackend(RGBDBackend):
             state = "map full: tracking, mapping nothing new (a larger Map size maps more)"
         else:
             state = "tracking"
+        if owed and self.count - int(self.retiring.sum()) >= self.budget:
+            state += (
+                f"; splat budget full: {owed} keyframes not fully shown (raise Max splats, or "
+                "free VRAM)"
+            )
         if self.warning:
             self.report(f"{self.warning}. MASt3R-SLAM {state}; {counts}")
         else:
@@ -476,9 +487,15 @@ class SLAMBackend(RGBDBackend):
 
     def draw(self, now):
         """Keep the splat map showing every keyframe's pointmap at its current pose: those
-        upstream marked dirty (new, or refined by the tracker) and those the solve moved."""
+        upstream marked dirty (new, or refined by the tracker) and those the solve moved are
+        drawn anew. A keyframe the splat pool could not take whole (full, or its old splats
+        still fading), or that lost splats to the pool's pressure, stays pending: it is
+        offered again, a few per frame while the pool has room, until all of it is shown."""
         torch, lietorch, keyframes = self.torch, self.lietorch, self.keyframes
         n = len(keyframes)
+        for k in self.evicted:
+            self.pending[k] = k < n
+        self.evicted.clear()
         redraw = torch.zeros(n, dtype=torch.bool, device=self.drawn.device)
         dirty = keyframes.get_dirty_idx()
         redraw[dirty[dirty < n]] = True
@@ -496,22 +513,32 @@ class SLAMBackend(RGBDBackend):
                 + (delta[:, 7] - 1).abs()
             )
             redraw[:shown] |= ~(moved <= MOVED)
-        for k in torch.nonzero(redraw).flatten().tolist():
+        redrawn = torch.nonzero(redraw).flatten().tolist()
+        for k in redrawn:
             self.show(k, now)
+        if self.budget > self.count:
+            owed = set(np.flatnonzero(self.pending[:n]).tolist()) - set(redrawn)
+            for k in sorted(owed)[:RETRIES]:
+                self.show(k, now, retry=True)
         self.shown = n
 
-    def show(self, k, now):
+    def show(self, k, now, retry=False):
+        """Place keyframe k's points as splats: anew (its old ones fade, and it may evict the
+        longest-unseen to make room), or, retrying, what is missing of it where it was drawn,
+        into free slots only."""
         torch, keyframes = self.torch, self.keyframes
         with keyframes.lock:
-            pose = keyframes.T_WC[k].clone()
+            pose = (self.drawn[k] if retry else keyframes.T_WC[k]).clone()
             z = keyframes.X[k][:, 2].clone()
             confidence = keyframes.C[k][:, 0] / keyframes.N[k]
             colors = (keyframes.uimg[k].reshape(-1, 3).to(z.device) * 255).to(torch.uint8)
         # Constrained to its rays, as use_calib does, and as upstream's viewer draws it.
         local = torch.stack((z * self.rays[0], z * self.rays[1], z), dim=1)
         valid = (confidence > CONFIDENCE) & (z > 0) & torch.isfinite(local).all(dim=1)
-        self.drawn[k] = pose
-        self.retire_source(k)
+        if not retry:
+            self.drawn[k] = pose
+            self.retire_source(k)
+        self.pending[k] = False
         if not bool(valid.any()):
             return
         self.depth[k] = z[valid].median()
@@ -520,10 +547,13 @@ class SLAMBackend(RGBDBackend):
         pixels = 3 * max(1, (400_000 / self.budget) ** 0.5)
         footprint = z * pose[0, 7] * self.scale * pixels / float(self.input.K[0, 0])
         xp = self.xp
-        self.integrate_points(
+        dropped = self.integrate_points(
             xp.from_dlpack(points[valid].contiguous()),
             xp.from_dlpack(colors[valid].contiguous()),
             now,
             xp.from_dlpack(footprint[valid].contiguous()),
             source=k,
+            headroom=False,
+            evict=not retry,
         )
+        self.pending[k] = dropped > 0
