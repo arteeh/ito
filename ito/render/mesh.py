@@ -42,6 +42,10 @@ JUMP = (0.02, 0.06)
 # silhouette (see bend() below).
 EDGE_BEND = float(os.environ.get("ITO_MESH_EDGE", "0.08"))
 NOW_BIAS = 0.03  # NOW wins over memory within this share of its depth
+# A surface the newest frame sees through keeps this share of its weight per such look.
+RETIRE_SHARE = float(os.environ.get("ITO_MESH_RETIRE", "0.6"))
+# A voxel counts as seen above this weight (one head-on look from 1 m weighs 1).
+MIN_WEIGHT = float(os.environ.get("ITO_MESH_MIN_WEIGHT", "0.05"))
 # A frame becomes a memory view (keyframe) once it moved this far (m) or turned (degrees).
 KEY_MOVE = (0.15, 12.0)
 KEY_RGB = (640, 360)  # keyframe texture size (width, height)
@@ -160,6 +164,7 @@ uniform float edge;
 uniform float now;
 uniform float color_age;
 uniform float max_weight;
+uniform float retire;
 """
     + EDGE
     + """
@@ -192,6 +197,10 @@ void main() {
     // nothing, instead of a false empty sample just behind a surface.
     vec2 old = imageLoad(field, c).rg;
     float t = min(1.0, sdf / trunc);
+    // Seen well in front of where the field holds a surface: the surface is gone (moved, or a
+    // wrong guess). Each such look takes a share of its weight, so it retires in a few looks,
+    // not after as many as built it.
+    if (sdf > 2.0 * trunc && old.g > 0.0 && old.r < 0.0) old *= retire;
     float W = min(old.g + w, max_weight);
     imageStore(field, c, vec4((old.r + t * w) / (old.g + w) * W, W, 0, 0));
     if (abs(sdf) > 1.5 * voxel) return;
@@ -611,6 +620,7 @@ class MeshWorld:
         _set(p, "now", float(frame.captured - self.epoch))
         _set(p, "color_age", COLOR_AGE)
         _set(p, "max_weight", 24.0)
+        _set(p, "retire", RETIRE_SHARE)
         self.field.bind_to_image(0, read=True, write=True)
         self.colors.bind_to_image(1, read=True, write=True)
         self.stamps.bind_to_image(2, read=True, write=True)
@@ -813,7 +823,7 @@ class MeshWorld:
             _set(r, "origin", tuple(float(v) for v in self.origin))
             _set(r, "box", tuple(float(v) for v in self.box))
             _set(r, "voxel", VOXEL)
-            _set(r, "min_weight", 0.3)
+            _set(r, "min_weight", MIN_WEIGHT)
             _set(r, "now", float(self.now[2].captured - self.epoch) if self.now else 0.0)
             keys = 0
             # Every sampler gets its own unit, used or not: two sampler types on one unit
