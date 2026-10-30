@@ -103,6 +103,17 @@ def main():
         fade_seconds=0.5,
         device="cuda",
     )
+    from ito.reconstruction.mode import FULL
+
+    full_stop = [False]
+    if FULL:
+        # As bind_admission starts it live (the replay has no admission).
+        from ito.reconstruction.mast3r_global import GlobalGraph
+
+        backend.global_graph = GlobalGraph(
+            backend.frontend, report, lambda: True, lambda: full_stop[0], None
+        )
+        backend.frontend.global_graph = backend.global_graph
     times, poses, gyro, states = rec.motion
     motion_rows = np.zeros((len(times), 21))
     motion_rows[:, 0] = times
@@ -262,6 +273,10 @@ def main():
                     keyframes=len(backend.graph.keyframes),
                     fit_steps=int(backend.fit_steps),
                     vram_gib=round(torch.cuda.max_memory_reserved() / 2**30, 2),
+                    keyframes_full=len(getattr(backend.frontend, "frames", ()) or ()),
+                    edge_mb=round(getattr(backend.global_graph, "edge_bytes", 0) / 2**20)
+                    if backend.global_graph is not None
+                    else 0,
                     **(used := memory(torch, backend)),
                 )
             )
@@ -301,6 +316,9 @@ def main():
             indent=1,
         )
     )
+    full_stop[0] = True
+    if backend.global_graph is not None:
+        (out / "global.json").write_text(json.dumps(backend.global_statistics(), default=str))
     if traced is not None:
         grown = tracemalloc.take_snapshot().compare_to(traced, "traceback")
         with (out / "trace.txt").open("w") as file:
