@@ -257,7 +257,7 @@ class GaussianBackend(GaussianSlots):
         entry): a surface following keyframe k in k's frame as placed (ITO_ANCHORED)."""
         records = self.records[indices]
         anchors = np.zeros(len(indices), np.uint32)
-        if self.anchor_table is None or not len(indices) or self.anchor_count <= 1:
+        if self.anchor_table is None or not len(indices):
             return records, anchors
         owners = self.owners[indices]
         unique, inverse = np.unique(owners, return_inverse=True)
