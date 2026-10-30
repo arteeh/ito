@@ -167,6 +167,9 @@ def load_model(weights, report, *, precision="full", precision_report=None):
             network.invalid_count = torch.zeros((), dtype=torch.int64, device="cuda")
         model.network_precision = network
         network.report()
+        from .mast3r_graphs import graph_model
+
+        model.graphs = graph_model(model)
         return model
     except torch.cuda.OutOfMemoryError:
         raise

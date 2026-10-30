@@ -69,6 +69,7 @@ class Admission:
         self.recovered_at = 0.0
         self.stream = self.torch_stream = None
         self.owner = None  # the thread that integrates frames (set on its first frame)
+        self.capturing = None  # the thread capturing a CUDA graph (mast3r_graphs.py)
 
     def completed(self, began, period):
         now = clock.now()
@@ -149,6 +150,10 @@ class Admission:
 
     @contextmanager
     def cuda_chunk(self, events, *, kind="map"):
+        if self.capturing == threading.get_ident():
+            # Inside a graph capture: no waits or events; the graph's replay is one chunk.
+            yield
+            return
         if self.owner is not None and threading.get_ident() != self.owner:
             # Another thread of the worker (the full SLAM graph): like the trainer it keeps out
             # of this thread's accounting and only waits while the renderer asks to back off.
@@ -236,6 +241,9 @@ def bind_model(model, admission):
                 block.register_forward_hook(after, always_call=True),
             )
         )
+    if getattr(model, "graphs", None) is not None:
+        # A graph replay (mast3r_graphs.py) skips these hooks: it is one chunk of its own.
+        model.graphs.admission = admission
     return handles
 
 
