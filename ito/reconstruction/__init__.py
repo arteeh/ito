@@ -138,6 +138,7 @@ def _run(recon):
                 precision_report=recon.report_precision,
                 motion_noise=recon.motion_noise,
                 frame_delay=recon.frame_delay,
+                capture_exact=recon.capture_exact,
                 exposure=recon.exposure,
                 **recon.options,
             )
@@ -595,6 +596,7 @@ class Reconstruction:
         tracking="robot",
         motion_noise=None,
         frame_delay=0.0,
+        capture_exact=False,
         exposure=None,
         precision="full",
         input_resolution=100,
@@ -615,6 +617,7 @@ class Reconstruction:
         self.tracking_mode = tracking if motion_noise is not None else "vision"
         self.motion_noise = motion_noise
         self.frame_delay = frame_delay
+        self.capture_exact = capture_exact
         self.exposure = exposure
         self.intrinsics = intrinsics
         self.shape = (intrinsics.height, intrinsics.width)

@@ -219,7 +219,8 @@ FIELD_INTERVAL = 20.0  # seconds: the least time from one field rebuild to the n
 
 class SLAMBackend(GaussianBackend):
     """frame_delay: the driver's estimate of how long before its capture_time a frame was
-    exposed; exposure: how long the sensor integrates one, None if the driver cannot say.
+    exposed; capture_exact: capture_time is the exposure itself (no delay, none estimated);
+    exposure: how long the sensor integrates one, None if the driver cannot say.
     aligner: a tracking.MapAligner, the map's say in every tracked frame's pose."""
 
     def __init__(
@@ -230,6 +231,7 @@ class SLAMBackend(GaussianBackend):
         report,
         motion_noise,
         frame_delay=0.0,
+        capture_exact=False,
         exposure=None,
         frontend=None,
         precision="full",
@@ -271,8 +273,15 @@ class SLAMBackend(GaussianBackend):
         self.motion = MotionBuffer(motion_noise, seconds=60.0)
         self.sensors = HeadSensors(seconds=60.0)
         bounds = (max(0.0, frame_delay + DELAY_RANGE[0]), frame_delay + DELAY_RANGE[1])
+        if capture_exact:
+            frame_delay, bounds = 0.0, (0.0, 0.0)
+        self.capture_exact = capture_exact
         self.graph = PoseGraph(
-            self.motion, td=frame_delay, td_bounds=bounds, estimate_td=True, inertial=self.sensors
+            self.motion,
+            td=frame_delay,
+            td_bounds=bounds,
+            estimate_td=not capture_exact,
+            inertial=self.sensors,
         )
         self.focal = float(intrinsics.fx)
         self.exposure = EXPOSURE if exposure is None else float(exposure)

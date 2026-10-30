@@ -68,6 +68,12 @@ class Camera(Model):
         description="How long before its capture_time a frame was exposed, as the driver "
         "estimates it; robot-first tracking refines it against the robot's motion",
     )
+    capture_exact: bool = Field(
+        default=False,
+        description="capture_time is when the sensor exposed the frame, on the clock motion and "
+        "sensor samples carry (capture_delay 0): reconstruction matches poses, IMU and ToF to "
+        "it as is instead of estimating a delay",
+    )
     exposure: Number | None = Field(
         default=None,
         ge=0,

@@ -48,7 +48,9 @@ PAN_LIMIT = 1.50
 FRAME_DELAY = 0.09
 GAIT_PERIOD = 0.42
 GAZE_DISTANCE = 10.0
-METADATA_POSE_INTERVAL = 0.05
+# Camera poses kept for stamping frames: every robot.state (50 Hz), by its source time, for
+# longer than a frame takes to arrive.
+POSE_HISTORY = 100
 # The head's four servos each have about a degree of gear play each way (microduck_rl's
 # add_backlash.py, modelled in the sim): the camera rides past what the encoders, and so the
 # kinematics, say by up to about two degrees, and by a different amount after the head turns
@@ -152,8 +154,10 @@ class MicroduckAdapter(Adapter):
         self._state_at = 0.0
         self._yaw_origin = None
         self._origin = None
-        self._poses = deque(maxlen=40)
-        self._pose_due = 0.0
+        self._poses = deque(maxlen=POSE_HISTORY)
+        self._last_capture = 0.0
+        self._capture_lag = None  # sim: RTP seconds minus exposure seconds, once matched
+        self._capture_kinds = dict.fromkeys(("exposure", "rtp", "receive"), 0)
         self._source_clock = SourceClock()
         self._motion = deque(maxlen=16)
         self._previous_motion = None
@@ -202,10 +206,13 @@ class MicroduckAdapter(Adapter):
             self._truth = truth.SimTruth(address) if address else None
             self.camera = Camera(
                 await self.remote.call("media.video"),
-                self._frame_metadata,
-                truth=self._true_pose if self._truth else None,
+                self._stamp,
                 record=self._record_frame if self._recorder else None,
             )
+            # The sim says when it exposed each frame (its truth lines, sim time on this clock),
+            # so frames carry their exposure time; a real beta's mediad drops V4L2's stamps, so
+            # there a frame carries its receive time and FRAME_DELAY estimates the lag.
+            exact = self._truth is not None
             self._description = RobotDescription(
                 name="Microduck",
                 motion_noise=MOTION_NOISE,
@@ -214,7 +221,8 @@ class MicroduckAdapter(Adapter):
                         name="head",
                         track_id="microduck-rgb",
                         intrinsics=self.camera.intrinsics,
-                        capture_delay=FRAME_DELAY,
+                        capture_delay=0.0 if exact else FRAME_DELAY,
+                        capture_exact=exact,
                         exposure=self._exposure(),
                     ),
                 ),
@@ -230,7 +238,8 @@ class MicroduckAdapter(Adapter):
                 ),
             )
             self._telemetry.update(
-                camera_calibration=self.camera.source, camera_timestamp="driver receive time"
+                camera_calibration=self.camera.source,
+                camera_timestamp="sim exposure time" if exact else "driver receive time",
             )
             if self._recorder:
                 c = self.camera
@@ -243,7 +252,8 @@ class MicroduckAdapter(Adapter):
                     intrinsics=c.intrinsics,
                     source=c.source,
                     motion_noise=MOTION_NOISE,
-                    frame_delay=FRAME_DELAY,
+                    frame_delay=0.0 if exact else FRAME_DELAY,
+                    capture_exact=exact,
                     exposure=self._exposure(),
                     tof_fov=self._tof_fov,
                 )
@@ -499,10 +509,10 @@ class MicroduckAdapter(Adapter):
             pose = frames.camera_in_world(
                 data["imu"]["quat"], position, (camera["pos"], camera["quat"]), self._origin
             )
-            if now >= self._pose_due:
-                self._pose_due = max(self._pose_due + METADATA_POSE_INTERVAL, now - 0.05)
-                self._poses.append((now, *pose, values["base_yaw"]))
-            self._moved(data, now, pose, camera)
+            source, stamp = self._source_clock(data.get("t_ns"), now)
+            if not self._poses or source > self._poses[-1][0]:
+                self._poses.append((source, *pose, values["base_yaw"]))
+            self._moved(data, source, stamp, pose, camera)
             for name, angle in zip(("yaw", "pitch", "roll"), frames.angles(pose[1]), strict=True):
                 values[f"camera_{name}"] = angle
             if self._measured_at is not None:
@@ -538,8 +548,7 @@ class MicroduckAdapter(Adapter):
             self._ranges_pending.clear()
         self._telemetry.update(head_imu_hz=self._imu_rate.hz(), tof_hz=self._tof_rate.hz())
 
-    def _moved(self, data, received, pose, camera):
-        source, stamp = self._source_clock(data.get("t_ns"), received)
+    def _moved(self, data, source, stamp, pose, camera):
         previous = self._previous_motion
         if previous is not None and source <= previous[0]:
             return
@@ -575,22 +584,60 @@ class MicroduckAdapter(Adapter):
             motion_gyro="head FK" if gyro_from_fk else "head IMU",
         )
 
-    def _frame_metadata(self):
-        if not self._poses:
-            return {}
-        position, orientation, body_yaw = frames.at(self._poses, clock.now() - FRAME_DELAY)
-        return dict(camera_pose=Pose(position=position, orientation=orientation), body_yaw=body_yaw)
+    def _stamp(self, raw, rtp, received):
+        """When a received frame was exposed (driver clock) and what Ito is told with it: the
+        robot's camera pose and body yaw at that time, the sim's exact pose if asked for.
 
-    def _record_frame(self, raw, received, rtp):
+        In the sim, the frame's truth line gives its exposure time; a frame the truth reader
+        could not name (rare, before its link delay settles) is placed by its RTP time and the
+        last matched frames' RTP-to-exposure lag. Without the sim, receive time - FRAME_DELAY."""
+        measured = {}
+        captured, kind = None, "receive"
+        if self._truth is not None and rtp is not None:
+            measured = self._true_pose(raw, rtp)
+            if self._last_truth is not None:
+                captured, kind = float(self._last_truth[1]["time"]), "exposure"
+                lag, known = rtp - captured, self._capture_lag
+                self._capture_lag = lag if known is None else known + 0.05 * (lag - known)
+            elif self._capture_lag is not None:
+                captured, kind = rtp - self._capture_lag, "rtp"
+        if captured is None:
+            # Without the sim the frame carries its receive time and reconstruction subtracts
+            # capture_delay itself; the sim's few unmatched first frames get the same estimate.
+            captured = received if self._truth is None else received - FRAME_DELAY
+        # Frames must stay in order (the pilot and the video's pts both rely on it).
+        captured = max(captured, self._last_capture + 1e-4)
+        self._last_capture = captured
+        self._capture_kinds[kind] += 1
+        self._telemetry.update(
+            **{f"frames_stamped_{k}": v for k, v in self._capture_kinds.items()},
+            frame_age_ms=round((received - captured) * 1000, 1),
+        )
+        if self._poses:
+            when = captured if self._truth is not None else received - FRAME_DELAY
+            position, orientation, body_yaw = frames.at(self._poses, when)
+            measured |= dict(
+                camera_pose=Pose(position=position, orientation=orientation), body_yaw=body_yaw
+            )
+        return captured, measured
+
+    def _record_frame(self, raw, received, rtp, captured):
         found = self._last_truth
         self._recorder.frame(
-            raw, received, rtp, found[1:] if found is not None and found[0] == rtp else None
+            raw,
+            received,
+            rtp,
+            found[1:] if found is not None and found[0] == rtp and found[2] is not None else None,
+            captured=captured,
         )
 
     def _true_pose(self, rgb, rtp):
         row = self._truth.match(rgb, rtp)
         self._last_truth = None
-        if row is None or self._origin is None:
+        if row is None:
+            return {}
+        if self._origin is None:
+            self._last_truth = (rtp, row, None, None)
             return {}
         position, orientation = truth.in_world(row, self._origin)
         self._last_truth = (rtp, row, position, orientation)
