@@ -1,249 +1,453 @@
-import math
+"""MASt3R-SLAM (Murai et al., CVPR 2025) as its own main.py runs it, in Ito's worker.
+
+The bundled upstream (models/slam, ito.build) does the SLAM: FrameTracker tracks every frame
+against the last keyframe and picks keyframes, the backend links each keyframe to the one
+before and to what retrieval recalls and solves the global Sim(3) graph, and a lost camera
+relocalises by retrieval, mapping nothing meanwhile. This module is main.py's loop, its
+backend's work per keyframe and its relocalisation, ported line for line, in one process and
+one thread: upstream's single_thread mode, in which the frontend waits for the backend after
+every keyframe and every relocalisation attempt. Ito's own code is the edges: Input makes
+frames as upstream's dataloader and create_frame do, and the camera pose and the keyframes'
+pointmaps (at their current poses, as upstream's viewer draws them) go out to the pilot.
+"""
+
+import threading
+from types import SimpleNamespace
 
 import numpy as np
 
-from ito import clock
-
-from .fusion import UP, PoseGraph
-from .motion import MotionBuffer
 from .rgbd import RGBDBackend
-from .sensors import HeadSensors
-from .slam_vision import RESTART_CAUSES
 
-__all__ = ["RESTART_CAUSES", "SLAMBackend"]
+AXES = np.array([1.0, -1.0, -1.0])  # OpenCV camera/world axes (+Y down, +Z forward) to Ito.
+# MASt3R's input, long side, per Input resolution setting; 512 is upstream's.
+LONG_SIDE = {25: 256, 50: 368, 75: 448, 100: 512}
+# Upstream's buffers, all allocated at start so memory stays flat. Upstream keeps 512 keyframes
+# and grows its graph; per keyframe Ito holds the keyframe (44 bytes per input pixel), its
+# graph edges (26 bytes per pixel each) and its share of the solve's inputs (16).
+KEYFRAMES = 192
+EDGES = 3 * KEYFRAMES
+CONFIDENCE = 1.5  # upstream's viewer draws points above this average confidence
+MOVED = 0.005  # a keyframe the solve moved by more than this share of its depth is redrawn
+# Free VRAM after setup below this: the driver is already spilling into system memory.
+SPILLING = 256 << 20
 
-# A frame smeared further than this by the camera's turn during its exposure still gets a
-# pose, from the robot, but neither a visual factor nor splats: no tracker matches through
-# it, and its splats would be streaks. Blur is |angular velocity| x exposure x focal length.
-BLUR_PIXELS = 8.0
-EXPOSURE = 0.010
-DELAY_RANGE = (-0.1, 0.2)
-FLOOR_RAY = math.radians(10)
-FLOOR_SHARE = 0.1
-FLOOR_HEIGHT = 0.05
-FLOOR_LEVEL = 0.05
-FLOOR_SIGMA = 0.15
-RANGE_SIGMA = 0.05
-SCALE_STEP = 0.01
+
+def input_shape(width, height, percent):
+    """Width and height of the frames MASt3R sees for a camera (see crop)."""
+    long = LONG_SIDE[percent]
+    size = max(width, height)
+    resized = [int(round(x * long / size)) for x in (width, height)]
+    half_width = 2 * (resized[0] // 2) // 16 * 8
+    half_height = 2 * (resized[1] // 2) // 16 * 8
+    if resized[0] == resized[1]:
+        half_height = 3 * half_width / 4
+    return 2 * half_width, int(2 * half_height)
+
+
+def crop(image, long):
+    """mast3r_utils.resize_img's 512 branch for any long side: resize the long side to it,
+    centre-crop to multiples of 16. Returns the image and its return_transformation."""
+    from mast3r_slam.mast3r_utils import _resize_pil_image
+
+    W1, H1 = image.size
+    image = _resize_pil_image(image, long)
+    W, H = image.size
+    cx, cy = W // 2, H // 2
+    halfw, halfh = ((2 * cx) // 16) * 8, ((2 * cy) // 16) * 8
+    if W == H:
+        halfh = 3 * halfw / 4
+    image = image.crop((cx - halfw, cy - halfh, cx + halfw, cy + halfh))
+    return image, (W1 / W, H1 / H, (W - image.size[0]) / 2, (H - image.size[1]) / 2)
+
+
+class Input:
+    """Upstream's dataloader for a calibrated camera: frames as create_frame makes them from the
+    driver's RGB, and K for them as Intrinsics derives it (K_frame). The driver's frames are
+    already pinhole: there is nothing to undistort."""
+
+    def __init__(self, intrinsics, percent, device="cuda"):
+        import PIL.Image
+
+        self.long, self.device = LONG_SIDE[percent], device
+        blank = PIL.Image.new("RGB", (intrinsics.width, intrinsics.height))
+        image, (scale_w, scale_h, half_crop_w, half_crop_h) = crop(blank, self.long)
+        self.width, self.height = image.size
+        self.K = np.array(
+            [
+                [intrinsics.fx / scale_w, 0, intrinsics.cx / scale_w - half_crop_w],
+                [0, intrinsics.fy / scale_h, intrinsics.cy / scale_h - half_crop_h],
+                [0, 0, 1],
+            ],
+            dtype=np.float32,
+        )
+
+    def frame(self, index, rgb, T_WC):
+        import PIL.Image
+        import torch
+        from dust3r.utils.image import ImgNorm
+        from mast3r_slam.frame import Frame
+
+        image, _ = crop(PIL.Image.fromarray(rgb), self.long)
+        img = ImgNorm(image)[None].to(device=self.device)
+        img_shape = torch.tensor(np.int32([image.size[::-1]]), device=self.device)
+        uimg = torch.from_numpy(np.array(image)) / 255.0
+        return Frame(index, img, img_shape, img_shape.clone(), uimg, T_WC)
+
+
+class Manager:
+    """What SharedKeyframes and SharedStates take from a multiprocessing Manager, for one
+    process: upstream shares them between its frontend, backend and viewer processes."""
+
+    @staticmethod
+    def RLock():
+        return threading.RLock()
+
+    @staticmethod
+    def Value(typecode, value):
+        return SimpleNamespace(value=value)
+
+    @staticmethod
+    def list():
+        return []
 
 
 class SLAMBackend(RGBDBackend):
-    """frame_delay: the driver's estimate of how long before its capture_time a frame was
-    exposed; exposure: how long the sensor integrates one, None if the driver cannot say.
-    aligner: a tracking.MapAligner, the map's say in every tracked frame's pose."""
-
     def __init__(
         self,
         capacity,
         intrinsics,
         *,
         report,
-        motion_noise,
-        frame_delay=0.0,
-        exposure=None,
-        frontend=None,
         precision="full",
         input_resolution=100,
         precision_report=None,
-        aligner=None,
         **options,
     ):
-        if frontend is None:
-            from .mast3r_frontend import MASt3RFrontend
+        from .mast3r_runtime import load_model, prepare
 
-            frontend = MASt3RFrontend(
-                intrinsics,
-                report,
-                precision=precision,
-                input_resolution=input_resolution,
-                precision_report=precision_report,
-            )
+        source, weights, retrieval = prepare(report)
+        import lietorch
+        import torch
+        from mast3r_slam.config import config, load_config
+        from mast3r_slam.frame import Mode, SharedKeyframes, SharedStates
+        from mast3r_slam.global_opt import FactorGraph
+        from mast3r_slam.mast3r_utils import load_retriever, mast3r_inference_mono
+        from mast3r_slam.tracker import FrameTracker
+
+        load_config(str(source / "config/base.yaml"))
+        # On top of base.yaml, what upstream's config/eval_calib.yaml sets: a calibrated camera,
+        # and a frontend that waits for the backend.
+        config["use_calib"] = True
+        config["single_thread"] = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.set_grad_enabled(False)
         options["device"] = "cuda"
         super().__init__(capacity, intrinsics, **options)
         self.report = report
-        self.frontend = frontend
-        self.aligner = aligner
-        self.intrinsics = intrinsics
-        self.aligned = 0
-        self.motion = MotionBuffer(motion_noise, seconds=60.0)
-        self.sensors = HeadSensors(seconds=60.0)
-        bounds = (max(0.0, frame_delay + DELAY_RANGE[0]), frame_delay + DELAY_RANGE[1])
-        self.graph = PoseGraph(
-            self.motion, td=frame_delay, td_bounds=bounds, estimate_td=True, inertial=self.sensors
+        self.torch, self.lietorch, self.config, self.Mode = torch, lietorch, config, Mode
+        self.inference = mast3r_inference_mono
+        self.input = Input(intrinsics, input_resolution)
+        h, w = self.input.height, self.input.width
+        self.settings = f"{precision.title()} precision, {input_resolution}% input resolution"
+        self.lower = "lower the Input resolution" + (
+            " or choose Half" if precision == "full" else ""
         )
-        self.focal = float(intrinsics.fx)
-        self.exposure = EXPOSURE if exposure is None else float(exposure)
+        try:
+            self.model = load_model(
+                weights, report, precision=precision, precision_report=precision_report
+            )
+            K = torch.as_tensor(self.input.K, device="cuda")
+            manager = Manager()
+            self.keyframes = SharedKeyframes(manager, h, w, buffer=KEYFRAMES)
+            self.states = SharedStates(manager, h, w)
+            self.keyframes.set_intrinsics(K)
+            self.tracker = FrameTracker(self.model, self.keyframes, "cuda")
+            self.graph = FactorGraph(self.model, self.keyframes, K, "cuda", max_edges=EDGES)
+            self.retrieval = load_retriever(self.model, str(retrieval))
+            # Ito's own, also once: each keyframe's pose when last drawn, and its depth.
+            self.drawn = torch.zeros(KEYFRAMES, 1, lietorch.Sim3.embedded_dim, device="cuda")
+            self.depth = torch.ones(KEYFRAMES, device="cuda")
+            free, _ = torch.cuda.mem_get_info()
+        except torch.cuda.OutOfMemoryError as exc:
+            raise RuntimeError(
+                f"Out of VRAM for MASt3R-SLAM at {self.settings}: {self.lower} in Settings"
+            ) from exc
+        self.warning = (
+            f"VRAM full ({free / 2**20:.0f} MiB free after MASt3R-SLAM's setup): the driver "
+            f"spills into system memory and everything slows; {self.lower}"
+            if free < SPILLING
+            else None
+        )
+        v, u = np.mgrid[:h, :w].reshape(2, -1).astype(np.float32)
+        K = self.input.K
+        rays = (u - K[0, 2]) / K[0, 0], (v - K[1, 2]) / K[1, 1]
+        self.rays = torch.as_tensor(np.stack(rays), device="cuda")
+        self.axes = torch.tensor(AXES, device="cuda", dtype=torch.float32)
+        self.world = None
+        self.i = 0
+        self.shown = 0
         self.camera_pose = np.eye(4, dtype=np.float32)
-        self.correction = np.eye(4, dtype=np.float32)
         self.tracked = 0
-        self.matched = 0
-        self.blurred = 0
-        self.restarts = dict.fromkeys(RESTART_CAUSES, 0)
         self.lost = False
-        self.unmatched_since = None
-        self.recalls = 0
-        self.waiting = False
-        report("MASt3R ready; waiting for camera and robot motion")
+        self.full = False
+        self.loops = 0
+        self.relocalized = 0
+        report("MASt3R-SLAM ready; waiting for camera")
 
     def bind_admission(self, admission):
+        from .admission import bind_model, bind_native
+
         super().bind_admission(admission)
-        if hasattr(self.frontend, "bind_admission"):
-            self.frontend.bind_admission(admission)
+        self.admission_hooks = bind_model(self.model, admission)
+        bind_native(admission)
 
-    def add_sensors(self, imu, ranges):
-        self.sensors.add(imu, ranges)
+    def integrate(self, rgb, depth, camera, now):
+        """One frame through upstream's main loop. camera: the robot's own estimate of its camera
+        pose (world-from-camera, Ito axes); only the first frame's is used, once, to place the
+        map in the robot's gravity-aligned world. It never enters the solve."""
+        before = len(self.keyframes), self.graph.n_edges, self.retrieval.kf_counter
+        try:
+            self.step(rgb, camera)
+        except self.torch.cuda.OutOfMemoryError as exc:
+            # The worker drops a frame that ran out of memory and goes on. Only tracking is
+            # safe to drop: half a keyframe's backend work leaves upstream's keyframes, graph
+            # and retrieval out of step, so that ends this map.
+            if (len(self.keyframes), self.graph.n_edges, self.retrieval.kf_counter) == before:
+                raise
+            raise RuntimeError(
+                f"Out of VRAM in MASt3R-SLAM's backend at {self.settings}: {self.lower} in Settings"
+            ) from exc
+        self.publish(self.posed)
+        self.draw(now)
 
-    def add_motion(self, rows):
-        self.motion.extend(rows)
-
-    def integrate(self, rgb, depth, camera, now, measured=False, *, captured):
-        """captured: the frame's stamp on the pilot clock, the clock motion samples are on."""
-        started = clock.now()
-        graph = self.graph
-        exposure = captured - graph.td
-        if not self.motion.covers(exposure):
-            if not self.waiting:
-                self.report("Robot-first tracking waiting for the robot's motion")
-            self.waiting = True
-            return
-        self.waiting = False
-        self.frontend.forget(graph.expire(self.motion.times[0]))
-        node = graph.add_frame(captured)
-        predicted = graph.pose(node)
-        last = graph.latest_keyframe()
-        reference_time = graph.nodes[last].time if last is not None else captured
-        _, covariance = self.motion.between(reference_time - graph.td, exposure)
-        gyro = self.sensors.angular_velocity(exposure)
-        if gyro is None:
-            gyro = self.motion.angular_velocity(exposure)
-        spin = float(np.linalg.norm(gyro))
-        if spin * self.exposure * self.focal > BLUR_PIXELS:
-            self.blurred += 1
-            graph.solve_frame()
-            self._publish(node)
-            return
-        result = self.frontend.track(rgb, node, predicted, np.sqrt(np.diag(covariance)))
-        cloud = result.cloud
-        if result.relative is not None:
-            graph.add_visual(result.reference, node, result.relative, result.sigma)
-            graph.solve_delay()
-            self.matched += 1
-        measured = None
-        if cloud is not None:
-            robot = self.motion.at(exposure)
-            seen = []
-            below = floor_scale(cloud, robot[:3, :3].T @ UP, float(robot[1, 3]))
-            if below is not None:
-                seen.append((math.log(below), FLOOR_SIGMA))
-            ranged = self.sensors.range_scale(cloud, exposure, self.motion)
-            if ranged is not None:
-                seen.append((math.log(ranged), RANGE_SIGMA))
-            for value, sigma in seen:
-                graph.add_scale(value, sigma)
-            if seen:
-                graph.solve_scale()
-                weights = [sigma**-2 for _, sigma in seen]
-                measured = math.exp(
-                    sum(w * value for w, (value, _) in zip(weights, seen, strict=True))
-                    / sum(weights)
-                )
-        graph.solve_frame()
-        if self.aligner is not None:
-            found = self.aligner.align(rgb, graph.pose(node), self.intrinsics)
-            if found is not None and found[2] > 0 and graph.add_map(node, *found[:2]):
-                graph.solve_frame()
-                self.aligned += 1
-        poses, dropped = {}, []
-        if result.keyframe:
-            dropped = graph.promote()
-            poses = graph.solve_window()
-        scale = 1.0
-        if poses or abs(graph.log_scale) > SCALE_STEP:
-            scale = graph.fold_scale()
-            self.frontend.correct(poses, scale)
-        if dropped:
-            self.frontend.forget(dropped)
-        if cloud is not None:
-            own = scale if measured is None else measured
-            cloud = cloud._replace(points=cloud.points * own)
-        pose = self._publish(node)
-        if cloud is not None:
-            self.place(cloud, pose, now + clock.now() - started)
-
-    def pose_at(self, captured):
-        return self.graph.pose_at(captured)
-
-    def _publish(self, node):
-        graph = self.graph
-        graph.publish(node)
-        pose = graph.pose(node)
-        self.camera_pose = pose.astype(np.float32)
-        self.correction = graph.correction(node).astype(np.float32)
-        self.tracked += 1
-        self.report(
-            f"Robot-first tracking | {self.tracked} frames, "
-            f"{self.matched / self.tracked:.0%} matched, {self.blurred} blurred, "
-            f"{self.sensors.ranged} ToF-scaled, "
-            f"frame delay {graph.td * 1000:.0f} ms"
+    def step(self, rgb, camera):
+        Mode, states, keyframes = self.Mode, self.states, self.keyframes
+        mode = states.get_mode()
+        # get frames last camera pose
+        T_WC = (
+            self.lietorch.Sim3.Identity(1, device="cuda")
+            if self.i == 0
+            else states.get_frame().T_WC
         )
-        return pose
+        frame = self.input.frame(self.i, rgb, T_WC)
+        posed = None
+        if mode == Mode.INIT:
+            # Initialize via mono inference, and encoded features neeed for database
+            X_init, C_init = self.inference(self.model, frame)
+            frame.update_pointmap(X_init, C_init)
+            keyframes.append(frame)
+            self.optimize(len(keyframes) - 1)
+            states.set_mode(Mode.TRACKING)
+            states.set_frame(frame)
+            self.place(camera)
+            posed = frame.T_WC
+        else:
+            add_new_kf = False
+            if mode == Mode.TRACKING:
+                add_new_kf, _, try_reloc = self.tracker.track(frame)
+                if try_reloc:
+                    states.set_mode(Mode.RELOC)
+                else:
+                    posed = frame.T_WC
+                states.set_frame(frame)
+            elif mode == Mode.RELOC:
+                X, C = self.inference(self.model, frame)
+                frame.update_pointmap(X, C)
+                states.set_frame(frame)
+                # Ito: a relocalisation attempt is a keyframe until it fails; none when full.
+                if self.room(self.config["retrieval"]["k"]) and self.relocalization(
+                    states.get_frame()
+                ):
+                    states.set_mode(Mode.TRACKING)
+                    self.relocalized += 1
+                    posed = self.lietorch.Sim3(keyframes.T_WC[len(keyframes) - 1])
+            else:
+                raise RuntimeError(f"Invalid MASt3R-SLAM mode {mode}")
+            if add_new_kf and self.room(1 + self.config["retrieval"]["k"]):
+                keyframes.append(frame)
+                self.optimize(len(keyframes) - 1)
+        self.i += 1
+        self.posed = posed
 
-    def place(self, cloud, pose, when):
-        torch = _torch()
-        world = torch.as_tensor(pose, device="cuda", dtype=torch.float32)
-        points = cloud.points @ world[:3, :3].T + world[:3, 3]
-        valid = cloud.valid
-        fx, fy, cx, cy = cloud.intrinsics
-        depth = -cloud.points[:, 2]
+    def room(self, edges):
+        """Upstream's buffers would overflow (IndexError) past their size: Ito adds no keyframe
+        then, and says so."""
+        self.full = len(self.keyframes) >= KEYFRAMES or self.graph.n_edges + edges > EDGES
+        return not self.full
+
+    def optimize(self, idx):
+        """run_backend's work on one queued keyframe (main.py), which single_thread waits for."""
+        config, keyframes, factor_graph = self.config, self.keyframes, self.graph
+        # Graph Construction
+        kf_idx = []
+        # k to previous consecutive keyframes
+        n_consec = 1
+        for j in range(min(n_consec, idx)):
+            kf_idx.append(idx - 1 - j)
+        frame = keyframes[idx]
+        retrieval_inds = self.retrieval.update(
+            frame,
+            add_after_query=True,
+            k=config["retrieval"]["k"],
+            min_thresh=config["retrieval"]["min_thresh"],
+        )
+        kf_idx += retrieval_inds
+
+        lc_inds = set(retrieval_inds)
+        lc_inds.discard(idx - 1)
+        if len(lc_inds) > 0:
+            self.loops += 1
+
+        kf_idx = set(kf_idx)  # Remove duplicates by using set
+        kf_idx.discard(idx)  # Remove current kf idx if included
+        kf_idx = list(kf_idx)  # convert to list
+        frame_idx = [idx] * len(kf_idx)
+        if kf_idx:
+            factor_graph.add_factors(kf_idx, frame_idx, config["local_opt"]["min_match_frac"])
+
+        if config["use_calib"]:
+            factor_graph.solve_GN_calib()
+        else:
+            factor_graph.solve_GN_rays()
+
+    def relocalization(self, frame):
+        """main.py's relocalization, as run_backend runs it for a frame in RELOC mode."""
+        config, keyframes = self.config, self.keyframes
+        factor_graph, retrieval_database = self.graph, self.retrieval
+        # we are adding and then removing from the keyframe, so we need to be careful.
+        # The lock slows viz down but safer this way...
+        with keyframes.lock:
+            kf_idx = []
+            retrieval_inds = retrieval_database.update(
+                frame,
+                add_after_query=False,
+                k=config["retrieval"]["k"],
+                min_thresh=config["retrieval"]["min_thresh"],
+            )
+            kf_idx += retrieval_inds
+            successful_loop_closure = False
+            if kf_idx:
+                keyframes.append(frame)
+                n_kf = len(keyframes)
+                kf_idx = list(kf_idx)  # convert to list
+                frame_idx = [n_kf - 1] * len(kf_idx)
+                if factor_graph.add_factors(
+                    frame_idx,
+                    kf_idx,
+                    config["reloc"]["min_match_frac"],
+                    is_reloc=config["reloc"]["strict"],
+                ):
+                    retrieval_database.update(
+                        frame,
+                        add_after_query=True,
+                        k=config["retrieval"]["k"],
+                        min_thresh=config["retrieval"]["min_thresh"],
+                    )
+                    successful_loop_closure = True
+                    keyframes.T_WC[n_kf - 1] = keyframes.T_WC[kf_idx[0]].clone()
+                else:
+                    keyframes.pop_last()
+
+            if successful_loop_closure:
+                if config["use_calib"]:
+                    factor_graph.solve_GN_calib()
+                else:
+                    factor_graph.solve_GN_rays()
+            return successful_loop_closure
+
+    def place(self, camera):
+        """The map's one gauge: upstream starts at the first keyframe's identity pose, Ito puts
+        that pose where the robot says its camera is."""
+        torch = self.torch
+        self.world = np.asarray(camera, dtype=np.float64)
+        self.world_rotation = torch.as_tensor(self.world[:3, :3], device="cuda").float()
+        self.world_translation = torch.as_tensor(self.world[:3, 3], device="cuda").float()
+
+    def placed(self, transform):
+        """A Sim(3) camera pose of upstream's as a rigid world-from-camera pose in Ito's world."""
+        matrix = transform.matrix()[0].double().cpu().numpy()
+        if not np.isfinite(matrix).all():
+            return None
+        # Sim3 rotations drift from orthonormal in float32; snap to the nearest one.
+        u, _, vh = np.linalg.svd(matrix[:3, :3])
+        rigid = np.eye(4)
+        rigid[:3, :3] = (u @ vh) * AXES[:, None] * AXES[None, :]
+        rigid[:3, 3] = matrix[:3, 3] * AXES
+        return self.world @ rigid
+
+    def publish(self, posed):
+        pose = None if posed is None else self.placed(posed)
+        self.lost = pose is None
+        if pose is not None:
+            self.camera_pose = pose.astype(np.float32)
+            self.tracked += 1
+        n = len(self.keyframes)
+        counts = (
+            f"{self.tracked} frames, {n}/{KEYFRAMES} keyframes, {self.graph.n_edges} edges, "
+            f"{self.loops} loop closures, {self.relocalized} relocalised"
+        )
+        if self.full:
+            state = f"map full at {n} keyframes: tracking on, mapping nothing new"
+        elif self.lost:
+            state = "lost: look back at a mapped place to relocalise"
+        else:
+            state = "tracking"
+        if self.warning:
+            self.report(f"{self.warning}. MASt3R-SLAM {state}; {counts}")
+        else:
+            # The pilot shows any status but the plain "tracking |" one.
+            self.report(f"MASt3R-SLAM {state} | {counts}")
+
+    def draw(self, now):
+        """Keep the splat map showing every keyframe's pointmap at its current pose: those
+        upstream marked dirty (new, or refined by the tracker) and those the solve moved."""
+        torch, lietorch, keyframes = self.torch, self.lietorch, self.keyframes
+        n = len(keyframes)
+        redraw = torch.zeros(n, dtype=torch.bool, device="cuda")
+        dirty = keyframes.get_dirty_idx()
+        redraw[dirty[dirty < n]] = True
+        redraw[self.shown :] = True
+        shown = self.shown
+        if shown:
+            drawn = lietorch.Sim3(self.drawn[:shown])
+            delta = (drawn.inv() * lietorch.Sim3(keyframes.T_WC[:shown])).data[:, 0]
+            # How far each keyframe's points moved, over their depth: translation, rotation
+            # and scale of the change in the keyframe's own frame.
+            vector, w = delta[:, 3:6].norm(dim=1), delta[:, 6].abs()
+            moved = (
+                delta[:, :3].norm(dim=1) / self.depth[:shown]
+                + 2 * torch.atan2(vector, w)
+                + (delta[:, 7] - 1).abs()
+            )
+            redraw[:shown] |= ~(moved <= MOVED)
+        for k in torch.nonzero(redraw).flatten().tolist():
+            self.show(k, now)
+        self.shown = n
+
+    def show(self, k, now):
+        torch, keyframes = self.torch, self.keyframes
+        with keyframes.lock:
+            pose = keyframes.T_WC[k].clone()
+            z = keyframes.X[k][:, 2].clone()
+            confidence = keyframes.C[k][:, 0] / keyframes.N[k]
+            colors = (keyframes.uimg[k].reshape(-1, 3).to("cuda") * 255).to(torch.uint8)
+        # Constrained to its rays, as use_calib does, and as upstream's viewer draws it.
+        local = torch.stack((z * self.rays[0], z * self.rays[1], z), dim=1)
+        valid = (confidence > CONFIDENCE) & (z > 0) & torch.isfinite(local).all(dim=1)
+        self.drawn[k] = pose
+        self.retire_source(k)
+        if not bool(valid.any()):
+            return
+        self.depth[k] = z[valid].median()
+        points = self.lietorch.Sim3(pose).act(local) * self.axes
+        points = points @ self.world_rotation.T + self.world_translation
         pixels = 3 * max(1, (400_000 / self.budget) ** 0.5)
-        footprint = depth * pixels / fx
+        footprint = z * pose[0, 7] * pixels / float(self.input.K[0, 0])
+        xp = self.xp
         self.integrate_points(
-            self.xp.from_dlpack(points[valid].contiguous()),
-            self.xp.from_dlpack(cloud.colors[valid].contiguous()),
-            when,
-            self.xp.from_dlpack(footprint[valid].contiguous()),
+            xp.from_dlpack(points[valid].contiguous()),
+            xp.from_dlpack(colors[valid].contiguous()),
+            now,
+            xp.from_dlpack(footprint[valid].contiguous()),
+            source=k,
         )
-        height, width = cloud.shape
-        image = torch.where(valid, depth, 0).reshape(height, width)
-        self.carve(
-            pose.astype(np.float32),
-            fx,
-            fy,
-            cx,
-            cy,
-            self.xp.from_dlpack(image.float().contiguous()),
-            when,
-        )
-
-
-def floor_scale(cloud, up, height):
-    """Metres per front-end unit from the floor in a frame's points, or None if it is not
-    in view. up: the world's up in the camera frame; height: the camera's above the floor."""
-    if height < FLOOR_HEIGHT:
-        return None
-    torch = _torch()
-    points = cloud.points[cloud.valid][::4]
-    up = torch.as_tensor(up, device=points.device, dtype=points.dtype)
-    below = -(points @ up)
-    lower = below > math.sin(FLOOR_RAY) * torch.linalg.vector_norm(points, dim=1)
-    levels = torch.log(below[lower]).cpu().numpy()
-    if len(levels) < FLOOR_SHARE * len(points):
-        return None
-    bottom, top = np.percentile(levels, (40, 99.5))
-    counts, edges = np.histogram(levels, np.arange(bottom, top + 0.04, 0.02))
-    densest = int(np.argmax(np.convolve(counts, np.ones(5), "same")))
-    near = np.abs(levels - edges[densest] - 0.01) < FLOOR_LEVEL
-    if near.sum() < FLOOR_SHARE * len(points):
-        return None
-    return height / math.exp(float(np.median(levels[near])))
-
-
-def _torch():
-    import torch
-
-    return torch
-
-
-def heading(rotation):
-    """Yaw of a world-from-camera rotation's view direction (-Z), positive to the left."""
-    return math.atan2(rotation[0, 2], rotation[2, 2])

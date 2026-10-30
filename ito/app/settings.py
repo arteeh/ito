@@ -15,7 +15,6 @@ RECENT = 6
 
 class Settings(AppSettings, Model):
     reconstruction: Literal["auto", "rgbd", "slam", "video"] = "auto"
-    tracking: Literal["robot", "vision"] = "robot"
     fov: float = Field(default=70, ge=30, le=120)
     sensitivity: float = Field(default=0.0025, ge=0.0001, le=0.02)
     invert_y: bool = False
@@ -43,6 +42,8 @@ def load(address, name, defaults):
             raise ValueError("Robot settings must be an object")
         for key in AppSettings.model_fields:
             values.pop(key, None)
+        # Saved before SLAM was MASt3R-SLAM alone, which tracks by vision only.
+        values.pop("tracking", None)
         return Settings.model_validate(defaults.model_dump() | values)
     except FileNotFoundError:
         return defaults

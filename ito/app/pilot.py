@@ -13,7 +13,7 @@ from ito.desktop import DesktopState, PilotStatus
 from ito.desktop.settings import load as app_settings
 from ito.link import PairingError, connect
 from ito.link.audio import Audio
-from ito.protocol import Command, FrameMetadata, Motion, Paired, PilotState, Pose, Sensors, Status
+from ito.protocol import Command, FrameMetadata, Motion, Paired, PilotState, Pose, Status
 from ito.rates import CounterRate, Rate
 from ito.reconstruction import Reconstruction
 from ito.render import pose
@@ -89,7 +89,6 @@ class Pilot:
         self.backend = "rgbd"
         self.reconstruction_status = ""
         self.tracked_frames = 0
-        self.slam_restarts = {}
         self.tracking = False
         self.tracking_steady_since = 0.0
         self.slam_view = False
@@ -107,7 +106,6 @@ class Pilot:
         self.camera_rate = Rate()
         self.motion_rate = Rate()
         self.motion_time = -1.0
-        self.robot_first = False
         self.backend_rate = CounterRate()
 
     @property
@@ -230,19 +228,6 @@ class Pilot:
             ),
         )
 
-    def _log_restarts(self, restarts):
-        if not restarts:
-            return
-        for cause, count in restarts.items():
-            if count > self.slam_restarts.get(cause, 0):
-                diagnostics.event(
-                    "slam_restart",
-                    cause=cause,
-                    count=count - self.slam_restarts.get(cause, 0),
-                    totals=restarts,
-                )
-        self.slam_restarts = restarts
-
     def _audio_status(self, peer):
         if not peer or not self.audio:
             return ""
@@ -286,13 +271,11 @@ class Pilot:
             return
         if self.backend == "rgbd" and (depth is None or camera is None):
             return
-        measured = False
         if self.backend == "slam":
-            measured = camera is not None or pair[1].head_angles is not None
             camera = self._prior(camera, pair[1])
         self.camera_rate.tick()
         try:
-            accepted = self.worker.submit(rgb, depth, camera, captured, measured=measured)
+            accepted = self.worker.submit(rgb, depth, camera, captured)
         except ValueError as exc:
             self.failure = str(exc)
             self.reconstruction_status = str(exc) + "; showing flat camera feed"
@@ -313,44 +296,7 @@ class Pilot:
             fresh.append(
                 (local, camera_matrix(sample.camera_pose), sample.angular_velocity, sample.state)
             )
-        if fresh and self.robot_first:
-            self._anchor(fresh[-1][1])
-            worker = self.worker
-            if worker is not None and not self.failure:
-                worker.motion(fresh)
         return fresh
-
-    def _sensors(self, message, peer):
-        worker = self.worker
-        if worker is None or self.failure or not self.robot_first:
-            return
-        local = peer.clock.remote_to_local
-        imu = [
-            dict(
-                sensor=unit.sensor,
-                mount=camera_matrix(unit.mount),
-                gyro_sigma=unit.gyro_sigma,
-                accel_sigma=unit.accel_sigma,
-                samples=[
-                    (local(x.time), x.angular_velocity, x.specific_force, x.orientation)
-                    for x in unit.samples
-                ],
-            )
-            for unit in message.imu
-        ]
-        ranges = [
-            dict(
-                sensor=grid.sensor,
-                time=local(grid.time),
-                mount=camera_matrix(grid.mount),
-                shape=(grid.rows, grid.cols),
-                field_of_view=grid.field_of_view,
-                distances=[math.nan if d is None else d for d in grid.distances],
-                sigma=grid.sigma,
-            )
-            for grid in message.ranges
-        ]
-        worker.sensors(imu, ranges)
 
     def _retire(self, worker):
         closer = threading.Thread(target=worker.close, name="ito-reconstruction-close")
@@ -424,7 +370,6 @@ class Pilot:
         self.tracked_frames = 0
         self.tracking = self.slam_view = False
         self.motion_time = -1.0
-        self.robot_first = False
         self.restart_at = None
         restart_delay = RESTART_FIRST
         worker_started = 0.0
@@ -439,7 +384,6 @@ class Pilot:
         def reconstruct():
             nonlocal worker_started
             worker_started = clock.now()
-            self.slam_restarts = {}
             with self.worker_lock:
                 self.worker = Reconstruction(
                     camera.intrinsics,
@@ -447,12 +391,7 @@ class Pilot:
                     precision=self.settings.precision,
                     input_resolution=self.settings.input_resolution,
                     backend=self.backend,
-                    tracking=self.settings.tracking,
-                    motion_noise=description.motion_noise,
-                    frame_delay=camera.capture_delay,
-                    exposure=camera.exposure,
                 )
-            self.robot_first = self.backend == "slam" and self.worker.tracking_mode == "robot"
             self.state = replace(self.state, correction=pose())
 
         if self.backend != "video":
@@ -468,7 +407,6 @@ class Pilot:
         self.armed = self.focus_hold = self.stalled = False
         previous_fresh = None
         last_fresh = None
-        motion_since = None
 
         def disarm(reason):
             nonlocal last_fresh
@@ -492,8 +430,6 @@ class Pilot:
                         self._submit(pair, peer)
                 elif isinstance(message, Motion):
                     self._motion(message, peer)
-                elif isinstance(message, Sensors) and message.camera == camera.name:
-                    self._sensors(message, peer)
                 elif isinstance(message, Status):
                     last_status = clock.now()
                     self.telemetry = message.telemetry
@@ -538,37 +474,13 @@ class Pilot:
                                     self.tracking_steady_since = now
                                 self.last_tracking = now
                             self.tracked_frames = count
-                        self._log_restarts(self.worker.restarts())
-                        if self.robot_first:
-                            # The eye rides the robot's own 50 Hz motion; vision only
-                            # corrects it and grows the scene. However slowly frames are
-                            # mapped, or while admission holds vision back for the display,
-                            # the scene stays up: the pilot keeps the last good scene, and
-                            # only motion that stops (or a failed worker) shows the feed.
-                            # Gating on vision's progress flashed the raw camera for a few
-                            # milliseconds whenever a mapped frame was late.
-                            if now - self.motion_time >= TRACKING_GAP:
-                                motion_since = None
-                            elif motion_since is None:
-                                motion_since = now
-                            live = self.tracking and now - self.motion_time < TRACKING_LOST
-                            steady = (
-                                live
-                                and motion_since is not None
-                                and now - motion_since >= TRACKING_STEADY
-                            )
-                        else:
-                            live = self.tracking and now - self.last_tracking < TRACKING_LOST
-                            steady = (
-                                live
-                                and now - self.last_tracking < TRACKING_GAP
-                                and now - self.tracking_steady_since >= TRACKING_STEADY
-                            )
-                        if live and tracked and self.robot_first:
-                            correction = self.worker.correction()
-                            if correction is not None:
-                                self.state = replace(self.state, correction=correction)
-                        elif live and tracked:
+                        live = self.tracking and now - self.last_tracking < TRACKING_LOST
+                        steady = (
+                            live
+                            and now - self.last_tracking < TRACKING_GAP
+                            and now - self.tracking_steady_since >= TRACKING_STEADY
+                        )
+                        if live and tracked:
                             self._anchor(transform)
                         elif self.tracking and not live:
                             self.reconstruction_status = (

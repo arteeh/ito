@@ -87,13 +87,11 @@ projection/voxelization on NVIDIA; the default automatically falls back to NumPy
 
 Monocular SLAM needs an NVIDIA GPU. Models and their licence notices are included in
 `models/` beside the app. Missing or damaged models keep the live flat camera feed usable.
-A robot that streams its own camera motion (Microduck does) is tracked robot-first: its
-source-stamped 50 Hz camera pose is fused with MASt3R's relative poses in a 12-keyframe
-window, in the robot's odometry frame, so there is no map to restart and a frame vision
-cannot match still gets a pose; so does one the camera's turn blurs, which adds no splats.
-The frame delay is estimated online against the robot's motion. Corrections reach the view at most 2 degrees/s and 5 cm/s,
-only while it moves. `--tracking vision` saves a per-robot switch back to MASt3R-SLAM alone
-(four keyframes, map restarts) for comparison. Monocular scale is estimated, so
+SLAM is MASt3R-SLAM as upstream runs it (`ito/reconstruction/slam.py`): the camera alone,
+tracked against keyframes, linked by retrieval and solved as one global Sim(3) graph; a lost
+camera relocalises and maps nothing meanwhile. The robot's pose places the map once, at the
+first frame. Its buffers (192 keyframes) are allocated at start, so memory stays flat; when
+they are full, tracking goes on and nothing new is mapped. Monocular scale is MASt3R's, so
 reconstructed distances are not a measurement tool.
 
 On Microduck, from this checkout: `uv run --project drivers/microduck ito-driver-microduck`; connect with `uv run ito <duck-address>:8081` and enter its printed pairing code.

@@ -2,7 +2,6 @@
 
 Each packet replaces only the listed stable slots; zero opacity evicts a slot.
 Locks are always tried, never waited on, including publication and consumption.
-The robot's motion has a ring of its own (MotionRing): the worker may wait for it.
 """
 
 from collections.abc import Callable
@@ -146,45 +145,3 @@ class UpdateRing:
             )
         finally:
             self.locks[slot].release()
-
-
-MOTION_STATES = ("standing", "walking", "turning", "held", "fallen")
-MOTION_CAPACITY = 512  # 10 s at robotd's 50 Hz
-MOTION_FIELDS = 1 + 16 + 3 + 1
-
-
-class MotionRing:
-    def __init__(self, context, capacity=MOTION_CAPACITY):
-        self.capacity = capacity
-        self.data = context.RawArray("d", capacity * MOTION_FIELDS)
-        self.written = context.RawValue("Q", 0)
-        self.lock = context.Lock()
-        self.pending = []
-
-    def put(self, samples):
-        self.pending.extend(samples)
-        del self.pending[: -self.capacity]
-        if not self.pending or not self.lock.acquire(False):
-            return
-        try:
-            data = np.frombuffer(self.data).reshape(self.capacity, MOTION_FIELDS)
-            written = self.written.value
-            for time, pose, spin, state in self.pending:
-                row = data[written % self.capacity]
-                row[0] = time
-                row[1:17] = np.asarray(pose, dtype=np.float64).ravel()
-                row[17:20] = spin
-                row[20] = MOTION_STATES.index(state)
-                written += 1
-            self.written.value = written
-            self.pending.clear()
-        finally:
-            self.lock.release()
-
-    def read(self, cursor):
-        with self.lock:
-            written = self.written.value
-            first = max(cursor, written - self.capacity)
-            data = np.frombuffer(self.data).reshape(self.capacity, MOTION_FIELDS)
-            rows = data[np.arange(first, written) % self.capacity].copy()
-        return rows, written

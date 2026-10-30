@@ -66,15 +66,14 @@ class Camera(Model):
         ge=0,
         le=1,
         description="How long before its capture_time a frame was exposed, as the driver "
-        "estimates it; robot-first tracking refines it against the robot's motion",
+        "estimates it",
     )
     exposure: Number | None = Field(
         default=None,
         ge=0,
         le=1,
         description="How long the sensor integrates a frame, as the driver knows it; None if "
-        "it cannot say. Robot-first tracking measures nothing visually in a frame the camera "
-        "turned too far during",
+        "it cannot say",
     )
 
 
