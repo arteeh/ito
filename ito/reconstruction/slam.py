@@ -608,6 +608,12 @@ class SLAMBackend(RGBDBackend):
         """A full map's spare keyframe goes when the camera is lost again, so the spare slot is
         free for the next relocalisation. Its edges are the graph's last (a full map adds no
         keyframe after it) and retrieval never held it."""
+        if self.spare is None:
+            # Ito: the usual loss, no spare keyframe. Checked without the backend's lock, which
+            # the frontend would otherwise wait on for the backend's queued keyframes (0.3-1 s
+            # on a fast turn): only the backend sets spare, during a relocalisation, before it
+            # sets TRACKING, and the frontend calls this only while TRACKING.
+            return
         with self.backend_lock:
             self._drop_spare()
 
