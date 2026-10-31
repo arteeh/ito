@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.12"
 resolution-markers = [
     "sys_platform == 'darwin'",
@@ -1036,6 +1036,9 @@ slam = [
     { name = "torchvision", version = "0.20.1", source = { registry = "https://download.pytorch.org/whl/cu124" }, marker = "(python_full_version < '3.13' and platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'extra-3-ito-slam') or (python_full_version >= '3.13' and extra == 'extra-3-ito-cuda' and extra == 'extra-3-ito-slam') or (platform_machine != 'aarch64' and extra == 'extra-3-ito-cuda' and extra == 'extra-3-ito-slam') or (sys_platform != 'linux' and extra == 'extra-3-ito-cuda' and extra == 'extra-3-ito-slam')" },
     { name = "torchvision", version = "0.20.1+cu124", source = { registry = "https://download.pytorch.org/whl/cu124" }, marker = "(python_full_version < '3.13' and platform_machine != 'aarch64' and extra == 'extra-3-ito-slam') or (python_full_version < '3.13' and sys_platform != 'linux' and extra == 'extra-3-ito-slam') or (extra == 'extra-3-ito-cuda' and extra == 'extra-3-ito-slam')" },
 ]
+tofmesh = [
+    { name = "pillow" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -1064,6 +1067,7 @@ requires-dist = [
     { name = "nvidia-cuda-runtime-cu12", marker = "extra == 'slam'", specifier = "==12.4.127" },
     { name = "opencv-python-headless", marker = "extra == 'microduck'", specifier = "==4.11.0.86" },
     { name = "opencv-python-headless", marker = "extra == 'slam'", specifier = "==4.11.0.86" },
+    { name = "pillow", marker = "extra == 'tofmesh'", specifier = ">=12.3.0" },
     { name = "platformdirs", marker = "extra == 'slam'", specifier = "==4.3.8" },
     { name = "plyfile", specifier = ">=1.1,<2" },
     { name = "psutil", marker = "extra == 'slam'", specifier = "==7.1.3" },
@@ -1079,7 +1083,7 @@ requires-dist = [
     { name = "torch", marker = "python_full_version < '3.13' and extra == 'slam'", specifier = "==2.5.1", index = "https://download.pytorch.org/whl/cu124", conflict = { package = "ito", extra = "slam" } },
     { name = "torchvision", marker = "python_full_version < '3.13' and extra == 'slam'", specifier = "==0.20.1", index = "https://download.pytorch.org/whl/cu124", conflict = { package = "ito", extra = "slam" } },
 ]
-provides-extras = ["microduck", "cuda", "slam"]
+provides-extras = ["microduck", "tofmesh", "cuda", "slam"]
 
 [package.metadata.requires-dev]
 dev = [

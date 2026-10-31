@@ -32,6 +32,9 @@ ito-desktop = "ito.desktop.__main__:main"
 
 [project.optional-dependencies]
 microduck = ["opencv-python-headless==4.11.0.86"]
+# The ToF-mesh-only release (release/windows.py --edition tofmesh): what the app needs beyond
+# the base that the slam extra otherwise brings along (PIL for the screen recorder).
+tofmesh = ["pillow>=12.3.0"]
 
 cuda = [
     "cupy-cuda12x[ctk]>=14,<15",

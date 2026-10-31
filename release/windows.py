@@ -43,7 +43,7 @@ def runtime(stage, work, edition="full"):
     lock = work / "pylock.toml"
     run(
         "uv", "export", "--frozen", "--no-dev",
-        *(["--extra", "slam"] if edition == "full" else []), "--no-emit-project",
+        "--extra", "slam" if edition == "full" else edition, "--no-emit-project",
         "--format", "pylock.toml", "--output-file", lock,
         cwd=ROOT,
     )  # fmt: skip
