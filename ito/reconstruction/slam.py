@@ -265,6 +265,8 @@ class SLAMBackend(RGBDBackend):
         # The head IMU's rotation prior (headimu.py, opt-in PoC): None unless ITO_HEAD_IMU is set.
         self.head = headimu.HeadPrior(self) if headimu.enabled() else None
         self.reloc_time = None  # capture time of the last frame handed to relocalisation
+        self.reloc_hint = None  # the head IMU's (keyframes, pose) for that frame, or None
+        self.relocalised_at = None  # capture time of the frame the last relocalisation used
         self.match_stats = None
         if self.head is not None:
             self.watch_matching()
@@ -378,8 +380,10 @@ class SLAMBackend(RGBDBackend):
             # relocalisation it is, and the guess left is from before the loss.
             self.tracker.reset_idx_f2k()
             T_WC = self.lietorch.Sim3(keyframes.T_WC[len(keyframes) - 1].clone())
-            if self.head is not None and self.reloc_time is not None:
-                self.head.relocalised(self.reloc_time, T_WC.data)
+            if self.head is not None and self.relocalised_at is not None:
+                # The gyro's turn since the frame that relocalised (not since the latest one
+                # handed to relocalisation: the backend may have taken an earlier one).
+                self.head.relocalised(self.relocalised_at, T_WC.data)
         if self.head is not None:
             seed, guess = self.head.start(
                 self.source_captured, T_WC, mode == Mode.TRACKING and self.i > 0
@@ -408,10 +412,12 @@ class SLAMBackend(RGBDBackend):
                 if try_reloc:
                     self.drop_spare()  # before RELOC: the backend relocalises into that slot
                     # Ito: the frame first, then the mode the backend acts on.
+                    hint = self.head.reloc_hint(self.source_captured) if self.head else None
                     with states.lock:
                         states.set_frame(frame)
                         self.hand_off()
                         self.reloc_frames += 1
+                        self.reloc_time, self.reloc_hint = self.source_captured, hint
                     states.set_mode(Mode.RELOC)
                 else:
                     posed = frame.T_WC
@@ -420,11 +426,12 @@ class SLAMBackend(RGBDBackend):
             elif mode == Mode.RELOC:
                 X, C = self.inference(self.model, frame)
                 frame.update_pointmap(X, C)
+                hint = self.head.reloc_hint(self.source_captured) if self.head else None
                 with states.lock:
                     states.set_frame(frame)
                     self.hand_off()
                     self.reloc_frames += 1
-                    self.reloc_time = self.source_captured
+                    self.reloc_time, self.reloc_hint = self.source_captured, hint
                 states.queue_reloc()
             else:
                 raise RuntimeError(f"Invalid MASt3R-SLAM mode {mode}")
@@ -530,13 +537,16 @@ class SLAMBackend(RGBDBackend):
                     for name in ("img", "uimg", "X_canon", "C", "feat", "pos"):
                         setattr(frame, name, getattr(frame, name).clone())
                     frame.T_WC = self.lietorch.Sim3(frame.T_WC.data.clone())
+                    hint = self.reloc_hint if headimu.prior() else None
+                    taken = self.reloc_time  # this frame's capture time
                     if stream is not None:
                         stream.synchronize()
                 # Ito: a full map relocalises into its spare slot (see relocalization).
                 spare = len(self.keyframes) >= self.capacity
                 edges = self.graph.n_edges
-                success = self.relocalization(frame, keep=not spare)
+                success = self.relocalization(frame, keep=not spare, hint=hint)
                 if success:
+                    self.relocalised_at = taken
                     self.relocalized += 1
                     if spare:
                         self.spare = edges
@@ -608,7 +618,7 @@ class SLAMBackend(RGBDBackend):
                 f"{idx} comes next: its ids no longer name keyframes"
             )
 
-    def relocalization(self, frame, keep=True):
+    def relocalization(self, frame, keep=True, hint=None):
         """main.py's relocalization, as run_backend runs it for a frame in RELOC mode.
 
         keep=False (Ito, a full map): the relocalised frame becomes a keyframe in the spare slot
@@ -629,6 +639,11 @@ class SLAMBackend(RGBDBackend):
                 min_thresh=config["retrieval"]["min_thresh"],
             )
             kf_idx += retrieval_inds
+            if hint is not None:
+                # Ito, the head IMU (opt-in): the keyframes the gyro says the camera faces again
+                # first, then retrieval's, as many as retrieval would offer.
+                near = [k for k in hint[0] if k < len(keyframes)]
+                kf_idx = list(dict.fromkeys(near + kf_idx))[: config["retrieval"]["k"]]
             successful_loop_closure = False
             if kf_idx:
                 keyframes.append(frame)
@@ -650,6 +665,10 @@ class SLAMBackend(RGBDBackend):
                         )
                     successful_loop_closure = True
                     keyframes.T_WC[n_kf - 1] = keyframes.T_WC[kf_idx[0]].clone()
+                    if hint is not None:
+                        # The solve starts from the gyro's dead-reckoned pose, not a recalled
+                        # keyframe's (which may be one whose edge was dropped).
+                        keyframes.T_WC[n_kf - 1] = hint[1]
                 else:
                     keyframes.pop_last()
 

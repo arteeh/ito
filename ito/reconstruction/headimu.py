@@ -29,6 +29,12 @@ SIZE = 4096  # samples kept: about a minute at the LSM6DSV16X's 60 Hz as robotd 
 # The gyro's rotation since the last tracked frame above which matching starts from it rather
 # than from the last frame's correspondences (or a new keyframe's identity guess).
 SEED_DEG = 2.0
+# Relocalising: how long the gyro may dead-reckon the camera's turn since it was last tracked
+# (its bias, +-1 deg/s on the LSM6DSV16X, adds up), and how far a keyframe may be turned from
+# that prediction to be offered to relocalisation beside retrieval's.
+LOST_MAX = 10.0
+NEAR_DEG = 35.0
+NEAR = 2  # keyframes offered at most
 # Held sample rate beyond the last sample before giving up on predicting (seconds).
 EXTRAPOLATE = 0.1
 OPENCV = np.diag([1.0, -1.0, -1.0])  # Ito camera axes to OpenCV's (a rotation: a vector map)
@@ -193,6 +199,40 @@ class HeadPrior:
             self.row["seeded"] = True
         T_WC = lietorch.Sim3(predicted.data.clone())
         return T_WC, guess
+
+    def reloc_hint(self, now):
+        """For a lost frame captured at now: the camera's pose dead-reckoned by the gyro from the
+        last tracked one (lietorch data), and the keyframes nearest it in view direction (and
+        place, over their depth). Relocalisation tries those beside retrieval's and starts the
+        new keyframe from that pose. None when the gyro cannot say."""
+        b, torch, lietorch = self.b, self.b.torch, self.b.lietorch
+        now -= DELAY
+        if self.last is None or now - self.last[0] > LOST_MAX:
+            return None
+        then, last_data = self.last
+        R = self.gyro.rotation(then, now)
+        if R is None:
+            return None
+        delta = torch.tensor(
+            [[0.0, 0.0, 0.0, *quaternion_xyzw(R).tolist(), 1.0]],
+            device=last_data.device,
+            dtype=last_data.dtype,
+        )
+        predicted = (lietorch.Sim3(last_data) * lietorch.Sim3(delta)).data
+        n = len(b.keyframes)
+        poses = b.keyframes.T_WC[:n, 0].cpu().double().numpy()
+        p = predicted.reshape(-1).cpu().double().numpy()
+        q = poses[:, 3:7] / np.linalg.norm(poses[:, 3:7], axis=1, keepdims=True)
+        qp = p[3:7] / np.linalg.norm(p[3:7])
+        turned = np.degrees(2 * np.arccos(np.clip(np.abs(q @ qp), 0, 1)))
+        depth = b.depth[:n].cpu().double().numpy() * np.maximum(poses[:, 7], 1e-6)
+        apart = np.linalg.norm(poses[:, :3] - p[:3], axis=1) / np.maximum(depth, 1e-6)
+        score = np.radians(turned) + apart
+        near = [int(k) for k in np.argsort(score) if turned[k] < NEAR_DEG][:NEAR]
+        self.row["hint"] = near
+        self.row["hint_turn_deg"] = [round(float(turned[k]), 1) for k in near]
+        self.row["dead_reckoned_s"] = round(now - then, 2)
+        return near, predicted.clone()
 
     def guess(self, R_fk):
         """Each keyframe pixel's ray turned into the frame and projected: its frame pixel."""
