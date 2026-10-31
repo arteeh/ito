@@ -91,8 +91,10 @@ SLAM is MASt3R-SLAM as upstream runs it (`ito/reconstruction/slam.py`): the came
 tracked against keyframes, linked by retrieval and solved as one global Sim(3) graph; a lost
 camera relocalises and maps nothing meanwhile. The robot's pose places the map once, at the
 first frame. Frames go in as upstream's dataloader makes them (long side 512, centre crop to
-16-pixel multiples), taken as already undistorted; an Input resolution below 100 % makes them
-smaller (448, 368, 256), which upstream does not do: its matching is tuned at 512. The large
+16-pixel multiples), taken as already undistorted (the Microduck driver rectifies its beta's
+wide lens, 116 by 60 degrees, into the widest pinhole it covers, about 92 by 60); an Input
+resolution below 100 % makes them smaller (448, 368, 256), which upstream does not do: its
+matching is tuned at 512. The large
 buffers (keyframes, graph edges, the solve's inputs) are allocated once, at start: Settings >
 Map size picks how many keyframes (and shows their VRAM; 512 is upstream's). A full map maps
 nothing new, but tracks and relocalises on: one spare keyframe slot is kept for relocalising,
@@ -107,7 +109,7 @@ The driver streams the head camera's pose at robotd's 50 Hz, stamped when robotd
 Virtual Microduck on Ubuntu: `drivers/microduck/setup-sim.sh /path/to/prefix`, then `/path/to/prefix/microduck-sim --viewer`.
 It builds Pollen's stack at the `third_party/` submodule pins (microduck at a release tag, microduck_rl's develop) and runs this checkout's driver.
 On Windows, use the prefix `~/.local/share/ito-microduck` in the default WSL distro; `drivers/microduck/microduck-sim.cmd` and `ito-microduck.cmd` launch it from there.
-From built checkouts: `uv run --extra microduck python -m drivers.microduck.sim --microduck /path/to/microduck --rl /path/to/microduck_rl --policies /path/to/policies/current [--viewer] [--camera-height 360|720|1080]` (the Microduck beta; its lens is an estimate until a beta is calibrated, `--beta-hfov` tries another).
+From built checkouts: `uv run --extra microduck python -m drivers.microduck.sim --microduck /path/to/microduck --rl /path/to/microduck_rl --policies /path/to/policies/current [--viewer] [--camera-height 360|720|1080]` (the Microduck beta, with its lens's datasheet figures until a beta is calibrated; `drivers/microduck/lens.py`).
 Enter the printed address and pairing code in Ito; Ctrl+C or closing the viewer stops the complete robot.
 
 ## Development and releases

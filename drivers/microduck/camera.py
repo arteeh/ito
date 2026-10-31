@@ -9,6 +9,51 @@ from aiortc.mediastreams import MediaStreamError
 from ito import clock
 from ito.protocol import FrameMetadata, Intrinsics
 
+# The widest pinhole Ito is given, degrees across: a pinhole's edges stretch as 1 / cos^2 of their
+# angle, so a wider one spends MASt3R's 512 pixels on smeared edges. The beta's lens (116 across,
+# 60 down) holds a 16:9 pinhole only 91.5 wide anyway (its 60 down binds), already stretching
+# the lens 2.2x at the sides and 2.7x in the corners; whichever is narrower wins.
+MAX_RECTIFIED_HFOV_DEG = 100.0
+
+
+def rectified(matrix, distortion, width, height):
+    """The camera matrix of the widest pinhole, centred on the frame, whose every pixel the
+    distorted frame covers (or the frame's own matrix when it has no distortion)."""
+    import cv2
+
+    if not np.any(distortion):
+        return matrix
+    edge = np.concatenate(
+        [
+            np.stack([np.arange(width) + 0.0, np.full(width, -0.5)], -1),
+            np.stack([np.arange(width) + 0.0, np.full(width, height - 0.5)], -1),
+            np.stack([np.full(height, -0.5), np.arange(height) + 0.0], -1),
+            np.stack([np.full(height, width - 0.5), np.arange(height) + 0.0], -1),
+        ]
+    )
+
+    def inside(focal):
+        rays = np.concatenate(
+            [(edge - (width / 2, height / 2)) / focal, np.ones((len(edge), 1))], -1
+        ).reshape(-1, 1, 3)
+        sent, _ = cv2.projectPoints(rays, np.zeros(3), np.zeros(3), matrix, distortion)
+        sent = sent.reshape(-1, 2)
+        return bool(
+            np.all((sent[:, 0] >= -0.5) & (sent[:, 0] <= width - 0.5))
+            and np.all((sent[:, 1] >= -0.5) & (sent[:, 1] <= height - 0.5))
+        )
+
+    widest = width / 2 / np.tan(np.radians(MAX_RECTIFIED_HFOV_DEG / 2))
+    if inside(widest):
+        focal = widest
+    else:
+        low, high = widest, 8 * max(matrix[0, 0], matrix[1, 1])
+        for _ in range(40):
+            middle = (low + high) / 2
+            low, high = (low, middle) if inside(middle) else (middle, high)
+        focal = high
+    return np.array([[focal, 0, width / 2], [0, focal, height / 2], [0, 0, 1]], np.float64)
+
 
 class Camera:
     def __init__(self, info, measured=dict):
@@ -27,32 +72,40 @@ class Camera:
                 "[media.intrinsics] in its robotd.toml, then restart mediad"
             )
         self.width, self.height = info["width"], info["height"]
-        k = Intrinsics(
-            width=self.width,
-            height=self.height,
-            **{key: geometry[key] for key in ("fx", "fy", "cx", "cy")},
-        )
         if info.get("rotate", 0) != 0:
             raise RuntimeError("Ito supports the Microduck beta, whose camera is upright")
-        matrix = np.array([[k.fx, 0, k.cx], [0, k.fy, k.cy], [0, 0, 1]])
-        distortion = np.array(geometry.get("distortion") or [0.0] * 5)
+        matrix = np.array(
+            [[geometry["fx"], 0, geometry["cx"]], [0, geometry["fy"], geometry["cy"]], [0, 0, 1]],
+            np.float64,
+        )
+        # OpenCV's order, k1 k2 p1 p2 k3 and on: a beta's lens needs the rational model's 8
+        # (lens.py), which microduck's [media.intrinsics] carries as it is.
+        distortion = np.array(geometry.get("distortion") or [0.0] * 5, np.float64)
         if distortion.shape not in {(4,), (5,), (8,), (12,), (14,)}:
             raise ValueError("unsupported Microduck camera distortion")
         if not np.isfinite(distortion).all():
             raise ValueError("non-finite Microduck camera distortion")
+        self.rectified = rectified(matrix, distortion, self.width, self.height)
         self.maps = (
             cv2.initUndistortRectifyMap(
                 matrix,
                 distortion,
                 None,
-                matrix,
-                (k.width, k.height),
-                cv2.CV_32FC1,
+                self.rectified,
+                (self.width, self.height),
+                cv2.CV_16SC2,
             )
             if np.any(distortion)
             else None
         )
-        self.intrinsics = k
+        self.intrinsics = Intrinsics(
+            width=self.width,
+            height=self.height,
+            fx=float(self.rectified[0, 0]),
+            fy=float(self.rectified[1, 1]),
+            cx=float(self.rectified[0, 2]),
+            cy=float(self.rectified[1, 2]),
+        )
         self.source = geometry["source"]
         self.measured = measured
         self.latest = None
@@ -61,10 +114,11 @@ class Camera:
         self.closed = False
 
     def rectify(self, frame):
+        """The frame as the pinhole Ito is told about (self.intrinsics)."""
         if (frame.width, frame.height) != (self.width, self.height):
             raise RuntimeError("Microduck camera resolution changed; restart the driver")
         rgb = frame.to_ndarray(format="rgb24")
-        if self.maps:
+        if self.maps is not None:
             rgb = self.cv.remap(rgb, *self.maps, self.cv.INTER_LINEAR)
         return np.ascontiguousarray(rgb)
 
