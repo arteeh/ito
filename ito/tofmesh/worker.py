@@ -1,15 +1,17 @@
 """The ToF mesh in its own process, with the calls the pilot makes on a reconstruction worker.
 
 The pilot thread only downsamples camera frames and queues messages; fusion (NumPy, CPU) runs in
-the worker so it never holds the render loop or the link. Queues are bounded: a busy worker
-drops camera frames (colour only, harmless), never motion or ToF frames (geometry), which are
-small.
+the worker so it never holds the render loop or the link. Queues are bounded and nothing here
+ever blocks the link loop: a busy worker drops camera frames (colour only, harmless); motion,
+ToF and IMU batches (geometry, small) wait in a short backlog, and only a worker stalled for
+seconds loses some of them (counted in the statistics and the status line).
 """
 
 import logging
 import multiprocessing as mp
 import queue
 import traceback
+from collections import deque
 
 import numpy as np
 
@@ -20,6 +22,7 @@ log = logging.getLogger(__name__)
 FRAME_RATE = 15.0  # camera frames forwarded per second
 FRAME_WIDTH = 640  # their width in the worker (colour and projectors)
 CLOSE_WAIT = 3.0
+BACKLOG = 64  # geometry batches held while the worker's queue is full (a few seconds)
 
 
 def _run(inputs, outputs, notes, options, integrated):
@@ -79,8 +82,9 @@ def _run(inputs, outputs, notes, options, integrated):
 
 def _merge(old, new, frame_type):
     """Two publications as one: the newer mesh, the newest projector of every slot."""
-    merged = frame_type(new.revision, new.captured_at, camera=new.camera, epoch=new.epoch)
     source = new if new.positions is not None else old
+    # The capture time goes with the mesh it timed (the HUD's capture-to-visible).
+    merged = frame_type(new.revision, source.captured_at, camera=new.camera, epoch=new.epoch)
     merged.positions, merged.normals = source.positions, source.normals
     merged.colours, merged.triangles = source.colours, source.triangles
     slots = {p.slot: p for p in old.projectors}
@@ -92,7 +96,10 @@ def _merge(old, new, frame_type):
 class TofMesh:
     """Pilot-side handle: submit(), motion(), ranges(), poll(), status(), statistics(), close()."""
 
-    def __init__(self, intrinsics, *, capture_delay=0.0, voxel=0.04, capacity=6000, keyframes=12):
+    def __init__(self, intrinsics, *, capture_delay=0.0, voxel=0.04, capacity=6000, keyframes=None):
+        from .fusion import PROJECTORS
+
+        keyframes = PROJECTORS if keyframes is None else keyframes
         context = mp.get_context("spawn")
         self.intrinsics = intrinsics
         self.capture_delay = float(capture_delay)
@@ -115,6 +122,8 @@ class TofMesh:
         self.has_mesh = False
         self._max_splats = 1
         self._closed = False
+        self.backlog = deque()
+        self.dropped = 0
         # Frames go to the worker strided to about FRAME_WIDTH: pixel i of the strided image is
         # pixel i * step + step // 2 of the full one.
         step = self.step = max(1, round(intrinsics.width / FRAME_WIDTH))
@@ -126,11 +135,25 @@ class TofMesh:
         )
 
     # -- inputs -------------------------------------------------------------------------
-    def _put(self, item, block=False):
+    def _put(self, item, keep=False):
+        """Queue without blocking. `keep` (geometry): if the queue is full, hold the item in the
+        backlog, in order, dropping the oldest past BACKLOG."""
+        if self._closed:
+            return False
         try:
-            self.inputs.put(item, timeout=0.05) if block else self.inputs.put_nowait(item)
+            while self.backlog:
+                self.inputs.put_nowait(self.backlog[0])
+                self.backlog.popleft()
+            self.inputs.put_nowait(item)
             return True
         except queue.Full:
+            if keep:
+                self.backlog.append(item)
+                while len(self.backlog) > BACKLOG:
+                    self.backlog.popleft()
+                    self.dropped += 1
+            return False
+        except ValueError:  # the queue was closed under us (the pilot retiring this worker)
             return False
 
     def submit(self, rgb, depth=None, camera=None, captured_at=None):
@@ -149,16 +172,18 @@ class TofMesh:
     def motion(self, samples):
         """Driver motion samples: [(pilot-clock time, 4x4 world_from_camera, ...), ...]."""
         if samples:
-            self._put(("motion", [(s[0], np.asarray(s[1], np.float64)) for s in samples]), True)
+            self._put(
+                ("motion", [(s[0], np.asarray(s[1], np.float64)) for s in samples]), keep=True
+            )
 
     def ranges(self, grids):
         if grids:
-            self._put(("ranges", grids), True)
+            self._put(("ranges", grids), keep=True)
 
     def imu(self, samples):
         """Head IMU: [(pilot-clock time, xyzw sensor-to-world, 3x3 sensor-to-camera), ...]."""
         if samples:
-            self._put(("imu", samples), True)
+            self._put(("imu", samples), keep=True)
 
     # -- outputs ------------------------------------------------------------------------
     def _notes(self):
@@ -193,7 +218,10 @@ class TofMesh:
                 return "ToF mesh: waiting for ToF frames (does the robot stream its ToF?)"
             return "Starting ToF mesh"
         s = self.stats
-        return f"ToF mesh: {s['triangles']:,} triangles, {s['blocks']:,}/{s['capacity']:,} blocks"
+        text = f"ToF mesh: {s['triangles']:,} triangles, {s['blocks']:,}/{s['capacity']:,} blocks"
+        if self.dropped:
+            text += f"; worker busy, {self.dropped:,} sensor batches lost"
+        return text
 
     def statistics(self):
         s = self.stats
@@ -205,6 +233,7 @@ class TofMesh:
             "tofmesh_tof_frames": s.get("tof_frames"),
             "tofmesh_tof_dropped": s.get("tof_dropped"),
             "tofmesh_volume_mb": s.get("volume_mb"),
+            "tofmesh_ingress_dropped": self.dropped,
         }
 
     def pose(self):
@@ -224,7 +253,10 @@ class TofMesh:
         if self._closed:
             return
         self._closed = True
-        self._put(("stop",), True)
+        try:
+            self.inputs.put(("stop",), timeout=0.5)
+        except (queue.Full, ValueError):
+            pass
         self.process.join(CLOSE_WAIT)
         if self.process.is_alive():
             self.process.terminate()

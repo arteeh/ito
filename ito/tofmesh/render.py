@@ -16,6 +16,8 @@ import numpy as np
 
 from ito.render.pose import validate_pose
 
+from .fusion import PROJECTORS
+
 SHADOW_SIZE = (256, 144)
 NEAR, FAR = 0.05, 30.0
 
@@ -145,7 +147,7 @@ def pinhole_projection(fx, fy, cx, cy, width, height, near=NEAR, far=FAR):
 
 
 class MeshRenderer:
-    def __init__(self, context: moderngl.Context, slots=12, image_size=(640, 360)):
+    def __init__(self, context: moderngl.Context, slots=PROJECTORS, image_size=(640, 360)):
         self.context = context
         self.slots = slots
         self.image_size = tuple(image_size)
@@ -174,10 +176,18 @@ class MeshRenderer:
         self.draw_count = 0
         self.target = None
         self.projection_enabled = True
+        self.epoch = None  # the worker run whose mesh and projectors are shown
 
     # -- updates -------------------------------------------------------------------------
     def upload(self, frame):
         """Apply one fusion.MeshFrame."""
+        if frame.epoch != self.epoch:
+            # A new worker (restart, reconnect): its map starts empty in its own odometry frame,
+            # so nothing of the old one may stay, mesh or projected views.
+            self.epoch = frame.epoch
+            self.count = 0
+            self.projectors = [None] * self.slots
+            self.shadow_dirty.clear()
         if frame.positions is not None:
             self._mesh(frame.positions, frame.normals, frame.colours, frame.triangles)
             self.shadow_dirty.update(k for k, p in enumerate(self.projectors) if p is not None)
