@@ -103,6 +103,14 @@ def simulation(
     )
     if not ort:
         raise FileNotFoundError("Install ONNX Runtime in the simulator's .venv")
+    if not list((rl / ".venv/lib").glob("python*/site-packages/cv2/__init__.py")):
+        # Installs from before the beta's lens: setup-sim.sh adds it, but needs apt (sudo).
+        uv = rl.parent / "tools/uv"
+        raise FileNotFoundError(
+            "the sim body needs OpenCV for the beta's lens: re-run setup-sim.sh, or just "
+            f"{uv if uv.exists() else 'uv'} pip install --python {rl / '.venv/bin/python'} "
+            "opencv-python-headless==4.11.0.86"
+        )
     media_env = os.environ.copy()
     # Pollen's hardware encoder presets are not portable to every desktop NVENC driver.
     media_env.setdefault("GST_PLUGIN_FEATURE_RANK", "x264enc:1024")

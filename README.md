@@ -109,6 +109,7 @@ The driver streams the head camera's pose at robotd's 50 Hz, stamped when robotd
 Virtual Microduck on Ubuntu: `drivers/microduck/setup-sim.sh /path/to/prefix`, then `/path/to/prefix/microduck-sim --viewer`.
 It builds Pollen's stack at the `third_party/` submodule pins (microduck at a release tag, microduck_rl's develop) and runs this checkout's driver.
 On Windows, use the prefix `~/.local/share/ito-microduck` in the default WSL distro; `drivers/microduck/microduck-sim.cmd` and `ito-microduck.cmd` launch it from there.
+An install from before the beta's lens (Oct 2026) needs OpenCV in its body venv: re-run `setup-sim.sh`, or `PREFIX/tools/uv pip install --python PREFIX/microduck_rl/.venv/bin/python opencv-python-headless==4.11.0.86` (the sim says so if it is missing).
 From built checkouts: `uv run --extra microduck python -m drivers.microduck.sim --microduck /path/to/microduck --rl /path/to/microduck_rl --policies /path/to/policies/current [--viewer] [--camera-height 360|720|1080]` (the Microduck beta, with its lens's datasheet figures until a beta is calibrated; `drivers/microduck/lens.py`).
 Enter the printed address and pairing code in Ito; Ctrl+C or closing the viewer stops the complete robot.
 
