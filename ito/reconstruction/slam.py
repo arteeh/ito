@@ -252,6 +252,10 @@ class SLAMBackend(RGBDBackend):
         options["device"] = "cuda"
         super().__init__(capacity, intrinsics, **options)
         self.report = report
+        # Out of VRAM: Torch's, or CuPy's in the splat map.
+        self.oom = (torch.cuda.OutOfMemoryError,) + (
+            (self.xp.cuda.memory.OutOfMemoryError,) if self.xp is not np else ()
+        )
         self.torch, self.lietorch, self.config, self.Mode = torch, lietorch, config, Mode
         self.inference = mast3r_inference_mono
         self.input = Input(intrinsics, input_resolution)
@@ -289,10 +293,8 @@ class SLAMBackend(RGBDBackend):
             # ... and whether it waits to be redrawn: the scale or splat size changed.
             self.stale = np.zeros(buffer, bool)
             free, _ = torch.cuda.mem_get_info()
-        except torch.cuda.OutOfMemoryError as exc:
-            raise RuntimeError(
-                f"Out of VRAM for MASt3R-SLAM at {self.settings}: {self.lower} in Settings"
-            ) from exc
+        except self.oom as exc:
+            raise self.setup_oom() from exc
         self.warning = (
             f"VRAM full ({free / 2**20:.0f} MiB free after MASt3R-SLAM's setup): the driver "
             f"spills into system memory and everything slows; {self.lower}"
@@ -313,6 +315,7 @@ class SLAMBackend(RGBDBackend):
         self.spare = None  # the graph's edge count before a full map's spare keyframe, if any
         self.loops = 0
         self.relocalized = 0
+        self.appends = 0  # keyframes the frontend added: a frame that did is not dropped on OOM
         self.ooms, self.oom_at = 0, -OOM_SHOWN
         self.tof = RangeScale(self.input.K, (h, w))
         self.scale = 1.0  # metres per map unit, for display; 1 until the ToF fixes it
@@ -320,7 +323,10 @@ class SLAMBackend(RGBDBackend):
         self.draw_seconds = 0.0
         self.ranged = None
         report("MASt3R-SLAM warming up")
-        self.warm_up()
+        try:
+            self.warm_up()
+        except self.oom as exc:
+            raise self.setup_oom() from exc
         # The backend thread: upstream's run_backend, on a CUDA stream of its own. Its lock
         # keeps the frontend's drop_spare out of a relocalisation or solve.
         self.backend_lock = threading.RLock()
@@ -381,13 +387,13 @@ class SLAMBackend(RGBDBackend):
                     "Settings"
                 ) from exc
             raise RuntimeError(f"MASt3R-SLAM's backend failed: {exc}") from exc
-        before = len(self.keyframes)
+        before = self.appends  # not len(keyframes): the backend adds relocalisations
         try:
             self.step(rgb, camera)
         except self.torch.cuda.OutOfMemoryError as exc:
             # The worker drops a frame that ran out of memory and goes on: safe for tracking,
             # not once the frame went into the keyframes.
-            if len(self.keyframes) == before:
+            if self.appends == before:
                 self.ooms, self.oom_at = self.ooms + 1, now
                 self.report(self.out_of_memory())
                 raise
@@ -397,14 +403,26 @@ class SLAMBackend(RGBDBackend):
         if self.ranged is not None and self.tof.value is None and self.measure(self.ranged):
             self.scale = self.tof.value
             self.stale[:] = True  # every keyframe again, at the new scale
-        self.publish(self.posed, now)
         began = time.perf_counter()
-        self.draw(now)
+        try:
+            self.draw(now)
+        except self.oom:
+            # The frame is tracked; the keyframes it did not redraw stay stale or owed (show)
+            # and are redrawn in the next frames. The status says so (publish).
+            self.ooms, self.oom_at = self.ooms + 1, now
+            self.torch.cuda.empty_cache()
         self.draw_seconds = time.perf_counter() - began
+        self.publish(self.posed, now)
+
+    def setup_oom(self):
+        return RuntimeError(
+            f"Out of VRAM for MASt3R-SLAM at {self.settings}: {self.lower} in Settings"
+        )
 
     def out_of_memory(self):
         return (
-            f"Out of VRAM at {self.settings}: {self.ooms} frames dropped; {self.lower} in Settings"
+            f"Out of VRAM at {self.settings}, {self.ooms} times (frames dropped, map redraws "
+            f"put off); {self.lower} in Settings"
         )
 
     def add_ranges(self, grid):
@@ -445,6 +463,7 @@ class SLAMBackend(RGBDBackend):
             # Initialize via mono inference, and encoded features neeed for database
             X_init, C_init = self.inference(self.model, frame)
             frame.update_pointmap(X_init, C_init)
+            self.appends += 1
             keyframes.append(frame)
             states.queue_global_optimization(len(keyframes) - 1)
             states.set_mode(Mode.TRACKING)
@@ -478,6 +497,7 @@ class SLAMBackend(RGBDBackend):
                 raise RuntimeError(f"Invalid MASt3R-SLAM mode {mode}")
             # Ito: a full map maps nothing new; upstream's buffer would overflow (IndexError).
             if add_new_kf and len(keyframes) < self.capacity:
+                self.appends += 1
                 keyframes.append(frame)
                 states.queue_global_optimization(len(keyframes) - 1)
         self.i += 1
@@ -770,13 +790,16 @@ class SLAMBackend(RGBDBackend):
                 + (delta[:, 7] - 1).abs()
             )
             stale = torch.as_tensor(self.stale[:shown], device=moved.device)
-            moved = torch.where(stale, moved + 1, torch.nan_to_num(moved, nan=1.0))
+            moved = torch.nan_to_num(moved, nan=1.0)
+            moved = torch.where(stale, moved + 1, moved)
             moved[redraw[:shown]] = 0
             due = moved > MOVED
             if due.any():
                 most = torch.argsort(moved, descending=True)[: min(REDRAWS, int(due.sum()))]
                 redraw[most] = True
         redrawn = torch.nonzero(redraw).flatten().tolist()
+        if redrawn:
+            self.stale[redrawn] = True  # until shown: a redraw cut short by OOM is done later
         for k in redrawn:
             self.show(k, now)
         if self.budget > self.count:
@@ -815,6 +838,7 @@ class SLAMBackend(RGBDBackend):
         pixels = self.footprint()
         footprint = z * pose[0, 7] * self.scale * pixels / float(self.input.K[0, 0])
         xp = self.xp
+        self.pending[k] = True  # until placed: one cut short by OOM is offered again
         dropped = self.integrate_points(
             xp.from_dlpack(points[valid].contiguous()),
             xp.from_dlpack(colors[valid].contiguous()),
