@@ -405,8 +405,15 @@ class SLAMBackend(RGBDBackend):
         graph_model(self.model)
         try:
             self.warm_up()
-        except self.oom as exc:
-            raise self.setup_oom() from exc
+            short = False
+        except self.oom:
+            short = True  # handled out here, where the warm-up's tensors are gone
+        if short:
+            self.shed_graphs()
+            try:
+                self.warm_up()
+            except self.oom as exc:
+                raise self.setup_oom() from exc
         # What setup and the warm-up cached was on the default stream; the frontend and backend
         # run on streams of their own, whose caches never reuse it (0.4-0.8 GiB held for nothing).
         if self.xp is not np:
@@ -451,6 +458,16 @@ class SLAMBackend(RGBDBackend):
         RGBDBackend(64, intrinsics, device="cuda").integrate_points(points, colors, 0.0, sizes)
         torch.cuda.synchronize()
 
+    def shed_graphs(self):
+        """Out of VRAM with MASt3R's CUDA graphs: they keep their own buffers and outputs (0.3-0.4
+        GiB at Half, 100 %), so drop them and run MASt3R eagerly, at the same precision, slower."""
+        graphs = getattr(self.model, "graphs", None)
+        if graphs is None or graphs.off:
+            return
+        graphs.drop()
+        note = "VRAM short for MASt3R's CUDA graphs: running without them, slower"
+        self.warning = f"{note}; {self.lower}" if self.warning is None else f"{self.warning}. {note}"
+
     def bind_admission(self, admission):
         from .admission import bind_model, bind_native
 
@@ -480,6 +497,7 @@ class SLAMBackend(RGBDBackend):
             # not once the frame went into the keyframes.
             if self.appends == before:
                 self.ooms, self.oom_at = self.ooms + 1, now
+                self.shed_graphs()
                 self.report(self.out_of_memory())
                 raise
             raise RuntimeError(
