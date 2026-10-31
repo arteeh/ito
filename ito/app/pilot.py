@@ -303,9 +303,22 @@ class Pilot:
         """ToF ranges for the map's one-time display scale; nothing else from the head's
         sensors reaches SLAM."""
         worker = self.worker
-        if worker is None or self.failure or self.backend != "slam" or not message.ranges:
+        if worker is None or self.failure or self.backend != "slam":
             return
         local = peer.clock.remote_to_local
+        if message.imu:
+            # The head IMU's rotation prior (opt-in PoC, ITO_HEAD_IMU): a no-op when it is off.
+            worker.imu(
+                [
+                    dict(
+                        mount=camera_matrix(unit.mount),
+                        samples=[(local(s.time), s.angular_velocity) for s in unit.samples],
+                    )
+                    for unit in message.imu
+                ]
+            )
+        if not message.ranges:
+            return
         worker.ranges(
             [
                 dict(
