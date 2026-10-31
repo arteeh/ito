@@ -17,13 +17,17 @@ from .admission import GPU_STAGES, Admission
 from .rgbd import RGBDBackend
 from .ring import SplatUpdate, UpdateRing
 
-__all__ = ["Reconstruction", "SplatUpdate", "default_budget"]
+__all__ = ["CLOSE_WAIT", "Reconstruction", "SplatUpdate", "default_budget"]
 
 log = logging.getLogger(__name__)
-# A stopped worker gets this long to leave its loop (a step that never ends is killed), then
-# this long to exit: CUDA's teardown alone took 0.35-0.55 s with 9 GB in use (RTX 4070 Ti).
+# Stopping a worker: it gets STOP_WAIT to leave its loop (a step that never ends is killed),
+# then EXIT_WAIT to clean up and exit: SLAM's backend thread (at most slam.BACKEND_WAIT) and
+# CUDA's teardown (0.35-0.55 s with 9 GB in use, RTX 4070 Ti); a kill gets KILL_WAIT. CLOSE_WAIT
+# is all of it: what close() may take, and so what its callers wait for.
 STOP_WAIT = 0.5
-EXIT_WAIT = 5.0
+EXIT_WAIT = 3.0
+KILL_WAIT = 1.0
+CLOSE_WAIT = STOP_WAIT + EXIT_WAIT + KILL_WAIT
 # Max splats also bounds sorting and drawing per frame: 2^19 kept 90 Hz stereo on an
 # RTX 4070 Ti with a full scene. VRAM may hold fewer; the worker budgets that live.
 DEFAULT_MAX_SPLATS = 1_000_000
@@ -63,8 +67,8 @@ def _run(recon):
         next_network_stats = 0
         sequence = 0
         # ITO_TIMELINE names a file for one line per frame the worker took: what became of it.
-        timeline = os.environ.get("ITO_TIMELINE")
-        timeline = open(timeline, "a", buffering=1) if timeline else None
+        path = os.environ.get("ITO_TIMELINE")
+        timeline = open(path, "a", buffering=1) if path else None
         if timeline:
             import psutil
 
@@ -278,6 +282,7 @@ def _run(recon):
         cause = "".join(traceback.format_exception(exc))
         recon.errors.send(message.splitlines()[0][:500] + "\n" + cause[-6000:])
     finally:
+        recon.leaving.value = True  # out of the loop: close() now waits EXIT_WAIT, not STOP_WAIT
         # The backend's own threads (SLAM's global solve): once stopped, their GPU work ends at
         # its next admission chunk.
         if backend is not None and hasattr(backend, "close"):
@@ -288,7 +293,6 @@ def _run(recon):
             vram.close()
         recon.errors.close()
         recon.notes.close()
-        recon.finished.value = True
 
 
 class Reconstruction:
@@ -365,7 +369,7 @@ class Reconstruction:
         self.slot_capacity = context.RawValue("I", 0)
         self.input_lock = context.Lock()
         self.stopped = context.RawValue("b", False)
-        self.finished = context.RawValue("b", False)  # the worker left its loop, cleaned up
+        self.leaving = context.RawValue("b", False)  # the worker left its loop, cleans up
         self.admission = Admission(context, self.stopped)
         reader, self.errors = context.Pipe(duplex=False)
         notes, self.notes = context.Pipe(duplex=False)
@@ -568,9 +572,9 @@ class Reconstruction:
             # A killed worker may leave an Event's internal condition locked forever.
             self.stopped.value = True
             deadline = clock.now() + STOP_WAIT
-            while self.process.is_alive() and not self.finished.value and clock.now() < deadline:
+            while self.process.is_alive() and not self.leaving.value and clock.now() < deadline:
                 self.process.join(timeout=0.01)
-            if self.finished.value:
+            if self.leaving.value:
                 self.process.join(timeout=EXIT_WAIT)
             if self.process.is_alive():
                 # SIGTERM stays pending on a stopped process; SIGKILL does not.
@@ -578,11 +582,11 @@ class Reconstruction:
                     "Reconstruction process %d killed: %s",
                     self.process.pid,
                     f"still exiting {EXIT_WAIT:.1f} s after it stopped"
-                    if self.finished.value
+                    if self.leaving.value
                     else f"still busy {STOP_WAIT:.1f} s after stop",
                 )
                 self.process.kill()
-                self.process.join(timeout=3)
+                self.process.join(timeout=KILL_WAIT)
                 if self.process.is_alive():
                     log.error("Reconstruction process %d did not exit", self.process.pid)
             self.range_queue.cancel_join_thread()

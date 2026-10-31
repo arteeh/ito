@@ -15,7 +15,7 @@ from ito.link import PairingError, connect
 from ito.link.audio import Audio
 from ito.protocol import Command, FrameMetadata, Motion, Paired, PilotState, Pose, Sensors, Status
 from ito.rates import CounterRate, Rate
-from ito.reconstruction import Reconstruction
+from ito.reconstruction import CLOSE_WAIT, Reconstruction
 from ito.render import pose
 from ito.render.pose import quaternion
 
@@ -36,8 +36,9 @@ INPUT_FRESH, SHORT_STALL = 0.2, 1.0
 # one (1/120 s) made a desktop pilot's samples wait out the interval, which doubled
 # input-to-robot latency on Windows (#31).
 SEND_INTERVAL, HEARTBEAT = 0.002, 1 / 60
-# A stopped worker's CUDA teardown takes about half a second (9 GB in use, RTX 4070 Ti).
-LINK_WAIT, WORKER_WAIT = 1.0, 2.0
+# Quitting waits for the workers as long as their close() may take (reconstruction.CLOSE_WAIT);
+# a healthy one is gone in about 0.6 s.
+LINK_WAIT, WORKER_WAIT = 1.0, CLOSE_WAIT
 
 
 class ShutdownStuck(RuntimeError):

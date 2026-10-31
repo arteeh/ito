@@ -40,7 +40,7 @@ SPARE = 1
 CONFIDENCE = 1.5  # upstream's viewer draws points above this average confidence
 MOVED = 0.005  # a keyframe the solve moved by more than this share of its depth is redrawn
 RETRIES = 2  # keyframes the splat pool could not take whole, offered again per frame
-BACKEND_WAIT = 2.0  # seconds the worker's exit waits for the backend thread
+BACKEND_WAIT = 2.0  # seconds the worker's exit waits for the backend thread (< EXIT_WAIT)
 # Keyframes redrawn per frame because the solve moved them or their splat size changed, the
 # most moved first; the rest wait for the next frames. All at once stalled tracking.
 REDRAWS = 8
@@ -490,6 +490,7 @@ class SLAMBackend(RGBDBackend):
         self.backend_thread.join(timeout=BACKEND_WAIT)
 
     def run_backend(self):
+        self.torch.set_grad_enabled(False)  # thread-local: the constructor's covers its thread
         try:
             while not self.closing:
                 if not self.backend_step():
