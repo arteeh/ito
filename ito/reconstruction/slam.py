@@ -38,6 +38,8 @@ EDGES_PER_KEYFRAME = 4
 KEYFRAME_BYTES_PER_PIXEL = 44 + 16 + 26 * EDGES_PER_KEYFRAME
 # Keyframe slots beyond the map size, only for relocalising a full map (see relocalization).
 SPARE = 1
+# Keyframe pairs decoded together when the backend links a keyframe (see pairwise).
+PAIRS_PER_DECODE = 1
 CONFIDENCE = 1.5  # upstream's viewer draws points above this average confidence
 MOVED = 0.005  # a keyframe the solve moved by more than this share of its depth is redrawn
 RETRIES = 2  # keyframes the splat pool could not take whole, offered again per frame
@@ -149,6 +151,29 @@ class Input:
         img_shape = torch.tensor(np.int32([image.size[::-1]]), device=self.device)
         uimg = torch.from_numpy(np.array(image)) / 255.0
         return Frame(index, img, img_shape, img_shape.clone(), uimg, T_WC)
+
+
+def pairwise(match):
+    """Upstream's mast3r_match_symmetric, one keyframe pair at a time: the backend links a new
+    keyframe to up to 1 + k at once, and matching them as one batch held every pair's full-size
+    decoder outputs (points, descriptors, confidences: four images a pair, stacked and
+    concatenated copies) together. Upstream decodes pair by pair anyway and matches each pair
+    on its own, so the results are the same, concatenated."""
+    import torch
+
+    def one_at_a_time(model, feat_i, pos_i, feat_j, pos_j, shape_i, shape_j):
+        if len(feat_i) <= PAIRS_PER_DECODE:
+            return match(model, feat_i, pos_i, feat_j, pos_j, shape_i, shape_j)
+        parts = [
+            match(model, feat_i[s], pos_i[s], feat_j[s], pos_j[s], shape_i[s], shape_j[s])
+            for s in (
+                slice(n, n + PAIRS_PER_DECODE) for n in range(0, len(feat_i), PAIRS_PER_DECODE)
+            )
+        ]
+        return tuple(torch.cat(outputs) for outputs in zip(*parts))
+
+    one_at_a_time.pairwise = True
+    return one_at_a_time
 
 
 class StreamLock:
@@ -263,10 +288,13 @@ class SLAMBackend(RGBDBackend):
         import torch
         from mast3r_slam.config import config, load_config
         from mast3r_slam.frame import Mode, SharedKeyframes, SharedStates
+        from mast3r_slam import global_opt
         from mast3r_slam.global_opt import FactorGraph
         from mast3r_slam.mast3r_utils import load_retriever, mast3r_inference_mono
         from mast3r_slam.tracker import FrameTracker
 
+        if not hasattr(global_opt.mast3r_match_symmetric, "pairwise"):
+            global_opt.mast3r_match_symmetric = pairwise(global_opt.mast3r_match_symmetric)
         load_config(str(source / "config/base.yaml"))
         if 1 + config["retrieval"]["k"] > EDGES_PER_KEYFRAME:
             raise RuntimeError("MASt3R-SLAM's retrieval k outgrew Ito's graph edge buffer")
