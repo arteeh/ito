@@ -25,6 +25,7 @@ MAX_COLOUR_WEIGHT = 12.0
 # saturated surface that is gone (a moved object, a wall doubled by drift) fades in a few seconds,
 # while one stray ray only dents it.
 CARVE = 0.2
+MESH_WEIGHT = 0.1  # a voxel takes part in the mesh from this weight (surface.extract)
 
 
 class Volume:
@@ -161,7 +162,8 @@ class Volume:
             # Only blocks holding a surface can change; empty space needs no more carving.
             surface = ((self.sdf[front] < 0) & (self.weight[front] > 0)).reshape(len(front), -1)
             front = front[surface.any(axis=1)]
-            slots = np.concatenate([slots, front])
+        banded = len(slots)
+        slots = np.concatenate([slots, front]) if len(front) else slots
         sensor_from_world = np.linalg.inv(world_from_sensor)
         points = self.centres(slots).reshape(-1, 3)
         local = points @ sensor_from_world[:3, :3].T + sensor_from_world[:3, 3]
@@ -196,9 +198,19 @@ class Volume:
         total = old_w + w
         with np.errstate(invalid="ignore", divide="ignore"):
             fused = np.where(total > 0, (self.sdf[slots] * old_w + s * w) / total, 0)
+        weight = np.minimum(total, MAX_WEIGHT)
+        touched = w.reshape(len(slots), -1).any(axis=1)
+        # Blocks only seen through re-mesh when their surface can have changed: a voxel changed
+        # side or crossed the weight a mesh needs (surface.extract's min_weight).
+        old_sdf, old_weight = self.sdf[slots[banded:]], self.weight[slots[banded:]]
+        flipped = ((old_sdf < 0) != (fused[banded:] < 0)) | (
+            (old_weight >= MESH_WEIGHT) != (weight[banded:] >= MESH_WEIGHT)
+        )
+        if len(slots) > banded:
+            touched[banded:] &= flipped.reshape(len(slots) - banded, -1).any(axis=1)
         self.sdf[slots] = fused
-        self.weight[slots] = np.minimum(total, MAX_WEIGHT)
-        self.dirty.update(slots[w.reshape(len(slots), -1).any(axis=1)].tolist())
+        self.weight[slots] = weight
+        self.dirty.update(slots[touched].tolist())
         return int(ok.sum())
 
     def visible(self, camera_from_world, intrinsics, size, distance):
