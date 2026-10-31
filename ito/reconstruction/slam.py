@@ -855,7 +855,8 @@ class SLAMBackend(RGBDBackend):
         if now - self.vram_full_at < OOM_SHOWN:
             full = (
                 f"VRAM full ({self.vram_full_free / 2**20:.0f} MiB free): the map's least "
-                f"recently seen splats fade to make room; {self.lower} in Settings"
+                "recently seen splats fade to make room"
+                + ("" if self.warning else f"; {self.lower} in Settings")
             )
             warning = full if warning is None else f"{warning}. {full}"
         if warning:
