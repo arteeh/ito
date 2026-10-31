@@ -113,8 +113,8 @@ def _run(recon):
                 recon.admission.memory_pressure.value = vram.pressure
                 if vram.pressure and hasattr(backend, "vram_full"):
                     backend.vram_full(now, vram.free_bytes)
-                    if vram.releases:
-                        # Still short after the caches went back: MASt3R's CUDA graphs hold
+                    if vram.released:
+                        # Still short right after the caches went back: MASt3R's CUDA graphs hold
                         # 0.3-0.4 GiB the caches cannot give; the splats would fade for less.
                         backend.shed_graphs()
                 recon.admission.gpu_busy.value = -1 if vram.gpu.busy is None else vram.gpu.busy

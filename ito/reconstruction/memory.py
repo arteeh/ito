@@ -26,6 +26,7 @@ class VRAM:
         self.free_bytes = 0
         self.cached_bytes = 0
         self.releases = 0
+        self.released = False  # this check released the caches and VRAM is still short
 
     def free(self):
         free, _ = self.xp.cuda.runtime.memGetInfo()
@@ -63,6 +64,7 @@ class VRAM:
 
     def check(self, slots, settled):
         now = clock.now()
+        self.released = False
         if now < self.next_check:
             return self.fit
         self.next_check = now + INTERVAL
@@ -78,7 +80,7 @@ class VRAM:
             and now - self.last_release >= RELEASE_COOLDOWN
         ):
             free = self.free_bytes = self.release(free, now)
-            self.pressure = free < FLOOR_BYTES
+            self.pressure = self.released = free < FLOOR_BYTES
         if not self.pressure:
             self.fit = slots if self.fit is None else min(self.fit, slots)
         elif settled:
