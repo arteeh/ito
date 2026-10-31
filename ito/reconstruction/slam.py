@@ -56,6 +56,9 @@ REDRAW_SECONDS = 0.025
 LOOP_GAP = 5
 # Free VRAM after setup below this: the driver is already spilling into system memory.
 SPILLING = 256 << 20
+# VRAM a frame's work takes beyond the buffers, per input pixel (MASt3R's activations, matching,
+# the backend's pairs): at 512x288 0.5-0.7 GiB at the peak, 0.7-1.1 GiB with the streams' caches.
+WORK_BYTES_PER_PIXEL = 5000
 OOM_SHOWN = 10.0  # seconds the status keeps saying a frame was dropped for VRAM
 
 
@@ -356,10 +359,14 @@ class SLAMBackend(RGBDBackend):
             free, _ = torch.cuda.mem_get_info()
         except self.oom as exc:
             raise self.setup_oom() from exc
+        # Windows' driver does not fail an allocation past the card: it spills into system
+        # memory, so running short shows only as a crawl. Say so at the start instead.
+        working = WORK_BYTES_PER_PIXEL * h * w
         self.warning = (
-            f"VRAM full ({free / 2**20:.0f} MiB free after MASt3R-SLAM's setup): the driver "
-            f"spills into system memory and everything slows; {self.lower}"
-            if free < SPILLING
+            f"VRAM short ({free / 2**20:.0f} MiB free after MASt3R-SLAM's setup, its frames "
+            f"need about {(working + SPILLING) / 2**20:.0f}): the driver spills into system "
+            f"memory and everything slows; {self.lower}"
+            if free < working + SPILLING
             else None
         )
         v, u = np.mgrid[:h, :w].reshape(2, -1).astype(np.float32)
