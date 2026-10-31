@@ -114,8 +114,8 @@ class SettingsScreen:
         imgui.text_disabled(f"VRAM at {s.input_resolution}% input (16:9 camera): {costs}.")
         imgui.text_disabled(
             "Taken at start, besides MASt3R's weights and retrieval (about 3.0 GB Full, 1.7 GB "
-            "Half). 512 is upstream's. A full map tracks and relocalises on but maps nothing "
-            "new. Applies at the next connection."
+            "Half). 512 is upstream's. A full map moves its least used keyframes to disk and "
+            "brings them back when the camera returns there. Applies at the next connection."
         )
         self.theme.heading("Scene")
         imgui.text("Max splats")

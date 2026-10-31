@@ -94,9 +94,10 @@ first frame. Frames go in as upstream's dataloader makes them (long side 512, ce
 16-pixel multiples), taken as already undistorted; an Input resolution below 100 % makes them
 smaller (448, 368, 256), which upstream does not do: its matching is tuned at 512. The large
 buffers (keyframes, graph edges, the solve's inputs) are allocated once, at start: Settings >
-Map size picks how many keyframes (and shows their VRAM; 512 is upstream's). A full map maps
-nothing new, but tracks and relocalises on: one spare keyframe slot is kept for relocalising,
-reused at every loss. Monocular scale is MASt3R's; a robot with a ToF sensor (Microduck) fixes
+Map size picks how many keyframes (and shows their VRAM; 512 is upstream's). A full map keeps
+mapping: its least recently used keyframe moves to a store on disk (its splats stay where they
+were), and comes back when retrieval recognises its place, linked into the graph again
+(`ito/reconstruction/places.py`). Monocular scale is MASt3R's; a robot with a ToF sensor (Microduck) fixes
 once how many metres a map unit is, for display only, so reconstructed distances are not a
 measurement tool.
 
