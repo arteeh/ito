@@ -32,6 +32,25 @@ def default_budget(renderer: str = "") -> int:
     return DEFAULT_MAX_SPLATS
 
 
+def places_row(backend):
+    """Keep places (#79): the keyframe store, for the timeline."""
+    places = getattr(backend, "places", None)
+    if places is None:
+        return None
+    return dict(
+        slots=len(backend.keyframes),
+        stored=len(places.stored),
+        out=places.evictions,
+        back=places.reloads,
+        linked=places.links_made,
+        link_failed=places.links_failed,
+        gids=places.next_gid,
+        maintain_ms_total=round(places.maintain_seconds * 1000, 1),
+        maintain_ms_peak=round(places.maintain_peak * 1000, 1),
+        retrieval_images=backend.retrieval.kf_counter,
+    )
+
+
 def _run(recon):
     vram = None
     try:
@@ -201,6 +220,7 @@ def _run(recon):
                         working_set_bytes=(memory := worker.memory_info()).rss,
                         # Windows: commit, which also counts what the driver backs with RAM.
                         private_bytes=getattr(memory, "private", None),
+                        places=places_row(backend),
                         gpu_busy_pct=recon.admission.gpu_busy.value,
                         memory_pressure=bool(recon.admission.memory_pressure.value),
                         render_backoffs=recon.admission.overruns.value,

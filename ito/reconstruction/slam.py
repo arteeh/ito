@@ -14,6 +14,7 @@ Where the robot has a ToF sensor, tof.RangeScale fixes once how many metres a ma
 the pilot gets the map at that scale; the solve never sees it.
 """
 
+import os
 import threading
 import time
 from contextlib import nullcontext
@@ -21,6 +22,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
+from .places import Places
 from .rgbd import RGBDBackend
 from .tof import RangeScale
 
@@ -190,6 +192,8 @@ class SLAMBackend(RGBDBackend):
         self.lower = "lower the Map size or Input resolution" + (
             " or choose Half" if precision == "full" else ""
         )
+        # Tests only (#79): a Map size below Settings' smallest, so a tape fills it quickly.
+        keyframes = int(os.environ.get("ITO_SLAM_KEYFRAMES") or keyframes)
         self.capacity = keyframes
         buffer = keyframes + SPARE
         try:
@@ -244,6 +248,7 @@ class SLAMBackend(RGBDBackend):
         self.drawn_pixels = self.footprint()
         self.draw_seconds = 0.0
         self.ranged = None
+        self.places = Places(self, buffer)
         report("MASt3R-SLAM warming up")
         self.warm_up()
         # The backend thread: upstream's run_backend, on a CUDA stream of its own. Its lock
@@ -343,6 +348,8 @@ class SLAMBackend(RGBDBackend):
 
     def step(self, rgb, camera):
         Mode, states, keyframes = self.Mode, self.states, self.keyframes
+        # Keep places (#79): reload what retrieval recalled, and keep a keyframe slot free.
+        self.places.maintain()
         mode = states.get_mode()
         # get frames last camera pose
         T_WC = (
@@ -364,6 +371,7 @@ class SLAMBackend(RGBDBackend):
             X_init, C_init = self.inference(self.model, frame)
             frame.update_pointmap(X_init, C_init)
             keyframes.append(frame)
+            self.places.appended()
             self.queue_global_optimization(len(keyframes) - 1)
             states.set_mode(Mode.TRACKING)
             states.set_frame(frame)
@@ -397,8 +405,10 @@ class SLAMBackend(RGBDBackend):
             else:
                 raise RuntimeError(f"Invalid MASt3R-SLAM mode {mode}")
             # Ito: a full map maps nothing new; upstream's buffer would overflow (IndexError).
+            # Keep places: the map is full only until places.maintain moves a keyframe out.
             if add_new_kf and len(keyframes) < self.capacity:
                 keyframes.append(frame)
+                self.places.appended()
                 self.queue_global_optimization(len(keyframes) - 1)
         self.i += 1
         self.posed = posed
@@ -468,7 +478,16 @@ class SLAMBackend(RGBDBackend):
                 if len(states.global_optimizer_tasks) > 0:
                     idx = states.global_optimizer_tasks[0]
             if idx == -1:
-                return False
+                if not self.places.links:
+                    return False
+                # Keep places: a reloaded keyframe joins the graph.
+                if stream is not None and self.handoff is not None:
+                    stream.wait_event(self.handoff)
+                self.places.link()
+                if stream is not None:
+                    stream.synchronize()
+                self.places.links.popleft()
+                return True
             if stream is not None and self.handoff is not None:
                 stream.wait_event(self.handoff)
             self.optimize(idx)
@@ -492,7 +511,8 @@ class SLAMBackend(RGBDBackend):
         k = len(self.keyframes) - 1
         self.graph.n_edges = self.spare
         self.keyframes.pop_last()
-        self.retire_source(k)
+        self.retire_source(int(self.places.gids[k]))
+        self.places.popped()
         self.pending[k] = self.stale[k] = False
         self.shown = min(self.shown, k)
         self.spare = None
@@ -507,11 +527,13 @@ class SLAMBackend(RGBDBackend):
         for j in range(min(n_consec, idx)):
             kf_idx.append(idx - 1 - j)
         frame = keyframes[idx]
-        retrieval_inds = self.retrieval.update(
+        gid = int(self.places.gids[idx])
+        retrieval_inds = self.places.retrieve(
             frame,
-            add_after_query=True,
+            gid,
             k=config["retrieval"]["k"],
             min_thresh=config["retrieval"]["min_thresh"],
+            partner=gid,
         )
         kf_idx += retrieval_inds
 
@@ -524,6 +546,7 @@ class SLAMBackend(RGBDBackend):
             factor_graph.add_factors(kf_idx, frame_idx, config["local_opt"]["min_match_frac"])
         kept = factor_graph.ii2[2 * edges : 2 * factor_graph.n_edges : 2].tolist()
         self.loops += any(i < idx - LOOP_GAP for i in kept)
+        self.places.touch(kept + [idx])
 
         if config["use_calib"]:
             factor_graph.solve_GN_calib()
@@ -538,14 +561,16 @@ class SLAMBackend(RGBDBackend):
         retrieval's ids must stay keyframe indices. Upstream has no full map: its buffer
         overflows instead."""
         config, keyframes = self.config, self.keyframes
-        factor_graph, retrieval_database = self.graph, self.retrieval
+        factor_graph = self.graph
         # we are adding and then removing from the keyframe, so we need to be careful.
         # The lock slows viz down but safer this way...
         with keyframes.lock:
+            if len(keyframes) >= keyframes.buffer:
+                return False  # Keep places: the frontend frees a slot first
             kf_idx = []
-            retrieval_inds = retrieval_database.update(
+            retrieval_inds = self.places.retrieve(
                 frame,
-                add_after_query=False,
+                None,
                 k=config["retrieval"]["k"],
                 min_thresh=config["retrieval"]["min_thresh"],
             )
@@ -553,6 +578,7 @@ class SLAMBackend(RGBDBackend):
             successful_loop_closure = False
             if kf_idx:
                 keyframes.append(frame)
+                self.places.appended()
                 n_kf = len(keyframes)
                 kf_idx = list(kf_idx)  # convert to list
                 frame_idx = [n_kf - 1] * len(kf_idx)
@@ -563,9 +589,9 @@ class SLAMBackend(RGBDBackend):
                     is_reloc=config["reloc"]["strict"],
                 ):
                     if keep:
-                        retrieval_database.update(
+                        self.places.retrieve(
                             frame,
-                            add_after_query=True,
+                            int(self.places.gids[n_kf - 1]),
                             k=config["retrieval"]["k"],
                             min_thresh=config["retrieval"]["min_thresh"],
                         )
@@ -573,6 +599,7 @@ class SLAMBackend(RGBDBackend):
                     keyframes.T_WC[n_kf - 1] = keyframes.T_WC[kf_idx[0]].clone()
                 else:
                     keyframes.pop_last()
+                    self.places.popped()
 
             if successful_loop_closure:
                 if config["use_calib"]:
@@ -614,7 +641,7 @@ class SLAMBackend(RGBDBackend):
         counts = (
             f"{self.tracked} frames, {n}/{self.capacity} keyframes, {self.graph.n_edges} edges, "
             f"{self.loops} loop closures, {self.relocalized} relocalised, "
-            f"{owed} keyframes owed splats, "
+            f"{owed} keyframes owed splats, places {self.places.status()}, "
             + (
                 f"{self.scale:.3f} m per map unit (ToF)"
                 if self.tof.value
@@ -653,8 +680,12 @@ class SLAMBackend(RGBDBackend):
         offered again, a few per frame while the pool has room, until all of it is shown."""
         torch, lietorch, keyframes = self.torch, self.lietorch, self.keyframes
         n = len(keyframes)
-        for k in self.evicted:
-            self.pending[k] = k < n
+        for gid in self.evicted:  # splat sources are lifelong keyframe ids (places.py)
+            k = self.places.slot(gid)
+            if k is None:
+                self.places.starved.add(gid)
+            else:
+                self.pending[k] = True
         self.evicted.clear()
         pixels = self.footprint()
         if abs(pixels / self.drawn_pixels - 1) > 0.25:
@@ -713,7 +744,7 @@ class SLAMBackend(RGBDBackend):
         if not retry:
             self.drawn[k] = pose
             self.stale[k] = False
-            self.retire_source(k)
+            self.retire_source(int(self.places.gids[k]))
         self.pending[k] = False
         if not bool(valid.any()):
             return
@@ -728,7 +759,7 @@ class SLAMBackend(RGBDBackend):
             xp.from_dlpack(colors[valid].contiguous()),
             now,
             xp.from_dlpack(footprint[valid].contiguous()),
-            source=k,
+            source=int(self.places.gids[k]),
             headroom=False,
             evict=not retry,
         )
