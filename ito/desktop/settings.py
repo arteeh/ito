@@ -9,6 +9,14 @@ from pydantic import BaseModel, ConfigDict, Field
 # MASt3R-SLAM's map size: keyframe slots, all allocated at start. 512 is upstream's; 128 (3.1 GB at
 # 100 % input) leaves room for MASt3R and the scene on a 12-16 GB card.
 KEYFRAMES = (64, 128, 192, 256, 384, 512)
+# Settings per card VRAM, measured with the sim, the pilot's view drawing and the rest of
+# Ceres's 12 GB held by another process (#83). Smaller cards first give up precision, then map
+# size and input resolution.
+PRESETS = {
+    "10 GB+": dict(precision="full", input_resolution=100, keyframes=128),
+    "8 GB": dict(precision="half", input_resolution=100, keyframes=128),
+    "6 GB": dict(precision="half", input_resolution=75, keyframes=64),
+}
 
 
 class AppSettings(BaseModel):

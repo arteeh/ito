@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from imgui_bundle import imgui
 
 from ito import diagnostics
-from ito.desktop.settings import KEYFRAMES, AppSettings, load, save
+from ito.desktop.settings import KEYFRAMES, PRESETS, AppSettings, load, save
 from ito.reconstruction.slam import map_bytes
 
 # The settings screen knows no camera: map sizes are costed for a 16:9 one, as Microduck's.
@@ -65,6 +65,23 @@ class SettingsScreen:
     def draw(self, *, xr_mode=False):
         s = self.settings
         self.theme.heading("MASt3R-SLAM")
+        imgui.text("Graphics card memory (VRAM)")
+        preset_widths = self.layout.row(*(1,) * len(PRESETS))
+        for index, (label, values) in enumerate(PRESETS.items()):
+            if index:
+                imgui.same_line()
+            chosen = all(getattr(s, key) == value for key, value in values.items())
+            if chosen:
+                imgui.push_style_color(imgui.Col_.button, self.theme.color("selected"))
+            clicked = self.layout.button(label, f"preset {label}", preset_widths[index])
+            if chosen:
+                imgui.pop_style_color()
+            if clicked and not chosen:
+                self.change(**values)
+        imgui.text_disabled(
+            "Sets the three below for a card with this much VRAM: 8 GB Half; 6 GB Half, 75% "
+            "and 64 keyframes. Applies at the next connection."
+        )
         imgui.text("Precision")
         precision_widths = self.layout.row(1, 1)
         for index, value in enumerate(("full", "half")):
