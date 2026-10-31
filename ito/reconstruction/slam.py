@@ -251,6 +251,8 @@ class SLAMBackend(RGBDBackend):
         self.backend_lock = threading.RLock()
         self.backend_stream = torch.cuda.Stream()
         self.handoff = None  # the frontend's last queued work, for the backend's stream to wait on
+        self.reloc_frames = self.reloc_tried = 0  # frames the frontend set for relocalising
+        self.resumed = 0  # relocalisations the frontend has started tracking from
         self.failure = None
         threading.Thread(target=self.run_backend, name="mast3r-slam-backend", daemon=True).start()
         report("MASt3R-SLAM ready; waiting for camera")
@@ -348,6 +350,13 @@ class SLAMBackend(RGBDBackend):
             if self.i == 0
             else states.get_frame().T_WC
         )
+        if mode == Mode.TRACKING and self.resumed != self.relocalized:
+            # Ito: the first frame after a relocalisation starts from the relocalised keyframe's
+            # pose. Upstream's starts from the last tracked one, from before the loss: a camera
+            # that moved while lost is far from it, calibrated tracking then fails at once and
+            # relocalises again, a keyframe more each time (loop tape: 18 in 10 s).
+            self.resumed = self.relocalized
+            T_WC = self.lietorch.Sim3(keyframes.T_WC[len(keyframes) - 1].clone())
         frame = self.input.frame(self.i, rgb, T_WC)
         posed = self.ranged = None
         if mode == Mode.INIT:
@@ -371,6 +380,7 @@ class SLAMBackend(RGBDBackend):
                     with states.lock:
                         states.set_frame(frame)
                         self.hand_off()
+                        self.reloc_frames += 1
                     states.set_mode(Mode.RELOC)
                 else:
                     posed = frame.T_WC
@@ -382,6 +392,7 @@ class SLAMBackend(RGBDBackend):
                 with states.lock:
                     states.set_frame(frame)
                     self.hand_off()
+                    self.reloc_frames += 1
                 states.queue_reloc()
             else:
                 raise RuntimeError(f"Invalid MASt3R-SLAM mode {mode}")
@@ -423,6 +434,12 @@ class SLAMBackend(RGBDBackend):
         with self.backend_lock, torch.cuda.stream(stream) if stream is not None else nullcontext():
             if mode == Mode.RELOC:
                 with states.lock:
+                    # Ito: each frame once. Upstream's loop tries the frame it has over and
+                    # over until the next comes, with the same result: live, that kept the GPU
+                    # and the GIL so busy that the frontend's frames took 0.9 s, not 0.12.
+                    if self.reloc_tried == self.reloc_frames:
+                        return False
+                    self.reloc_tried = self.reloc_frames
                     if stream is not None and self.handoff is not None:
                         stream.wait_event(self.handoff)
                     # Ito: a copy, the frontend overwrites states' frame with the next one.
