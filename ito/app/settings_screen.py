@@ -3,7 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from imgui_bundle import imgui
 
-from ito import diagnostics
+from ito import diagnostics, edition
 from ito.desktop.settings import KEYFRAMES, AppSettings, load, save
 from ito.reconstruction.slam import map_bytes
 
@@ -62,8 +62,15 @@ class SettingsScreen:
     def close(self):
         self.writer.shutdown(wait=True)
 
-    def draw(self, *, xr_mode=False):
-        s = self.settings
+    def _tofmesh(self):
+        self.theme.heading("ToF mesh")
+        imgui.text_wrapped(
+            "This build maps with the robot's time-of-flight sensor, placed by the robot's own "
+            "pose (odometry and IMU), and paints the mesh with its camera frames. No SLAM, no "
+            "AI model, nothing to tune here."
+        )
+
+    def _reconstruction(self, s, xr_mode):
         self.theme.heading("MASt3R-SLAM")
         imgui.text("Precision")
         precision_widths = self.layout.row(1, 1)
@@ -142,6 +149,13 @@ class SettingsScreen:
             self.change(max_splats=min((1 << 31) - 1, (s.max_splats // 100_000 + 1) * 100_000))
         imgui.text_disabled("Higher: more scene detail, more VRAM and draw time.")
         imgui.text_disabled("The live VRAM manager may keep fewer splats.")
+
+    def draw(self, *, xr_mode=False):
+        s = self.settings
+        if edition.TOFMESH:
+            self._tofmesh()
+        else:
+            self._reconstruction(s, xr_mode)
         self.theme.heading("Diagnostics")
         debug = diagnostics.current()
         imgui.text("Diagnostic logging")

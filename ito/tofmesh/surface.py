@@ -21,10 +21,7 @@ _BLOCK_OF = _OFFSET // BLOCK + 1
 _LOCAL_OF = _OFFSET % BLOCK
 CORNERS = np.array([(x, y, z) for x in (0, 1) for y in (0, 1) for z in (0, 1)])
 EDGES = [
-    (a, b)
-    for a in range(8)
-    for b in range(a + 1, 8)
-    if np.abs(CORNERS[a] - CORNERS[b]).sum() == 1
+    (a, b) for a in range(8) for b in range(a + 1, 8) if np.abs(CORNERS[a] - CORNERS[b]).sum() == 1
 ]
 
 
@@ -49,13 +46,13 @@ def extract(volume, slots, min_weight=0.25):
     sdf, weight, colour, colour_weight = _gather(volume, slots)
     m = len(slots)
     n = R - 1  # cells per axis
-    corner = lambda a, c=None: (  # noqa: E731
-        (sdf if c is None else c)[:, a[0] : a[0] + n, a[1] : a[1] + n, a[2] : a[2] + n]
+    corner = (
+        lambda a, c=None: (  # noqa: E731
+            (sdf if c is None else c)[:, a[0] : a[0] + n, a[1] : a[1] + n, a[2] : a[2] + n]
+        )
     )
     s = np.stack([corner(c) for c in CORNERS], -1)  # (M, n, n, n, 8)
-    valid = np.stack(
-        [corner(c, weight) >= min_weight for c in CORNERS], -1
-    ).all(-1)
+    valid = np.stack([corner(c, weight) >= min_weight for c in CORNERS], -1).all(-1)
     negative = s < 0
     active = valid & negative.any(-1) & (~negative).any(-1)
 

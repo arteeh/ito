@@ -145,7 +145,9 @@ class MeshRenderer:
         self.context = context
         self.slots = slots
         self.image_size = tuple(image_size)
-        self.program = context.program(vertex_shader=VERTEX, fragment_shader=FRAGMENT % {"K": slots})
+        self.program = context.program(
+            vertex_shader=VERTEX, fragment_shader=FRAGMENT % {"K": slots}
+        )
         self.shadow_program = context.program(
             vertex_shader=SHADOW_VERTEX, fragment_shader=SHADOW_FRAGMENT
         )

@@ -66,7 +66,11 @@ class Tape:
             p = m["camera_pose"]
             if lo - 1 <= m["time"] <= hi:
                 out.append(
-                    (m["time"] + 0.02, "motion", (m["time"], pose_matrix(p["position"], p["orientation"])))
+                    (
+                        m["time"] + 0.02,
+                        "motion",
+                        (m["time"], pose_matrix(p["position"], p["orientation"])),
+                    )
                 )
         for s in self.sensors:
             for g in s.get("ranges", []):
@@ -112,7 +116,12 @@ def main():
     fw = args.frame_width
     fh = round(fw * tape.h / tape.w)
     s = fw / tape.w
-    K = (tape.K[0, 0] * s, tape.K[1, 1] * s, (tape.K[0, 2] + 0.5) * s - 0.5, (tape.K[1, 2] + 0.5) * s - 0.5)
+    K = (
+        tape.K[0, 0] * s,
+        tape.K[1, 1] * s,
+        (tape.K[0, 2] + 0.5) * s - 0.5,
+        (tape.K[1, 2] + 0.5) * s - 0.5,
+    )
     delay = tape.meta.get("frame_delay", 0.09)
     events = tape.events(args.start, args.end)
     film = None

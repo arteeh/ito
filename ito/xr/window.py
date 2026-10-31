@@ -10,7 +10,7 @@ from imgui_bundle import imgui
 from OpenGL import GL
 from xr.utils import GraphicsAPI, Matrix4x4f
 
-from ito import clock, diagnostics
+from ito import clock, diagnostics, edition
 from ito.app.menu_layout import MenuLayout
 from ito.desktop import DesktopWindow
 from ito.desktop.window import DesktopState
@@ -211,7 +211,8 @@ class XRWindow(DesktopWindow):
         self.overlay.leave = False
         from ito.render.scene import GaussianBuffer
 
-        self.renderer.upload(GaussianBuffer(np.empty((0, 4, 4), np.float32)))
+        if not edition.TOFMESH:  # the ToF mesh keeps its map behind the menu
+            self.renderer.upload(GaussianBuffer(np.empty((0, 4, 4), np.float32)))
         choice = None
 
         def draw(size):
@@ -293,6 +294,8 @@ class XRWindow(DesktopWindow):
                         if not self.renderer.apply(update):
                             pending = update
                             break
+                    elif getattr(update, "kind", None) == "mesh":
+                        self.renderer.upload(update)
                     elif update.revision != revision:
                         self.renderer.upload(update.gaussians)
                     if isinstance(update, SplatUpdate):

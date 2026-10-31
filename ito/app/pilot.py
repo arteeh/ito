@@ -8,7 +8,7 @@ import traceback
 from collections import deque
 from dataclasses import replace
 
-from ito import clock, diagnostics
+from ito import clock, diagnostics, edition
 from ito.desktop import DesktopState, PilotStatus
 from ito.desktop.settings import load as app_settings
 from ito.link import PairingError, connect
@@ -267,7 +267,7 @@ class Pilot:
         rgb, depth, camera, _ = FrameJoin.arrays(pair, peer.clock)
         self.last_frame = clock.now()
         self.state = replace(self.state, video=rgb, video_time=captured)
-        if self.backend == "rgbd" and camera is not None:
+        if self.backend in ("rgbd", "tofmesh") and camera is not None:
             self._anchor(camera)
         if self.worker is None or self.failure:
             return
@@ -298,13 +298,21 @@ class Pilot:
             fresh.append(
                 (local, camera_matrix(sample.camera_pose), sample.angular_velocity, sample.state)
             )
+        worker = self.worker
+        if fresh and worker is not None and not self.failure and self.backend == "tofmesh":
+            worker.motion(fresh)
         return fresh
 
     def _sensors(self, message, peer):
-        """ToF ranges for the map's one-time display scale; nothing else from the head's
-        sensors reaches SLAM."""
+        """ToF ranges: SLAM's one-time display scale (nothing else from the head's sensors
+        reaches SLAM), or the ToF mesh's geometry."""
         worker = self.worker
-        if worker is None or self.failure or self.backend != "slam" or not message.ranges:
+        if (
+            worker is None
+            or self.failure
+            or self.backend not in ("slam", "tofmesh")
+            or not message.ranges
+        ):
             return
         local = peer.clock.remote_to_local
         worker.ranges(
@@ -386,6 +394,9 @@ class Pilot:
             if choice == "auto"
             else choice
         )
+        if edition.TOFMESH:
+            # This build carries the ToF mesh only; a flat feed stays possible.
+            self.backend = "video" if choice == "video" else "tofmesh"
         self.reconstruction_status = (
             "Flat camera feed" if self.backend == "video" else "Starting " + self.backend
         )
@@ -407,6 +418,11 @@ class Pilot:
             nonlocal worker_started
             worker_started = clock.now()
             with self.worker_lock:
+                if self.backend == "tofmesh":
+                    from ito.tofmesh.worker import TofMesh
+
+                    self.worker = TofMesh(camera.intrinsics, capture_delay=camera.capture_delay)
+                    return
                 self.worker = Reconstruction(
                     camera.intrinsics,
                     max_splats=min(self.max_splats, self.splat_limit or self.max_splats),
@@ -521,6 +537,9 @@ class Pilot:
                             )
                         self.slam_view = view
                         self.state = replace(self.state, flat_video=not self.slam_view)
+                    elif self.backend == "tofmesh":
+                        # The flat feed until the first triangles arrive.
+                        self.state = replace(self.state, flat_video=not self.worker.has_mesh)
                 if self.failure:
                     self.reconstruction_status = self.failure + "; showing flat camera feed"
                     if self.restart_at is not None:
@@ -531,7 +550,7 @@ class Pilot:
                     with self.worker_lock:
                         failed, self.worker = self.worker, None
                     self._retire(failed)
-                    if self.backend == "rgbd" or self.tracked_frames:
+                    if self.backend in ("rgbd", "tofmesh") or self.tracked_frames:
                         if now - worker_started >= RESTART_HEALTHY:
                             restart_delay = RESTART_FIRST
                         self.restart_at = now + restart_delay

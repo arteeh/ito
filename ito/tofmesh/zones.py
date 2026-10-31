@@ -72,11 +72,7 @@ class Zones:
         u = (across + self.fov[0] / 2) / self.step[0] - 0.5
         v = (self.fov[1] / 2 - up) / self.step[1] - 0.5
         inside = (
-            (z < 0)
-            & (u >= -0.5)
-            & (u <= self.cols - 0.5)
-            & (v >= -0.5)
-            & (v <= self.rows - 0.5)
+            (z < 0) & (u >= -0.5) & (u <= self.cols - 0.5) & (v >= -0.5) & (v <= self.rows - 0.5)
         )
         out = np.full(len(points), np.nan)
         if not inside.any():
@@ -111,9 +107,9 @@ class Zones:
         far = np.where(ok, inverse, np.inf).min(axis=1)
         with np.errstate(invalid="ignore", divide="ignore"):
             ratio = near / far
-        bilinear_w = np.stack(
-            [(1 - fu) * (1 - fv), fu * (1 - fv), (1 - fu) * fv, fu * fv], axis=1
-        ) * ok
+        bilinear_w = (
+            np.stack([(1 - fu) * (1 - fv), fu * (1 - fv), (1 - fu) * fv, fu * fv], axis=1) * ok
+        )
         weight = bilinear_w.sum(axis=1)
         smooth = (ok.sum(axis=1) >= 2) & (ratio <= self.edge) & (weight >= 0.25)
         with np.errstate(divide="ignore", invalid="ignore"):

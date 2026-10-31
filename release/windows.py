@@ -4,7 +4,9 @@
 
 A relocatable CPython with the locked dependencies installed, started by release/ito.c's
 ito.exe (runtime\\pythonw.exe -I -m ito.app), plus models\\ from ito.build and
-THIRD_PARTY_NOTICES.txt. No freezer: the release runs exactly what runs from source."""
+THIRD_PARTY_NOTICES.txt. No freezer: the release runs exactly what runs from source.
+--edition tofmesh (or ITO_RELEASE_EDITION=tofmesh) builds the ToF-mesh-only Ito instead: no
+SLAM extra (no torch/CuPy), no models\\, and ito\\EDITION selecting ito.tofmesh at runtime."""
 
 import argparse
 import email.parser
@@ -27,7 +29,7 @@ def run(*command, **options):
     subprocess.run(list(map(str, command)), check=True, **options)
 
 
-def runtime(stage, work):
+def runtime(stage, work, edition="full"):
     managed = Path(subprocess.check_output(["uv", "python", "dir"], text=True).strip())
     base = Path(sys.base_prefix)
     if base.parent.resolve() != managed.resolve() or sys.version_info[:2] != (3, 12):
@@ -40,7 +42,8 @@ def runtime(stage, work):
             shutil.rmtree(path) if path.is_dir() else path.unlink()
     lock = work / "pylock.toml"
     run(
-        "uv", "export", "--frozen", "--no-dev", "--extra", "slam", "--no-emit-project",
+        "uv", "export", "--frozen", "--no-dev",
+        *(["--extra", "slam"] if edition == "full" else []), "--no-emit-project",
         "--format", "pylock.toml", "--output-file", lock,
         cwd=ROOT,
     )  # fmt: skip
@@ -53,6 +56,8 @@ def runtime(stage, work):
             "uv", "pip", "install", "--python", python, "--target", site,
             "--link-mode", "copy", "--compile-bytecode", *requirement,
         )  # fmt: skip
+    if edition != "full":
+        (site / "ito" / "EDITION").write_text(edition + "\n", encoding="utf-8")
     unused = [site / "bin", site / "torch/include", *site.rglob("*.lib")]
     for path in unused + list(site.glob("xr/**/android*")):
         shutil.rmtree(path) if path.is_dir() else path.unlink(missing_ok=True)
@@ -140,7 +145,7 @@ def notices(site, models, runtime, output):
             lines.append("(The package ships no licence file; see its metadata above.)")
         sections.append("\n".join(lines))
     for root, label in ((runtime, "Python runtime"), (models, "models")):
-        for path in sorted(root.rglob("*")):
+        for path in sorted(root.rglob("*")) if root.is_dir() else ():
             if (
                 path.is_file()
                 and LICENCE_FILE.match(path.name)
@@ -184,8 +189,25 @@ def _read(path):
     return path.read_text(encoding="utf-8", errors="replace").strip()
 
 
-def check(stage):
+def check(stage, edition="full"):
     env = {k: v for k, v in os.environ.items() if not k.startswith(("PYTHON", "VIRTUAL_ENV"))}
+    env.pop("ITO_EDITION", None)
+    if edition == "tofmesh":
+        run(
+            stage / "runtime/python.exe", "-I", "-c",
+            "import sys, pathlib, importlib.util, mujoco, aiortc, xr, imgui_bundle, moderngl\n"
+            "import ito.app.__main__, ito.tofmesh.worker, ito.tofmesh.render\n"
+            "from ito import edition\n"
+            "root = pathlib.Path(sys.argv[1])\n"
+            "assert edition.TOFMESH, edition.NAME\n"
+            "assert not (root / 'models').exists()\n"
+            "for name in ('torch', 'cupy', 'faiss'):\n"
+            "    assert importlib.util.find_spec(name) is None, name\n"
+            "for module in (mujoco, aiortc, xr, imgui_bundle, ito):\n"
+            "    assert pathlib.Path(module.__file__).is_relative_to(root), module.__file__\n",
+            stage, env=env, cwd=stage,
+        )  # fmt: skip
+        return
     run(
         stage / "runtime/python.exe", "-I", "-c",
         "import sys, pathlib, torch, cupy, mujoco, aiortc, xr, imgui_bundle, ito.app.__main__\n"
@@ -207,6 +229,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--models", type=Path, help="copy a built ito.build bundle")
     parser.add_argument("--dist", type=Path, default=ROOT / "dist", help="output directory")
+    parser.add_argument(
+        "--edition",
+        choices=("full", "tofmesh"),
+        default=os.environ.get("ITO_RELEASE_EDITION", "full"),
+        help="full: MASt3R-SLAM and models; tofmesh: the ToF mesh only, no models",
+    )
     args = parser.parse_args()
     if sys.platform != "win32":
         raise SystemExit("The Windows release is built on Windows")
@@ -217,8 +245,9 @@ def main():
     with tempfile.TemporaryDirectory(prefix="ito-release-", dir=args.dist) as work:
         work = Path(work)
         launcher(stage, work)
-        runtime(stage, work)
-    models(stage, args.models)
+        runtime(stage, work, args.edition)
+    if args.edition == "full":
+        models(stage, args.models)
     count = notices(
         stage / "runtime/Lib/site-packages",
         stage / "models",
@@ -226,7 +255,7 @@ def main():
         stage / "THIRD_PARTY_NOTICES.txt",
     )
     print(f"THIRD_PARTY_NOTICES.txt: {count} components", flush=True)
-    check(stage)
+    check(stage, args.edition)
     size = sum(p.stat().st_size for p in stage.rglob("*") if p.is_file())
     print(f"Release ready: {stage} ({size / 1e9:.2f} GB)")
 

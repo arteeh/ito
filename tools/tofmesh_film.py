@@ -72,7 +72,9 @@ class Film:
                 self.start = news.camera.copy()
 
     def _view(self, world_from_eye, projection):
-        self.renderer.draw(world_from_eye, np.eye(4), projection, self.fbo, viewport=(0, 0, self.w, self.h))
+        self.renderer.draw(
+            world_from_eye, np.eye(4), projection, self.fbo, viewport=(0, 0, self.w, self.h)
+        )
         data = self.fbo.read(components=3, viewport=(0, 0, self.w, self.h))
         return np.frombuffer(data, np.uint8).reshape(self.h, self.w, 3)[::-1]
 
@@ -83,13 +85,17 @@ class Film:
             fw, fh = self.frame_size
             fov_y = 2 * np.arctan(fh / (2 * fy))
             # Panels are 16:9 like the camera; the pilot panel uses the camera's own field of view.
-            canvas[: self.h, self.w :] = self._view(self.camera, perspective(fov_y, self.w / self.h))
+            canvas[: self.h, self.w :] = self._view(
+                self.camera, perspective(fov_y, self.w / self.h)
+            )
             pos = self.camera[:3, 3]
             forward = -self.camera[:3, 2]
             flat = np.array([forward[0], 0, forward[2]])
             flat /= max(np.linalg.norm(flat), 1e-6)
             chase = look_at(pos - flat * 1.4 + np.array([0, 0.9, 0]), pos + flat * 1.2)
-            canvas[self.h :, : self.w] = self._view(chase, perspective(np.radians(70), self.w / self.h))
+            canvas[self.h :, : self.w] = self._view(
+                chase, perspective(np.radians(70), self.w / self.h)
+            )
             if self.overview:
                 ex, ey, ez, tx, ty, tz = self.overview
                 over = look_at((ex, ey, ez), (tx, ty, tz))
@@ -98,20 +104,35 @@ class Film:
                 f0 = -self.start[:3, 2]
                 f0 = np.array([f0[0], 0, f0[2]]) / max(np.linalg.norm([f0[0], f0[2]]), 1e-6)
                 over = look_at(s - f0 * 0.8 + np.array([0, 2.6, 0]), s + f0 * 1.8)
-            canvas[self.h :, self.w :] = self._view(over, perspective(np.radians(80), self.w / self.h))
+            canvas[self.h :, self.w :] = self._view(
+                over, perspective(np.radians(80), self.w / self.h)
+            )
         if self.image is not None:
-            canvas[: self.h, : self.w] = cv2.resize(self.image, (self.w, self.h), interpolation=cv2.INTER_AREA)
+            canvas[: self.h, : self.w] = cv2.resize(
+                self.image, (self.w, self.h), interpolation=cv2.INTER_AREA
+            )
         stats = fusion.stats
         label = (
             f"t {t:5.1f}s  tris {stats['triangles']}  blocks {stats['blocks']}  "
             f"fuse {stats['fuse_ms']:.0f}ms  mesh {stats['mesh_ms']:.0f}ms"
         )
-        cv2.putText(canvas, label, (10, self.size[1] - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(
+            canvas,
+            label,
+            (10, self.size[1] - 12),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
         for text, x, y in (
             ("camera", 8, 18), ("ToF mesh, robot view", self.w + 8, 18),
             ("ToF mesh, behind", 8, self.h + 18), ("ToF mesh, overview", self.w + 8, self.h + 18),
         ):  # fmt: skip
-            cv2.putText(canvas, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1, cv2.LINE_AA)
+            cv2.putText(
+                canvas, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1, cv2.LINE_AA
+            )
         self.proc.stdin.write(canvas.tobytes())
 
     def close(self):

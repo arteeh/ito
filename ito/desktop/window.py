@@ -10,7 +10,7 @@ from typing import TextIO
 import pygame
 from OpenGL import GL
 
-from ito import clock, diagnostics
+from ito import clock, diagnostics, edition
 from ito.reconstruction import SplatUpdate, default_budget
 from ito.reconstruction.admission import PUBLICATION_PACKETS
 from ito.render import GaussianRenderer, SceneSource, current_context, perspective, pose
@@ -94,7 +94,12 @@ class DesktopWindow:
             self.gpu = GPU() if "nvidia" in self.context.info["GL_VENDOR"].lower() else None
             buffer_limit = self.context.info["GL_MAX_SHADER_STORAGE_BLOCK_SIZE"]
             self.splat_limit = 16_384 if software else min(MAX_SLOT_COUNT, buffer_limit // 64)
-            self.renderer = GaussianRenderer(self.context)
+            if edition.TOFMESH:
+                from ito.tofmesh.render import MeshRenderer
+
+                self.renderer = MeshRenderer(self.context)
+            else:
+                self.renderer = GaussianRenderer(self.context)
             self.video_panel = VideoPanel(self.context)
             self.max_splats = min(
                 self.splat_limit,
@@ -216,6 +221,8 @@ class DesktopWindow:
                     if not self.renderer.apply(frame):
                         pending = frame
                         break
+                elif getattr(frame, "kind", None) == "mesh":
+                    self.renderer.upload(frame)
                 elif frame.revision != revision:
                     self.renderer.upload(frame.gaussians)
                 if isinstance(frame, SplatUpdate):
