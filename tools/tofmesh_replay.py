@@ -161,8 +161,13 @@ def main():
         if now >= next_stat:
             next_stat += 1
             rss = int(open("/proc/self/statm").read().split()[1]) * resource.getpagesize() / 2**20
-            row = dict(t=round(now - tape.t0, 1), step_ms_p50=float(np.median(steps)),
-                       step_ms_max=float(np.max(steps)), rss_mb=round(rss), **fusion.stats)  # fmt: skip
+            row = dict(
+                t=round(now - tape.t0, 1),
+                step_ms_p50=float(np.median(steps)),
+                step_ms_max=float(np.max(steps)),
+                rss_mb=round(rss),
+                **fusion.stats,
+            )
             stats.write(json.dumps(row) + "\n")
             stats.flush()
             steps = []
