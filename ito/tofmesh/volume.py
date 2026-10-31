@@ -38,7 +38,8 @@ class Volume:
         self.touched = np.zeros(n, np.float64)
         self.slots = {}
         self.free = list(range(self.capacity - 1, -1, -1))
-        self.dirty = set()
+        self.dirty = set()  # geometry changed
+        self.painted = set()  # only colours changed
         self.evicted = set()
         self.evictions = 0
         local = np.stack(np.meshgrid(*[np.arange(BLOCK)] * 3, indexing="ij"), -1).reshape(-1, 3)
@@ -98,6 +99,7 @@ class Volume:
         slot = int(candidates[np.argmax(score)])
         del self.slots[tuple(self.keys[slot])]
         self.dirty.discard(slot)
+        self.painted.discard(slot)
         self.evicted.add(tuple(self.keys[slot]))
         self.evictions += 1
         return slot
@@ -244,13 +246,18 @@ class Volume:
             :, None
         ]
         flat_weight[index] = np.minimum(total, MAX_COLOUR_WEIGHT)
-        self.dirty.update(np.unique(target).tolist())
+        self.painted.update(np.unique(target).tolist())
         return int(len(index))
 
-    def take_dirty(self):
+    def take_dirty(self, colours=False):
+        """Blocks whose geometry changed (and, with colours, those only repainted) since the
+        last call, and the keys of blocks forgotten meanwhile."""
         dirty, evicted = self.dirty, self.evicted
         self.dirty, self.evicted = set(), set()
-        return np.array(sorted(dirty), np.int64), evicted
+        painted = set()
+        if colours:
+            painted, self.painted = self.painted - dirty, set()
+        return np.array(sorted(dirty), np.int64), np.array(sorted(painted), np.int64), evicted
 
     def neighbourhood(self, slots):
         """(len(slots), 3, 3, 3) slot of each block and its 26 neighbours (missing: the empty

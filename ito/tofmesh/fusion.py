@@ -27,7 +27,10 @@ from .zones import zones_from_grid
 # A sensor reading waits this long for the pose stream to reach its time, then is dropped.
 POSE_WAIT = 0.4
 PAINT_INTERVAL = 0.15
-MESH_INTERVAL = 0.25
+MESH_INTERVAL = 0.2
+# Colour-only changes (repainted voxels) reach the mesh this often; the live projector already
+# shows the current view at camera resolution, so the coarse vertex colours can lag.
+RECOLOUR_INTERVAL = 1.5
 LIVE_INTERVAL = 1 / 20
 # A frame becomes a kept projector when it looks this differently from every kept one.
 KEY_ANGLE = np.radians(14)
@@ -104,6 +107,7 @@ class Fusion:
         self.last_paint = -1e9
         self.last_live = -1e9
         self.last_mesh = -1e9
+        self.last_recolour = -1e9
         self.revision = 0
         self.epoch = time.time()
         self.captured_at = None
@@ -213,7 +217,10 @@ class Fusion:
         news = None
         if now - self.last_mesh >= MESH_INTERVAL and (self.volume.dirty or self.volume.evicted):
             self.last_mesh = now
-            self._remesh()
+            colours = now - self.last_recolour >= RECOLOUR_INTERVAL
+            if colours:
+                self.last_recolour = now
+            self._remesh(colours)
         if self.mesh_changed or self.pending_projectors:
             self.revision += 1
             news = MeshFrame(self.revision, self.captured_at, camera=self.camera, epoch=self.epoch)
@@ -247,12 +254,13 @@ class Fusion:
         self.kept[slot] = (camera, exposed)
         self.pending_projectors.append(Projector(slot, image, camera, k, exposed))
 
-    def _remesh(self):
+    def _remesh(self, colours):
         started = time.perf_counter()
-        dirty, evicted = self.volume.take_dirty()
+        dirty, painted, evicted = self.volume.take_dirty(colours)
         for key in evicted:
             self.meshes.pop(key, None)
-        todo = set(dirty.tolist())
+        # A block's mesh reaches one voxel into its neighbours: new geometry re-meshes them too.
+        todo = set(dirty.tolist()) | set(painted.tolist())
         for slot in dirty:
             kx, ky, kz = self.volume.keys[slot]
             for dx in (-1, 0, 1):
