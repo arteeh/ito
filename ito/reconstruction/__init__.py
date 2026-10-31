@@ -61,7 +61,12 @@ def _run(recon):
         if backend.xp is not np:
             from .memory import VRAM
 
-            vram = VRAM(backend.xp, sys.modules.get("torch"), recon.notes.send)
+            vram = VRAM(
+                backend.xp,
+                sys.modules.get("torch"),
+                recon.notes.send,
+                getattr(backend, "shed_graphs", None),
+            )
         model = getattr(backend, "model", None)
         network = getattr(model, "network_precision", None)
         next_network_stats = 0
@@ -113,10 +118,6 @@ def _run(recon):
                 recon.admission.memory_pressure.value = vram.pressure
                 if vram.pressure and hasattr(backend, "vram_full"):
                     backend.vram_full(now, vram.free_bytes)
-                    if vram.released:
-                        # Still short right after the caches went back: MASt3R's CUDA graphs hold
-                        # 0.3-0.4 GiB the caches cannot give; the splats would fade for less.
-                        backend.shed_graphs()
                 recon.admission.gpu_busy.value = -1 if vram.gpu.busy is None else vram.gpu.busy
                 recon.vram_free.value = vram.free_bytes
                 recon.vram_cached.value = vram.cached_bytes

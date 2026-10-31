@@ -460,13 +460,15 @@ class SLAMBackend(RGBDBackend):
 
     def shed_graphs(self):
         """Out of VRAM with MASt3R's CUDA graphs: they keep their own buffers and outputs (0.3-0.4
-        GiB at Half, 100 %), so drop them and run MASt3R eagerly, at the same precision, slower."""
+        GiB at Half, 100 %), so drop them and run MASt3R eagerly, at the same precision, slower.
+        True if they were dropped now."""
         graphs = getattr(self.model, "graphs", None)
         if graphs is None or graphs.off:
-            return
+            return False
         graphs.drop()
         note = "VRAM short for MASt3R's CUDA graphs: running without them, slower"
         self.warning = f"{note}; {self.lower}" if self.warning is None else f"{self.warning}. {note}"
+        return True
 
     def bind_admission(self, admission):
         from .admission import bind_model, bind_native

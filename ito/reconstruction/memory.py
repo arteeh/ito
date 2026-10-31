@@ -16,8 +16,11 @@ INTERVAL = 0.5
 
 
 class VRAM:
-    def __init__(self, xp, torch, note):
+    def __init__(self, xp, torch, note, shed=None):
         self.xp, self.torch, self.note = xp, torch, note
+        # Gives back more VRAM when the caches were not enough (MASt3R's CUDA graphs): True if
+        # it freed anything. Before the splats, which fade for little (96 B a slot).
+        self.shed = shed
         self.gpu = GPU(xp.cuda.runtime.getDevice())
         self.next_check = 0.0
         self.last_release = -RELEASE_COOLDOWN
@@ -26,7 +29,6 @@ class VRAM:
         self.free_bytes = 0
         self.cached_bytes = 0
         self.releases = 0
-        self.released = False  # this check released the caches and VRAM is still short
 
     def free(self):
         free, _ = self.xp.cuda.runtime.memGetInfo()
@@ -64,7 +66,6 @@ class VRAM:
 
     def check(self, slots, settled):
         now = clock.now()
-        self.released = False
         if now < self.next_check:
             return self.fit
         self.next_check = now + INTERVAL
@@ -80,7 +81,13 @@ class VRAM:
             and now - self.last_release >= RELEASE_COOLDOWN
         ):
             free = self.free_bytes = self.release(free, now)
-            self.pressure = self.released = free < FLOOR_BYTES
+            self.pressure = free < FLOOR_BYTES
+            if self.pressure and self.shed is not None and self.shed():
+                # Measured again: the splats give up only what is still short.
+                free = self.free_bytes = self.free()
+                self.cached_bytes = self.cached()
+                self.pressure = free < FLOOR_BYTES
+                self.note(f"VRAM {free / 2**30:.2f} GiB free after dropping MASt3R's CUDA graphs")
         if not self.pressure:
             self.fit = slots if self.fit is None else min(self.fit, slots)
         elif settled:
