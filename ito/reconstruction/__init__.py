@@ -5,6 +5,7 @@ import os
 import queue
 import sys
 import traceback
+from contextlib import nullcontext
 
 import numpy as np
 
@@ -46,6 +47,7 @@ def _run(recon):
                 input_resolution=recon.input_resolution,
                 keyframes=recon.keyframes,
                 precision_report=recon.report_precision,
+                map_trainer=recon.map_trainer,
                 **recon.options,
             )
         else:
@@ -66,6 +68,7 @@ def _run(recon):
             import psutil
 
             worker = psutil.Process()
+        lock = getattr(backend, "lock", None) or nullcontext()
         cursor = 0
         revision = 0
         published_slots = len(backend.keys)
@@ -80,26 +83,28 @@ def _run(recon):
                 if count > recon.nonfinite_points.value:
                     recon.notes.send(dict(event="network_nonfinite", count=count))
                     recon.nonfinite_points.value = count
-            backend.expire(now, recon.ring.last_acknowledged())
-            limit = recon.budget.value
-            if vram is not None:
-                fit = vram.check(len(backend.keys), len(backend.keys) <= backend.budget)
-                limit = limit if fit is None else min(limit, fit)
-                recon.admission.memory_pressure.value = vram.pressure
-                recon.admission.gpu_busy.value = -1 if vram.gpu.busy is None else vram.gpu.busy
-                recon.vram_free.value = vram.free_bytes
-                recon.vram_cached.value = vram.cached_bytes
-                recon.cache_releases.value = vram.releases
-            if limit != backend.budget:
-                retired = backend.resize(limit, now)
-                recon.splat_limit.value = limit
-                if retired:
-                    recon.notes.send(
-                        f"Splat limit {limit:,}: the {retired:,} least recently seen fade out"
-                    )
-            if len(backend.keys) > backend.budget and backend.compact():
-                recon.notes.send(f"Splat slots shrunk to {len(backend.keys):,}")
-            recon.slot_capacity.value = len(backend.keys)
+            # The map trainer (slam.py) exchanges rows with the map under its lock.
+            with lock:
+                backend.expire(now, recon.ring.last_acknowledged())
+                limit = recon.budget.value
+                if vram is not None:
+                    fit = vram.check(len(backend.keys), len(backend.keys) <= backend.budget)
+                    limit = limit if fit is None else min(limit, fit)
+                    recon.admission.memory_pressure.value = vram.pressure
+                    recon.admission.gpu_busy.value = -1 if vram.gpu.busy is None else vram.gpu.busy
+                    recon.vram_free.value = vram.free_bytes
+                    recon.vram_cached.value = vram.cached_bytes
+                    recon.cache_releases.value = vram.releases
+                if limit != backend.budget:
+                    retired = backend.resize(limit, now)
+                    recon.splat_limit.value = limit
+                    if retired:
+                        recon.notes.send(
+                            f"Splat limit {limit:,}: the {retired:,} least recently seen fade out"
+                        )
+                if len(backend.keys) > backend.budget and backend.compact():
+                    recon.notes.send(f"Splat slots shrunk to {len(backend.keys):,}")
+                recon.slot_capacity.value = len(backend.keys)
             while recon.backend == "slam":
                 try:
                     backend.add_ranges(recon.range_queue.get_nowait())
@@ -194,6 +199,7 @@ def _run(recon):
                         if backend.xp is not np
                         else None,
                         working_set_bytes=worker.memory_info().rss,
+                        map_trainer_steps=getattr(getattr(backend, "trainer", None), "steps", None),
                         gpu_busy_pct=recon.admission.gpu_busy.value,
                         memory_pressure=bool(recon.admission.memory_pressure.value),
                         render_backoffs=recon.admission.overruns.value,
@@ -211,49 +217,50 @@ def _run(recon):
                         recon.display_scale.value = backend.tof.value or 0.0
                     finally:
                         recon.output_lock.release()
-            for _ in range(recon.ring.slots):
-                dirty = np.flatnonzero(backend.dirty)
-                start = np.searchsorted(dirty, cursor)
-                ordered = np.concatenate((dirty[start:], dirty[:start]))
-                eviction = backend.sequences[ordered] == 0
-                indices = np.concatenate((ordered[eviction], ordered[~eviction]))[
-                    : recon.ring.batch
-                ]
-                if not len(indices) and len(backend.keys) == published_slots:
-                    break
-                contributing = backend.sequences[indices] > 0
-                packet_capture = max(
-                    published_capture,
-                    float(backend.captures[indices[contributing]].max())
-                    if contributing.any()
-                    else published_capture,
+            with lock:
+                for _ in range(recon.ring.slots):
+                    dirty = np.flatnonzero(backend.dirty)
+                    start = np.searchsorted(dirty, cursor)
+                    ordered = np.concatenate((dirty[start:], dirty[:start]))
+                    eviction = backend.sequences[ordered] == 0
+                    indices = np.concatenate((ordered[eviction], ordered[~eviction]))[
+                        : recon.ring.batch
+                    ]
+                    if not len(indices) and len(backend.keys) == published_slots:
+                        break
+                    contributing = backend.sequences[indices] > 0
+                    packet_capture = max(
+                        published_capture,
+                        float(backend.captures[indices[contributing]].max())
+                        if contributing.any()
+                        else published_capture,
+                    )
+                    if not recon.ring.publish(
+                        indices,
+                        backend.records[indices],
+                        len(backend.keys),
+                        backend.count,
+                        revision,
+                        packet_capture,
+                        backend.sequences[indices],
+                        backend.captures[indices],
+                    ):
+                        break
+                    published_slots = len(backend.keys)
+                    published_capture = packet_capture
+                    retiring = indices[backend.retiring[indices]]
+                    backend.retire_revision[retiring] = revision
+                    if len(indices):
+                        cursor = (int(indices[-1]) + 1) % len(backend.keys)
+                    backend.dirty[indices] = False
+                    revision += 1
+                recon.scene_slots.value = backend.count
+                recon.retiring_slots.value = int(backend.retiring.sum())
+                recon.dirty_slots.value = int(backend.dirty.sum())
+                pending_captures = backend.captures[backend.dirty & (backend.sequences > 0)]
+                recon.oldest_dirty_capture.value = (
+                    float(pending_captures.min()) if len(pending_captures) else 0
                 )
-                if not recon.ring.publish(
-                    indices,
-                    backend.records[indices],
-                    len(backend.keys),
-                    backend.count,
-                    revision,
-                    packet_capture,
-                    backend.sequences[indices],
-                    backend.captures[indices],
-                ):
-                    break
-                published_slots = len(backend.keys)
-                published_capture = packet_capture
-                retiring = indices[backend.retiring[indices]]
-                backend.retire_revision[retiring] = revision
-                if len(indices):
-                    cursor = (int(indices[-1]) + 1) % len(backend.keys)
-                backend.dirty[indices] = False
-                revision += 1
-            recon.scene_slots.value = backend.count
-            recon.retiring_slots.value = int(backend.retiring.sum())
-            recon.dirty_slots.value = int(backend.dirty.sum())
-            pending_captures = backend.captures[backend.dirty & (backend.sequences > 0)]
-            recon.oldest_dirty_capture.value = (
-                float(pending_captures.min()) if len(pending_captures) else 0
-            )
             if recon.sequence.value == sequence or not recon.admission.available():
                 recon.admission.wake.wait(0.005)
     except InterruptedError:
@@ -287,6 +294,7 @@ class Reconstruction:
         precision="full",
         input_resolution=100,
         keyframes=128,
+        map_trainer=False,
     ):
         if not 1 <= max_splats <= MAX_SLOT_COUNT:
             raise ValueError(f"Max splats must be between 1 and {MAX_SLOT_COUNT:,}")
@@ -296,9 +304,14 @@ class Reconstruction:
             raise ValueError("Reconstruction backend must be rgbd or slam")
         from ito.desktop.settings import AppSettings
 
-        AppSettings(precision=precision, input_resolution=input_resolution, keyframes=keyframes)
+        AppSettings(
+            precision=precision,
+            input_resolution=input_resolution,
+            keyframes=keyframes,
+            map_trainer=map_trainer,
+        )
         self.precision, self.input_resolution = precision, input_resolution
-        self.keyframes = keyframes
+        self.keyframes, self.map_trainer = keyframes, map_trainer
         self.backend = backend
         self.intrinsics = intrinsics
         self.shape = (intrinsics.height, intrinsics.width)
@@ -383,6 +396,7 @@ class Reconstruction:
                 self.intrinsics.width, self.intrinsics.height, self.input_resolution
             ),
             slam_keyframes=self.keyframes,
+            slam_map_trainer=self.map_trainer,
             slam_display_scale=self.display_scale.value or None,
             reconstruction_oom=self.last_oom.value > 0 and clock.now() - self.last_oom.value < 10,
             network_oom_count=self.oom_count.value,

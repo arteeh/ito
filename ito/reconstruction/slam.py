@@ -18,6 +18,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
+from .maptrain import VIEW_EVERY, rescaled, similarity
 from .rgbd import RGBDBackend
 from .tof import RangeScale
 
@@ -44,6 +45,9 @@ LOOP_GAP = 5
 # Free VRAM after setup below this: the driver is already spilling into system memory.
 SPILLING = 256 << 20
 OOM_SHOWN = 10.0  # seconds the status keeps saying a frame was dropped for VRAM
+# Splat footprint at placement, in MASt3R input pixels: 3, or 2 under the map trainer, which
+# trains them down from there (more, smaller seeds; densifying is not built).
+PIXELS, TRAINED_PIXELS = 3, 2
 
 
 def crop_size(width, height):
@@ -148,6 +152,7 @@ class SLAMBackend(RGBDBackend):
         input_resolution=100,
         keyframes=128,
         precision_report=None,
+        map_trainer=False,
         **options,
     ):
         from .mast3r_runtime import load_model, prepare
@@ -232,6 +237,16 @@ class SLAMBackend(RGBDBackend):
         self.relocalized = 0
         self.ooms, self.oom_at = 0, -OOM_SHOWN
         self.tof = RangeScale(self.input.K, (h, w))
+        # The map trainer (maptrain.py, opt-in PoC): started in bind_admission. The map's lock
+        # is held while the worker changes the splat map (not while it tracks), and by the
+        # trainer only to exchange rows with it.
+        self.lock = threading.Lock()
+        self.map_trainer = map_trainer
+        self.trainer = None
+        self.trainer_note = None
+        self.generations = np.zeros(buffer, np.int64)  # keyframe slots (re)used
+        self.views_offered = 0
+        self.offer = None
         self.scale = 1.0  # metres per map unit, for display; 1 until the ToF fixes it
         self.ranged = None
         report("MASt3R-SLAM ready; waiting for camera")
@@ -239,9 +254,20 @@ class SLAMBackend(RGBDBackend):
     def bind_admission(self, admission):
         from .admission import bind_model, bind_native
 
+        if self.map_trainer:
+            admission.priority = -1
         super().bind_admission(admission)
         self.admission_hooks = bind_model(self.model, admission)
         bind_native(admission)
+        if self.map_trainer:
+            try:
+                from .maptrain import MapTrainer
+
+                self.trainer = MapTrainer(self, self.intrinsics, self.input.long)
+            except ImportError as exc:  # a build without gsplat
+                self.trainer_note = f"map trainer unavailable: {exc}"
+            else:
+                self.trainer.start(admission.available, self.lock)
 
     def integrate(self, rgb, depth, camera, now):
         """One frame through upstream's main loop. camera: the robot's own estimate of its camera
@@ -261,11 +287,18 @@ class SLAMBackend(RGBDBackend):
             raise RuntimeError(
                 f"Out of VRAM in MASt3R-SLAM's backend at {self.settings}: {self.lower} in Settings"
             ) from exc
-        if self.ranged is not None and self.tof.value is None and self.measure(self.ranged):
-            self.scale = self.tof.value
-            self.shown = 0  # every keyframe again, at the new scale
-        self.publish(self.posed, now)
-        self.draw(now)
+        with self.lock:
+            if self.ranged is not None and self.tof.value is None and self.measure(self.ranged):
+                if self.trainer is not None:
+                    # Trained splats are scaled where they are, not drawn again.
+                    self.queue_move(-1, rescaled(self.tof.value / self.scale, self.world))
+                else:
+                    self.shown = 0  # every keyframe again, at the new scale
+                self.scale = self.tof.value
+            self.publish(self.posed, now)
+            self.draw(now)
+            if self.trainer is not None:
+                self.feed(rgb, before[0])
 
     def out_of_memory(self):
         return (
@@ -294,7 +327,7 @@ class SLAMBackend(RGBDBackend):
             else states.get_frame().T_WC
         )
         frame = self.input.frame(self.i, rgb, T_WC)
-        posed = self.ranged = None
+        posed = self.ranged = self.offer = None
         if mode == Mode.INIT:
             # Initialize via mono inference, and encoded features neeed for database
             X_init, C_init = self.inference(self.model, frame)
@@ -317,6 +350,8 @@ class SLAMBackend(RGBDBackend):
                     posed = frame.T_WC
                     self.ranged = frame
                 states.set_frame(frame)
+                if not add_new_kf and not try_reloc:
+                    self.offer = frame
             elif mode == Mode.RELOC:
                 X, C = self.inference(self.model, frame)
                 frame.update_pointmap(X, C)
@@ -348,7 +383,8 @@ class SLAMBackend(RGBDBackend):
         k = len(self.keyframes) - 1
         self.graph.n_edges = self.spare
         self.keyframes.pop_last()
-        self.retire_source(k)
+        with self.lock:
+            self.retire_source(k)
         self.pending[k] = False
         self.shown = min(self.shown, k)
         self.spare = None
@@ -472,6 +508,11 @@ class SLAMBackend(RGBDBackend):
             f"{self.loops} loop closures, {self.relocalized} relocalised, "
             f"{owed} keyframes owed splats, "
             + (
+                f"map trainer {self.trainer.steps} steps on {len(self.trainer.views)} views, "
+                if self.trainer is not None
+                else ""
+            )
+            + (
                 f"{self.scale:.3f} m per map unit (ToF)"
                 if self.tof.value
                 else "unscaled (MASt3R units)"
@@ -491,6 +532,9 @@ class SLAMBackend(RGBDBackend):
                 "free VRAM)"
             )
         warning = self.warning
+        note = self.trainer_note or (self.trainer is not None and self.trainer.error)
+        if note:
+            warning = note if warning is None else f"{warning}; {note}"
         if now - self.oom_at < OOM_SHOWN:
             warning = (
                 self.out_of_memory() if warning is None else f"{self.out_of_memory()}. {warning}"
@@ -514,7 +558,10 @@ class SLAMBackend(RGBDBackend):
         self.evicted.clear()
         redraw = torch.zeros(n, dtype=torch.bool, device=self.drawn.device)
         dirty = keyframes.get_dirty_idx()
-        redraw[dirty[dirty < n]] = True
+        if self.trainer is None:
+            # The map trainer trains the reference keyframe's splats instead of redrawing them
+            # from every refinement of its pointmap.
+            redraw[dirty[dirty < n]] = True
         redraw[self.shown :] = True
         shown = self.shown
         if shown:
@@ -528,7 +575,11 @@ class SLAMBackend(RGBDBackend):
                 + 2 * torch.atan2(vector, w)
                 + (delta[:, 7] - 1).abs()
             )
-            redraw[:shown] |= ~(moved <= MOVED)
+            moved = ~(moved <= MOVED)
+            if self.trainer is not None:
+                self.move_keyframes(torch.nonzero(moved).flatten())
+            else:
+                redraw[:shown] |= moved
         redrawn = torch.nonzero(redraw).flatten().tolist()
         for k in redrawn:
             self.show(k, now)
@@ -560,7 +611,9 @@ class SLAMBackend(RGBDBackend):
         self.depth[k] = z[valid].median()
         points = self.lietorch.Sim3(pose).act(local) * self.axes * self.scale
         points = points @ self.world_rotation.T + self.world_translation
-        pixels = 3 * max(1, (400_000 / self.budget) ** 0.5)
+        pixels = (PIXELS if self.trainer is None else TRAINED_PIXELS) * max(
+            1, (400_000 / self.budget) ** 0.5
+        )
         footprint = z * pose[0, 7] * self.scale * pixels / float(self.input.K[0, 0])
         xp = self.xp
         dropped = self.integrate_points(
@@ -571,5 +624,46 @@ class SLAMBackend(RGBDBackend):
             source=k,
             headroom=False,
             evict=not retry,
+            overwrite=self.trainer is None,
         )
         self.pending[k] = dropped > 0
+
+    # -- the map trainer (maptrain.py) -----------------------------------------------------------
+    def queue_move(self, source, matrix):
+        self.move_seq += 1
+        self.trainer.moves.append((source, matrix, self.move_seq))
+
+    def move_keyframes(self, ks):
+        """Keyframes the solve moved: their splats move with them (trainer), not redrawn."""
+        if not len(ks):
+            return
+        lietorch = self.lietorch
+        delta = lietorch.Sim3(self.keyframes.T_WC[ks]) * lietorch.Sim3(self.drawn[ks]).inv()
+        matrices = delta.matrix().reshape(-1, 4, 4).double().cpu().numpy()
+        for k, matrix in zip(ks.tolist(), matrices, strict=True):
+            if np.isfinite(matrix).all():
+                self.queue_move(k, similarity(matrix, self.scale, self.world))
+        self.drawn[ks] = self.keyframes.T_WC[ks]
+
+    def feed(self, rgb, before):
+        """New keyframes and every VIEW_EVERY-th tracked frame go to the trainer as training
+        views (a tracked frame held relative to the latest keyframe), then the keyframes'
+        poses after this frame."""
+        trainer, keyframes, lietorch = self.trainer, self.keyframes, self.lietorch
+        n = len(keyframes)
+        if n > before:
+            k = n - 1
+            self.generations[k] += 1
+            trainer.inbox.append(("kf", k, int(self.generations[k]), rgb))
+        elif self.offer is not None and n:
+            self.views_offered += 1
+            if self.views_offered % VIEW_EVERY == 0:
+                k = n - 1
+                relative = lietorch.Sim3(keyframes.T_WC[k]).inv() * self.offer.T_WC
+                rel = relative.data.reshape(8).clone()
+                event = self.torch.cuda.Event()
+                event.record()
+                trainer.inbox.append(("view", k, int(self.generations[k]), rel, event, rgb))
+        self.offer = None
+        if n:
+            trainer.publish(keyframes, n, self.scale, self.world, self.generations, self.depth)

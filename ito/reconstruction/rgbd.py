@@ -29,6 +29,10 @@ SLOT_FIELDS = {
     # refresh it do not take it over, so one source's redraw or removal never takes splats
     # another source still shows.
     "sources": (np.int32, -1, ()),
+    # For the map trainer (maptrain.py): written by the worker since the trainer last looked,
+    # and how many queued moves the slot's values already reflect.
+    "fresh": (bool, False, ()),
+    "moves": (np.int64, 0, ()),
 }
 
 
@@ -67,6 +71,7 @@ class RGBDBackend:
         self.grow(min(budget, FIRST_SLOTS))
         self.source_sequence = 0
         self.source_captured = 0.0
+        self.move_seq = 0  # moves queued for the map trainer so far
         self.budget = budget
         # Sources (see SLOT_FIELDS) that lost splats to pool pressure since last asked.
         self.evicted = set()
@@ -132,6 +137,7 @@ class RGBDBackend:
                 array[target] = array[source]
             self.sequences[target] = 0
             self.dirty[target] = True
+            self.fresh[target] = True
             self.keys[source] = MOVED + source
             self.retire(source, pressure=True)
         if (self.keys[self.budget :] >= 0).any():
@@ -157,6 +163,7 @@ class RGBDBackend:
         self.pressure_victims[indices] = pressure
         self.sequences[indices] = 0
         self.dirty[indices] = True
+        self.fresh[indices] = True
 
     def expire(self, now, acknowledged):
         accepted = self.retiring & (self.retire_revision <= acknowledged)
@@ -173,6 +180,7 @@ class RGBDBackend:
         self.release_after[expired] = np.inf
         self.sources[expired] = -1
         self.dirty[expired] = True
+        self.fresh[expired] = True
 
     def retire_source(self, source):
         """Fade out the splats one source owns: it is placed anew (or gone), and what it places
@@ -233,12 +241,23 @@ class RGBDBackend:
         self.carve(camera, i.fx, i.fy, i.cx, i.cy, observed, now)
 
     def integrate_points(
-        self, points, colors, now, sizes=None, source=-1, *, headroom=True, evict=True
+        self,
+        points,
+        colors,
+        now,
+        sizes=None,
+        source=-1,
+        *,
+        headroom=True,
+        evict=True,
+        overwrite=True,
     ):
         """Splats for these points, one per voxel. Returns how many voxels found no slot: the
         budget was full, or the voxel's splat is a pressure victim still fading. To make room
         it evicts the longest-unseen splats (evict): as many as these points lacked, and, with
-        headroom, enough to keep an eighth of the budget free for what comes next."""
+        headroom, enough to keep an eighth of the budget free for what comes next. Without
+        overwrite (the map trainer's), a voxel's live splat is left as it is: only empty voxels
+        are filled."""
         xp = self.xp
         with self.gpu_chunk("voxelize"):
             valid = xp.all(xp.isfinite(points), axis=1)
@@ -274,6 +293,13 @@ class RGBDBackend:
                     xp.asnumpy, (keys, points, colors, cell, locations, matched, order)
                 )
         slots = occupied[order[locations[matched]]]
+        matched_index = np.flatnonzero(matched)
+        kept = 0
+        if not overwrite:
+            alive = ~self.retiring[slots]
+            self.seen[slots[alive]] = now
+            kept = int(alive.sum())
+            slots, matched_index = slots[~alive], matched_index[~alive]
         # Carved geometry can be rescued by a fresh observation. Pressure victims
         # must finish fading: rescuing them on every frame can permanently fill the
         # pool and exclude new detail. They become eligible again after release.
@@ -281,7 +307,7 @@ class RGBDBackend:
             ~self.pressure_victims[slots] & (self.count <= self.budget)
         )
         slots = slots[refresh]
-        observed = np.flatnonzero(matched)[refresh]
+        observed = matched_index[refresh]
         self.sources[slots[self.retiring[slots]]] = source
         self.retiring[slots] = False
         self.retire_revision[slots] = np.inf
@@ -311,7 +337,9 @@ class RGBDBackend:
         self.records[slots, 2, 0] = 1
         self.records[slots, 3, :3] = (colors[observed] / 255 - 0.5) / 0.2820947918
         self.dirty[slots] = True
-        dropped = offered - len(slots)
+        self.fresh[slots] = True
+        self.moves[slots] = self.move_seq
+        dropped = offered - len(slots) - kept
         if not evict:
             return dropped
         spare = max(0, self.budget - self.count) + int(self.retiring.sum())

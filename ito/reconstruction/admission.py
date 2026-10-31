@@ -91,7 +91,8 @@ class Admission:
         torch = sys.modules.get("torch")
         if torch is not None:
             torch.cuda.synchronize()
-            self.torch_stream = torch.cuda.Stream(priority=0)
+            # A map trainer in the worker (maptrain.py) runs below this stream: priority -1.
+            self.torch_stream = torch.cuda.Stream(priority=getattr(self, "priority", 0))
             self.stream = xp.cuda.ExternalStream(self.torch_stream.cuda_stream)
         else:
             self.stream = xp.cuda.Stream(non_blocking=True)
