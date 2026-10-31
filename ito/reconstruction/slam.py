@@ -21,6 +21,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
+from . import headimu
 from .rgbd import RGBDBackend
 from .tof import RangeScale
 
@@ -261,6 +262,12 @@ class SLAMBackend(RGBDBackend):
         self.reloc_frames = self.reloc_tried = 0  # frames the frontend set for relocalising
         self.resumed = 0  # relocalisations the frontend has started tracking from
         self.failure = None
+        # The head IMU's rotation prior (headimu.py, opt-in PoC): None unless ITO_HEAD_IMU is set.
+        self.head = headimu.HeadPrior(self) if headimu.enabled() else None
+        self.reloc_time = None  # capture time of the last frame handed to relocalisation
+        self.match_stats = None
+        if self.head is not None:
+            self.watch_matching()
         self.closing = False
         self.backend_thread = threading.Thread(
             target=self.run_backend, name="mast3r-slam-backend", daemon=True
@@ -371,6 +378,16 @@ class SLAMBackend(RGBDBackend):
             # relocalisation it is, and the guess left is from before the loss.
             self.tracker.reset_idx_f2k()
             T_WC = self.lietorch.Sim3(keyframes.T_WC[len(keyframes) - 1].clone())
+            if self.head is not None and self.reloc_time is not None:
+                self.head.relocalised(self.reloc_time, T_WC.data)
+        if self.head is not None:
+            seed, guess = self.head.start(
+                self.source_captured, T_WC, mode == Mode.TRACKING and self.i > 0
+            )
+            if seed is not None:
+                T_WC = seed
+            if guess is not None:
+                self.tracker.idx_f2k = guess
         frame = self.input.frame(self.i, rgb, T_WC)
         posed = self.ranged = None
         if mode == Mode.INIT:
@@ -407,6 +424,7 @@ class SLAMBackend(RGBDBackend):
                     states.set_frame(frame)
                     self.hand_off()
                     self.reloc_frames += 1
+                    self.reloc_time = self.source_captured
                 states.queue_reloc()
             else:
                 raise RuntimeError(f"Invalid MASt3R-SLAM mode {mode}")
@@ -416,6 +434,33 @@ class SLAMBackend(RGBDBackend):
                 self.queue_global_optimization(len(keyframes) - 1)
         self.i += 1
         self.posed = posed
+        if self.head is not None:
+            self.head.tracked(
+                self.source_captured, frame, "tracked" if posed is not None else "lost"
+            )
+
+    def add_imu(self, batch):
+        """Head gyro samples (times on the pilot clock, rates in OpenCV camera axes)."""
+        if self.head is not None:
+            self.head.add(batch)
+
+    def watch_matching(self):
+        """For the head IMU's log: how much of the keyframe each tracked frame matched."""
+        import mast3r_slam.tracker as tracker
+
+        match = tracker.mast3r_match_asymmetric
+
+        def watched(*args, **kwargs):
+            out = match(*args, **kwargs)
+            valid, Qkf = out[1], out[5]
+            confident = valid[0] & (Qkf > self.config["tracking"]["Q_conf"])
+            self.match_stats = dict(
+                matched=round(float(valid.float().mean()), 3),
+                confident=round(float(confident.float().mean()), 3),
+            )
+            return out
+
+        tracker.mast3r_match_asymmetric = watched
 
     def hand_off(self):
         """What the frontend queued so far on its CUDA stream, for the backend's to wait on."""

@@ -13,6 +13,7 @@ from ito.protocol import Intrinsics
 from ito.render.gpu import MAX_SLOT_COUNT
 from ito.render.pose import validate_pose
 
+from . import headimu
 from .admission import GPU_STAGES, Admission
 from .rgbd import RGBDBackend
 from .ring import SplatUpdate, UpdateRing
@@ -106,6 +107,11 @@ def _run(recon):
             while recon.backend == "slam":
                 try:
                     backend.add_ranges(recon.range_queue.get_nowait())
+                except queue.Empty:
+                    break
+            while recon.backend == "slam" and recon.imu_queue is not None:
+                try:
+                    backend.add_imu(recon.imu_queue.get_nowait())
                 except queue.Empty:
                     break
             frame = None
@@ -337,6 +343,8 @@ class Reconstruction:
         self.output_captured = context.RawValue("d", 0)
         # ToF ranges for the map's display scale, until the worker has fixed it (then nonzero).
         self.range_queue = context.Queue(maxsize=64)
+        # Head gyro batches for headimu.py (opt-in PoC, ITO_HEAD_IMU): None when off.
+        self.imu_queue = context.Queue(maxsize=256) if headimu.enabled() else None
         self.display_scale = context.RawValue("d", 0)
         self.tracked = context.RawValue("Q", 0)
         self.integrated = context.RawValue("Q", 0)
@@ -496,6 +504,22 @@ class Reconstruction:
                     except queue.Empty:
                         pass
 
+    def imu(self, units):
+        """Head IMU readings for headimu.py (only with ITO_HEAD_IMU): dicts with mount (the
+        sensor-to-camera 4x4) and samples [(time on the pilot clock, angular velocity in the
+        sensor's axes, ...)]. A full queue drops the batch."""
+        if self.closed or self.imu_queue is None:
+            return
+        for unit in units:
+            if not unit["samples"]:
+                continue
+            times = np.array([s[0] for s in unit["samples"]], np.float64)
+            rates = headimu.to_opencv(unit["mount"], [s[1] for s in unit["samples"]])
+            try:
+                self.imu_queue.put_nowait((times, rates))
+            except queue.Full:
+                pass
+
     def submit(self, rgb, depth=None, camera=None, captured_at=None):
         """Depth is axial metres; pose is world-from-camera (+Y up, -Z forward).
 
@@ -587,6 +611,9 @@ class Reconstruction:
                     log.error("Reconstruction process %d did not exit", self.process.pid)
             self.range_queue.cancel_join_thread()
             self.range_queue.close()
+            if self.imu_queue is not None:
+                self.imu_queue.cancel_join_thread()
+                self.imu_queue.close()
             self.errors.close()
             self.notes.close()
 
