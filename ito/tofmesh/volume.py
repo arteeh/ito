@@ -126,17 +126,26 @@ class Volume:
         sensor_from_world = np.linalg.inv(world_from_sensor)
         points = self.centres(slots).reshape(-1, 3)
         local = points @ sensor_from_world[:3, :3].T + sensor_from_world[:3, 3]
-        measured, distance = zones.lookup(local)
+        measured, distance, interpolated = zones.lookup(local)
         sdf = measured - distance
         ok = np.isfinite(sdf) & (sdf > -self.truncation) & (distance > 0.03)
         ok &= measured <= self.max_range
+        # Free space is carved only where the range is known along that very ray: a zone's one
+        # range stands for its whole footprint, and on a floor seen at a shallow angle that
+        # footprint spans tens of centimetres of range, so carving with it would punch holes in
+        # the floor in front of the measured point.
+        ok &= interpolated | (sdf <= self.truncation)
         if not ok.any():
             return 0
         # Farther ranges are noisier (sim and datasheet: ~3 mm near, ~2 cm at 4 m), and the
         # zone's footprint grows with distance: trust them less.
         w = np.clip(1.3 - measured / 4.0, 0.3, 1.0)
-        # Behind the surface, confidence falls off: the far side is unseen.
-        w = np.where(sdf < 0, w * (1 + sdf / self.truncation), w)
+        # Behind the surface, confidence falls off: the far side is unseen. Free space far in
+        # front only erodes slowly, so one stray ray does not erase a surface.
+        # (Not to zero: a floor seen at a shallow angle has its underside voxels far "behind"
+        # along the ray though barely below it, and they must count for the surface to close.)
+        w = np.where(sdf < 0, w * (1 + 0.7 * sdf / self.truncation), w)
+        w = np.where(sdf > self.truncation, w * 0.3, w)
         w = np.where(ok, w, 0).astype(np.float32)
         s = np.clip(np.nan_to_num(sdf), -self.truncation, self.truncation).astype(np.float32)
         shape = (len(slots), BLOCK, BLOCK, BLOCK)

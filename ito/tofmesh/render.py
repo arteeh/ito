@@ -88,9 +88,12 @@ void main() {
         float edge = clamp(min(min(u, image_size.x - u), min(v, image_size.y - v))
                            / (0.06 * image_size.x), 0.0, 1.0);
         float w = boost[k] * facing * facing * edge / (1.0 + 0.5 * d * d);
-        float w3 = w * w * w;
-        sum += w3 * texture(images, vec3(st, float(k))).rgb;
-        total += w3;
+        // A steep power: the best view nearly alone, so small pose errors between views do
+        // not show as double images.
+        float w2 = w * w;
+        float w6 = w2 * w2 * w2;
+        sum += w6 * texture(images, vec3(st, float(k))).rgb;
+        total += w6;
         best = max(best, w);
     }
     vec3 colour = base;
@@ -325,7 +328,7 @@ class MeshRenderer:
                 matrices[k] = entry[0].T
                 intrinsics[k] = entry[1]
                 origins[k] = entry[2]
-                boost[k] = 1.5 if k == 0 else 1.0
+                boost[k] = 2.0 if k == 0 else 1.0
             program["camera_from_world"].write(matrices.tobytes())
             program["intrinsics"].write(intrinsics.tobytes())
             program["origin"].write(origins.tobytes())

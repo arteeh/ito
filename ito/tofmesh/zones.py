@@ -17,7 +17,7 @@ import math
 
 import numpy as np
 
-GRAZING = math.radians(16)
+GRAZING = math.radians(10)
 
 
 class Zones:
@@ -62,8 +62,10 @@ class Zones:
         return (self.direction(a, u) * r[..., None]).reshape(-1, 3)
 
     def lookup(self, points):
-        """Range along each point's ray and the point's own distance, for points in the sensor
-        frame (N, 3). Range is NaN outside the field of view or where no zone measured."""
+        """Range along each point's ray, the point's own distance, and whether the range was
+        interpolated between zones of one surface (False: nearest zone, at an edge or a gap),
+        for points in the sensor frame (N, 3). Range is NaN outside the field of view or where
+        no zone measured."""
         x, y, z = points[:, 0], points[:, 1], points[:, 2]
         distance = np.sqrt(x * x + y * y + z * z)
         across = np.arctan2(x, -z)
@@ -75,8 +77,9 @@ class Zones:
             (z < 0) & (u >= -0.5) & (u <= self.cols - 0.5) & (v >= -0.5) & (v <= self.rows - 0.5)
         )
         out = np.full(len(points), np.nan)
+        interpolated = np.zeros(len(points), bool)
         if not inside.any():
-            return out, distance
+            return out, distance, interpolated
         u, v = u[inside], v[inside]
         c0 = np.clip(np.floor(u).astype(int), 0, self.cols - 2)
         r0 = np.clip(np.floor(v).astype(int), 0, self.rows - 2)
@@ -119,7 +122,8 @@ class Zones:
         cn = np.clip(np.rint(u).astype(int), 0, self.cols - 1)
         nearest = np.where(self.valid[rn, cn], self.ranges[rn, cn], np.nan)
         out[inside] = np.where(smooth, bilinear, nearest)
-        return out, distance
+        interpolated[inside] = smooth
+        return out, distance, interpolated
 
 
 def zones_from_grid(grid, sensor_to_camera=None):

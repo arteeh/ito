@@ -37,7 +37,7 @@ def _gather(volume, slots):
     return sdf, weight, colour, colour_weight
 
 
-def extract(volume, slots, min_weight=0.25):
+def extract(volume, slots, min_weight=0.1):
     """Meshes of these blocks: a list of (key, positions (V,3) f32, normals (V,3) f32,
     colours (V,4) u8 with alpha 0 where no camera frame coloured it, triangles (T,3) u32)."""
     slots = np.asarray(slots, np.int64)
