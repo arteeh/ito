@@ -160,7 +160,7 @@ def main():
                 film.draw(now - tape.t0, fusion)
         if now >= next_stat:
             next_stat += 1
-            rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+            rss = int(open("/proc/self/statm").read().split()[1]) * resource.getpagesize() / 2**20
             row = dict(t=round(now - tape.t0, 1), step_ms_p50=float(np.median(steps)),
                        step_ms_max=float(np.max(steps)), rss_mb=round(rss), **fusion.stats)  # fmt: skip
             stats.write(json.dumps(row) + "\n")

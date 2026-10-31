@@ -61,8 +61,9 @@ void main() {
     if (v_colour.a > 0.5) {
         base = v_colour.rgb;
     } else {
-        float light = 0.45 + 0.4 * max(dot(n, normalize(vec3(0.3, 1.0, 0.2))), 0.0);
-        base = vec3(0.42, 0.45, 0.52) * light;
+        // Never coloured by a camera frame: plain grey, shaded so its shape reads.
+        float light = 0.5 + 0.35 * max(dot(n, normalize(vec3(0.3, 1.0, 0.2))), 0.0);
+        base = vec3(0.5) * light;
     }
     vec3 sum = vec3(0.0);
     float total = 0.0;

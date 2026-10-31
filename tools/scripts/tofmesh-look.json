@@ -1,0 +1,15 @@
+[
+  {"for": 14, "note": "connect and settle"},
+  {"for": 2, "do": "resume", "note": "resume"},
+  {"for": 3, "tilt": -8, "note": "look a little down"},
+  {"for": 3, "turn": -30, "note": "look left"},
+  {"for": 3, "note": "hold"},
+  {"for": 5, "turn": 30, "note": "look right"},
+  {"for": 3, "note": "hold"},
+  {"for": 3, "turn": -15, "note": "back towards the middle"},
+  {"for": 5, "keys": "w", "note": "walk forward"},
+  {"for": 4, "keys": "d", "note": "turn the body right"},
+  {"for": 4, "keys": "w", "note": "walk forward"},
+  {"for": 4, "keys": "a", "note": "turn the body left"},
+  {"for": 3, "do": "stop", "note": "stop"}
+]

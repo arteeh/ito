@@ -223,6 +223,7 @@ class DesktopWindow:
                         break
                 elif getattr(frame, "kind", None) == "mesh":
                     self.renderer.upload(frame)
+                    applied.append(frame)
                 elif frame.revision != revision:
                     self.renderer.upload(frame.gaussians)
                 if isinstance(frame, SplatUpdate):

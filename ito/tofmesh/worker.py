@@ -77,7 +77,7 @@ def _run(inputs, outputs, notes, options, integrated):
 
 def _merge(old, new, frame_type):
     """Two publications as one: the newer mesh, the newest projector of every slot."""
-    merged = frame_type(new.revision, new.captured_at, camera=new.camera)
+    merged = frame_type(new.revision, new.captured_at, camera=new.camera, epoch=new.epoch)
     source = new if new.positions is not None else old
     merged.positions, merged.normals = source.positions, source.normals
     merged.colours, merged.triangles = source.colours, source.triangles
@@ -186,9 +186,7 @@ class TofMesh:
                 return "ToF mesh: waiting for ToF frames (does the robot stream its ToF?)"
             return "Starting ToF mesh"
         s = self.stats
-        return (
-            f"ToF mesh: {s['triangles']:,} triangles, {s['blocks']:,}/{s['capacity']:,} blocks"
-        )
+        return f"ToF mesh: {s['triangles']:,} triangles, {s['blocks']:,}/{s['capacity']:,} blocks"
 
     def statistics(self):
         s = self.stats
@@ -233,4 +231,3 @@ class TofMesh:
 
     def __exit__(self, *_):
         self.close()
-

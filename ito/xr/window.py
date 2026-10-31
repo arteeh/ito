@@ -296,6 +296,7 @@ class XRWindow(DesktopWindow):
                             break
                     elif getattr(update, "kind", None) == "mesh":
                         self.renderer.upload(update)
+                        applied.append(update)
                     elif update.revision != revision:
                         self.renderer.upload(update.gaussians)
                     if isinstance(update, SplatUpdate):

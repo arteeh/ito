@@ -53,6 +53,15 @@ class MeshFrame:
     triangles: np.ndarray | None = None
     projectors: list = field(default_factory=list)
     camera: np.ndarray | None = None  # latest posed camera, world_from_camera
+    epoch: float = 0.0
+
+    @property
+    def observations(self):
+        """For the windows' performance HUD: a new mesh made visible the ToF frame of
+        `captured_at` (pilot clock), so "capture to visible" is ToF range to screen."""
+        if self.positions is None or self.captured_at is None:
+            return ()
+        return ((self.revision, self.captured_at),)
 
 
 class Fusion:
@@ -70,6 +79,7 @@ class Fusion:
         self.last_live = -1e9
         self.last_mesh = -1e9
         self.revision = 0
+        self.epoch = time.time()
         self.captured_at = None
         self.camera = None
         self.mesh_changed = False
@@ -151,7 +161,7 @@ class Fusion:
             self._remesh()
         if self.mesh_changed or self.pending_projectors:
             self.revision += 1
-            news = MeshFrame(self.revision, self.captured_at, camera=self.camera)
+            news = MeshFrame(self.revision, self.captured_at, camera=self.camera, epoch=self.epoch)
             if self.mesh_changed:
                 news.positions, news.normals, news.colours, news.triangles = self.combined()
                 self.mesh_changed = False
