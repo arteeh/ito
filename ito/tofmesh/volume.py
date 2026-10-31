@@ -136,7 +136,7 @@ class Volume:
         rays = samples / np.linalg.norm(samples, axis=1, keepdims=True)
         # Blocks around the surface as interpolated along each sample's ray (a zone's one range
         # misses a floor seen at a shallow angle by tens of centimetres across its footprint).
-        measured, _, _ = zones.lookup(samples)
+        measured = zones.lookup(samples)[0]
         r = np.where(np.isfinite(measured), measured, np.linalg.norm(samples, axis=1))
         keep = r <= self.max_range
         rays, r = rays[keep], r[keep]
@@ -165,15 +165,16 @@ class Volume:
         sensor_from_world = np.linalg.inv(world_from_sensor)
         points = self.centres(slots).reshape(-1, 3)
         local = points @ sensor_from_world[:3, :3].T + sensor_from_world[:3, 3]
-        measured, distance, interpolated = zones.lookup(local)
+        measured, distance, interpolated, free = zones.lookup(local)
         sdf = measured - distance
         ok = np.isfinite(sdf) & (sdf > -self.truncation) & (distance > 0.03)
         ok &= measured <= self.max_range
-        # Free space is carved only where the range is known along that very ray: a zone's one
-        # range stands for its whole footprint, and on a floor seen at a shallow angle that
-        # footprint spans tens of centimetres of range, so carving with it would punch holes in
-        # the floor in front of the measured point.
-        ok &= interpolated | (sdf <= self.truncation)
+        # Free space is carved only as far as the ray is known to be free: a zone's one range
+        # stands for its whole footprint, and on a floor seen at a shallow angle that footprint
+        # spans tens of centimetres of range, so carving with it would punch holes in the floor
+        # in front of the measured point (zones.lookup: `free`).
+        with np.errstate(invalid="ignore"):
+            ok &= (sdf <= self.truncation) | (distance < free - self.truncation)
         if not ok.any():
             return 0
         # Farther ranges are noisier (sim and datasheet: ~3 mm near, ~2 cm at 4 m), and the

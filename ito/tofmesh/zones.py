@@ -114,10 +114,14 @@ class Zones:
         return (self.direction(a, u) * r[..., None]).reshape(-1, 3)
 
     def lookup(self, points):
-        """Range along each point's ray, the point's own distance, and whether the range was
+        """Range along each point's ray, the point's own distance, whether the range was
         interpolated between zones of one surface (False: nearest zone, at an edge or a gap),
-        for points in the sensor frame (N, 3). Range is NaN outside the field of view or where
-        no zone measured."""
+        and how far the ray is known to be free, for points in the sensor frame (N, 3). Range
+        and free are NaN outside the field of view or where no zone measured.
+
+        Free is the range where interpolated; at an edge between the outer zone centres, the
+        nearest of the surrounding measured zones (each reports the nearest target in its
+        footprint, so nothing is nearer than all of them); past the outer centres, NaN."""
         x, y, z = points[:, 0], points[:, 1], points[:, 2]
         distance = np.sqrt(x * x + y * y + z * z)
         across = np.arctan2(x, -z)
@@ -129,16 +133,17 @@ class Zones:
             (z < 0) & (u >= -0.5) & (u <= self.cols - 0.5) & (v >= -0.5) & (v <= self.rows - 0.5)
         )
         out = np.full(len(points), np.nan)
+        free = np.full(len(points), np.nan)
         interpolated = np.zeros(len(points), bool)
         if not inside.any():
-            return out, distance, interpolated
+            return out, distance, interpolated, free
         u, v = u[inside], v[inside]
         rn = np.clip(np.rint(v).astype(int), 0, self.rows - 1)
         cn = np.clip(np.rint(u).astype(int), 0, self.cols - 1)
         nearest = np.where(self.valid[rn, cn], self.ranges[rn, cn], np.nan)
         if self.rows < 2 or self.cols < 2:
             out[inside] = nearest
-            return out, distance, interpolated
+            return out, distance, interpolated, free
         c0 = np.clip(np.floor(u).astype(int), 0, self.cols - 2)
         r0 = np.clip(np.floor(v).astype(int), 0, self.rows - 2)
         # Past the outer zone centres: extrapolated where the border continues a plane, else the
@@ -194,7 +199,13 @@ class Zones:
         # Nearest zone (by footprint) where the corners disagree or one is missing.
         out[inside] = np.where(smooth, bilinear, nearest)
         interpolated[inside] = smooth & within
-        return out, distance, interpolated
+        with np.errstate(invalid="ignore"):
+            closest = np.where(ok, corners, np.inf).min(axis=1)
+        inner = (u >= 0) & (u <= self.cols - 1) & (v >= 0) & (v <= self.rows - 1)
+        free[inside] = np.where(
+            smooth & within, bilinear, np.where(inner & np.isfinite(closest), closest, np.nan)
+        )
+        return out, distance, interpolated, free
 
 
 def zones_from_grid(grid, sensor_to_camera=None):
