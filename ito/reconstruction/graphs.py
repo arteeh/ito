@@ -11,7 +11,8 @@ then replayed: inputs are copied into its fixed buffers, outputs cloned out of t
 kernels are the ones the eager forward launches, so the outputs are the same. All units share
 one memory pool, so only one replay may run at a time: replays are serialised across threads
 (the frontend and upstream's backend thread both run MASt3R) and each one's stream waits for
-the one before on the GPU. A unit that cannot be captured runs eagerly from then on.
+the one before on the GPU. A unit that cannot be captured (an error other than out of VRAM)
+runs eagerly from then on; out of VRAM only fails that call, and the next one captures again.
 """
 
 import logging
@@ -138,9 +139,11 @@ class Unit:
                 outputs = self.forward(*buffers)
         except torch.cuda.OutOfMemoryError:
             # Not a unit that cannot be captured: the VRAM is short, and the caller reports it
-            # (at setup the clear "Out of VRAM ... lower ..." error). Same precision either way.
+            # (at setup the clear "Out of VRAM ... lower ..." error; mid-session that frame is
+            # dropped with a status message). The unit stays a graph: the next call captures
+            # again, so a short squeeze (a game starting) never leaves Ito slower for the rest
+            # of the session. Ito never trades speed for VRAM on its own (user's rule, #83).
             del graph, outputs, buffers
-            self.eager = True
             g.failed += 1
             torch.cuda.synchronize()
             torch.cuda.empty_cache()
