@@ -60,6 +60,8 @@ LOOP_GAP = 5
 SPILLING = 256 << 20
 # VRAM a frame's work takes beyond the buffers, per input pixel (MASt3R's activations, matching,
 # the backend's pairs): at 512x288 0.5-0.7 GiB at the peak, 0.7-1.1 GiB with the streams' caches.
+# Measured eager, before CUDA graphs; warn_short samples after the warm-up, so the graphs' own
+# pool (+0.3 GiB at 512x288) is already out of what it compares this with.
 WORK_BYTES_PER_PIXEL = 5000
 OOM_SHOWN = 10.0  # seconds the status keeps saying a frame was dropped for VRAM
 # A frame out of VRAM again within this many seconds drops MASt3R's CUDA graphs for the session
