@@ -10,7 +10,14 @@ neighbouring ranges of a plane seen at a grazing angle `GRAZING` or steeper diff
 sin(GRAZING) / sin(GRAZING - step). A larger jump is an edge (an object in front of a wall, a
 doorway): there each point takes its nearest zone, so the mesh steps rather than hanging a
 "curtain" between near and far. Floors seen at a shallow angle stay continuous this way, which a
-fixed percentage threshold would tear into stairs.
+fixed percentage threshold would tear into stairs. Within that ratio, a big jump between two
+neighbours must also be continuous with the zones beyond them (see `_joined`): a chair 1.5 m in
+front of a wall 3 m away is an edge, a floor or a wall-floor crease is not.
+
+Outside the outermost zone centres the range is extrapolated only where the three outermost zones
+lie on one plane (collinear in inverse range), and only there may it carve free space; elsewhere
+the border half-zone takes the value at the outer centres and counts as not interpolated (it
+shapes the surface, never carves).
 """
 
 import math
@@ -18,6 +25,42 @@ import math
 import numpy as np
 
 GRAZING = math.radians(10)
+# Neighbours closer than this ratio are one surface without further checks.
+SMALL_JUMP = 1.15
+# A bigger jump is one surface if lines through the zones on either side meet within it, or miss
+# by at most this fraction of the inverse range (a plane is close to linear in inverse range).
+CONTINUITY = 0.1
+
+
+def _joined(inverse, axis):
+    """Whether each pair of neighbouring zones along `axis` (0: rows, 1: columns) can be one
+    surface, from the inverse ranges (NaN: unmeasured). Shape: one less along `axis`."""
+    i = np.moveaxis(inverse, axis, -1)
+    a, b = i[..., :-1], i[..., 1:]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        small = np.maximum(a, b) <= SMALL_JUMP * np.minimum(a, b)
+    nan = np.full(i.shape[:-1] + (1,), np.nan)
+    before = np.concatenate([nan, i[..., :-2]], -1)  # the zone before a
+    after = np.concatenate([i[..., 2:], nan], -1)  # the zone after b
+    # How far the line through (before, a) passes b, and the line through (after, b) passes a.
+    # The two lines meet between a and b (a crease, or a plane) when these have the same sign;
+    # at a step (near zones on one side, far on the other) they have opposite signs.
+    left = a + (a - before) - b
+    right = b + (b - after) - a
+    tolerance = CONTINUITY * np.maximum(a, b)
+    with np.errstate(invalid="ignore"):
+        crosses = (left * right >= 0) | (np.abs(left) <= tolerance) | (np.abs(right) <= tolerance)
+    # Lines on both sides are needed to tell a crease from a step; with one or none, the ratio
+    # test alone decides. Pairs with an unmeasured zone are left to the missing-zone fill.
+    unknown = ~np.isfinite(left) | ~np.isfinite(right)
+    joined = small | crosses | unknown | ~np.isfinite(a) | ~np.isfinite(b)
+    return np.moveaxis(joined, -1, axis)
+
+
+def _flat(i0, i1, i2):
+    """Whether three neighbouring zones (inverse ranges, outermost first) lie on one plane."""
+    with np.errstate(invalid="ignore"):
+        return np.abs(i0 - 2 * i1 + i2) <= CONTINUITY * i1
 
 
 class Zones:
@@ -30,6 +73,15 @@ class Zones:
         self.mount = np.asarray(sensor_to_camera, dtype=np.float64)
         step = max(self.step)
         self.edge = math.sin(GRAZING) / math.sin(max(GRAZING - step, 0.02))
+        inverse = np.where(self.valid, 1.0 / np.where(self.valid, self.ranges, 1.0), np.nan)
+        self.joined_across = _joined(inverse, 1)  # (rows, cols - 1)
+        self.joined_down = _joined(inverse, 0)  # (rows - 1, cols)
+        # Border rows/columns that continue a plane outwards (extrapolated half a zone).
+        no = np.zeros(max(rows, cols), bool)
+        self.flat_left = _flat(*inverse[:, :3].T) if cols >= 3 else no[:rows]
+        self.flat_right = _flat(*inverse[:, ::-1][:, :3].T) if cols >= 3 else no[:rows]
+        self.flat_top = _flat(*inverse[:3]) if rows >= 3 else no[:cols]
+        self.flat_bottom = _flat(*inverse[::-1][:3]) if rows >= 3 else no[:cols]
 
     @property
     def count(self):
@@ -81,10 +133,24 @@ class Zones:
         if not inside.any():
             return out, distance, interpolated
         u, v = u[inside], v[inside]
+        rn = np.clip(np.rint(v).astype(int), 0, self.rows - 1)
+        cn = np.clip(np.rint(u).astype(int), 0, self.cols - 1)
+        nearest = np.where(self.valid[rn, cn], self.ranges[rn, cn], np.nan)
+        if self.rows < 2 or self.cols < 2:
+            out[inside] = nearest
+            return out, distance, interpolated
         c0 = np.clip(np.floor(u).astype(int), 0, self.cols - 2)
         r0 = np.clip(np.floor(v).astype(int), 0, self.rows - 2)
-        fu = np.clip(u - c0, -0.5, 1.5)
-        fv = np.clip(v - r0, -0.5, 1.5)
+        # Past the outer zone centres: extrapolated where the border continues a plane, else the
+        # value at the centres, which is not "interpolated" (so it never carves free space).
+        left = (c0 == 0) & self.flat_left[r0] & self.flat_left[r0 + 1]
+        right = (c0 == self.cols - 2) & self.flat_right[r0] & self.flat_right[r0 + 1]
+        top = (r0 == 0) & self.flat_top[c0] & self.flat_top[c0 + 1]
+        bottom = (r0 == self.rows - 2) & self.flat_bottom[c0] & self.flat_bottom[c0 + 1]
+        fu = np.clip(u - c0, np.where(left, -0.5, 0.0), np.where(right, 1.5, 1.0))
+        fv = np.clip(v - r0, np.where(top, -0.5, 0.0), np.where(bottom, 1.5, 1.0))
+        within = ((u >= 0) | left) & ((u <= self.cols - 1) | right)
+        within &= ((v >= 0) | top) & ((v <= self.rows - 1) | bottom)
         corners = np.stack(
             [
                 self.ranges[r0, c0],
@@ -114,15 +180,20 @@ class Zones:
             np.stack([(1 - fu) * (1 - fv), fu * (1 - fv), (1 - fu) * fv, fu * fv], axis=1) * ok
         )
         weight = bilinear_w.sum(axis=1)
-        smooth = (ok.sum(axis=1) >= 2) & (ratio <= self.edge) & (weight >= 0.25)
+        joined = (
+            self.joined_across[r0, c0]
+            & self.joined_across[r0 + 1, c0]
+            & self.joined_down[r0, c0]
+            & self.joined_down[r0, c0 + 1]
+        )
+        smooth = (ok.sum(axis=1) >= 2) & (ratio <= self.edge) & (weight >= 0.25) & joined
+        denominator = (np.nan_to_num(inverse) * bilinear_w).sum(axis=1)
         with np.errstate(divide="ignore", invalid="ignore"):
-            bilinear = weight / (np.nan_to_num(inverse) * bilinear_w).sum(axis=1)
+            bilinear = np.where(denominator > 0, weight / denominator, np.nan)
+        smooth &= np.isfinite(bilinear)
         # Nearest zone (by footprint) where the corners disagree or one is missing.
-        rn = np.clip(np.rint(v).astype(int), 0, self.rows - 1)
-        cn = np.clip(np.rint(u).astype(int), 0, self.cols - 1)
-        nearest = np.where(self.valid[rn, cn], self.ranges[rn, cn], np.nan)
         out[inside] = np.where(smooth, bilinear, nearest)
-        interpolated[inside] = smooth
+        interpolated[inside] = smooth & within
         return out, distance, interpolated
 
 
