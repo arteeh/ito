@@ -57,23 +57,10 @@ class Graphs:
         self.captured = 0
         self.failed = 0
         self.off = False  # set when a replay's fence failed: every unit runs eagerly
-        self.units = []
 
     def install(self, module):
         """Replace module.forward (tensor arguments only) with graph replays."""
         module.forward = Unit(self, module.forward, type(module).__name__)
-        self.units.append(module.forward)
-
-    def drop(self):
-        """Every unit eager from now, and the graphs' memory (their pool, inputs and outputs)
-        handed back: for a card too small to hold them. Same precision, only slower."""
-        with self.lock:
-            self.off = True
-            self.torch.cuda.synchronize()  # no replay still running on the pool
-            for unit in self.units:
-                unit.entries.clear()
-            self.pool = None
-        self.torch.cuda.empty_cache()
 
 
 class Unit:

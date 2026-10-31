@@ -64,9 +64,6 @@ SPILLING = 256 << 20
 # pool (+0.3 GiB at 512x288) is already out of what it compares this with.
 WORK_BYTES_PER_PIXEL = 5000
 OOM_SHOWN = 10.0  # seconds the status keeps saying a frame was dropped for VRAM
-# A frame out of VRAM again within this many seconds drops MASt3R's CUDA graphs for the session
-# (~40 % slower frames); one alone, as another program's brief spike, only drops the frame.
-GRAPHS_OOM_WINDOW = 30.0
 
 
 def crop_size(width, height):
@@ -365,7 +362,7 @@ class SLAMBackend(RGBDBackend):
             self.stale = np.zeros(buffer, bool)
         except self.oom as exc:
             raise self.setup_oom() from exc
-        self.warning = None  # a lasting one in the status (warn_short, shed_graphs)
+        self.warning = None  # a lasting one in the status (warn_short)
         v, u = np.mgrid[:h, :w].reshape(2, -1).astype(np.float32)
         K = self.input.K
         rays = (u - K[0, 2]) / K[0, 0], (v - K[1, 2]) / K[1, 1]
@@ -382,7 +379,6 @@ class SLAMBackend(RGBDBackend):
         self.relocalized = 0
         self.appends = 0  # keyframes the frontend added: a frame that did is not dropped on OOM
         self.ooms, self.oom_at = 0, -OOM_SHOWN
-        self.frame_oom_at = -GRAPHS_OOM_WINDOW  # the last frame dropped for VRAM
         self.tof = RangeScale(self.input.K, (h, w))
         self.scale = 1.0  # metres per map unit, for display; 1 until the ToF fixes it
         self.drawn_pixels = self.footprint()
@@ -394,15 +390,8 @@ class SLAMBackend(RGBDBackend):
         graph_model(self.model)
         try:
             self.warm_up()
-            short = False
-        except self.oom:
-            short = True  # handled out here, where the warm-up's tensors are gone
-        if short:
-            self.shed_graphs()
-            try:
-                self.warm_up()
-            except self.oom as exc:
-                raise self.setup_oom() from exc
+        except self.oom as exc:
+            raise self.setup_oom() from exc
         # What setup and the warm-up cached was on the default stream; the frontend and backend
         # run on streams of their own, whose caches never reuse it (0.4-0.8 GiB held for nothing).
         if self.xp is not np:
@@ -471,21 +460,7 @@ class SLAMBackend(RGBDBackend):
             f"need about {need / 2**20:.0f}): the driver spills into system memory and "
             "everything slows"
         )
-        # shed_graphs' note, if the warm-up dropped them, already says what to lower.
-        lower = f"; {self.lower}" if self.warning is None else f". {self.warning}"
-        self.warning = short + lower
-
-    def shed_graphs(self):
-        """Out of VRAM with MASt3R's CUDA graphs: they keep their own buffers and outputs (0.3-0.4
-        GiB at Half, 100 %), so drop them and run MASt3R eagerly, at the same precision, slower.
-        True if they were dropped now."""
-        graphs = getattr(self.model, "graphs", None)
-        if graphs is None or graphs.off:
-            return False
-        graphs.drop()
-        note = "VRAM short for MASt3R's CUDA graphs: running without them, slower"
-        self.warning = f"{note}; {self.lower}" if self.warning is None else f"{self.warning}. {note}"
-        return True
+        self.warning = f"{short}; {self.lower}"
 
     def bind_admission(self, admission):
         from .admission import bind_model, bind_native
@@ -515,9 +490,7 @@ class SLAMBackend(RGBDBackend):
             # The worker drops a frame that ran out of memory and goes on: safe for tracking,
             # not once the frame went into the keyframes.
             if self.appends == before:
-                if now - self.frame_oom_at < GRAPHS_OOM_WINDOW:
-                    self.shed_graphs()
-                self.ooms, self.oom_at, self.frame_oom_at = self.ooms + 1, now, now
+                self.ooms, self.oom_at = self.ooms + 1, now
                 self.report(self.out_of_memory())
                 raise
             raise RuntimeError(
