@@ -1,4 +1,4 @@
-# ruff: noqa: E501, B905  (analysis script for the PoC, not product code)
+# ruff: noqa: E501, B905, UP031  (analysis script for the PoC, not product code)
 """Summarise a run's head-IMU log (timeline.jsonl.imu.jsonl): lost frames, the turns around the
 losses, and the gyro's prediction error on tracked frames. Usage: imulog.py RUN [RUN...]"""
 

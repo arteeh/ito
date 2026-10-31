@@ -1,4 +1,4 @@
-# ruff: noqa: E501, B905  (analysis script for the PoC, not product code)
+# ruff: noqa: E501, B905, UP031  (analysis script for the PoC, not product code)
 """Head IMU vs the sim's truth on a tape: integrate the gyro (mounted into Ito's camera axes)
 between frames and compare with the true relative camera rotation; scan a time offset.
 Usage: gyrocheck.py TAPE"""

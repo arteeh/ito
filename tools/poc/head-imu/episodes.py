@@ -1,4 +1,4 @@
-# ruff: noqa: E501, B905  (analysis script for the PoC, not product code)
+# ruff: noqa: E501, B905, UP031  (analysis script for the PoC, not product code)
 """Loss episodes of replay runs from their timeline: when tracking was lost (tape time) and for
 how long (until the next tracked frame). Usage: episodes.py START RUN [RUN...]"""
 
