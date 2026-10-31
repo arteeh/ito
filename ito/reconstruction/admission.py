@@ -1,6 +1,7 @@
+import threading
 import time
 from collections import deque
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 
 from ito import clock
 
@@ -56,6 +57,7 @@ class Admission:
         self.cooldown = 0.0
         self.recovered_at = 0.0
         self.stream = self.torch_stream = None
+        self.lock = None  # made in the worker (bind_stream): the SLAM backend thread shares this
 
     def completed(self, began, period):
         now = clock.now()
@@ -87,6 +89,7 @@ class Admission:
     def bind_stream(self, xp):
         import sys
 
+        self.lock = threading.RLock()
         xp.cuda.get_current_stream().synchronize()
         torch = sys.modules.get("torch")
         if torch is not None:
@@ -102,6 +105,10 @@ class Admission:
             self.memory_peak.value = max(used, self.memory_peak.value)
 
     def collect(self):
+        with self.lock or nullcontext():
+            self._collect()
+
+    def _collect(self):
         while self.pending and event_done(self.pending[0][1]):
             start, end, elapsed, kind = self.pending.popleft()
             seconds = elapsed(start, end) / 1000
@@ -123,7 +130,10 @@ class Admission:
         while len(self.pending) >= MAX_PENDING_CHUNKS:
             if not self.acquire():
                 raise InterruptedError("Reconstruction stopped")
-            self.pending[0][1].synchronize()
+            with self.lock or nullcontext():
+                oldest = self.pending[0][1] if self.pending else None
+            if oldest is not None:
+                oldest.synchronize()
             self.collect()
         if not self.acquire():
             raise InterruptedError("Reconstruction stopped")
@@ -186,9 +196,11 @@ def bind_model(model, admission):
     )
     handles = []
     for block in blocks:
-        scope = []
+        # One stack per thread: the SLAM backend thread runs the same blocks as the frontend.
+        scopes = threading.local()
 
-        def before(module, inputs, *, scope=scope):
+        def before(module, inputs, *, scopes=scopes):
+            scope = scopes.__dict__.setdefault("stack", [])
             chunk = admission.cuda_chunk(
                 events=(
                     torch.cuda.Event(enable_timing=True),
@@ -200,7 +212,8 @@ def bind_model(model, admission):
             chunk.__enter__()
             scope.append(chunk)
 
-        def after(module, inputs, result, *, scope=scope):
+        def after(module, inputs, result, *, scopes=scopes):
+            scope = scopes.__dict__.setdefault("stack", [])
             if scope:
                 scope.pop().__exit__(None, None, None)
 
