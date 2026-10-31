@@ -363,6 +363,11 @@ class SLAMBackend(RGBDBackend):
             self.warm_up()
         except self.oom as exc:
             raise self.setup_oom() from exc
+        # What setup and the warm-up cached was on the default stream; the frontend and backend
+        # run on streams of their own, whose caches never reuse it (0.4-0.8 GiB held for nothing).
+        if self.xp is not np:
+            self.xp.get_default_memory_pool().free_all_blocks()
+        torch.cuda.empty_cache()
         # The backend thread: upstream's run_backend, on a CUDA stream of its own. Its lock
         # keeps the frontend's drop_spare out of a relocalisation or solve.
         self.backend_lock = threading.RLock()
