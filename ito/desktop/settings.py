@@ -14,8 +14,8 @@ KEYFRAMES = (64, 128, 192, 256, 384, 512)
 # size and input resolution.
 PRESETS = {
     "10 GB+": dict(precision="full", input_resolution=100, keyframes=128),
-    "8 GB": dict(precision="half", input_resolution=100, keyframes=128),
-    "6 GB": dict(precision="half", input_resolution=75, keyframes=64),
+    "8 GB": dict(precision="half", input_resolution=75, keyframes=128),
+    "6 GB": dict(precision="half", input_resolution=50, keyframes=64),
 }
 
 

@@ -79,8 +79,8 @@ class SettingsScreen:
             if clicked and not chosen:
                 self.change(**values)
         imgui.text_disabled(
-            "Sets the three below for a card with this much VRAM: 8 GB Half; 6 GB Half, 75% "
-            "and 64 keyframes. Applies at the next connection."
+            "Sets the three below for a card with this much VRAM: 8 GB Half and 75%; 6 GB "
+            "Half, 50% and 64 keyframes. Applies at the next connection."
         )
         imgui.text("Precision")
         precision_widths = self.layout.row(1, 1)
