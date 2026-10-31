@@ -37,6 +37,9 @@ PROJECTORS = 12
 # A frame becomes a kept projector when it looks this differently from every kept one.
 KEY_ANGLE = np.radians(14)
 KEY_DISTANCE = 0.25
+# A kept view this old is replaced by a new frame looking about the same way, so a changed scene
+# (an object gone) is not projected from an old picture of it.
+KEY_REFRESH = 3.0
 
 
 @dataclass
@@ -254,18 +257,23 @@ class Fusion:
             self.pending_projectors.append(Projector(0, image, camera, k, exposed))
         if self.keyframes <= 1:
             return
-        for pose, _ in self.kept.values():
-            if (
-                angle_between(pose[:3, :3], camera[:3, :3]) < KEY_ANGLE
-                and np.linalg.norm(pose[:3, 3] - camera[:3, 3]) < KEY_DISTANCE
-            ):
+        similar = [
+            (angle_between(pose[:3, :3], camera[:3, :3]), slot)
+            for slot, (pose, _) in self.kept.items()
+            if np.linalg.norm(pose[:3, 3] - camera[:3, 3]) < KEY_DISTANCE
+        ]
+        similar = [(angle, slot) for angle, slot in similar if angle < KEY_ANGLE]
+        if similar:
+            slot = min(similar)[1]
+            if exposed - self.kept[slot][1] < KEY_REFRESH:
                 return
-        if len(self.kept) < self.keyframes - 1:
+        elif len(self.kept) < self.keyframes - 1:
             slot = self.next_kept
             self.next_kept += 1
         else:
             slot = min(self.kept, key=lambda s: self.kept[s][1])  # the oldest view
         self.kept[slot] = (camera, exposed)
+        self.pending_projectors = [p for p in self.pending_projectors if p.slot != slot]
         self.pending_projectors.append(Projector(slot, image, camera, k, exposed))
 
     def _remesh(self, colours):
