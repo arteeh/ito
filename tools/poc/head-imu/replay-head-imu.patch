@@ -1,0 +1,11 @@
+--- /home/maarten/.unii/scratch/LemonRadish/rig/tools/tapes/replay.py	2026-10-31 02:15:35.417533583 +0100
++++ /home/maarten/.unii/scratch/LemonRadish/hirig/tools/tapes/replay.py	2026-10-31 08:12:35.253222909 +0100
+@@ -351,6 +351,8 @@
+                 )
+                 for g in payload["ranges"]
+             ]
++            if hasattr(worker, "imu"):  # poc/head-imu: the head gyro (a no-op unless ITO_HEAD_IMU)
++                worker.imu([dict(mount=u["mount"], samples=[(s[0], s[1]) for s in u["samples"]]) for u in imu])
+             if hasattr(worker, "sensors"):
+                 worker.sensors(imu, ranges)
+             elif hasattr(worker, "ranges"):
