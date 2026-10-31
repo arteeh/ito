@@ -40,6 +40,9 @@ SPARE = 1
 CONFIDENCE = 1.5  # upstream's viewer draws points above this average confidence
 MOVED = 0.005  # a keyframe the solve moved by more than this share of its depth is redrawn
 RETRIES = 2  # keyframes the splat pool could not take whole, offered again per frame
+# Keyframes redrawn per frame because the solve moved them or their splat size changed, the
+# most moved first; the rest wait for the next frames. All at once stalled tracking.
+REDRAWS = 8
 # A loop closure, for the status: an edge the match kept to a keyframe more than this many
 # before the new one (upstream prints every retrieval but the keyframe before: mostly the
 # recent neighbours).
@@ -208,6 +211,8 @@ class SLAMBackend(RGBDBackend):
             self.depth = torch.ones(buffer, device="cuda")
             # ... and whether the splat pool still owes it splats (see draw).
             self.pending = np.zeros(buffer, bool)
+            # ... and whether it waits to be redrawn: the scale or splat size changed.
+            self.stale = np.zeros(buffer, bool)
             free, _ = torch.cuda.mem_get_info()
         except torch.cuda.OutOfMemoryError as exc:
             raise RuntimeError(
@@ -236,6 +241,8 @@ class SLAMBackend(RGBDBackend):
         self.ooms, self.oom_at = 0, -OOM_SHOWN
         self.tof = RangeScale(self.input.K, (h, w))
         self.scale = 1.0  # metres per map unit, for display; 1 until the ToF fixes it
+        self.drawn_pixels = self.footprint()
+        self.draw_seconds = 0.0
         self.ranged = None
         report("MASt3R-SLAM warming up")
         self.warm_up()
@@ -309,9 +316,11 @@ class SLAMBackend(RGBDBackend):
             ) from exc
         if self.ranged is not None and self.tof.value is None and self.measure(self.ranged):
             self.scale = self.tof.value
-            self.shown = 0  # every keyframe again, at the new scale
+            self.stale[:] = True  # every keyframe again, at the new scale
         self.publish(self.posed, now)
+        began = time.perf_counter()
         self.draw(now)
+        self.draw_seconds = time.perf_counter() - began
 
     def out_of_memory(self):
         return (
@@ -467,7 +476,7 @@ class SLAMBackend(RGBDBackend):
         self.graph.n_edges = self.spare
         self.keyframes.pop_last()
         self.retire_source(k)
-        self.pending[k] = False
+        self.pending[k] = self.stale[k] = False
         self.shown = min(self.shown, k)
         self.spare = None
 
@@ -630,6 +639,11 @@ class SLAMBackend(RGBDBackend):
         for k in self.evicted:
             self.pending[k] = k < n
         self.evicted.clear()
+        pixels = self.footprint()
+        if abs(pixels / self.drawn_pixels - 1) > 0.25:
+            # Max splats (or the VRAM manager's limit) changed the splat size a lot: redraw.
+            self.stale[:] = True
+            self.drawn_pixels = pixels
         redraw = torch.zeros(n, dtype=torch.bool, device=self.drawn.device)
         dirty = keyframes.get_dirty_idx()
         redraw[dirty[dirty < n]] = True
@@ -646,7 +660,13 @@ class SLAMBackend(RGBDBackend):
                 + 2 * torch.atan2(vector, w)
                 + (delta[:, 7] - 1).abs()
             )
-            redraw[:shown] |= ~(moved <= MOVED)
+            stale = torch.as_tensor(self.stale[:shown], device=moved.device)
+            moved = torch.where(stale, moved + 1, torch.nan_to_num(moved, nan=1.0))
+            moved[redraw[:shown]] = 0
+            due = moved > MOVED
+            if due.any():
+                most = torch.argsort(moved, descending=True)[: min(REDRAWS, int(due.sum()))]
+                redraw[most] = True
         redrawn = torch.nonzero(redraw).flatten().tolist()
         for k in redrawn:
             self.show(k, now)
@@ -655,6 +675,10 @@ class SLAMBackend(RGBDBackend):
             for k in sorted(owed)[:RETRIES]:
                 self.show(k, now, retry=True)
         self.shown = n
+
+    def footprint(self):
+        """A splat's size in pixels of the keyframe that places it: bigger for a smaller budget."""
+        return 3 * max(1, (400_000 / self.budget) ** 0.5)
 
     def show(self, k, now, retry=False):
         """Place keyframe k's points as splats: anew (its old ones fade, and it may evict the
@@ -671,6 +695,7 @@ class SLAMBackend(RGBDBackend):
         valid = (confidence > CONFIDENCE) & (z > 0) & torch.isfinite(local).all(dim=1)
         if not retry:
             self.drawn[k] = pose
+            self.stale[k] = False
             self.retire_source(k)
         self.pending[k] = False
         if not bool(valid.any()):
@@ -678,7 +703,7 @@ class SLAMBackend(RGBDBackend):
         self.depth[k] = z[valid].median()
         points = self.lietorch.Sim3(pose).act(local) * self.axes * self.scale
         points = points @ self.world_rotation.T + self.world_translation
-        pixels = 3 * max(1, (400_000 / self.budget) ** 0.5)
+        pixels = self.footprint()
         footprint = z * pose[0, 7] * self.scale * pixels / float(self.input.K[0, 0])
         xp = self.xp
         dropped = self.integrate_points(

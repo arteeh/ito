@@ -174,6 +174,8 @@ def _run(recon):
                         splats=int(backend.count),
                         splats_delta=int(backend.count) - before[1],
                         keyframes=len(backend.keyframes) if recon.backend == "slam" else None,
+                        # Of work_ms: the splat map's redraws of SLAM's keyframes.
+                        draw_ms=round(getattr(backend, "draw_seconds", 0) * 1000, 1),
                         backend_calls=recon.integrated.value,
                         dirty_slots=recon.dirty_slots.value,
                         retiring_slots=recon.retiring_slots.value,
