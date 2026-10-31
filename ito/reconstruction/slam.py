@@ -175,6 +175,15 @@ class StreamLock:
             self.cuda.current_stream().wait_event(self.released)
         return self
 
+    def try_enter(self):
+        """__enter__ if no other thread holds the lock, without waiting; True if entered."""
+        if not self.lock.acquire(blocking=False):
+            return False
+        self.depth += 1
+        if self.depth == 1 and self.released is not None:
+            self.cuda.current_stream().wait_event(self.released)
+        return True
+
     def __exit__(self, *exc):
         self.depth -= 1
         try:
@@ -803,17 +812,34 @@ class SLAMBackend(RGBDBackend):
         offered again, a few per frame while the pool has room, until all of it is shown."""
         # Ito: not while the backend thread holds the keyframes (a relocalisation holds them
         # for its retrieval, matching and solve, ~0.3 s): tracking would wait for it. Whatever
-        # is due stays due (dirty, moved or new) and is drawn at the next frame.
-        lock = self.keyframes.lock  # a StreamLock: try its RLock, then enter it for the ordering
-        if not lock.lock.acquire(blocking=False):
+        # is due stays due (dirty, moved or new) and is drawn at the next frame. Held, the lock
+        # covers only copying what this frame redraws; the splats are placed after it, so the
+        # backend does not wait for them either.
+        lock = self.keyframes.lock
+        if not lock.try_enter():
             return
         try:
-            with lock:
-                self.redraw(now)
+            n, redrawn, moving, retries = self.due()
         finally:
-            lock.lock.release()
+            lock.__exit__(None, None, None)
+        began = time.perf_counter()
+        for k, copy in redrawn:
+            self.show(k, copy, now)
+        # Moved keyframes, most moved first, while this frame's redraws took under
+        # REDRAW_SECONDS (at least one): the rest are still moved, and come next frame.
+        for i, (k, copy) in enumerate(moving):
+            if i and time.perf_counter() - began > REDRAW_SECONDS:
+                break
+            self.stale[k] = True
+            self.show(k, copy, now)
+        if self.budget > self.count:
+            for k, copy in retries:
+                self.show(k, copy, now, retry=True)
+        self.shown = n
 
-    def redraw(self, now):
+    def due(self):
+        """Under the keyframes' lock: which keyframes this frame redraws, each with a copy of
+        what show needs (new and dirty ones, moved ones up to REDRAWS, pending retries)."""
         torch, lietorch, keyframes = self.torch, self.lietorch, self.keyframes
         n = len(keyframes)
         for k in self.evicted:
@@ -832,8 +858,7 @@ class SLAMBackend(RGBDBackend):
         moving = []
         if shown:
             drawn = lietorch.Sim3(self.drawn[:shown])
-            with keyframes.lock:
-                poses = keyframes.T_WC[:shown].clone()
+            poses = keyframes.T_WC[:shown].clone()
             delta = (drawn.inv() * lietorch.Sim3(poses)).data[:, 0]
             # How far each keyframe's points moved, over their depth: translation, rotation
             # and scale of the change in the keyframe's own frame.
@@ -854,37 +879,37 @@ class SLAMBackend(RGBDBackend):
         redrawn = torch.nonzero(redraw).flatten().tolist()
         if redrawn:
             self.stale[redrawn] = True  # until shown: a redraw cut short by OOM is done later
-        began = time.perf_counter()
-        for k in redrawn:
-            self.show(k, now)
-        # Moved keyframes, most moved first, while this frame's redraws took under
-        # REDRAW_SECONDS (at least one): the rest are still moved, and come next frame.
-        for i, k in enumerate(moving):
-            if i and time.perf_counter() - began > REDRAW_SECONDS:
-                break
-            self.stale[k] = True
-            self.show(k, now)
-            redrawn.append(k)
+        retries = []
         if self.budget > self.count:
-            owed = set(np.flatnonzero(self.pending[:n]).tolist()) - set(redrawn)
-            for k in sorted(owed)[:RETRIES]:
-                self.show(k, now, retry=True)
-        self.shown = n
+            owed = set(np.flatnonzero(self.pending[:n]).tolist()) - set(redrawn) - set(moving)
+            retries = sorted(owed)[:RETRIES]
+        return (
+            n,
+            [(k, self.copy(k)) for k in redrawn],
+            [(k, self.copy(k)) for k in moving],
+            [(k, self.copy(k, retry=True)) for k in retries],
+        )
+
+    def copy(self, k, retry=False):
+        """What show needs of keyframe k, copied under the keyframes' lock: its pose (where it
+        was drawn, retrying), depth, confidence and colours."""
+        torch, keyframes = self.torch, self.keyframes
+        pose = (self.drawn[k] if retry else keyframes.T_WC[k]).clone()
+        z = keyframes.X[k][:, 2].clone()
+        confidence = keyframes.C[k][:, 0] / keyframes.N[k]
+        colors = (keyframes.uimg[k].reshape(-1, 3).to(z.device) * 255).to(torch.uint8)
+        return pose, z, confidence, colors
 
     def footprint(self):
         """A splat's size in pixels of the keyframe that places it: bigger for a smaller budget."""
         return 3 * max(1, (400_000 / self.budget) ** 0.5)
 
-    def show(self, k, now, retry=False):
-        """Place keyframe k's points as splats: anew (its old ones fade, and it may evict the
-        longest-unseen to make room), or, retrying, what is missing of it where it was drawn,
-        into free slots only."""
-        torch, keyframes = self.torch, self.keyframes
-        with keyframes.lock:
-            pose = (self.drawn[k] if retry else keyframes.T_WC[k]).clone()
-            z = keyframes.X[k][:, 2].clone()
-            confidence = keyframes.C[k][:, 0] / keyframes.N[k]
-            colors = (keyframes.uimg[k].reshape(-1, 3).to(z.device) * 255).to(torch.uint8)
+    def show(self, k, copy, now, retry=False):
+        """Place keyframe k's points (copy, from due) as splats: anew (its old ones fade, and it
+        may evict the longest-unseen to make room), or, retrying, what is missing of it where
+        it was drawn, into free slots only."""
+        torch = self.torch
+        pose, z, confidence, colors = copy
         # Constrained to its rays, as use_calib does, and as upstream's viewer draws it.
         local = torch.stack((z * self.rays[0], z * self.rays[1], z), dim=1)
         valid = (confidence > CONFIDENCE) & (z > 0) & torch.isfinite(local).all(dim=1)
