@@ -20,7 +20,10 @@ from .ring import SplatUpdate, UpdateRing
 __all__ = ["Reconstruction", "SplatUpdate", "default_budget"]
 
 log = logging.getLogger(__name__)
+# A stopped worker gets this long to leave its loop (a step that never ends is killed), then
+# this long to exit: CUDA's teardown alone took 0.35-0.55 s with 9 GB in use (RTX 4070 Ti).
 STOP_WAIT = 0.5
+EXIT_WAIT = 5.0
 # Max splats also bounds sorting and drawing per frame: 2^19 kept 90 Hz stereo on an
 # RTX 4070 Ti with a full scene. VRAM may hold fewer; the worker budgets that live.
 DEFAULT_MAX_SPLATS = 1_000_000
@@ -33,7 +36,7 @@ def default_budget(renderer: str = "") -> int:
 
 
 def _run(recon):
-    vram = None
+    vram = backend = timeline = None
     try:
         if recon.backend == "slam":
             from .slam import SLAMBackend
@@ -275,10 +278,17 @@ def _run(recon):
         cause = "".join(traceback.format_exception(exc))
         recon.errors.send(message.splitlines()[0][:500] + "\n" + cause[-6000:])
     finally:
+        # The backend's own threads (SLAM's global solve): once stopped, their GPU work ends at
+        # its next admission chunk.
+        if backend is not None and hasattr(backend, "close"):
+            backend.close()
+        if timeline:
+            timeline.close()
         if vram is not None:
             vram.close()
         recon.errors.close()
         recon.notes.close()
+        recon.finished.value = True
 
 
 class Reconstruction:
@@ -355,6 +365,7 @@ class Reconstruction:
         self.slot_capacity = context.RawValue("I", 0)
         self.input_lock = context.Lock()
         self.stopped = context.RawValue("b", False)
+        self.finished = context.RawValue("b", False)  # the worker left its loop, cleaned up
         self.admission = Admission(context, self.stopped)
         reader, self.errors = context.Pipe(duplex=False)
         notes, self.notes = context.Pipe(duplex=False)
@@ -556,13 +567,19 @@ class Reconstruction:
             self.closed = True
             # A killed worker may leave an Event's internal condition locked forever.
             self.stopped.value = True
-            self.process.join(timeout=STOP_WAIT)
+            deadline = clock.now() + STOP_WAIT
+            while self.process.is_alive() and not self.finished.value and clock.now() < deadline:
+                self.process.join(timeout=0.01)
+            if self.finished.value:
+                self.process.join(timeout=EXIT_WAIT)
             if self.process.is_alive():
                 # SIGTERM stays pending on a stopped process; SIGKILL does not.
                 log.warning(
-                    "Reconstruction process %d killed: still busy %.1f s after stop",
+                    "Reconstruction process %d killed: %s",
                     self.process.pid,
-                    STOP_WAIT,
+                    f"still exiting {EXIT_WAIT:.1f} s after it stopped"
+                    if self.finished.value
+                    else f"still busy {STOP_WAIT:.1f} s after stop",
                 )
                 self.process.kill()
                 self.process.join(timeout=3)

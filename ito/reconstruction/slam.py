@@ -40,6 +40,7 @@ SPARE = 1
 CONFIDENCE = 1.5  # upstream's viewer draws points above this average confidence
 MOVED = 0.005  # a keyframe the solve moved by more than this share of its depth is redrawn
 RETRIES = 2  # keyframes the splat pool could not take whole, offered again per frame
+BACKEND_WAIT = 2.0  # seconds the worker's exit waits for the backend thread
 # Keyframes redrawn per frame because the solve moved them or their splat size changed, the
 # most moved first; the rest wait for the next frames. All at once stalled tracking.
 REDRAWS = 8
@@ -254,7 +255,11 @@ class SLAMBackend(RGBDBackend):
         self.reloc_frames = self.reloc_tried = 0  # frames the frontend set for relocalising
         self.resumed = 0  # relocalisations the frontend has started tracking from
         self.failure = None
-        threading.Thread(target=self.run_backend, name="mast3r-slam-backend", daemon=True).start()
+        self.closing = False
+        self.backend_thread = threading.Thread(
+            target=self.run_backend, name="mast3r-slam-backend", daemon=True
+        )
+        self.backend_thread.start()
         report("MASt3R-SLAM ready; waiting for camera")
 
     def warm_up(self):
@@ -413,9 +418,15 @@ class SLAMBackend(RGBDBackend):
         self.hand_off()
         self.states.queue_global_optimization(idx)
 
+    def close(self):
+        """Stop the backend thread. With the worker stopped, admission ends its GPU work at the
+        next chunk (InterruptedError); a call that never returns is left to the process's exit."""
+        self.closing = True
+        self.backend_thread.join(timeout=BACKEND_WAIT)
+
     def run_backend(self):
         try:
-            while True:
+            while not self.closing:
                 if not self.backend_step():
                     time.sleep(0.01)
         except BaseException as exc:  # noqa: BLE001 (handed to the frontend, which raises it)

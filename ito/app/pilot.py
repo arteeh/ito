@@ -36,7 +36,8 @@ INPUT_FRESH, SHORT_STALL = 0.2, 1.0
 # one (1/120 s) made a desktop pilot's samples wait out the interval, which doubled
 # input-to-robot latency on Windows (#31).
 SEND_INTERVAL, HEARTBEAT = 0.002, 1 / 60
-LINK_WAIT, WORKER_WAIT = 1.0, 0.8
+# A stopped worker's CUDA teardown takes about half a second (9 GB in use, RTX 4070 Ti).
+LINK_WAIT, WORKER_WAIT = 1.0, 2.0
 
 
 class ShutdownStuck(RuntimeError):
