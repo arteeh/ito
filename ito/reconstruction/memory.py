@@ -5,7 +5,7 @@ released only when the device is nearly full. Only then are splat slots given up
 longest-unseen first. Spilling into shared system memory would stall everything."""
 
 from ito import clock
-from ito.render.gpu import GPU
+from ito.render.gpu import GPU, bus_id
 
 MARGIN_BYTES = 512 << 20
 FLOOR_BYTES = 256 << 20
@@ -21,7 +21,8 @@ class VRAM:
         # Gives back more VRAM when the caches were not enough (MASt3R's CUDA graphs): True if
         # it freed anything. Before the splats, which fade for little (96 B a slot).
         self.shed = shed
-        self.gpu = GPU(bus_id=xp.cuda.runtime.deviceGetPCIBusId(xp.cuda.runtime.getDevice()))
+        device = xp.cuda.runtime.getDevice()
+        self.gpu = GPU(device, bus_id(xp, device))
         self.next_check = 0.0
         self.last_release = -RELEASE_COOLDOWN
         self.pressure = False

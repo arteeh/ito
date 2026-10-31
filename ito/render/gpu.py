@@ -12,6 +12,15 @@ class _Utilization(ct.Structure):
     _fields_ = [(name, ct.c_uint) for name in ("gpu", "memory")]
 
 
+def bus_id(xp, device):
+    """The CUDA device's PCI bus id from CuPy (Torch 2.5 has none), or None if this CuPy cannot
+    say: then GPU() takes CUDA's index, right on a one-GPU machine."""
+    try:
+        return xp.cuda.runtime.deviceGetPCIBusId(device)
+    except Exception:
+        return None
+
+
 class GPU:
     def __init__(self, index=0, bus_id=None):
         """bus_id: the card's PCI bus id ("0000:01:00.0"), for a CUDA device: CUDA numbers only the

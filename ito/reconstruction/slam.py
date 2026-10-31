@@ -21,7 +21,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from ito.render.gpu import GPU
+from ito.render.gpu import GPU, bus_id
 
 from .graphs import graph_model
 from .rgbd import RGBDBackend
@@ -459,7 +459,8 @@ class SLAMBackend(RGBDBackend):
         # On Windows the runtime reports this process's own budget: with another program
         # holding 6 GiB of a 12 GiB card it said 10.8 GiB free, NVML 4.9 (#83).
         if self.xp is not np:  # CuPy's: Torch 2.5 has no PCI bus id
-            card = GPU(bus_id=self.xp.cuda.runtime.deviceGetPCIBusId(torch.cuda.current_device()))
+            device = torch.cuda.current_device()
+            card = GPU(device, bus_id(self.xp, device))
             if card.library is not None:
                 free = min(free, card.free)
             card.close()
