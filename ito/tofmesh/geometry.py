@@ -62,10 +62,13 @@ def angle_between(a, b):
 
 class PoseTrack:
     """The robot's camera pose stream (driver Motion samples on the pilot clock), interpolated
-    to any time inside it. Bounded: only the last `seconds` are kept."""
+    to any time inside it. Bounded: only the last `seconds` are kept. Across a gap longer than
+    `max_gap` (the stream is 50 Hz; a link hiccup) there is no pose: a straight-line guess
+    while the head turns would place a frame wrongly."""
 
-    def __init__(self, seconds=5.0):
+    def __init__(self, seconds=5.0, max_gap=0.1):
         self.seconds = seconds
+        self.max_gap = max_gap
         self.samples = deque()
 
     def add(self, when, world_from_camera):
@@ -100,6 +103,8 @@ class PoseTrack:
             else:
                 hi = mid
         (ta, pa, qa), (tb, pb, qb) = self.samples[lo], self.samples[hi]
+        if tb - ta > self.max_gap:
+            return None
         t = (when - ta) / (tb - ta)
         return self._matrix(pa + t * (pb - pa), slerp(qa, qb, t))
 

@@ -32,6 +32,8 @@ MESH_INTERVAL = 0.2
 # shows the current view at camera resolution, so the coarse vertex colours can lag.
 RECOLOUR_INTERVAL = 1.5
 LIVE_INTERVAL = 1 / 20
+# Projector slots: 0 the live frame, the rest kept views (the renderer's texture array).
+PROJECTORS = 12
 # A frame becomes a kept projector when it looks this differently from every kept one.
 KEY_ANGLE = np.radians(14)
 KEY_DISTANCE = 0.25
@@ -72,31 +74,40 @@ class MeshFrame:
 
 # A head IMU reading tilts a pose only within this many seconds of it.
 TILT_MATCH = 0.03
+# Without one that near (IMU batches arrive with the ToF, after the camera frames), the last
+# correction holds for this long, so the map never mixes tilted and untilted poses.
+TILT_HOLD = 0.5
 UP = np.array([0.0, 1.0, 0.0])
 
 
-def tilted(camera, up):
-    """camera (4x4 world_from_camera) turned the least so that world up, seen from the camera,
-    is `up` (a unit vector in camera axes)."""
+def tilt(camera, up):
+    """The least rotation (3x3, in camera axes) that turns camera (4x4 world_from_camera) so
+    that world up, seen from the camera, is `up` (a unit vector in camera axes)."""
     a = camera[:3, :3].T @ UP  # world up in camera axes, as the pose has it
     axis = np.cross(up, a)
     s, c = np.linalg.norm(axis), float(np.clip(up @ a, -1, 1))
     if s < 1e-9:
-        return camera
+        return np.eye(3)
     k = axis / s
     skew = np.array([[0, -k[2], k[1]], [k[2], 0, -k[0]], [-k[1], k[0], 0]])
-    turn = np.eye(3) + s * skew + (1 - c) * skew @ skew  # rotates `up` onto `a`
+    return np.eye(3) + s * skew + (1 - c) * skew @ skew  # rotates `up` onto `a`
+
+
+def turned(camera, turn):
     out = camera.copy()
     out[:3, :3] = camera[:3, :3] @ turn
     return out
 
 
 class Fusion:
-    def __init__(self, voxel=0.04, capacity=6000, keyframes=12, max_range=4.0, head_imu=True):
+    def __init__(
+        self, voxel=0.04, capacity=6000, keyframes=PROJECTORS, max_range=4.0, head_imu=True
+    ):
         self.volume = Volume(voxel=voxel, capacity=capacity, max_range=max_range)
         self.poses = PoseTrack()
         self.head_imu = head_imu
         self.tilts = deque(maxlen=500)  # (time, world up in camera axes) from the head IMU
+        self.last_turn = None  # (time, 3x3): the latest tilt correction made
         self.grids = []
         self.frames = []
         self.meshes = {}
@@ -114,8 +125,8 @@ class Fusion:
         self.camera = None
         self.mesh_changed = False
         self.stats = dict(
-            tof_frames=0, tof_dropped=0, tilted=0, tof_voxels=0, painted=0, frames=0,
-            frames_dropped=0,
+            tof_frames=0, tof_dropped=0, tilted=0, tilt_held=0, untilted=0, tof_voxels=0,
+            painted=0, frames=0, frames_dropped=0,
             vertices=0, triangles=0, blocks=0, evictions=0, fuse_ms=0.0, paint_ms=0.0,
             mesh_ms=0.0,
         )  # fmt: skip
@@ -143,6 +154,10 @@ class Fusion:
         near = [self.tilts[j] for j in (i - 1, i) if 0 <= j < len(self.tilts)]
         near = [(t, u) for t, u in near if abs(t - when) <= TILT_MATCH]
         if not near:
+            if self.last_turn is not None and abs(when - self.last_turn[0]) <= TILT_HOLD:
+                self.stats["tilt_held"] += 1
+                return turned(camera, self.last_turn[1])
+            self.stats["untilted"] += 1
             return camera
         if len(near) == 2 and near[1][0] > near[0][0]:
             f = (when - near[0][0]) / (near[1][0] - near[0][0])
@@ -150,7 +165,10 @@ class Fusion:
         else:
             up = min(near, key=lambda n: abs(n[0] - when))[1]
         self.stats["tilted"] += 1
-        return tilted(camera, up / np.linalg.norm(up))
+        turn = tilt(camera, up / np.linalg.norm(up))
+        if self.last_turn is None or when >= self.last_turn[0]:
+            self.last_turn = (when, turn)
+        return turned(camera, turn)
 
     def ranges(self, grids):
         self.grids.extend(grids)
@@ -162,11 +180,6 @@ class Fusion:
         driver's own pose for this frame, used when the pose stream does not cover it."""
         self.frames.append((image, exposed, intrinsics, fallback))
         del self.frames[:-4]
-
-    def _position(self):
-        latest = self.poses.latest
-        pose = self.poses.at(latest) if latest is not None else None
-        return pose[:3, 3] if pose is not None else np.zeros(3)
 
     def step(self, now):
         """Fuse whatever the pose stream now covers; returns a MeshFrame when there is news."""
@@ -195,11 +208,11 @@ class Fusion:
 
         frames, self.frames = self.frames, []
         for image, exposed, intrinsics, fallback in frames:
+            # Wait for the pose stream to pass the exposure rather than hold its end pose.
+            if (latest is None or exposed > latest) and now - exposed <= POSE_WAIT:
+                self.frames.append((image, exposed, intrinsics, fallback))
+                continue
             camera = self.pose(exposed, slack=0.05)
-            if camera is None and latest is not None and exposed > latest:
-                if now - exposed <= POSE_WAIT:
-                    self.frames.append((image, exposed, intrinsics, fallback))
-                    continue
             if camera is None:
                 camera = fallback
             if camera is None:
@@ -215,9 +228,10 @@ class Fusion:
                 self.stats["paint_ms"] = (time.perf_counter() - started) * 1000
 
         news = None
-        if now - self.last_mesh >= MESH_INTERVAL and (self.volume.dirty or self.volume.evicted):
+        colours = now - self.last_recolour >= RECOLOUR_INTERVAL
+        changed = self.volume.dirty or self.volume.evicted or (colours and self.volume.painted)
+        if now - self.last_mesh >= MESH_INTERVAL and changed:
             self.last_mesh = now
-            colours = now - self.last_recolour >= RECOLOUR_INTERVAL
             if colours:
                 self.last_recolour = now
             self._remesh(colours)
@@ -259,10 +273,11 @@ class Fusion:
         dirty, painted, evicted = self.volume.take_dirty(colours)
         for key in evicted:
             self.meshes.pop(key, None)
-        # A block's mesh reaches one voxel into its neighbours: new geometry re-meshes them too.
+        # A block's mesh reaches one voxel into its neighbours: new geometry re-meshes them too,
+        # and so does a forgotten block (by its old key: its slot may hold another block now).
         todo = set(dirty.tolist()) | set(painted.tolist())
-        for slot in dirty:
-            kx, ky, kz = self.volume.keys[slot]
+        centres = [tuple(k) for k in self.volume.keys[dirty].tolist()] + list(evicted)
+        for kx, ky, kz in centres:
             for dx in (-1, 0, 1):
                 for dy in (-1, 0, 1):
                     for dz in (-1, 0, 1):
