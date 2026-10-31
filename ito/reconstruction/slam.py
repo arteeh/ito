@@ -45,6 +45,9 @@ BACKEND_WAIT = 2.0  # seconds the worker's exit waits for the backend thread (< 
 # Keyframes redrawn per frame because the solve moved them or their splat size changed, the
 # most moved first; the rest wait for the next frames. All at once stalled tracking.
 REDRAWS = 8
+# ... and only while a frame's redraws took less than this: a moved keyframe's redraw takes
+# 10-40 ms, and eight of them stalled a frame by 0.35 s after a relocalisation.
+REDRAW_SECONDS = 0.025
 # A loop closure, for the status: an edge the match kept to a keyframe more than this many
 # before the new one (upstream prints every retrieval but the keyframe before: mostly the
 # recent neighbours).
@@ -820,6 +823,7 @@ class SLAMBackend(RGBDBackend):
         redraw[dirty[dirty < n]] = True
         redraw[self.shown :] = True
         shown = self.shown
+        moving = []
         if shown:
             drawn = lietorch.Sim3(self.drawn[:shown])
             with keyframes.lock:
@@ -840,12 +844,21 @@ class SLAMBackend(RGBDBackend):
             due = moved > MOVED
             if due.any():
                 most = torch.argsort(moved, descending=True)[: min(REDRAWS, int(due.sum()))]
-                redraw[most] = True
+                moving = most.tolist()
         redrawn = torch.nonzero(redraw).flatten().tolist()
         if redrawn:
             self.stale[redrawn] = True  # until shown: a redraw cut short by OOM is done later
+        began = time.perf_counter()
         for k in redrawn:
             self.show(k, now)
+        # Moved keyframes, most moved first, while this frame's redraws took under
+        # REDRAW_SECONDS (at least one): the rest are still moved, and come next frame.
+        for i, k in enumerate(moving):
+            if i and time.perf_counter() - began > REDRAW_SECONDS:
+                break
+            self.stale[k] = True
+            self.show(k, now)
+            redrawn.append(k)
         if self.budget > self.count:
             owed = set(np.flatnonzero(self.pending[:n]).tolist()) - set(redrawn)
             for k in sorted(owed)[:RETRIES]:
