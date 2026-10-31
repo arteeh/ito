@@ -52,6 +52,11 @@ EPS = 1e-15
 SSIM_WEIGHT = 0.2
 RECENT = 3  # the newest views get half of all steps
 PRUNE_OPACITY = 0.02
+# A splat may grow to at most this many times its placed size (0: no limit, the default). Without
+# a limit, splats at the edge of what was mapped stretch over the photo's unmapped parts: the
+# walls look whole from the robot's path, but hazy from elsewhere; with 3, the haze gives way to
+# holes (by eye, NOTES-map-trainer.md).
+GROW = float(os.environ.get("ITO_MAPTRAIN_GROW", "0")) or math.inf
 MOVED, COLOUR, RESHAPED, REFADED = 1e-4, 1 / 255, 0.02, 0.02  # smaller changes are not published
 
 
@@ -165,7 +170,7 @@ class MapTrainer:
         self.rates = torch.tensor(RATES, device="cuda")
         self.capacity = 0
         self.rows = self.m = self.v = self.count = self.written = self.touched = None
-        self.row_source = self.row_seq = None
+        self.row_source = self.row_seq = self.ceiling = None
         self.live = None
         # Worker -> trainer, appended by the worker (deque appends and pops are atomic).
         self.inbox = collections.deque()  # photos: ("kf", k, gen, rgb) / ("view", ..., rel, event)
@@ -282,6 +287,7 @@ class MapTrainer:
         self.touched = fit(self.touched, 0, torch.bool)
         self.row_source = fit(self.row_source, 0, torch.int32)
         self.row_seq = fit(self.row_seq, 0, torch.int64)
+        self.ceiling = fit(self.ceiling, 0)
         self.capacity = n
         if n > old:
             self.backend.fresh[old:n] = True
@@ -301,6 +307,7 @@ class MapTrainer:
         rows = self.rows[index]
         rows[:, 0:3] = rows[:, 0:3] @ sr.T + t
         rows[:, 3:6] += math.log(s)
+        self.ceiling[index] += math.log(s)
         w, x, y, z = (
             torch.as_tensor(v, device="cuda", dtype=torch.float32)
             for v in quaternion(matrix[:3, :3] / s)
@@ -342,6 +349,7 @@ class MapTrainer:
                 self.count[index] = 0
                 self.row_source[index] = torch.as_tensor(b.sources[take], device="cuda")
                 self.row_seq[index] = torch.as_tensor(b.moves[take], device="cuda")
+                self.ceiling[index] = rows[:, 3:6].amax(1) + math.log(GROW)  # inf: none
             self.taken_rows += len(take)
         # 2. The worker's queued moves, in order.
         latest = None
@@ -553,6 +561,7 @@ class MapTrainer:
             v_hat = v / (1 - BETAS[1] ** count)[:, None]
             rows = self.rows[index] - self.rates * m_hat / (v_hat.sqrt() + EPS)
             rows[:, 6:10] = torch.nn.functional.normalize(rows[:, 6:10], dim=-1)
+            rows[:, 3:6] = torch.minimum(rows[:, 3:6], self.ceiling[index, None])
             rows[:, 10].clamp_(-7, 7)
             rows[:, 11:14].clamp_(-0.5 / C0, 0.5 / C0)
             self.rows[index] = rows
