@@ -80,13 +80,33 @@ def map_bytes(keyframes, width, height, percent):
     return (keyframes + SPARE) * KEYFRAME_BYTES_PER_PIXEL * w * h
 
 
+_bands = []  # the resize's thread pool, made at first use
+
+
+def resize(image, long):
+    """mast3r_utils._resize_pil_image, with an RGB image's three bands resampled at once on
+    threads: Pillow releases the GIL while it resamples, and per band it computes the same bytes
+    (1280x720 to 512x288: 8.6 -> 5.2 ms on Ceres)."""
+    import PIL.Image
+
+    S = max(image.size)
+    interp = PIL.Image.LANCZOS if S > long else PIL.Image.BICUBIC
+    new_size = tuple(int(round(x * long / S)) for x in image.size)
+    if image.mode != "RGB":
+        return image.resize(new_size, interp)
+    if not _bands:
+        from concurrent.futures import ThreadPoolExecutor
+
+        _bands.append(ThreadPoolExecutor(3, thread_name_prefix="input-resize"))
+    bands = _bands[0].map(lambda band: band.resize(new_size, interp), image.split())
+    return PIL.Image.merge("RGB", list(bands))
+
+
 def crop(image, long):
     """mast3r_utils.resize_img's 512 branch for any long side: resize the long side to it,
     centre-crop to multiples of 16. Returns the image and its return_transformation."""
-    from mast3r_slam.mast3r_utils import _resize_pil_image
-
     W1, H1 = image.size
-    image = _resize_pil_image(image, long)
+    image = resize(image, long)
     W, H = image.size
     cx, cy = W // 2, H // 2
     halfw, halfh = crop_size(W, H)
