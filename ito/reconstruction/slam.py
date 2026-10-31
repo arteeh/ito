@@ -175,6 +175,12 @@ class SLAMBackend(RGBDBackend):
         # base.yaml's single_thread stays off: a frontend that waited for every global solve
         # (eval_calib.yaml) lost a camera turning while it waited (close tape, 0.5 s stalls).
         config["use_calib"] = True
+        # Upstream relocalises a lost frame only if every keyframe retrieval recalls matches it
+        # 30 % (reloc.strict in base.yaml); its own ETH3D config turns that off, and so does
+        # Ito. Back at a mapped place on the s2-twist tape (64-80 s) the three recalled matched
+        # 20-33 % each, frame after frame, and strict never relocalised. Non-strict drops the
+        # edges under 30 % and relocalises on the rest.
+        config["reloc"]["strict"] = False
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.set_grad_enabled(False)
         options["device"] = "cuda"
@@ -361,6 +367,9 @@ class SLAMBackend(RGBDBackend):
             # that moved while lost is far from it, calibrated tracking then fails at once and
             # relocalises again, a keyframe more each time (loop tape: 18 in 10 s).
             self.resumed = self.relocalized
+            # Upstream resets the tracker's match guess whenever its keyframe is new; after a
+            # relocalisation it is, and the guess left is from before the loss.
+            self.tracker.reset_idx_f2k()
             T_WC = self.lietorch.Sim3(keyframes.T_WC[len(keyframes) - 1].clone())
         frame = self.input.frame(self.i, rgb, T_WC)
         posed = self.ranged = None
