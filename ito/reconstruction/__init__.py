@@ -111,6 +111,8 @@ def _run(recon):
                 fit = vram.check(len(backend.keys), len(backend.keys) <= backend.budget)
                 limit = limit if fit is None else min(limit, fit)
                 recon.admission.memory_pressure.value = vram.pressure
+                if vram.pressure and hasattr(backend, "vram_full"):
+                    backend.vram_full(now, vram.free_bytes)
                 recon.admission.gpu_busy.value = -1 if vram.gpu.busy is None else vram.gpu.busy
                 recon.vram_free.value = vram.free_bytes
                 recon.vram_cached.value = vram.cached_bytes

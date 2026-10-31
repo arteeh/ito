@@ -385,6 +385,7 @@ class SLAMBackend(RGBDBackend):
         self.relocalized = 0
         self.appends = 0  # keyframes the frontend added: a frame that did is not dropped on OOM
         self.ooms, self.oom_at = 0, -OOM_SHOWN
+        self.vram_full_at, self.vram_full_free = -OOM_SHOWN, 0  # see vram_full
         self.tof = RangeScale(self.input.K, (h, w))
         self.scale = 1.0  # metres per map unit, for display; 1 until the ToF fixes it
         self.drawn_pixels = self.footprint()
@@ -492,6 +493,11 @@ class SLAMBackend(RGBDBackend):
             self.torch.cuda.empty_cache()
         self.draw_seconds = time.perf_counter() - began
         self.publish(self.posed, now)
+
+    def vram_full(self, now, free):
+        """The worker's VRAM check found the card nearly full (memory.VRAM): it cuts the splat
+        limit, and the map fades without an error. The status says so for a while."""
+        self.vram_full_at, self.vram_full_free = now, free
 
     def setup_oom(self):
         return RuntimeError(
@@ -838,6 +844,12 @@ class SLAMBackend(RGBDBackend):
             warning = (
                 self.out_of_memory() if warning is None else f"{self.out_of_memory()}. {warning}"
             )
+        if now - self.vram_full_at < OOM_SHOWN:
+            full = (
+                f"VRAM full ({self.vram_full_free / 2**20:.0f} MiB free): the map's least "
+                f"recently seen splats fade to make room; {self.lower} in Settings"
+            )
+            warning = full if warning is None else f"{warning}. {full}"
         if warning:
             self.report(f"{warning}. MASt3R-SLAM {state}; {counts}")
         else:
