@@ -12,9 +12,6 @@ PUBLICATION_PACKETS = 2
 MATCH_QUERIES = 32768
 MAX_PENDING_CHUNKS = 4
 MAX_BACKOFF_FRAME_SHARE = 0.25
-# torch.cuda.memory_reserved() flattens the allocator's whole statistics tree in Python
-# (~0.3 ms); read per chunk (~250 chunks a frame) it took 18% of the worker's wall time.
-MEMORY_CHECK_SECONDS = 0.05
 GPU_STAGES = (
     "inference",
     "iter_proj",
@@ -49,7 +46,6 @@ class Admission:
         self.enabled = context.RawValue("b", False)
         self.pause_until = context.RawValue("d", 0)
         self.last_progress = context.RawValue("d", 0)
-        self.memory_peak = context.RawValue("Q", 0)
         self.gpu_busy = context.RawValue("d", -1)
         self.memory_pressure = context.RawValue("b", False)
         self.active_seconds = context.RawValue("d", 0)
@@ -58,8 +54,6 @@ class Admission:
         self.stage_calls = context.RawArray("Q", len(GPU_STAGES))
         self.overruns = context.RawValue("Q", 0)
         self.wake = Wake(context)
-        self.memory_used = None
-        self.memory_checked = 0.0
         self.pending = deque()
         self.cooldown = 0.0
         self.recovered_at = 0.0
@@ -106,15 +100,6 @@ class Admission:
         else:
             self.stream = xp.cuda.Stream(non_blocking=True)
 
-    def check_memory(self, force=False):
-        now = clock.now()
-        if self.memory_used is not None and (
-            force or now - self.memory_checked >= MEMORY_CHECK_SECONDS
-        ):
-            self.memory_checked = now
-            used = self.memory_used()
-            self.memory_peak.value = max(used, self.memory_peak.value)
-
     def collect(self):
         with self.lock or nullcontext():
             self._collect()
@@ -148,7 +133,6 @@ class Admission:
             self.collect()
         if not self.acquire():
             raise InterruptedError("Reconstruction stopped")
-        self.check_memory()
 
     @contextmanager
     def cuda_chunk(self, events, *, kind="map"):
@@ -160,7 +144,6 @@ class Admission:
         finally:
             end.record()
             self.pending.append((start, end, elapsed, kind))
-            self.check_memory()
 
     @contextmanager
     def integration(self):
@@ -182,7 +165,6 @@ class Admission:
             finally:
                 self.stream.synchronize()
                 self.collect()
-                self.check_memory(force=True)
                 self.last_progress.value = clock.now()
 
 

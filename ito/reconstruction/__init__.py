@@ -217,8 +217,7 @@ def _run(recon):
                             )
                             for i, name in enumerate(GPU_STAGES)
                         },
-                        cuda_memory_peak_bytes=recon.admission.memory_peak.value,
-                        # Now, not peak: CuPy's pool and Torch's reserved blocks; the process's
+                        # CuPy's pool and Torch's reserved blocks; the process's
                         # working set. Flat over a session once SLAM's buffers are allocated.
                         cuda_memory_bytes=backend.cuda_memory_bytes()
                         if backend.xp is not np
@@ -450,7 +449,6 @@ class Reconstruction:
                 for i, name in enumerate(GPU_STAGES)
             },
             cuda_completed_chunks=self.admission.chunks.value,
-            cuda_memory_peak_bytes=self.admission.memory_peak.value,
             memory_pressure=bool(self.admission.memory_pressure.value),
             render_backoffs=self.admission.overruns.value,
             throttle_remaining_ms=max(0, self.admission.pause_until.value - clock.now()) * 1000,

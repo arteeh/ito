@@ -85,7 +85,6 @@ class RGBDBackend:
     def bind_admission(self, admission):
         self.admission = admission
         if self.xp is not np:
-            admission.memory_used = self.cuda_memory_bytes
             admission.bind_stream(self.xp)
 
     def cuda_memory_bytes(self):
