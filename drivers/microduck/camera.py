@@ -11,48 +11,73 @@ from ito.protocol import FrameMetadata, Intrinsics
 
 # The widest pinhole Ito is given, degrees across: a pinhole's edges stretch as 1 / cos^2 of their
 # angle, so a wider one spends MASt3R's 512 pixels on smeared edges. The beta's lens (116 across,
-# 60 down) holds a 16:9 pinhole only 91.5 wide anyway (its 60 down binds), already stretching
+# 60 down) holds a 16:9 pinhole only 91.4 wide anyway (its 60 down binds), already stretching
 # the lens 2.2x at the sides and 2.7x in the corners; whichever is narrower wins.
 MAX_RECTIFIED_HFOV_DEG = 100.0
 
 
 def rectified(matrix, distortion, width, height):
-    """The camera matrix of the widest pinhole, centred on the frame, whose every pixel the
-    distorted frame covers (or the frame's own matrix when it has no distortion)."""
+    """The camera matrix of the widest pinhole of the frame's size whose every pixel the distorted
+    frame covers (or the frame's own matrix when it has no distortion). It keeps the calibration's
+    principal point and pixel aspect and scales only the focal length: centring it would throw
+    away twice the offset on one side (an alpha's cy 474 of 720 would lose a third of the view
+    down). Each pixel's centre must map within the sent frame's outer pixel centres, so bilinear
+    remap never mixes in its black border."""
     import cv2
 
     if not np.any(distortion):
         return matrix
+    cx, cy = matrix[0, 2], matrix[1, 2]
+    if not (0 < cx < width - 1 and 0 < cy < height - 1):
+        raise ValueError("the Microduck camera's principal point is outside its frame")
+    columns, rows = np.arange(width, dtype=np.float64), np.arange(height, dtype=np.float64)
     edge = np.concatenate(
         [
-            np.stack([np.arange(width) + 0.0, np.full(width, -0.5)], -1),
-            np.stack([np.arange(width) + 0.0, np.full(width, height - 0.5)], -1),
-            np.stack([np.full(height, -0.5), np.arange(height) + 0.0], -1),
-            np.stack([np.full(height, width - 0.5), np.arange(height) + 0.0], -1),
+            np.stack([columns, np.zeros(width)], -1),
+            np.stack([columns, np.full(width, height - 1.0)], -1),
+            np.stack([np.zeros(height), rows], -1),
+            np.stack([np.full(height, width - 1.0), rows], -1),
         ]
     )
+    # CV_16SC2 maps round to 1/32 pixel: keep that much inside the outer pixel centres.
+    margin = 1 / 32
 
-    def inside(focal):
+    def matrix_at(scale):
+        return np.array(
+            [[matrix[0, 0] * scale, 0, cx], [0, matrix[1, 1] * scale, cy], [0, 0, 1]], np.float64
+        )
+
+    def inside(scale):
+        k = matrix_at(scale)
         rays = np.concatenate(
-            [(edge - (width / 2, height / 2)) / focal, np.ones((len(edge), 1))], -1
+            [(edge - (cx, cy)) / (k[0, 0], k[1, 1]), np.ones((len(edge), 1))], -1
         ).reshape(-1, 1, 3)
         sent, _ = cv2.projectPoints(rays, np.zeros(3), np.zeros(3), matrix, distortion)
         sent = sent.reshape(-1, 2)
         return bool(
-            np.all((sent[:, 0] >= -0.5) & (sent[:, 0] <= width - 0.5))
-            and np.all((sent[:, 1] >= -0.5) & (sent[:, 1] <= height - 0.5))
+            np.all((sent[:, 0] >= margin) & (sent[:, 0] <= width - 1 - margin))
+            and np.all((sent[:, 1] >= margin) & (sent[:, 1] <= height - 1 - margin))
         )
 
-    widest = width / 2 / np.tan(np.radians(MAX_RECTIFIED_HFOV_DEG / 2))
-    if inside(widest):
-        focal = widest
-    else:
-        low, high = widest, 8 * max(matrix[0, 0], matrix[1, 1])
-        for _ in range(40):
-            middle = (low + high) / 2
-            low, high = (low, middle) if inside(middle) else (middle, high)
-        focal = high
-    return np.array([[focal, 0, width / 2], [0, focal, height / 2], [0, 0, 1]], np.float64)
+    # The cap is on the whole width, however the principal point splits it.
+    def across(scale):
+        fx = matrix[0, 0] * scale
+        return np.degrees(np.arctan((cx + 0.5) / fx) + np.arctan((width - 0.5 - cx) / fx))
+
+    low, high = 1e-3, 1.0
+    while across(low) < MAX_RECTIFIED_HFOV_DEG:
+        low /= 2
+    while not inside(high):
+        high *= 2
+        if high > 64:
+            raise ValueError("the Microduck camera's distortion does not cover its own frame")
+    for _ in range(60):
+        middle = (low + high) / 2
+        if inside(middle) and across(middle) <= MAX_RECTIFIED_HFOV_DEG:
+            high = middle
+        else:
+            low = middle
+    return matrix_at(high)
 
 
 class Camera:

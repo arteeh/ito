@@ -92,7 +92,7 @@ tracked against keyframes, linked by retrieval and solved as one global Sim(3) g
 camera relocalises and maps nothing meanwhile. The robot's pose places the map once, at the
 first frame. Frames go in as upstream's dataloader makes them (long side 512, centre crop to
 16-pixel multiples), taken as already undistorted (the Microduck driver rectifies its beta's
-wide lens, 116 by 60 degrees, into the widest pinhole it covers, about 92 by 60); an Input
+wide lens, 116 by 60 degrees, into the widest pinhole it covers, 91.4 by 60); an Input
 resolution below 100 % makes them smaller (448, 368, 256), which upstream does not do: its
 matching is tuned at 512. The large
 buffers (keyframes, graph edges, the solve's inputs) are allocated once, at start: Settings >
