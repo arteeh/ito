@@ -193,7 +193,12 @@ def _run(recon):
                         cuda_memory_bytes=backend.cuda_memory_bytes()
                         if backend.xp is not np
                         else None,
-                        working_set_bytes=worker.memory_info().rss,
+                        torch_allocated_bytes=sys.modules["torch"].cuda.memory_allocated()
+                        if "torch" in sys.modules and backend.xp is not np
+                        else None,
+                        working_set_bytes=(memory := worker.memory_info()).rss,
+                        # Windows: commit, which also counts what the driver backs with RAM.
+                        private_bytes=getattr(memory, "private", None),
                         gpu_busy_pct=recon.admission.gpu_busy.value,
                         memory_pressure=bool(recon.admission.memory_pressure.value),
                         render_backoffs=recon.admission.overruns.value,
