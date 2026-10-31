@@ -61,7 +61,7 @@ def _run(recon):
         if backend.xp is not np:
             from .memory import VRAM
 
-            vram = VRAM(backend.xp)
+            vram = VRAM(backend.xp, recon.notes.send)
         model = getattr(backend, "model", None)
         network = getattr(model, "network_precision", None)
         next_network_stats = 0
@@ -110,6 +110,8 @@ def _run(recon):
             if vram is not None and vram.check():
                 recon.admission.gpu_busy.value = -1 if vram.gpu.busy is None else vram.gpu.busy
                 recon.vram_free.value = vram.free_bytes
+                if vram.spilling and hasattr(backend, "spilling"):
+                    backend.spilling(now, vram.spilled)
             if limit != backend.budget:
                 retired = backend.resize(limit, now)
                 recon.splat_limit.value = limit
@@ -224,6 +226,8 @@ def _run(recon):
                         # Windows: commit, which also counts what the driver backs with RAM.
                         private_bytes=getattr(memory, "private", None),
                         gpu_busy_pct=recon.admission.gpu_busy.value,
+                        # Windows: GPU memory in system RAM beyond the session's lowest.
+                        vram_spilled_bytes=vram.spilled if vram is not None else None,
                         render_backoffs=recon.admission.overruns.value,
                         input_frames_skipped=max(0, sequence - previous_sequence - 1),
                     )

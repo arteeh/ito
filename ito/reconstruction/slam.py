@@ -64,6 +64,7 @@ SPILLING = 256 << 20
 # pool (+0.3 GiB at 512x288) is already out of what it compares this with.
 WORK_BYTES_PER_PIXEL = 5000
 OOM_SHOWN = 10.0  # seconds the status keeps saying a frame was dropped for VRAM
+SPILL_SHOWN = 3.0  # seconds it keeps saying VRAM spills after the last check that found it
 
 
 def crop_size(width, height):
@@ -379,6 +380,7 @@ class SLAMBackend(RGBDBackend):
         self.relocalized = 0
         self.appends = 0  # keyframes the frontend added: a frame that did is not dropped on OOM
         self.ooms, self.oom_at = 0, -OOM_SHOWN
+        self.spill_at, self.spilled = -SPILL_SHOWN, 0  # see spilling
         self.tof = RangeScale(self.input.K, (h, w))
         self.scale = 1.0  # metres per map unit, for display; 1 until the ToF fixes it
         self.drawn_pixels = self.footprint()
@@ -439,7 +441,8 @@ class SLAMBackend(RGBDBackend):
 
     def warn_short(self, pixels):
         """Windows' driver does not fail an allocation past the card: it spills into system
-        memory, so running short shows only as a crawl. Say so at the start instead. Measured
+        memory, so running short shows only as a crawl. The worker's check (spilling) says so
+        once it happens; this says so at the start, from what the frames will need. Measured
         after the warm-up and the cache release: the CUDA graphs (if kept) hold their pool by
         then, and what is left is the frames'."""
         torch = self.torch
@@ -512,6 +515,11 @@ class SLAMBackend(RGBDBackend):
             self.torch.cuda.empty_cache()
         self.draw_seconds = time.perf_counter() - began
         self.publish(self.posed, now)
+
+    def spilling(self, now, spilled):
+        """The worker's VRAM check (memory.VRAM, Windows) found spilled bytes of Ito's GPU memory
+        overflowing into system RAM. The status says so while it lasts and SPILL_SHOWN after."""
+        self.spill_at, self.spilled = now, spilled
 
     def setup_oom(self):
         return RuntimeError(
@@ -855,6 +863,12 @@ class SLAMBackend(RGBDBackend):
             warning = (
                 self.out_of_memory() if warning is None else f"{self.out_of_memory()}. {warning}"
             )
+        if now - self.spill_at < SPILL_SHOWN:
+            spill = (
+                f"VRAM full: {self.spilled / 2**20:.0f} MiB spilled into system RAM, everything "
+                "slows" + ("" if self.warning else f"; {self.lower} in Settings")
+            )
+            warning = spill if warning is None else f"{warning}. {spill}"
         if warning:
             self.report(f"{warning}. MASt3R-SLAM {state}; {counts}")
         else:
