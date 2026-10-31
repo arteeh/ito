@@ -342,6 +342,7 @@ class SLAMBackend(RGBDBackend):
         self.scale = 1.0  # metres per map unit, for display; 1 until the ToF fixes it
         self.drawn_pixels = self.footprint()
         self.draw_seconds = 0.0
+        self.pose_ready = None  # the worker's: hands the pilot the pose before draw's work
         self.ranged = None
         report("MASt3R-SLAM warming up")
         # MASt3R's units as CUDA graphs, captured by the warm-up.
@@ -426,6 +427,9 @@ class SLAMBackend(RGBDBackend):
         if self.ranged is not None and self.tof.value is None and self.measure(self.ranged):
             self.scale = self.tof.value
             self.stale[:] = True  # every keyframe again, at the new scale
+        self.pose(self.posed)
+        if self.pose_ready is not None:
+            self.pose_ready()
         began = time.perf_counter()
         try:
             self.draw(now)
@@ -735,12 +739,16 @@ class SLAMBackend(RGBDBackend):
         rigid[:3, 3] = matrix[:3, 3] * AXES * self.scale
         return self.world @ rigid
 
-    def publish(self, posed, now):
+    def pose(self, posed):
+        """The frame's camera pose for the pilot (pose_ready hands it over before draw)."""
         pose = None if posed is None else self.placed(posed)
         self.lost = pose is None
         if pose is not None:
             self.camera_pose = pose.astype(np.float32)
             self.tracked += 1
+
+    def publish(self, posed, now):
+        """The status line, after draw (whose out-of-VRAM it reports)."""
         full = len(self.keyframes) >= self.capacity
         n = min(len(self.keyframes), self.capacity)
         owed = int(self.pending[: len(self.keyframes)].sum())

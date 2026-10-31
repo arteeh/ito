@@ -79,6 +79,24 @@ def _run(recon):
         captured = recon.epoch
         published_capture = recon.epoch
         parent = mp.parent_process()
+        posed = [0.0]
+
+        def publish_pose():
+            """The tracked camera pose to the pilot. SLAM calls it as soon as the frame is
+            tracked, before redrawing its splat map (~10 ms), so the view need not wait for it."""
+            if recon.output_lock.acquire(False):
+                try:
+                    np.frombuffer(recon.output_camera, np.float32)[:] = backend.camera_pose.ravel()
+                    recon.output_captured.value = captured
+                    recon.tracked.value = backend.tracked
+                    recon.tracking.value = not backend.lost and backend.tracked > 0
+                    recon.display_scale.value = backend.tof.value or 0.0
+                finally:
+                    recon.output_lock.release()
+                posed[0] = posed[0] or clock.now()
+
+        if recon.backend == "slam":
+            backend.pose_ready = publish_pose
         while not recon.stopped.value and parent.is_alive():
             now = clock.now() - recon.epoch
             if network is not None and now >= next_network_stats:
@@ -134,6 +152,7 @@ def _run(recon):
                 if timeline:
                     before = (getattr(backend, "tracked", 0), backend.count)
                     began = clock.now()
+                posed[0] = 0.0
                 backend.source_sequence = sequence
                 backend.source_captured = captured
                 dropped = False
@@ -183,6 +202,8 @@ def _run(recon):
                         keyframes=len(backend.keyframes) if recon.backend == "slam" else None,
                         # Of work_ms: the splat map's redraws of SLAM's keyframes.
                         draw_ms=round(getattr(backend, "draw_seconds", 0) * 1000, 1),
+                        # From began until the pilot could read the frame's camera pose.
+                        pose_ms=round((posed[0] - began) * 1000, 1) if posed[0] else None,
                         backend_calls=recon.integrated.value,
                         dirty_slots=recon.dirty_slots.value,
                         retiring_slots=recon.retiring_slots.value,
@@ -214,17 +235,10 @@ def _run(recon):
                         input_frames_skipped=max(0, sequence - previous_sequence - 1),
                     )
                     timeline.write(json.dumps(row) + "\n")
-                if recon.backend == "slam" and recon.output_lock.acquire(False):
-                    try:
-                        np.frombuffer(recon.output_camera, np.float32)[:] = (
-                            backend.camera_pose.ravel()
-                        )
-                        recon.output_captured.value = captured
-                        recon.tracked.value = backend.tracked
-                        recon.tracking.value = not backend.lost and backend.tracked > 0
-                        recon.display_scale.value = backend.tof.value or 0.0
-                    finally:
-                        recon.output_lock.release()
+                if recon.backend == "slam":
+                    # Again after the splat map's work: the early write may have found the pilot
+                    # holding the lock.
+                    publish_pose()
             for _ in range(recon.ring.slots):
                 dirty = np.flatnonzero(backend.dirty)
                 start = np.searchsorted(dirty, cursor)
