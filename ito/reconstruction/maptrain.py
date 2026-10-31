@@ -57,6 +57,8 @@ PRUNE_OPACITY = 0.02
 # walls look whole from the robot's path, but hazy from elsewhere; with 3, the haze gives way to
 # holes (by eye, NOTES-map-trainer.md).
 GROW = float(os.environ.get("ITO_MAPTRAIN_GROW", "0")) or math.inf
+# 0: a control for the PoC: the trainer's seeding and moves, no training steps.
+TRAIN = os.environ.get("ITO_MAPTRAIN_TRAIN", "1") != "0"
 MOVED, COLOUR, RESHAPED, REFADED = 1e-4, 1 / 255, 0.02, 0.02  # smaller changes are not published
 
 
@@ -516,7 +518,7 @@ class MapTrainer:
                     self.rebuild(snapshot)
             self.seconds["sync"] += time.perf_counter() - began
         self.steps += 1
-        if self.live is None or not len(self.live):
+        if self.live is None or not len(self.live) or not TRAIN:
             return False
         view = self.choose()
         if view is None:

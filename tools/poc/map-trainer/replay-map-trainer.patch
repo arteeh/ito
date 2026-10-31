@@ -1,0 +1,18 @@
+--- /home/maarten/.unii/scratch/LemonRadish/rig/tools/tapes/replay.py	2026-10-31 02:15:35.417533583 +0100
++++ /home/maarten/.unii/scratch/LemonRadish/mtrig/tools/tapes/replay.py	2026-10-31 04:24:09.630900804 +0100
+@@ -135,6 +135,7 @@
+     p.add_argument("--keyframes", type=int, help="Map size (feat/slam)")
+     p.add_argument("--precision", choices=("full", "half"))
+     p.add_argument("--input-resolution", type=int)
++    p.add_argument("--map-trainer", action="store_true", help="the map trainer PoC (#82)")
+     a = p.parse_args()
+     import logging
+ 
+@@ -181,6 +182,7 @@
+         precision=a.precision or settings.get("precision", "full"),
+         input_resolution=a.input_resolution or settings.get("input_resolution", 100),
+         keyframes=a.keyframes or settings.get("keyframes", 128),
++        map_trainer=a.map_trainer,
+     )
+     signature = inspect.signature(Reconstruction.__init__).parameters
+     # Capture stamps: A1 tapes carry each frame's capture time (`captured`) and say whether it
