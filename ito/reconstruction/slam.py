@@ -62,6 +62,9 @@ SPILLING = 256 << 20
 # the backend's pairs): at 512x288 0.5-0.7 GiB at the peak, 0.7-1.1 GiB with the streams' caches.
 WORK_BYTES_PER_PIXEL = 5000
 OOM_SHOWN = 10.0  # seconds the status keeps saying a frame was dropped for VRAM
+# A frame out of VRAM again within this many seconds drops MASt3R's CUDA graphs for the session
+# (~40 % slower frames); one alone, as another program's brief spike, only drops the frame.
+GRAPHS_OOM_WINDOW = 30.0
 
 
 def crop_size(width, height):
@@ -393,6 +396,7 @@ class SLAMBackend(RGBDBackend):
         self.relocalized = 0
         self.appends = 0  # keyframes the frontend added: a frame that did is not dropped on OOM
         self.ooms, self.oom_at = 0, -OOM_SHOWN
+        self.frame_oom_at = -GRAPHS_OOM_WINDOW  # the last frame dropped for VRAM
         self.vram_full_at, self.vram_full_free = -OOM_SHOWN, 0  # see vram_full
         self.tof = RangeScale(self.input.K, (h, w))
         self.scale = 1.0  # metres per map unit, for display; 1 until the ToF fixes it
@@ -498,8 +502,9 @@ class SLAMBackend(RGBDBackend):
             # The worker drops a frame that ran out of memory and goes on: safe for tracking,
             # not once the frame went into the keyframes.
             if self.appends == before:
-                self.ooms, self.oom_at = self.ooms + 1, now
-                self.shed_graphs()
+                if now - self.frame_oom_at < GRAPHS_OOM_WINDOW:
+                    self.shed_graphs()
+                self.ooms, self.oom_at, self.frame_oom_at = self.ooms + 1, now, now
                 self.report(self.out_of_memory())
                 raise
             raise RuntimeError(
