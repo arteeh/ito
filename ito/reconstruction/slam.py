@@ -21,6 +21,8 @@ from types import SimpleNamespace
 
 import numpy as np
 
+from ito.render.gpu import GPU
+
 from .graphs import graph_model
 from .rgbd import RGBDBackend
 from .tof import RangeScale
@@ -357,6 +359,12 @@ class SLAMBackend(RGBDBackend):
             # ... and whether it waits to be redrawn: the scale or splat size changed.
             self.stale = np.zeros(buffer, bool)
             free, _ = torch.cuda.mem_get_info()
+            # On Windows the runtime reports this process's own budget: with another program
+            # holding 6 GiB of a 12 GiB card it said 10.8 GiB free, NVML 4.9 (#83).
+            card = GPU(torch.cuda.current_device())
+            if card.library is not None:
+                free = min(free, card.free)
+            card.close()
         except self.oom as exc:
             raise self.setup_oom() from exc
         # Windows' driver does not fail an allocation past the card: it spills into system
