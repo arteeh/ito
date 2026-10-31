@@ -452,6 +452,24 @@ class SLAMBackend(RGBDBackend):
         torch = self.torch
         stream = self.backend_stream
         with self.backend_lock, torch.cuda.stream(stream) if stream is not None else nullcontext():
+            # Ito: queued keyframes first, in RELOC too, where upstream's loop relocalises first.
+            # Retrieval numbers its entries in the order they come and Ito takes those numbers for
+            # keyframe indices: a relocalised keyframe added before a queued one swapped them for
+            # good (wrong recalls, wrong relocalisation poses). And a full map's spare keyframe's
+            # edges must be the graph's last, as drop_spare removes the graph's tail.
+            idx = -1
+            with states.lock:
+                if len(states.global_optimizer_tasks) > 0:
+                    idx = states.global_optimizer_tasks[0]
+            if idx != -1:
+                if stream is not None and self.handoff is not None:
+                    stream.wait_event(self.handoff)
+                self.optimize(idx)
+                if stream is not None:
+                    stream.synchronize()
+                with states.lock:
+                    states.global_optimizer_tasks.pop(0)
+                return True
             if mode == Mode.RELOC:
                 with states.lock:
                     # Ito: each frame once. Upstream's loop tries the frame it has over and
@@ -483,21 +501,7 @@ class SLAMBackend(RGBDBackend):
                     states.set_mode(Mode.TRACKING)
                 states.dequeue_reloc()
                 return True
-            idx = -1
-            with states.lock:
-                if len(states.global_optimizer_tasks) > 0:
-                    idx = states.global_optimizer_tasks[0]
-            if idx == -1:
-                return False
-            if stream is not None and self.handoff is not None:
-                stream.wait_event(self.handoff)
-            self.optimize(idx)
-            if stream is not None:
-                stream.synchronize()
-            with states.lock:
-                if len(states.global_optimizer_tasks) > 0:
-                    states.global_optimizer_tasks.pop(0)
-            return True
+            return False
 
     def drop_spare(self):
         """A full map's spare keyframe goes when the camera is lost again, so the spare slot is
@@ -527,6 +531,7 @@ class SLAMBackend(RGBDBackend):
         for j in range(min(n_consec, idx)):
             kf_idx.append(idx - 1 - j)
         frame = keyframes[idx]
+        self.check_retrieval(idx)
         retrieval_inds = self.retrieval.update(
             frame,
             add_after_query=True,
@@ -550,6 +555,14 @@ class SLAMBackend(RGBDBackend):
         else:
             factor_graph.solve_GN_rays()
 
+    def check_retrieval(self, idx):
+        """Retrieval's next entry gets keyframe index idx: Ito takes its ids for indices."""
+        if self.retrieval.kf_counter != idx:
+            raise RuntimeError(
+                f"MASt3R-SLAM's retrieval holds {self.retrieval.kf_counter} entries where keyframe "
+                f"{idx} comes next: its ids no longer name keyframes"
+            )
+
     def relocalization(self, frame, keep=True):
         """main.py's relocalization, as run_backend runs it for a frame in RELOC mode.
 
@@ -562,6 +575,7 @@ class SLAMBackend(RGBDBackend):
         # we are adding and then removing from the keyframe, so we need to be careful.
         # The lock slows viz down but safer this way...
         with keyframes.lock:
+            self.check_retrieval(len(keyframes))
             kf_idx = []
             retrieval_inds = retrieval_database.update(
                 frame,
