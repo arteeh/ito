@@ -73,6 +73,13 @@ class Tape:
                     )
                 )
         for s in self.sensors:
+            for imu in s.get("imu", []):
+                mount = rotation(imu["mount"]["orientation"])
+                for smp in imu["samples"]:
+                    if smp.get("orientation") and lo - 1 <= smp["time"] <= hi:
+                        out.append(
+                            (smp["time"] + 0.02, "imu", (smp["time"], smp["orientation"], mount))
+                        )
             for g in s.get("ranges", []):
                 if lo <= g["time"] <= hi:
                     mount = g["mount"]
@@ -108,11 +115,12 @@ def main():
     parser.add_argument("--voxel", type=float, default=0.04)
     parser.add_argument("--frame-width", type=int, default=640)
     parser.add_argument("--overview", default="")
+    parser.add_argument("--no-head-imu", dest="head_imu", action="store_false")
     args = parser.parse_args()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     tape = Tape(args.tape)
-    fusion = Fusion(voxel=args.voxel)
+    fusion = Fusion(voxel=args.voxel, head_imu=args.head_imu)
     fw = args.frame_width
     fh = round(fw * tape.h / tape.w)
     s = fw / tape.w
@@ -146,6 +154,8 @@ def main():
                 fusion.motion([payload])
             elif kind == "tof":
                 fusion.ranges([payload])
+            elif kind == "imu":
+                fusion.imu([payload])
             else:
                 image = tape.rgb(payload, (fw, fh))
                 fusion.frame(image, payload["received"] - delay, K)

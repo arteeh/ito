@@ -3,6 +3,8 @@ drive it):
 
   driver Motion samples  -> PoseTrack (the robot's own camera pose: contact odometry for
                             position, trunk IMU + head joint encoders for orientation)
+  head IMU samples       -> the camera's tilt (its own gravity fusion); heading stays the pose
+                            stream's, since the head IMU's yaw is arbitrary
   ToF RangeGrid          -> pose at the grid's own time -> Volume.integrate (TSDF)
   camera frame           -> pose at its exposure       -> Volume.paint (voxel colours)
                                                         -> projector frames for the renderer
@@ -12,12 +14,13 @@ Nothing here sees the simulator's ground truth: every pose comes from the driver
 """
 
 import time
+from collections import deque
 from dataclasses import dataclass, field
 
 import numpy as np
 
 from . import surface
-from .geometry import PoseTrack, angle_between
+from .geometry import PoseTrack, angle_between, rotation
 from .volume import Volume
 from .zones import zones_from_grid
 
@@ -64,10 +67,33 @@ class MeshFrame:
         return ((self.revision, self.captured_at),)
 
 
+# A head IMU reading tilts a pose only within this many seconds of it.
+TILT_MATCH = 0.03
+UP = np.array([0.0, 1.0, 0.0])
+
+
+def tilted(camera, up):
+    """camera (4x4 world_from_camera) turned the least so that world up, seen from the camera,
+    is `up` (a unit vector in camera axes)."""
+    a = camera[:3, :3].T @ UP  # world up in camera axes, as the pose has it
+    axis = np.cross(up, a)
+    s, c = np.linalg.norm(axis), float(np.clip(up @ a, -1, 1))
+    if s < 1e-9:
+        return camera
+    k = axis / s
+    skew = np.array([[0, -k[2], k[1]], [k[2], 0, -k[0]], [-k[1], k[0], 0]])
+    turn = np.eye(3) + s * skew + (1 - c) * skew @ skew  # rotates `up` onto `a`
+    out = camera.copy()
+    out[:3, :3] = camera[:3, :3] @ turn
+    return out
+
+
 class Fusion:
-    def __init__(self, voxel=0.04, capacity=6000, keyframes=12, max_range=4.0):
+    def __init__(self, voxel=0.04, capacity=6000, keyframes=12, max_range=4.0, head_imu=True):
         self.volume = Volume(voxel=voxel, capacity=capacity, max_range=max_range)
         self.poses = PoseTrack()
+        self.head_imu = head_imu
+        self.tilts = deque(maxlen=500)  # (time, world up in camera axes) from the head IMU
         self.grids = []
         self.frames = []
         self.meshes = {}
@@ -84,7 +110,8 @@ class Fusion:
         self.camera = None
         self.mesh_changed = False
         self.stats = dict(
-            tof_frames=0, tof_dropped=0, tof_voxels=0, painted=0, frames=0, frames_dropped=0,
+            tof_frames=0, tof_dropped=0, tilted=0, tof_voxels=0, painted=0, frames=0,
+            frames_dropped=0,
             vertices=0, triangles=0, blocks=0, evictions=0, fuse_ms=0.0, paint_ms=0.0,
             mesh_ms=0.0,
         )  # fmt: skip
@@ -92,6 +119,34 @@ class Fusion:
     def motion(self, samples):
         for when, world_from_camera in samples:
             self.poses.add(when, world_from_camera)
+
+    def imu(self, samples):
+        """Head IMU samples with the chip's own orientation: [(pilot-clock time, sensor-to-world
+        xyzw, sensor-to-camera 3x3), ...]. Only gravity (tilt) is taken from them."""
+        for when, orientation, mount in samples:
+            if self.tilts and when <= self.tilts[-1][0]:
+                continue
+            up = np.asarray(mount) @ rotation(orientation).T @ UP
+            self.tilts.append((when, up / np.linalg.norm(up)))
+
+    def pose(self, when, slack=0.1):
+        """The camera at `when`: the pose stream, its tilt from the head IMU where one is near."""
+        camera = self.poses.at(when, slack=slack)
+        if camera is None or not self.head_imu or not self.tilts:
+            return camera
+        times = [t for t, _ in self.tilts]
+        i = int(np.searchsorted(times, when))
+        near = [self.tilts[j] for j in (i - 1, i) if 0 <= j < len(self.tilts)]
+        near = [(t, u) for t, u in near if abs(t - when) <= TILT_MATCH]
+        if not near:
+            return camera
+        if len(near) == 2 and near[1][0] > near[0][0]:
+            f = (when - near[0][0]) / (near[1][0] - near[0][0])
+            up = near[0][1] * (1 - f) + near[1][1] * f
+        else:
+            up = min(near, key=lambda n: abs(n[0] - when))[1]
+        self.stats["tilted"] += 1
+        return tilted(camera, up / np.linalg.norm(up))
 
     def ranges(self, grids):
         self.grids.extend(grids)
@@ -120,7 +175,7 @@ class Fusion:
                 else:
                     waiting.append(grid)
                 continue
-            camera = self.poses.at(grid["time"])
+            camera = self.pose(grid["time"])
             if camera is None:
                 self.stats["tof_dropped"] += 1
                 continue
@@ -136,7 +191,7 @@ class Fusion:
 
         frames, self.frames = self.frames, []
         for image, exposed, intrinsics, fallback in frames:
-            camera = self.poses.at(exposed, slack=0.05)
+            camera = self.pose(exposed, slack=0.05)
             if camera is None and latest is not None and exposed > latest:
                 if now - exposed <= POSE_WAIT:
                     self.frames.append((image, exposed, intrinsics, fallback))

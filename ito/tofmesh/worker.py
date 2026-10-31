@@ -42,6 +42,8 @@ def _run(inputs, outputs, notes, options, integrated):
                     fusion.motion(item[1])
                 elif kind == "ranges":
                     fusion.ranges(item[1])
+                elif kind == "imu":
+                    fusion.imu(item[1])
                 elif kind == "frame":
                     fusion.frame(*item[1:])
                 try:
@@ -152,6 +154,11 @@ class TofMesh:
     def ranges(self, grids):
         if grids:
             self._put(("ranges", grids), True)
+
+    def imu(self, samples):
+        """Head IMU: [(pilot-clock time, xyzw sensor-to-world, 3x3 sensor-to-camera), ...]."""
+        if samples:
+            self._put(("imu", samples), True)
 
     # -- outputs ------------------------------------------------------------------------
     def _notes(self):
