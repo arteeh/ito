@@ -21,6 +21,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
+from .graphs import graph_model
 from .rgbd import RGBDBackend
 from .tof import RangeScale
 
@@ -323,6 +324,8 @@ class SLAMBackend(RGBDBackend):
         self.draw_seconds = 0.0
         self.ranged = None
         report("MASt3R-SLAM warming up")
+        # MASt3R's units as CUDA graphs, captured by the warm-up.
+        graph_model(self.model)
         try:
             self.warm_up()
         except self.oom as exc:

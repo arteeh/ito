@@ -194,11 +194,9 @@ def event_done(event):
 def bind_model(model, admission):
     import torch
 
-    blocks = [
-        block
-        for name in ("enc_blocks", "dec_blocks", "dec_blocks2")
-        for block in getattr(model, name)
-    ]
+    from .graphs import units
+
+    blocks = units(model)
     inside = {id(module) for block in blocks for module in block.modules()}
     blocks.extend(
         module
