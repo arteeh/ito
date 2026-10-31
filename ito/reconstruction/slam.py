@@ -4,9 +4,10 @@ The bundled upstream (models/slam, ito.build) does the SLAM: FrameTracker tracks
 against the last keyframe and picks keyframes, the backend links each keyframe to the one
 before and to what retrieval recalls and solves the global Sim(3) graph, and a lost camera
 relocalises by retrieval, mapping nothing meanwhile. This module is main.py's loop, its
-backend's work per keyframe and its relocalisation, ported line for line, in one process and
-one thread: upstream's single_thread mode, in which the frontend waits for the backend after
-every keyframe and every relocalisation attempt. Ito's own code is the edges: Input makes
+backend's loop (its work per keyframe and its relocalisation), ported line for line, in one
+process: the frontend in the worker's thread, the backend in a thread of its own, as upstream's
+base config runs them in two processes (single_thread off): the frontend never waits for the
+global solve. Ito's own code is the edges: Input makes
 frames as upstream's dataloader and create_frame do, and the camera pose and the keyframes'
 pointmaps (at their current poses, as upstream's viewer draws them) go out to the pilot.
 Where the robot has a ToF sensor, tof.RangeScale fixes once how many metres a map unit is, and
@@ -14,6 +15,8 @@ the pilot gets the map at that scale; the solve never sees it.
 """
 
 import threading
+import time
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import numpy as np
@@ -164,10 +167,10 @@ class SLAMBackend(RGBDBackend):
         load_config(str(source / "config/base.yaml"))
         if 1 + config["retrieval"]["k"] > EDGES_PER_KEYFRAME:
             raise RuntimeError("MASt3R-SLAM's retrieval k outgrew Ito's graph edge buffer")
-        # On top of base.yaml, what upstream's config/eval_calib.yaml sets: a calibrated camera,
-        # and a frontend that waits for the backend.
+        # On top of base.yaml, what upstream's config/calib.yaml sets: a calibrated camera.
+        # base.yaml's single_thread stays off: a frontend that waited for every global solve
+        # (eval_calib.yaml) lost a camera turning while it waited (close tape, 0.5 s stalls).
         config["use_calib"] = True
-        config["single_thread"] = True
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.set_grad_enabled(False)
         options["device"] = "cuda"
@@ -236,6 +239,13 @@ class SLAMBackend(RGBDBackend):
         self.ranged = None
         report("MASt3R-SLAM warming up")
         self.warm_up()
+        # The backend thread: upstream's run_backend, on a CUDA stream of its own. Its lock
+        # keeps the frontend's drop_spare out of a relocalisation or solve.
+        self.backend_lock = threading.RLock()
+        self.backend_stream = torch.cuda.Stream()
+        self.handoff = None  # the frontend's last queued work, for the backend's stream to wait on
+        self.failure = None
+        threading.Thread(target=self.run_backend, name="mast3r-slam-backend", daemon=True).start()
         report("MASt3R-SLAM ready; waiting for camera")
 
     def warm_up(self):
@@ -274,19 +284,28 @@ class SLAMBackend(RGBDBackend):
         """One frame through upstream's main loop. camera: the robot's own estimate of its camera
         pose (world-from-camera, Ito axes); only the first frame's is used, once, to place the
         map in the robot's gravity-aligned world. It never enters the solve."""
-        before = len(self.keyframes), self.graph.n_edges, self.retrieval.kf_counter
+        if self.failure is not None:
+            exc, self.failure = self.failure, None
+            if isinstance(exc, self.torch.cuda.OutOfMemoryError):
+                # Half a keyframe's backend work leaves upstream's keyframes, graph and retrieval
+                # out of step: that ends this map.
+                raise RuntimeError(
+                    f"Out of VRAM in MASt3R-SLAM's backend at {self.settings}: {self.lower} in "
+                    "Settings"
+                ) from exc
+            raise RuntimeError(f"MASt3R-SLAM's backend failed: {exc}") from exc
+        before = len(self.keyframes)
         try:
             self.step(rgb, camera)
         except self.torch.cuda.OutOfMemoryError as exc:
-            # The worker drops a frame that ran out of memory and goes on. Only tracking is
-            # safe to drop: half a keyframe's backend work leaves upstream's keyframes, graph
-            # and retrieval out of step, so that ends this map.
-            if (len(self.keyframes), self.graph.n_edges, self.retrieval.kf_counter) == before:
+            # The worker drops a frame that ran out of memory and goes on: safe for tracking,
+            # not once the frame went into the keyframes.
+            if len(self.keyframes) == before:
                 self.ooms, self.oom_at = self.ooms + 1, now
                 self.report(self.out_of_memory())
                 raise
             raise RuntimeError(
-                f"Out of VRAM in MASt3R-SLAM's backend at {self.settings}: {self.lower} in Settings"
+                f"Out of VRAM in MASt3R-SLAM at {self.settings}: {self.lower} in Settings"
             ) from exc
         if self.ranged is not None and self.tof.value is None and self.measure(self.ranged):
             self.scale = self.tof.value
@@ -327,7 +346,7 @@ class SLAMBackend(RGBDBackend):
             X_init, C_init = self.inference(self.model, frame)
             frame.update_pointmap(X_init, C_init)
             keyframes.append(frame)
-            self.optimize(len(keyframes) - 1)
+            self.queue_global_optimization(len(keyframes) - 1)
             states.set_mode(Mode.TRACKING)
             states.set_frame(frame)
             self.place(camera)
@@ -338,38 +357,110 @@ class SLAMBackend(RGBDBackend):
             if mode == Mode.TRACKING:
                 add_new_kf, _, try_reloc = self.tracker.track(frame)
                 if try_reloc:
+                    self.drop_spare()  # before RELOC: the backend relocalises into that slot
+                    # Ito: the frame first, then the mode the backend acts on.
+                    with states.lock:
+                        states.set_frame(frame)
+                        self.hand_off()
                     states.set_mode(Mode.RELOC)
-                    self.drop_spare()
                 else:
                     posed = frame.T_WC
                     self.ranged = frame
-                states.set_frame(frame)
+                    states.set_frame(frame)
             elif mode == Mode.RELOC:
                 X, C = self.inference(self.model, frame)
                 frame.update_pointmap(X, C)
-                states.set_frame(frame)
-                # Ito: a full map relocalises into its spare slot (see relocalization).
-                spare = len(keyframes) >= self.capacity
-                edges = self.graph.n_edges
-                if self.relocalization(states.get_frame(), keep=not spare):
-                    states.set_mode(Mode.TRACKING)
-                    self.relocalized += 1
-                    posed = self.lietorch.Sim3(keyframes.T_WC[len(keyframes) - 1])
-                    if spare:
-                        self.spare = edges
+                with states.lock:
+                    states.set_frame(frame)
+                    self.hand_off()
+                states.queue_reloc()
             else:
                 raise RuntimeError(f"Invalid MASt3R-SLAM mode {mode}")
             # Ito: a full map maps nothing new; upstream's buffer would overflow (IndexError).
             if add_new_kf and len(keyframes) < self.capacity:
                 keyframes.append(frame)
-                self.optimize(len(keyframes) - 1)
+                self.queue_global_optimization(len(keyframes) - 1)
         self.i += 1
         self.posed = posed
+
+    def hand_off(self):
+        """What the frontend queued so far on its CUDA stream, for the backend's to wait on."""
+        if self.backend_stream is not None:
+            self.handoff = self.torch.cuda.Event()
+            self.handoff.record()
+
+    def queue_global_optimization(self, idx):
+        self.hand_off()
+        self.states.queue_global_optimization(idx)
+
+    def run_backend(self):
+        try:
+            while True:
+                if not self.backend_step():
+                    time.sleep(0.01)
+        except BaseException as exc:  # noqa: BLE001 (handed to the frontend, which raises it)
+            self.failure = exc
+
+    def backend_step(self):
+        """One pass of upstream's run_backend loop (main.py). False when it had nothing to do.
+        Ito: on the backend's own CUDA stream, after the frontend work it reads; finished
+        (synchronised) before the frontend may see its results."""
+        Mode, states = self.Mode, self.states
+        mode = states.get_mode()
+        if mode == Mode.INIT or states.is_paused():
+            return False
+        torch = self.torch
+        stream = self.backend_stream
+        with self.backend_lock, torch.cuda.stream(stream) if stream is not None else nullcontext():
+            if mode == Mode.RELOC:
+                with states.lock:
+                    if stream is not None and self.handoff is not None:
+                        stream.wait_event(self.handoff)
+                    # Ito: a copy, the frontend overwrites states' frame with the next one.
+                    frame = states.get_frame()
+                    for name in ("img", "uimg", "X_canon", "C", "feat", "pos"):
+                        setattr(frame, name, getattr(frame, name).clone())
+                    frame.T_WC = self.lietorch.Sim3(frame.T_WC.data.clone())
+                    if stream is not None:
+                        stream.synchronize()
+                # Ito: a full map relocalises into its spare slot (see relocalization).
+                spare = len(self.keyframes) >= self.capacity
+                edges = self.graph.n_edges
+                success = self.relocalization(frame, keep=not spare)
+                if success:
+                    self.relocalized += 1
+                    if spare:
+                        self.spare = edges
+                if stream is not None:
+                    stream.synchronize()
+                if success:
+                    states.set_mode(Mode.TRACKING)
+                states.dequeue_reloc()
+                return True
+            idx = -1
+            with states.lock:
+                if len(states.global_optimizer_tasks) > 0:
+                    idx = states.global_optimizer_tasks[0]
+            if idx == -1:
+                return False
+            if stream is not None and self.handoff is not None:
+                stream.wait_event(self.handoff)
+            self.optimize(idx)
+            if stream is not None:
+                stream.synchronize()
+            with states.lock:
+                if len(states.global_optimizer_tasks) > 0:
+                    states.global_optimizer_tasks.pop(0)
+            return True
 
     def drop_spare(self):
         """A full map's spare keyframe goes when the camera is lost again, so the spare slot is
         free for the next relocalisation. Its edges are the graph's last (a full map adds no
         keyframe after it) and retrieval never held it."""
+        with self.backend_lock:
+            self._drop_spare()
+
+    def _drop_spare(self):
         if self.spare is None:
             return
         k = len(self.keyframes) - 1
@@ -381,7 +472,7 @@ class SLAMBackend(RGBDBackend):
         self.spare = None
 
     def optimize(self, idx):
-        """run_backend's work on one queued keyframe (main.py), which single_thread waits for."""
+        """run_backend's work on one queued keyframe (main.py)."""
         config, keyframes, factor_graph = self.config, self.keyframes, self.graph
         # Graph Construction
         kf_idx = []
