@@ -56,6 +56,7 @@ class Graphs:
         self.side = torch.cuda.Stream()  # warm-ups and captures, one stream for all units
         self.captured = 0
         self.failed = 0
+        self.off = False  # set when a replay's fence failed: every unit runs eagerly
 
     def install(self, module):
         """Replace module.forward (tensor arguments only) with graph replays."""
@@ -73,6 +74,7 @@ class Unit:
         torch = g.torch
         if (
             self.eager
+            or g.off
             or torch.is_grad_enabled()
             or torch.cuda.is_current_stream_capturing()
             or not all(isinstance(t, torch.Tensor) and t.is_cuda for t in inputs)
@@ -84,6 +86,8 @@ class Unit:
             torch.is_autocast_enabled("cuda"),
         )
         with g.lock:
+            if g.off:
+                return self.forward(*inputs)
             entry = self.entries.get(key)
             if entry is None:
                 entry = self.capture(key, inputs)
@@ -92,16 +96,27 @@ class Unit:
             buffers, graph, outputs, aliases, single = entry
             stream = torch.cuda.current_stream()
             stream.wait_event(g.done)
-            for buffer, value in zip(buffers, inputs, strict=True):
-                buffer.copy_(value)
-            graph.replay()
-            # An output that is one of the inputs (a decoder block returns its memory as it
-            # got it) is handed back as the caller's own tensor.
-            result = tuple(
-                inputs[alias] if alias is not None else output.clone()
-                for output, alias in zip(outputs, aliases, strict=True)
-            )
-            g.done.record(stream)
+            # From here this stream may use the shared pool: whatever happens (an OOM cloning an
+            # output), done is recorded after it, or the next replay on the other thread's
+            # stream could run over this one's buffers.
+            try:
+                for buffer, value in zip(buffers, inputs, strict=True):
+                    buffer.copy_(value)
+                graph.replay()
+                # An output that is one of the inputs (a decoder block returns its memory as it
+                # got it) is handed back as the caller's own tensor.
+                result = tuple(
+                    inputs[alias] if alias is not None else output.clone()
+                    for output, alias in zip(outputs, aliases, strict=True)
+                )
+            finally:
+                try:
+                    g.done.record(stream)
+                except BaseException:
+                    # No fence for the pool: no replay is safe after this one; eager from now.
+                    g.off = True
+                    log.error("MASt3R's CUDA graphs are off: their fence failed")
+                    raise
         return result[0] if single else result
 
     def capture(self, key, inputs):
@@ -111,6 +126,7 @@ class Unit:
         caller = torch.cuda.current_stream()
         side = g.side
         side.wait_stream(caller)
+        graph = outputs = None
         try:
             # Warm-up outside the capture, as CUDA graphs need (cuBLAS/cuDNN pick their kernels).
             with torch.cuda.stream(side):
@@ -120,12 +136,25 @@ class Unit:
             graph = torch.cuda.CUDAGraph()
             with torch.cuda.graph(graph, pool=g.pool, capture_error_mode="thread_local"):
                 outputs = self.forward(*buffers)
+        except torch.cuda.OutOfMemoryError:
+            # Not a unit that cannot be captured: the VRAM is short, and the caller reports it
+            # (at setup the clear "Out of VRAM ... lower ..." error). Same precision either way.
+            del graph, outputs, buffers
+            self.eager = True
+            g.failed += 1
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            raise
         except RuntimeError as exc:
             log.warning("MASt3R %s runs without a CUDA graph: %s", self.name, str(exc)[:300])
             self.eager = True
             g.failed += 1
             torch.cuda.synchronize()
             return None
+        finally:
+            # torch.cuda.graph restores the stream only after capture_end(), which raises when
+            # the capture failed.
+            torch.cuda.set_stream(caller)
         single = isinstance(outputs, torch.Tensor)
         outputs = (outputs,) if single else tuple(outputs)
         ids = {id(b): i for i, b in enumerate(buffers)}
