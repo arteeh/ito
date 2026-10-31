@@ -383,7 +383,6 @@ class SLAMBackend(RGBDBackend):
         self.appends = 0  # keyframes the frontend added: a frame that did is not dropped on OOM
         self.ooms, self.oom_at = 0, -OOM_SHOWN
         self.frame_oom_at = -GRAPHS_OOM_WINDOW  # the last frame dropped for VRAM
-        self.vram_full_at, self.vram_full_free = -OOM_SHOWN, 0  # see vram_full
         self.tof = RangeScale(self.input.K, (h, w))
         self.scale = 1.0  # metres per map unit, for display; 1 until the ToF fixes it
         self.drawn_pixels = self.footprint()
@@ -540,11 +539,6 @@ class SLAMBackend(RGBDBackend):
             self.torch.cuda.empty_cache()
         self.draw_seconds = time.perf_counter() - began
         self.publish(self.posed, now)
-
-    def vram_full(self, now, free):
-        """The worker's VRAM check found the card nearly full (memory.VRAM): it cuts the splat
-        limit, and the map fades without an error. The status says so for a while."""
-        self.vram_full_at, self.vram_full_free = now, free
 
     def setup_oom(self):
         return RuntimeError(
@@ -882,22 +876,12 @@ class SLAMBackend(RGBDBackend):
         else:
             state = "tracking"
         if owed and self.count - int(self.retiring.sum()) >= self.budget:
-            state += (
-                f"; splat budget full: {owed} keyframes not fully shown (raise Max splats, or "
-                "free VRAM)"
-            )
+            state += f"; splat budget full: {owed} keyframes not fully shown (raise Max splats)"
         warning = self.warning
         if now - self.oom_at < OOM_SHOWN:
             warning = (
                 self.out_of_memory() if warning is None else f"{self.out_of_memory()}. {warning}"
             )
-        if now - self.vram_full_at < OOM_SHOWN:
-            full = (
-                f"VRAM full ({self.vram_full_free / 2**20:.0f} MiB free): the map's least "
-                "recently seen splats fade to make room"
-                + ("" if self.warning else f"; {self.lower} in Settings")
-            )
-            warning = full if warning is None else f"{warning}. {full}"
         if warning:
             self.report(f"{warning}. MASt3R-SLAM {state}; {counts}")
         else:
@@ -947,7 +931,7 @@ class SLAMBackend(RGBDBackend):
         self.evicted.clear()
         pixels = self.footprint()
         if abs(pixels / self.drawn_pixels - 1) > 0.25:
-            # Max splats (or the VRAM manager's limit) changed the splat size a lot: redraw.
+            # Max splats changed the splat size a lot: redraw.
             self.stale[:] = True
             self.drawn_pixels = pixels
         redraw = torch.zeros(n, dtype=torch.bool, device=self.drawn.device)

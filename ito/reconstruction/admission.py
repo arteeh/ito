@@ -47,7 +47,6 @@ class Admission:
         self.pause_until = context.RawValue("d", 0)
         self.last_progress = context.RawValue("d", 0)
         self.gpu_busy = context.RawValue("d", -1)
-        self.memory_pressure = context.RawValue("b", False)
         self.active_seconds = context.RawValue("d", 0)
         self.chunks = context.RawValue("Q", 0)
         self.stage_seconds = context.RawArray("d", len(GPU_STAGES))

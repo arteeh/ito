@@ -158,7 +158,6 @@ class SettingsScreen:
         ):
             self.change(max_splats=min((1 << 31) - 1, (s.max_splats // 100_000 + 1) * 100_000))
         imgui.text_disabled("Higher: more scene detail, more VRAM and draw time.")
-        imgui.text_disabled("The live VRAM manager may keep fewer splats.")
         self.theme.heading("Diagnostics")
         debug = diagnostics.current()
         imgui.text("Diagnostic logging")

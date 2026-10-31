@@ -29,7 +29,7 @@ EXIT_WAIT = 3.0
 KILL_WAIT = 1.0
 CLOSE_WAIT = STOP_WAIT + EXIT_WAIT + KILL_WAIT
 # Max splats also bounds sorting and drawing per frame: 2^19 kept 90 Hz stereo on an
-# RTX 4070 Ti with a full scene. VRAM may hold fewer; the worker budgets that live.
+# RTX 4070 Ti with a full scene. Nothing lowers it to fit VRAM: the user's setting stands.
 DEFAULT_MAX_SPLATS = 1_000_000
 
 
@@ -61,12 +61,7 @@ def _run(recon):
         if backend.xp is not np:
             from .memory import VRAM
 
-            vram = VRAM(
-                backend.xp,
-                sys.modules.get("torch"),
-                recon.notes.send,
-                getattr(backend, "shed_graphs", None),
-            )
+            vram = VRAM(backend.xp)
         model = getattr(backend, "model", None)
         network = getattr(model, "network_precision", None)
         next_network_stats = 0
@@ -112,16 +107,9 @@ def _run(recon):
                     recon.nonfinite_points.value = count
             backend.expire(now, recon.ring.last_acknowledged())
             limit = recon.budget.value
-            if vram is not None:
-                fit = vram.check(len(backend.keys), len(backend.keys) <= backend.budget)
-                limit = limit if fit is None else min(limit, fit)
-                recon.admission.memory_pressure.value = vram.pressure
-                if vram.pressure and hasattr(backend, "vram_full"):
-                    backend.vram_full(now, vram.free_bytes)
+            if vram is not None and vram.check():
                 recon.admission.gpu_busy.value = -1 if vram.gpu.busy is None else vram.gpu.busy
                 recon.vram_free.value = vram.free_bytes
-                recon.vram_cached.value = vram.cached_bytes
-                recon.cache_releases.value = vram.releases
             if limit != backend.budget:
                 retired = backend.resize(limit, now)
                 recon.splat_limit.value = limit
@@ -236,7 +224,6 @@ def _run(recon):
                         # Windows: commit, which also counts what the driver backs with RAM.
                         private_bytes=getattr(memory, "private", None),
                         gpu_busy_pct=recon.admission.gpu_busy.value,
-                        memory_pressure=bool(recon.admission.memory_pressure.value),
                         render_backoffs=recon.admission.overruns.value,
                         input_frames_skipped=max(0, sequence - previous_sequence - 1),
                     )
@@ -371,8 +358,6 @@ class Reconstruction:
         self.work_seconds = context.RawValue("d", 0)
         self.work_total = context.RawValue("d", 0)
         self.vram_free = context.RawValue("Q", 0)
-        self.vram_cached = context.RawValue("Q", 0)
-        self.cache_releases = context.RawValue("Q", 0)
         self.input_age_seconds = context.RawValue("d", 0)
         self.skipped_inputs = context.RawValue("Q", 0)
         self.tracking = context.RawValue("b", False)
@@ -444,8 +429,6 @@ class Reconstruction:
             backend_work_ms=self.work_seconds.value * 1000,
             backend_work_total_s=self.work_total.value,
             vram_free_mib=self.vram_free.value / 2**20,
-            vram_cached_mib=self.vram_cached.value / 2**20,
-            cache_releases=self.cache_releases.value,
             input_age_ms=self.input_age_seconds.value * 1000,
             skipped_input_frames=self.skipped_inputs.value,
             cuda_scope_seconds=self.admission.active_seconds.value,
@@ -456,7 +439,6 @@ class Reconstruction:
                 for i, name in enumerate(GPU_STAGES)
             },
             cuda_completed_chunks=self.admission.chunks.value,
-            memory_pressure=bool(self.admission.memory_pressure.value),
             render_backoffs=self.admission.overruns.value,
             throttle_remaining_ms=max(0, self.admission.pause_until.value - clock.now()) * 1000,
         )
