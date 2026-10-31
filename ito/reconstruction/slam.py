@@ -234,7 +234,34 @@ class SLAMBackend(RGBDBackend):
         self.tof = RangeScale(self.input.K, (h, w))
         self.scale = 1.0  # metres per map unit, for display; 1 until the ToF fixes it
         self.ranged = None
+        report("MASt3R-SLAM warming up")
+        self.warm_up()
         report("MASt3R-SLAM ready; waiting for camera")
+
+    def warm_up(self):
+        """A frame's work on a noise image before the first real one, none of it kept: CUDA,
+        cuSOLVER and CuPy load or compile their kernels at first use, which took the first frame
+        over 6 s (CuPy's voxel kernels 5 s). Live, a first frame that slow is far from the
+        next, and upstream's tracker loses it: a camera that turns meanwhile never tracks."""
+        from mast3r_slam.mast3r_utils import mast3r_match_asymmetric
+
+        torch, intrinsics = self.torch, self.intrinsics
+        rng = np.random.default_rng(0)
+        rgb = rng.integers(0, 256, (intrinsics.height, intrinsics.width, 3), dtype=np.uint8)
+        identity = self.lietorch.Sim3.Identity(1, device="cuda")
+        keyframe, frame = (self.input.frame(0, rgb, identity) for _ in range(2))
+        keyframe.update_pointmap(*self.inference(self.model, keyframe))
+        mast3r_match_asymmetric(self.model, frame, keyframe)
+        features = self.retrieval.prep_features(keyframe.feat)[0]
+        self.retrieval.quantize_custom(features, self.retrieval.asmk.params.get("query_ivf"))
+        torch.linalg.cholesky(torch.eye(7, device="cuda"))
+        (identity.inv() * identity).act(torch.zeros(1, 3, device="cuda"))
+        xp = self.xp
+        points = xp.asarray(rng.normal(size=(4096, 3)), dtype=xp.float32)
+        colors = xp.asarray(rng.integers(0, 256, (4096, 3)), dtype=xp.uint8)
+        sizes = xp.full(4096, 0.01, dtype=xp.float32)
+        RGBDBackend(64, intrinsics, device="cuda").integrate_points(points, colors, 0.0, sizes)
+        torch.cuda.synchronize()
 
     def bind_admission(self, admission):
         from .admission import bind_model, bind_native
