@@ -21,7 +21,7 @@ class VRAM:
         # Gives back more VRAM when the caches were not enough (MASt3R's CUDA graphs): True if
         # it freed anything. Before the splats, which fade for little (96 B a slot).
         self.shed = shed
-        self.gpu = GPU(xp.cuda.runtime.getDevice())
+        self.gpu = GPU(bus_id=xp.cuda.runtime.deviceGetPCIBusId(xp.cuda.runtime.getDevice()))
         self.next_check = 0.0
         self.last_release = -RELEASE_COOLDOWN
         self.pressure = False

@@ -13,7 +13,9 @@ class _Utilization(ct.Structure):
 
 
 class GPU:
-    def __init__(self, index=0):
+    def __init__(self, index=0, bus_id=None):
+        """bus_id: the card's PCI bus id ("0000:01:00.0"), for a CUDA device: CUDA numbers only the
+        cards it sees (CUDA_VISIBLE_DEVICES, fastest first), NVML's index counts all of them."""
         self.library = None
         self.handle = ct.c_void_p()
         self.free = self.total = 0
@@ -28,9 +30,17 @@ class GPU:
             library = ct.CDLL("nvml.dll" if os.name == "nt" else "libnvidia-ml.so.1")
             self._call(library.nvmlInit_v2)
             initialized = True
-            self._call(
-                library.nvmlDeviceGetHandleByIndex_v2, ct.c_uint(index), ct.byref(self.handle)
-            )
+            if bus_id is None:
+                self._call(
+                    library.nvmlDeviceGetHandleByIndex_v2, ct.c_uint(index), ct.byref(self.handle)
+                )
+            else:
+                bus_id = bus_id if isinstance(bus_id, bytes) else bus_id.encode()
+                self._call(
+                    library.nvmlDeviceGetHandleByPciBusId_v2,
+                    ct.c_char_p(bus_id),
+                    ct.byref(self.handle),
+                )
             self.library = library
             self.sample()
         except (OSError, AttributeError, RuntimeError):

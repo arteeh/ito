@@ -456,10 +456,11 @@ class SLAMBackend(RGBDBackend):
         free, _ = torch.cuda.mem_get_info()
         # On Windows the runtime reports this process's own budget: with another program
         # holding 6 GiB of a 12 GiB card it said 10.8 GiB free, NVML 4.9 (#83).
-        card = GPU(torch.cuda.current_device())
-        if card.library is not None:
-            free = min(free, card.free)
-        card.close()
+        if self.xp is not np:  # CuPy's: Torch 2.5 has no PCI bus id
+            card = GPU(bus_id=self.xp.cuda.runtime.deviceGetPCIBusId(torch.cuda.current_device()))
+            if card.library is not None:
+                free = min(free, card.free)
+            card.close()
         need = WORK_BYTES_PER_PIXEL * pixels + SPILLING
         if free >= need:
             return
