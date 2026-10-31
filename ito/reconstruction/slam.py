@@ -640,6 +640,7 @@ class SLAMBackend(RGBDBackend):
                 n_kf = len(keyframes)
                 kf_idx = list(kf_idx)  # convert to list
                 frame_idx = [n_kf - 1] * len(kf_idx)
+                edges = factor_graph.n_edges
                 if factor_graph.add_factors(
                     frame_idx,
                     kf_idx,
@@ -654,7 +655,11 @@ class SLAMBackend(RGBDBackend):
                             min_thresh=config["retrieval"]["min_thresh"],
                         )
                     successful_loop_closure = True
-                    keyframes.T_WC[n_kf - 1] = keyframes.T_WC[kf_idx[0]].clone()
+                    # Ito: from the best recalled keyframe the match kept. Upstream takes
+                    # retrieval's first, which non-strict relocalisation may have dropped (the
+                    # same one under strict: it keeps all or none).
+                    seed = int(factor_graph.jj2[2 * edges])
+                    keyframes.T_WC[n_kf - 1] = keyframes.T_WC[seed].clone()
                 else:
                     keyframes.pop_last()
 
