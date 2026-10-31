@@ -45,15 +45,21 @@ class VRAM:
         return max(0, cached)
 
     def release(self, free, now):
+        """Hand the cached blocks back to the driver; the free VRAM after it. What is reported
+        released is measured: the estimate (cached) also counts blocks that cannot go, as the
+        CUDA graphs' pool's."""
         self.xp.get_default_memory_pool().free_all_blocks()
         if self.torch is not None:
             self.torch.cuda.empty_cache()
         self.last_release = now
         self.releases += 1
+        after = self.free()
+        self.cached_bytes = self.cached()
         self.note(
             f"VRAM {free / 2**30:.2f} GiB free: released "
-            f"{self.cached_bytes / 2**30:.2f} GiB of cached CUDA blocks"
+            f"{max(0, after - free) / 2**30:.2f} GiB of cached CUDA blocks"
         )
+        return after
 
     def check(self, slots, settled):
         now = clock.now()
@@ -65,14 +71,18 @@ class VRAM:
         self.pressure = free < FLOOR_BYTES
         if free >= MARGIN_BYTES:
             self.fit = slots + (free - MARGIN_BYTES) // SLOT_BYTES
-        elif not self.pressure:
-            self.fit = slots if self.fit is None else min(self.fit, slots)
-        elif self.cached_bytes >= FLOOR_BYTES - free and now - self.last_release >= (
-            RELEASE_COOLDOWN
+            return self.fit
+        if (
+            self.pressure
+            and self.cached_bytes >= FLOOR_BYTES - free
+            and now - self.last_release >= RELEASE_COOLDOWN
         ):
-            self.release(free, now)
+            free = self.free_bytes = self.release(free, now)
+            self.pressure = free < FLOOR_BYTES
+        if not self.pressure:
             self.fit = slots if self.fit is None else min(self.fit, slots)
         elif settled:
+            # Still short after any release: splats give up slots.
             shortfall = -(-(MARGIN_BYTES - free) // SLOT_BYTES)
             fit = max(MIN_SLOTS, slots - shortfall, slots // 2)
             if self.fit is None or fit < self.fit:
