@@ -361,25 +361,9 @@ class SLAMBackend(RGBDBackend):
             self.pending = np.zeros(buffer, bool)
             # ... and whether it waits to be redrawn: the scale or splat size changed.
             self.stale = np.zeros(buffer, bool)
-            free, _ = torch.cuda.mem_get_info()
-            # On Windows the runtime reports this process's own budget: with another program
-            # holding 6 GiB of a 12 GiB card it said 10.8 GiB free, NVML 4.9 (#83).
-            card = GPU(torch.cuda.current_device())
-            if card.library is not None:
-                free = min(free, card.free)
-            card.close()
         except self.oom as exc:
             raise self.setup_oom() from exc
-        # Windows' driver does not fail an allocation past the card: it spills into system
-        # memory, so running short shows only as a crawl. Say so at the start instead.
-        working = WORK_BYTES_PER_PIXEL * h * w
-        self.warning = (
-            f"VRAM short ({free / 2**20:.0f} MiB free after MASt3R-SLAM's setup, its frames "
-            f"need about {(working + SPILLING) / 2**20:.0f}): the driver spills into system "
-            f"memory and everything slows; {self.lower}"
-            if free < working + SPILLING
-            else None
-        )
+        self.warning = None  # a lasting one in the status (warn_short, shed_graphs)
         v, u = np.mgrid[:h, :w].reshape(2, -1).astype(np.float32)
         K = self.input.K
         rays = (u - K[0, 2]) / K[0, 0], (v - K[1, 2]) / K[1, 1]
@@ -423,6 +407,7 @@ class SLAMBackend(RGBDBackend):
         if self.xp is not np:
             self.xp.get_default_memory_pool().free_all_blocks()
         torch.cuda.empty_cache()
+        self.warn_short(h * w)
         # The backend thread: upstream's run_backend, on a CUDA stream of its own. Its lock
         # keeps the frontend's drop_spare out of a relocalisation or solve.
         self.backend_lock = threading.RLock()
@@ -461,6 +446,31 @@ class SLAMBackend(RGBDBackend):
         sizes = xp.full(4096, 0.01, dtype=xp.float32)
         RGBDBackend(64, intrinsics, device="cuda").integrate_points(points, colors, 0.0, sizes)
         torch.cuda.synchronize()
+
+    def warn_short(self, pixels):
+        """Windows' driver does not fail an allocation past the card: it spills into system
+        memory, so running short shows only as a crawl. Say so at the start instead. Measured
+        after the warm-up and the cache release: the CUDA graphs (if kept) hold their pool by
+        then, and what is left is the frames'."""
+        torch = self.torch
+        free, _ = torch.cuda.mem_get_info()
+        # On Windows the runtime reports this process's own budget: with another program
+        # holding 6 GiB of a 12 GiB card it said 10.8 GiB free, NVML 4.9 (#83).
+        card = GPU(torch.cuda.current_device())
+        if card.library is not None:
+            free = min(free, card.free)
+        card.close()
+        need = WORK_BYTES_PER_PIXEL * pixels + SPILLING
+        if free >= need:
+            return
+        short = (
+            f"VRAM short ({free / 2**20:.0f} MiB free after MASt3R-SLAM's setup, its frames "
+            f"need about {need / 2**20:.0f}): the driver spills into system memory and "
+            "everything slows"
+        )
+        # shed_graphs' note, if the warm-up dropped them, already says what to lower.
+        lower = f"; {self.lower}" if self.warning is None else f". {self.warning}"
+        self.warning = short + lower
 
     def shed_graphs(self):
         """Out of VRAM with MASt3R's CUDA graphs: they keep their own buffers and outputs (0.3-0.4
