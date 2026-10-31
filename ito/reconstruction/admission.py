@@ -6,7 +6,10 @@ from contextlib import contextmanager, nullcontext
 from ito import clock
 
 PUBLICATION_PACKETS = 2
-MATCH_QUERIES = 4096
+# Queries per matching chunk: ~0.6 ms of iter_proj/refine_matches GPU work at 512x288, about one
+# model block. 4096 made ~70 chunks a tracked frame whose Python cost (~0.3 ms each) was 6x the
+# kernels' own time.
+MATCH_QUERIES = 32768
 MAX_PENDING_CHUNKS = 4
 MAX_BACKOFF_FRAME_SHARE = 0.25
 # torch.cuda.memory_reserved() flattens the allocator's whole statistics tree in Python
