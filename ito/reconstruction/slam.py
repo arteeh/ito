@@ -127,13 +127,79 @@ class Input:
         return Frame(index, img, img_shape, img_shape.clone(), uimg, T_WC)
 
 
+class StreamLock:
+    """A reentrant lock that also orders CUDA work across threads. Upstream's frontend and
+    backend share the keyframes and the frame state (SharedKeyframes, SharedStates) and guard
+    them with one lock each; in Ito they are two threads, each on its own CUDA stream, and a
+    lock orders only the CPU. So a holder's release records an event on its stream, and the
+    next holder's stream waits for it: what one side queued under the lock (a solve's poses, the
+    tracker's refined pointmap, a snapshot copy) is done before the other side's work under it
+    runs, in both directions, and nobody blocks on the GPU. Shared tensors are only read or
+    written under the lock, or copied there; views kept past it are of data the other side
+    never writes."""
+
+    def __init__(self, cuda):
+        self.lock = threading.RLock()
+        self.cuda = cuda
+        self.depth = 0
+        self.released = None  # the last holder's event
+
+    def __enter__(self):
+        self.lock.acquire()
+        self.depth += 1
+        if self.depth == 1 and self.released is not None:
+            self.cuda.current_stream().wait_event(self.released)
+        return self
+
+    def __exit__(self, *exc):
+        self.depth -= 1
+        try:
+            if self.depth == 0:
+                event = self.cuda.Event()
+                event.record()
+                self.released = event
+        finally:
+            self.lock.release()
+
+
+class TrackedKeyframes:
+    """The keyframes as FrameTracker sees them. Its keyframe's pose is a copy, as the backend's
+    solve may move the keyframe while it tracks; its write-back stores what the tracker changes,
+    the keyframe's pointmap (SharedKeyframes.__setitem__'s part for it), not that copy."""
+
+    def __init__(self, keyframes, Sim3):
+        self.keyframes, self.Sim3 = keyframes, Sim3
+
+    def __len__(self):
+        return len(self.keyframes)
+
+    def last_keyframe(self):
+        with self.keyframes.lock:
+            keyframe = self.keyframes.last_keyframe()
+            if keyframe is not None:
+                keyframe.T_WC = self.Sim3(keyframe.T_WC.data.clone())
+        return keyframe
+
+    def __setitem__(self, idx, keyframe):
+        shared = self.keyframes
+        with shared.lock:
+            shared.X[idx] = keyframe.X_canon
+            shared.C[idx] = keyframe.C
+            shared.N[idx] = keyframe.N
+            shared.N_updates[idx] = keyframe.N_updates
+            shared.is_dirty[idx] = True
+
+
 class Manager:
     """What SharedKeyframes and SharedStates take from a multiprocessing Manager, for one
-    process: upstream shares them between its frontend, backend and viewer processes."""
+    process: upstream shares them between its frontend, backend and viewer processes. cuda:
+    torch.cuda, for locks that also order the threads' CUDA streams (StreamLock)."""
 
-    @staticmethod
-    def RLock():
-        return threading.RLock()
+    def __init__(self, cuda=None):
+        self.cuda = cuda
+
+    def RLock(self):
+        return threading.RLock() if self.cuda is None else StreamLock(self.cuda)
 
     @staticmethod
     def Value(typecode, value):
@@ -204,11 +270,13 @@ class SLAMBackend(RGBDBackend):
                 weights, report, precision=precision, precision_report=precision_report
             )
             K = torch.as_tensor(self.input.K, device="cuda")
-            manager = Manager()
+            manager = Manager(torch.cuda)
             self.keyframes = SharedKeyframes(manager, h, w, buffer=buffer)
             self.states = SharedStates(manager, h, w)
             self.keyframes.set_intrinsics(K)
-            self.tracker = FrameTracker(self.model, self.keyframes, "cuda")
+            self.tracker = FrameTracker(
+                self.model, TrackedKeyframes(self.keyframes, lietorch.Sim3), "cuda"
+            )
             self.graph = FactorGraph(
                 self.model, self.keyframes, K, "cuda", max_edges=EDGES_PER_KEYFRAME * buffer
             )
@@ -257,7 +325,6 @@ class SLAMBackend(RGBDBackend):
         # keeps the frontend's drop_spare out of a relocalisation or solve.
         self.backend_lock = threading.RLock()
         self.backend_stream = torch.cuda.Stream()
-        self.handoff = None  # the frontend's last queued work, for the backend's stream to wait on
         self.reloc_frames = self.reloc_tried = 0  # frames the frontend set for relocalising
         self.resumed = 0  # relocalisations the frontend has started tracking from
         self.failure = None
@@ -370,7 +437,8 @@ class SLAMBackend(RGBDBackend):
             # Upstream resets the tracker's match guess whenever its keyframe is new; after a
             # relocalisation it is, and the guess left is from before the loss.
             self.tracker.reset_idx_f2k()
-            T_WC = self.lietorch.Sim3(keyframes.T_WC[len(keyframes) - 1].clone())
+            with keyframes.lock:
+                T_WC = self.lietorch.Sim3(keyframes.T_WC[len(keyframes) - 1].clone())
         frame = self.input.frame(self.i, rgb, T_WC)
         posed = self.ranged = None
         if mode == Mode.INIT:
@@ -378,7 +446,7 @@ class SLAMBackend(RGBDBackend):
             X_init, C_init = self.inference(self.model, frame)
             frame.update_pointmap(X_init, C_init)
             keyframes.append(frame)
-            self.queue_global_optimization(len(keyframes) - 1)
+            states.queue_global_optimization(len(keyframes) - 1)
             states.set_mode(Mode.TRACKING)
             states.set_frame(frame)
             self.place(camera)
@@ -393,7 +461,6 @@ class SLAMBackend(RGBDBackend):
                     # Ito: the frame first, then the mode the backend acts on.
                     with states.lock:
                         states.set_frame(frame)
-                        self.hand_off()
                         self.reloc_frames += 1
                     states.set_mode(Mode.RELOC)
                 else:
@@ -405,7 +472,6 @@ class SLAMBackend(RGBDBackend):
                 frame.update_pointmap(X, C)
                 with states.lock:
                     states.set_frame(frame)
-                    self.hand_off()
                     self.reloc_frames += 1
                 states.queue_reloc()
             else:
@@ -413,19 +479,9 @@ class SLAMBackend(RGBDBackend):
             # Ito: a full map maps nothing new; upstream's buffer would overflow (IndexError).
             if add_new_kf and len(keyframes) < self.capacity:
                 keyframes.append(frame)
-                self.queue_global_optimization(len(keyframes) - 1)
+                states.queue_global_optimization(len(keyframes) - 1)
         self.i += 1
         self.posed = posed
-
-    def hand_off(self):
-        """What the frontend queued so far on its CUDA stream, for the backend's to wait on."""
-        if self.backend_stream is not None:
-            self.handoff = self.torch.cuda.Event()
-            self.handoff.record()
-
-    def queue_global_optimization(self, idx):
-        self.hand_off()
-        self.states.queue_global_optimization(idx)
 
     def close(self):
         """Stop the backend thread. With the worker stopped, admission ends its GPU work at the
@@ -443,8 +499,8 @@ class SLAMBackend(RGBDBackend):
 
     def backend_step(self):
         """One pass of upstream's run_backend loop (main.py). False when it had nothing to do.
-        Ito: on the backend's own CUDA stream, after the frontend work it reads; finished
-        (synchronised) before the frontend may see its results."""
+        Ito: on the backend's own CUDA stream; what it shares with the frontend it reads and
+        writes under upstream's locks, which order the two streams (StreamLock)."""
         Mode, states = self.Mode, self.states
         mode = states.get_mode()
         if mode == Mode.INIT or states.is_paused():
@@ -462,8 +518,6 @@ class SLAMBackend(RGBDBackend):
                 if len(states.global_optimizer_tasks) > 0:
                     idx = states.global_optimizer_tasks[0]
             if idx != -1:
-                if stream is not None and self.handoff is not None:
-                    stream.wait_event(self.handoff)
                 self.optimize(idx)
                 if stream is not None:
                     stream.synchronize()
@@ -478,15 +532,11 @@ class SLAMBackend(RGBDBackend):
                     if self.reloc_tried == self.reloc_frames:
                         return False
                     self.reloc_tried = self.reloc_frames
-                    if stream is not None and self.handoff is not None:
-                        stream.wait_event(self.handoff)
                     # Ito: a copy, the frontend overwrites states' frame with the next one.
                     frame = states.get_frame()
                     for name in ("img", "uimg", "X_canon", "C", "feat", "pos"):
                         setattr(frame, name, getattr(frame, name).clone())
                     frame.T_WC = self.lietorch.Sim3(frame.T_WC.data.clone())
-                    if stream is not None:
-                        stream.synchronize()
                 # Ito: a full map relocalises into its spare slot (see relocalization).
                 spare = len(self.keyframes) >= self.capacity
                 edges = self.graph.n_edges
@@ -702,7 +752,9 @@ class SLAMBackend(RGBDBackend):
         shown = self.shown
         if shown:
             drawn = lietorch.Sim3(self.drawn[:shown])
-            delta = (drawn.inv() * lietorch.Sim3(keyframes.T_WC[:shown])).data[:, 0]
+            with keyframes.lock:
+                poses = keyframes.T_WC[:shown].clone()
+            delta = (drawn.inv() * lietorch.Sim3(poses)).data[:, 0]
             # How far each keyframe's points moved, over their depth: translation, rotation
             # and scale of the change in the keyframe's own frame.
             vector, w = delta[:, 3:6].norm(dim=1), delta[:, 6].abs()
