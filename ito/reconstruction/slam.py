@@ -792,6 +792,19 @@ class SLAMBackend(RGBDBackend):
         drawn anew. A keyframe the splat pool could not take whole (full, or its old splats
         still fading), or that lost splats to the pool's pressure, stays pending: it is
         offered again, a few per frame while the pool has room, until all of it is shown."""
+        # Ito: not while the backend thread holds the keyframes (a relocalisation holds them
+        # for its retrieval, matching and solve, ~0.3 s): tracking would wait for it. Whatever
+        # is due stays due (dirty, moved or new) and is drawn at the next frame.
+        lock = self.keyframes.lock  # a StreamLock: try its RLock, then enter it for the ordering
+        if not lock.lock.acquire(blocking=False):
+            return
+        try:
+            with lock:
+                self.redraw(now)
+        finally:
+            lock.lock.release()
+
+    def redraw(self, now):
         torch, lietorch, keyframes = self.torch, self.lietorch, self.keyframes
         n = len(keyframes)
         for k in self.evicted:
