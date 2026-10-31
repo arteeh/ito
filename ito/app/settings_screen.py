@@ -117,6 +117,15 @@ class SettingsScreen:
             "Half). 512 is upstream's. A full map tracks and relocalises on but maps nothing "
             "new. Applies at the next connection."
         )
+        imgui.text("Map trainer (test)")
+        if self.layout.button(
+            "On" if s.map_trainer else "Off", "map trainer", self.layout.row(1)[0]
+        ):
+            self.change(map_trainer=not s.map_trainer)
+        imgui.text_disabled(
+            "A proof of concept: trains the splat map against the camera's frames for a sharper "
+            "scene. Uses more GPU and about 1 GB more VRAM. Applies at the next connection."
+        )
         self.theme.heading("Scene")
         imgui.text("Max splats")
         minus, value_width, plus = self.layout.row(1, 1.85, 1)

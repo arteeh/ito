@@ -411,6 +411,7 @@ class Pilot:
                     precision=self.settings.precision,
                     input_resolution=self.settings.input_resolution,
                     keyframes=self.settings.keyframes,
+                    map_trainer=self.settings.map_trainer,
                     backend=self.backend,
                 )
 

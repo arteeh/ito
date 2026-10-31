@@ -16,6 +16,8 @@ class AppSettings(BaseModel):
     precision: Literal["full", "half"] = "full"
     input_resolution: Literal[25, 50, 75, 100] = 100
     keyframes: Literal[KEYFRAMES] = 128
+    # Proof of concept (#82): train the splat map photometrically (ito/reconstruction/maptrain.py).
+    map_trainer: bool = False
     max_splats: int = Field(default=1_000_000, ge=1, le=(1 << 31) - 1)
     diagnostic_logging: bool = False
 
