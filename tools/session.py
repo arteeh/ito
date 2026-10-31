@@ -26,6 +26,7 @@ import imageio_ffmpeg
 
 HERE = Path(__file__).resolve().parents[1]
 ROOT = Path("/mnt/c/Users/me/Projects/ito")
+WSLG = Path("/tmp/.X11-unix/X0")
 
 
 def windows(path: Path) -> str:
@@ -157,12 +158,16 @@ def main():
             "--policies",
             str(prefix / "policies/current"),
             *(["--viewer"] if args.viewer else []),
+            # The head camera's lens is three pinhole renders a frame: llvmpipe, on a CPU shared
+            # with the physics and the encoder, can fall behind 30 fps. WSLg's GPU keeps up.
+            *(["--gl", "glfw"] if not args.viewer and WSLG.exists() else []),
             *args.sim_args.split(),
         ],
         cwd=args.sim_source,
         stdout=sim_log,
         stderr=subprocess.STDOUT,
         env=os.environ
+        | ({"DISPLAY": os.environ.get("DISPLAY", ":0")} if WSLG.exists() else {})
         | {
             "PYTHONPATH": str(args.sim_source),
             "GST_PLUGIN_PATH": str(prefix / "gst-plugins-rs/target/debug"),

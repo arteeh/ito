@@ -66,7 +66,6 @@ def simulation(
     gl=None,
     camera_height=None,
     blur=1,
-    hfov=None,
     calibrated=True,
     head_imu=None,
     imu_noise=1.0,
@@ -74,9 +73,6 @@ def simulation(
     seed=0,
 ):
     camera_height = camera_height or lens.DEFAULT_HEIGHT
-    hfov = hfov or lens.HFOV_ESTIMATE_DEG
-    if not 10 <= hfov <= 170:
-        raise ValueError("the camera's field of view must be between 10 and 170 degrees")
     head_imu = True if head_imu is None else head_imu
     upstream, rl, policies_dir = (p.resolve() for p in (upstream, rl, policies_dir))
     logs.mkdir(parents=True, exist_ok=True)
@@ -88,7 +84,6 @@ def simulation(
         "OPENBLAS_NUM_THREADS": "1",
         "OMP_NUM_THREADS": "1",
         "ITO_MICRODUCK_CAMERA_HEIGHT": str(camera_height),
-        "ITO_MICRODUCK_CAMERA_HFOV": str(hfov),
         "ITO_MICRODUCK_CAMERA_FPS": "30",
     }
     sim_env["ITO_MICRODUCK_BLUR"] = str(blur)
@@ -108,6 +103,14 @@ def simulation(
     )
     if not ort:
         raise FileNotFoundError("Install ONNX Runtime in the simulator's .venv")
+    if not list((rl / ".venv/lib").glob("python*/site-packages/cv2/__init__.py")):
+        # Installs from before the beta's lens: setup-sim.sh adds it, but needs apt (sudo).
+        uv = rl.parent / "tools/uv"
+        raise FileNotFoundError(
+            "the sim body needs OpenCV for the beta's lens: re-run setup-sim.sh, or just "
+            f"{uv if uv.exists() else 'uv'} pip install --python {rl / '.venv/bin/python'} "
+            "opencv-python-headless==4.11.0.86"
+        )
     media_env = os.environ.copy()
     # Pollen's hardware encoder presets are not portable to every desktop NVENC driver.
     media_env.setdefault("GST_PLUGIN_FEATURE_RANK", "x264enc:1024")
@@ -143,15 +146,16 @@ def simulation(
             f'quality = "{lens.RESOLUTIONS[camera_height]}"',
         ]
         if calibrated:
-            focal = lens.focal_px(1920, hfov)
+            # The rendered lens (lens.py), as a calibration of it would be written.
             media += [
                 "[media.intrinsics]",
-                "width = 1920",
-                "height = 1080",
-                f"fx = {focal!r}",
-                f"fy = {focal!r}",
-                "cx = 960.0",
-                "cy = 540.0",
+                f"width = {lens.WIDTH}",
+                f"height = {lens.HEIGHT}",
+                f"fx = {lens.F_PX!r}",
+                f"fy = {lens.F_PX!r}",
+                f"cx = {lens.WIDTH / 2!r}",
+                f"cy = {lens.HEIGHT / 2!r}",
+                f"distortion = [{', '.join(map(repr, lens.DISTORTION))}]",
             ]
         media_config.write_text("\n".join(media) + "\n")
         policies = {
@@ -389,11 +393,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     arguments(parser)
     parser.add_argument(
-        "--beta-hfov",
-        type=float,
-        help=f"the beta's lens, degrees across (default: estimate {lens.HFOV_ESTIMATE_DEG})",
-    )
-    parser.add_argument(
         "--uncalibrated",
         action="store_true",
         help="a beta with no [media.intrinsics], which publishes no camera geometry",
@@ -450,7 +449,6 @@ def main():
             gl=args.gl,
             camera_height=args.camera_height,
             blur=args.blur,
-            hfov=args.beta_hfov,
             calibrated=not args.uncalibrated,
             head_imu=args.head_imu,
             imu_noise=args.imu_noise,
