@@ -27,6 +27,10 @@ TRACKING_LOST = 2.0
 TRACKING_STEADY = 1.0
 TRACKING_GAP = 0.5
 RESTART_FIRST, RESTART_LONGEST, RESTART_HEALTHY = 1.0, 30.0, 60.0
+# ToF mesh: the eye is the robot camera's position averaged over one Microduck gait period. A
+# walking duck's head sways ~1.3 cm sideways at every step (sim, 1 Nov), which shook near
+# things in the view; the average cancels the sway and lags the walk by half of this.
+EYE_AVERAGE = 0.42
 INPUT_FRESH, SHORT_STALL = 0.2, 1.0
 # Pilot state goes out as each input sample arrives (a headset's 72-90 Hz, a monitor's refresh),
 # and at least at HEARTBEAT when samples stop: the robot must hear the deadman go stale.
@@ -101,6 +105,7 @@ class Pilot:
         self.matched_frames = 0
         self.connections = 0
         self.camera_pose = pose()
+        self.eye_positions = deque()  # (time, camera position) for EYE_AVERAGE
         self.last_tracking = 0.0
         self.settings_revision = 0
         self.last_frame = 0.0
@@ -268,7 +273,7 @@ class Pilot:
         self.last_frame = clock.now()
         self.state = replace(self.state, video=rgb, video_time=captured)
         if self.backend in ("rgbd", "tofmesh") and camera is not None:
-            self._anchor(camera)
+            self._anchor(camera, captured if self.backend == "tofmesh" else None)
         if self.worker is None or self.failure:
             return
         if self.backend == "rgbd" and (depth is None or camera is None):
@@ -355,17 +360,28 @@ class Pilot:
             result[:3, :3] = pose(yaw=pan, pitch=tilt)[:3, :3] @ result[:3, :3]
         return pose(yaw=metadata.body_yaw) @ result
 
-    def _anchor(self, camera):
+    def _anchor(self, camera, averaged_at=None):
         """Only the camera's position anchors the pilot's eye.
 
         The pilot's head is the whole view rotation, in the gravity-aligned world anchored
         where the robot started. The robot turns its head and body to look where the pilot
         looks, but those turns never rotate the view: the pilot is never turned by the robot.
+        With `averaged_at` (a frame's capture time) the eye is the average position over the
+        last EYE_AVERAGE seconds.
         """
         self.camera_pose = camera
+        eye = camera[:3, 3]
+        if averaged_at is not None:
+            kept = self.eye_positions
+            if kept and averaged_at < kept[-1][0]:
+                kept.clear()  # a new session's clock
+            kept.append((averaged_at, eye.copy()))
+            while averaged_at - kept[0][0] > EYE_AVERAGE:
+                kept.popleft()
+            eye = sum(p for _, p in kept) / len(kept)
         self.state = replace(
             self.state,
-            robot_camera=pose(camera[:3, 3]),
+            robot_camera=pose(eye),
             robot_heading=math.atan2(float(camera[0, 2]), float(camera[2, 2])),
         )
 
