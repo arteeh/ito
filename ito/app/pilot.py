@@ -44,6 +44,12 @@ SEND_INTERVAL, HEARTBEAT = 0.002, 1 / 60
 LINK_WAIT, WORKER_WAIT = 1.0, CLOSE_WAIT
 
 
+def _targets(zones):
+    """A RangeGrid's per-zone targets as one row per zone, nearest first, NaN-padded."""
+    depth = max(1, max(map(len, zones), default=0))
+    return [[*zone, *[math.nan] * (depth - len(zone))] for zone in zones]
+
+
 class ShutdownStuck(RuntimeError):
     pass
 
@@ -256,7 +262,7 @@ class Pilot:
                     mount=camera_matrix(grid.mount),
                     shape=(grid.rows, grid.cols),
                     field_of_view=grid.field_of_view,
-                    distances=[math.nan if d is None else d for d in grid.distances],
+                    distances=_targets(grid.distances),
                 )
                 for grid in message.ranges
             ]

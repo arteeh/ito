@@ -171,8 +171,11 @@ class Volume:
         origin = self.keys[slots] * self.block_size
         return origin[:, None, :] + self.local[None, :, :]
 
-    def integrate(self, zones, world_from_sensor, now, position):
-        """Fuse one ToF frame (zones.Zones) seen from world_from_sensor (4x4)."""
+    def integrate(self, zones, world_from_sensor, now, position, carve=True):
+        """Fuse one ToF frame (zones.Zones) seen from world_from_sensor (4x4). carve=False for
+        targets behind a zone's nearest one: only the band around their surface is fused, since
+        the ray before them is free in only part of the zone's footprint, and which part the
+        sensor does not say."""
         if not zones.count:
             return 0
         samples = zones.samples(3)
@@ -200,7 +203,7 @@ class Volume:
         reach = r - self.truncation
         t = np.arange(step, max(float(reach.max()), step), step)
         along = (rays[:, None, :] * t[None, :, None])[t[None, :] < reach[:, None]]
-        front = self.existing(along @ rotate + origin)
+        front = self.existing(along @ rotate + origin) if carve else np.zeros(0, np.int64)
         front = front[~np.isin(front, slots)]
         if len(front):
             # Only blocks holding a surface can change; empty space needs no more carving.
@@ -220,7 +223,7 @@ class Volume:
         # spans tens of centimetres of range, so carving with it would punch holes in the floor
         # in front of the measured point (zones.lookup: `free`).
         with np.errstate(invalid="ignore"):
-            ok &= (sdf <= self.truncation) | (distance < free - self.truncation)
+            ok &= (sdf <= self.truncation) | (carve & (distance < free - self.truncation))
         if not ok.any():
             return 0
         # Farther ranges are noisier (sim and datasheet: ~3 mm near, ~2 cm at 4 m), and the

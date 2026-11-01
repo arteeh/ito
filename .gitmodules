@@ -2,10 +2,12 @@
 # builds the robot side from them, drivers/microduck/sim.py runs the body from microduck_rl.
 # microduck: release tag daemon-v0.18.3 plus the beta board's simulated head IMU,
 # ToF, calibrated camera and home-relative gaze commands (API v48), frames that carry
-# their capture time in their RTP timestamps and a simulated head IMU clocked by its
-# quickest handshake (arteeh fork, branch feat/frame-stamps-0.18.3).
+# their capture time in their RTP timestamps, a simulated head IMU clocked by its
+# quickest handshake (feat/frame-stamps-0.18.3) and up to four ToF targets per zone
+# (API v49; arteeh fork, branch feat/tof-targets-0.18.3).
 # microduck_rl: its develop branch (no releases; bae39f5) plus the matching simulated
-# sensors and per-board camera mount (arteeh fork, branch feat/beta-sim-develop).
+# sensors and per-board camera mount (feat/beta-sim-develop) and a simulated ToF whose
+# zones see their cone (arteeh fork, branch feat/tof-honest-develop).
 # gst-plugins-rs: 0.14.5+.
 [submodule "third_party/microduck"]
 	path = third_party/microduck

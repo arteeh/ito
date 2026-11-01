@@ -59,10 +59,14 @@ def imu(chip, samples, sensor, camera):
 
 
 def ranges(chip, when, data, sensor, camera, fov):
-    rows, cols = data["rows"], data["cols"]
+    rows, cols, targets = data["rows"], data["cols"], data["targets"]
     distances = data["distance_mm"]
-    if rows * cols != len(distances) or len(data["status"]) != len(distances):
+    if rows * cols * targets != len(distances) or len(data["status"]) != len(distances):
         raise ValueError("Microduck ToF frame does not match its zones")
+    usable = [
+        mm / 1000 if status in VALID and 0 < mm <= 100_000 else None
+        for mm, status in zip(distances, data["status"], strict=True)
+    ]
     return RangeGrid(
         sensor=chip.lower(),
         time=when,
@@ -70,9 +74,10 @@ def ranges(chip, when, data, sensor, camera, fov):
         rows=rows,
         cols=cols,
         field_of_view=(fov, fov),
+        # tofd's slots are strongest first; Ito's targets nearest first.
         distances=tuple(
-            mm / 1000 if status in VALID and 0 < mm <= 100_000 else None
-            for mm, status in zip(distances, data["status"], strict=True)
+            tuple(sorted(d for d in usable[zone : zone + targets] if d is not None))
+            for zone in range(0, len(usable), targets)
         ),
         sigma=RANGE_SIGMA,
     )

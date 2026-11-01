@@ -4,6 +4,11 @@ A RangeGrid's zones divide its field of view evenly in angle (as the VL53L5CX an
 simulated one do): zone (row, col) looks `across` right and `up` up of the sensor's -Z axis,
 with row 0 at the top and column 0 at the left. Each distance is along the zone's centre ray.
 
+A zone reports every target in its footprint at least 600 mm apart (ST's limit; nearer ones merge
+into one range), nearest first: a table edge and the wall behind it. One Zones holds one target per
+zone: the nearest (what carves free space: nothing in the footprint is nearer), or the next ones
+behind it (zones_from_grid).
+
 Between zone centres the inverse range is interpolated bilinearly (exact for a plane seen by a
 pinhole, near enough for these small angles), but only across zones that can be one surface:
 neighbouring ranges of a plane seen at a grazing angle `GRAZING` or steeper differ by at most
@@ -474,7 +479,13 @@ class Zones:
 
 
 def zones_from_grid(grid, sensor_to_camera=None):
-    """Zones of a pilot-side grid dict (time, mount 4x4, shape, field_of_view, distances)."""
+    """Zones of a pilot-side grid dict (time, mount 4x4, shape, field_of_view, distances: per zone
+    its targets, nearest first, NaN-padded): one per target, the zones' nearest targets first,
+    then their second nearest, and so on."""
     rows, cols = grid["shape"]
     mount = grid["mount"] if sensor_to_camera is None else sensor_to_camera
-    return Zones(rows, cols, grid["field_of_view"], grid["distances"], mount)
+    targets = np.asarray(grid["distances"], dtype=np.float64).reshape(rows * cols, -1)
+    return [
+        Zones(rows, cols, grid["field_of_view"], targets[:, k], mount)
+        for k in range(targets.shape[1])
+    ]

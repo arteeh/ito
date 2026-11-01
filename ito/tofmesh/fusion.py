@@ -431,10 +431,14 @@ class Fusion:
                 self.stats["tof_dropped"] += 1
                 continue
             started = time.perf_counter()
-            zones = zones_from_grid(grid)
+            zones, *behind = zones_from_grid(grid)
             world_from_sensor = camera @ zones.mount
             guide_ms = self._guide(zones, world_from_sensor, grid["time"])
             fused = self.volume.integrate(zones, world_from_sensor, grid["time"], camera[:3, 3])
+            for farther in behind:
+                fused += self.volume.integrate(
+                    farther, world_from_sensor, grid["time"], camera[:3, 3], carve=False
+                )
             ended = time.perf_counter()
             self.stats["tof_frames"] += 1
             self.stats["tof_voxels"] = fused

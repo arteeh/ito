@@ -224,8 +224,9 @@ class Imu(Model):
 class RangeGrid(Model):
     """One frame of a multizone time-of-flight sensor: rows x cols zones evenly dividing its
     field of view, row 0 at the top and column 0 at the left as the sensor looks out along its
-    -Z (+X right, +Y up, like a camera). Each distance is the range along its zone's centre
-    ray, in metres, or None where the zone measured nothing usable."""
+    -Z (+X right, +Y up, like a camera). Each zone has the ranges of the targets it found in its
+    footprint, in metres, nearest first: one surface, or several along the zone (an edge: a
+    table and the wall behind it), or none where it measured nothing usable."""
 
     sensor: Name
     time: Time = Field(description="Driver clock when the sensor ranged, not its arrival")
@@ -233,7 +234,7 @@ class RangeGrid(Model):
     rows: int = Field(ge=1, le=64)
     cols: int = Field(ge=1, le=64)
     field_of_view: tuple[Number, Number] = Field(description="Full width and height, radians")
-    distances: tuple[Annotated[Number, Field(gt=0, le=100)] | None, ...]
+    distances: tuple[tuple[Annotated[Number, Field(gt=0, le=100)], ...], ...]
     sigma: tuple[Number, Number] = Field(
         description="Range noise, one sigma: metres plus a fraction of the distance"
     )
@@ -241,7 +242,9 @@ class RangeGrid(Model):
     @model_validator(mode="after")
     def shape(self) -> Self:
         if len(self.distances) != self.rows * self.cols:
-            raise ValueError("a range grid has one distance per zone")
+            raise ValueError("a range grid has one set of targets per zone")
+        if any(list(zone) != sorted(zone) for zone in self.distances):
+            raise ValueError("a zone's targets are nearest first")
         if any(not 0 < a < 3.1416 for a in self.field_of_view):
             raise ValueError("range field of view must be within (0, pi)")
         if self.sigma[0] < 0 or self.sigma[1] < 0:
