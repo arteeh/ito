@@ -84,7 +84,6 @@ void main() {
     }
     vec3 sum = vec3(0.0);
     float total = 0.0;
-    float best = 0.0;
     for (int k = 0; k < K; ++k) {
         if (boost[k] <= 0.0 || projection <= 0.0) continue;
         vec4 c = camera_from_world[k] * vec4(v_world, 1.0);
@@ -101,20 +100,26 @@ void main() {
         if (d > nearest + 0.06 + 0.03 * d) continue;
         vec3 toward = (origin[k] - v_world) / max(d, 1e-4);
         float facing = dot(n, toward);
-        if (facing < 0.15) continue;
+        // Kept views only where they face the surface; the live frame colours everything it
+        // sees, however grazing (the low camera sees the floor at a shallow angle, and a bumpy
+        // ToF floor tips its normals further away).
+        if (k == 0) facing = abs(facing);
+        else if (facing < 0.15) continue;
         float edge = clamp(min(min(u, image_size.x - u), min(v, image_size.y - v))
                            / (0.06 * image_size.x), 0.0, 1.0);
-        float w = boost[k] * facing * facing * edge / (1.0 + 0.5 * d * d);
+        // The floor keeps a grazing or border sample of the live frame in the blend
+        // (w^6 stays a normal float), where it is the only view.
+        float w = max(boost[k] * facing * facing * edge / (1.0 + 0.5 * d * d), 1e-5);
         // A steep power: the best view nearly alone, so small pose errors between views do
         // not show as double images.
         float w2 = w * w;
         float w6 = w2 * w2 * w2;
         sum += w6 * texture(images, vec3(st, float(k))).rgb;
         total += w6;
-        best = max(best, w);
     }
-    vec3 colour = base;
-    if (total > 0.0) colour = mix(base, sum / total, clamp(best * 6.0, 0.0, 1.0));
+    // Any frame that sees the fragment colours it fully; the voxel colours (or grey) only
+    // where no frame does.
+    vec3 colour = total > 0.0 ? sum / total : base;
     f_colour = vec4(colour, 1.0);
 }
 """
