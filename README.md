@@ -15,10 +15,10 @@ Press **R** to pilot. WASD moves where you look; click or Tab for mouse-look. Sp
 In WSL on the Windows PC, from this checkout:
 
 ```sh
-tools/sim.sh [BUILD]   # the sim with its viewer, and that Windows build of Ito connected to it
+tools/sim.sh   # robotd, tofd, mediad and Ito's driver in Docker, and the MuJoCo body with its viewer
 ```
 
-It runs `docker compose up -d` (robotd, tofd, mediad, Ito's driver) and the MuJoCo body, `uv run --extra sim python -m drivers.microduck.sim --viewer`. Closing the viewer stops both. Ito connects to the WSL address, port 8081, with the code in `~/.config/ito/microduck-sim-code`.
+Connect Ito to `localhost:8081` with the pairing code it prints. Closing the viewer stops the sim.
 
 ## Development
 

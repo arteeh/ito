@@ -34,7 +34,4 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv UV_PYTHON_INSTALL_DIR=/opt/python \
 COPY drivers/microduck/pyproject.toml drivers/microduck/uv.lock /opt/ito/drivers/microduck/
 RUN uv sync --frozen --no-install-project --project /opt/ito/drivers/microduck --python 3.12 \
     && uv pip install --python /opt/venv onnxruntime==1.24.4
-COPY ito /opt/ito/ito
-COPY drivers/__init__.py /opt/ito/drivers/
-COPY drivers/microduck/*.py /opt/ito/drivers/microduck/
 CMD ["python", "-m", "drivers.microduck.robot"]
