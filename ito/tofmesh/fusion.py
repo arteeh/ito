@@ -482,6 +482,7 @@ class Fusion:
             track = np.array(times), np.array(quaternions)
             self.frame_delay.estimate(now, *track, self.frame_intrinsics)
             self.stats["frame_delay_extra_ms"] = self.frame_delay.extra * 1000
+            self.stats["frame_delay_moves"] = self.frame_delay.measured
 
     def _guide(self, zones, world_from_sensor, when):
         """Edges of this ToF frame along the camera frame nearest in time (zones.guide)."""

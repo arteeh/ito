@@ -18,11 +18,15 @@ from collections import deque
 import numpy as np
 
 THUMB_WIDTH = 160
-WINDOW = 2.0  # seconds of frame pairs an estimate uses
+# The worker admits at most 15 frames a second (worker.FRAME_RATE), from a 30 Hz camera ~11
+# (live sim, 1 Nov: 97 ms apart), so a window holds ~11 pairs a second. An estimate uses the last
+# WINDOW seconds and needs PAIRS of them moving: more than half, a head turning most of the window.
+# (30 pairs in 2 s needed every frame of a full 15 per second: the estimate never ran live.)
+WINDOW = 3.0  # seconds of frame pairs an estimate uses
 EVERY = 0.5  # seconds between estimates
 MOVED = 1.0  # thumbnail pixels a pair must be predicted to move to count
 CLIP = 5.0  # thumbnail pixels: a worse match counts no more than this
-PAIRS = 30  # moving pairs an estimate needs
+PAIRS = 20  # moving pairs an estimate needs
 # A steady turn says nothing about the delay (every delay predicts the same image shift): the
 # costs come out nearly flat. The estimate moves only to a delay that matches clearly better
 # than the current one, by this fraction of the median cost.

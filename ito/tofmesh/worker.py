@@ -269,6 +269,7 @@ class TofMesh:
             "tofmesh_tof_frames": s.get("tof_frames"),
             "tofmesh_tof_dropped": s.get("tof_dropped"),
             "tofmesh_frame_delay_extra_ms": s.get("frame_delay_extra_ms"),
+            "tofmesh_frame_delay_moves": s.get("frame_delay_moves"),
             "tofmesh_untilted": s.get("untilted"),
             "tofmesh_tilt_held": s.get("tilt_held"),
             "tofmesh_tilt_ahead": s.get("tilt_ahead"),
