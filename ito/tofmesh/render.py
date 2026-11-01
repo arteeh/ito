@@ -27,11 +27,11 @@ every live frame is also baked into a texture atlas at about the camera's resolu
 block owns six square tiles, one per axis direction (+X, -X, +Y, ...), and a triangle lives in
 the tiles of the directions its face points along (a planar projection of the block onto that
 axis, fixed in the world, so re-meshing a block keeps its texture in place). A texel keeps the
-frame that saw it best (facing it most squarely and nearest, the same weight the projectors
-use) and is replaced only by a view about as good or better (BAKE_KEEP): seen areas stay as sharp
-as their best view, and a view as good refreshes them (a moved object). The atlas joins the
-projector blend with the weight of the view it kept. Tiles of a block the volume forgot are
-cleared when its slot is given to a new block (MeshFrame.cleared).
+frame that saw it best (facing it most squarely, nearest and nearest the image's middle, the
+same weight the projectors use) and is replaced only by a view about as good (BAKE_KEEP): seen
+areas stay as sharp as their best view, and a view as good refreshes them (a moved object). The
+atlas joins the projector blend with the weight of the best view it had. Tiles of a block the
+volume forgot are cleared when its slot is given to a new block (MeshFrame.cleared).
 """
 
 import logging
@@ -61,9 +61,9 @@ LAYER_TILES = (LAYER // TILE) ** 2
 # drawn from those within ~75 (so a drawn tile was always baked).
 BAKE_FACING = 0.2
 DRAW_FACING = 0.25
-# A texel takes a new view's colour when that view's weight is at least this share of the weight
-# of the view it holds.
-BAKE_KEEP = 0.7
+# A texel takes a new view's colour when that view's weight is at least this share of the best
+# weight a view of it ever had.
+BAKE_KEEP = 0.85
 
 VERTEX = """
 #version 430
@@ -112,6 +112,17 @@ float along(vec3 n, int d) {
 }
 """
 
+# A view's weight also falls off away from its image's middle (q: fx, fy, cx, cy): of the frames of
+# a turn that all see a spot, the one that saw it nearest the middle (the way the pilot looks at
+# it) wins. Its lens edges and the floor's height error (at a grazing angle a centimetre moves
+# a floor point by many pixels) are worst at the border.
+CENTRAL_GLSL = """
+float central(vec4 q, float u, float v) {
+    vec2 r = vec2((u - q.z) / q.x, (v - q.w) / q.y);
+    return 1.0 / (1.0 + 2.0 * dot(r, r));
+}
+"""
+
 FRAGMENT = """
 #version 430
 #define K %(K)d
@@ -132,6 +143,7 @@ in vec3 v_local;
 flat in int v_slot;
 out vec4 f_colour;
 %(TILE_GLSL)s
+%(CENTRAL_GLSL)s
 // The atlas at this fragment: rgb and the weight of the view it kept (alpha^4), blended over the
 // tiles of the directions the triangle faces; w 0 where none of them was baked here.
 vec4 baked(vec3 face) {
@@ -208,7 +220,8 @@ void main() {
                            / (0.06 * image_size.x), 0.0, 1.0);
         // The floor keeps a grazing or border sample of the live frame in the blend
         // (w^6 stays a normal float), where it is the only view.
-        float w = max(boost[k] * facing * facing * edge / (1.0 + 0.5 * d * d), 1e-5);
+        float w = max(boost[k] * facing * facing * edge * central(q, u, v) / (1.0 + 0.5 * d * d),
+                      1e-5);
         // A steep power: the best view nearly alone, so small pose errors between views do
         // not show as double images.
         float w2 = w * w;
@@ -319,6 +332,7 @@ uniform float shadow_slots;
 in vec3 v_world;
 in vec3 v_normal;
 flat in ivec4 v_tile;
+%(CENTRAL_GLSL)s
 
 void main() {
     ivec2 texel = ivec2(gl_FragCoord.xy);
@@ -339,14 +353,19 @@ void main() {
     if (s < -0.25) return;
     float edge = clamp(min(min(u, image_size.x - u), min(v, image_size.y - v))
                        / (0.06 * image_size.x), 0.0, 1.0);
-    float w = s * s * edge / (1.0 + 0.5 * d * d);
+    float w = s * s * edge * central(intrinsics, u, v) / (1.0 + 0.5 * d * d);
     if (w <= 0.0) return;
+    // Alpha holds the best weight any view of this texel had (its fourth root: 8 bits keep the
+    // low weights of a grazing floor apart), and the colour is the last view's within BAKE_KEEP of
+    // it. A best so far, not the colour's own weight: a turning camera's views of a texel weaken
+    // a little each frame as it leaves the middle of the image, and against its own last weight
+    // each would win, down to the frame's border.
     ivec3 at = ivec3(texel, v_tile.z);
-    float kept = imageLoad(atlas, at).a;
-    kept *= kept;
-    if (w < %(BAKE_KEEP)f * kept * kept) return;
-    // Alpha holds the weight's fourth root: 8 bits keep the low weights of a grazing floor apart.
-    float a = max(sqrt(sqrt(w)), 1.0 / 255.0);
+    float best = imageLoad(atlas, at).a;
+    best *= best;
+    best *= best;
+    if (w < %(BAKE_KEEP)f * best) return;
+    float a = max(sqrt(sqrt(max(w, best))), 1.0 / 255.0);
     imageStore(atlas, at, vec4(texture(images, vec3(st, 0.0)).rgb, a));
 }
 """
@@ -662,7 +681,7 @@ def _shader(source, slots=PROJECTORS):
     tile = TILE_GLSL % {"TILE": TILE, "SIDE": LAYER // TILE, "SPAN": TILE_SPAN}
     return source % {
         "K": slots, "TILE_GLSL": tile, "DRAW_FACING": DRAW_FACING, "BAKE_FACING": BAKE_FACING,
-        "BAKE_KEEP": BAKE_KEEP, "LAYER": LAYER,
+        "BAKE_KEEP": BAKE_KEEP, "LAYER": LAYER, "CENTRAL_GLSL": CENTRAL_GLSL,
     }  # fmt: skip
 
 
