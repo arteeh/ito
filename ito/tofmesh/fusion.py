@@ -177,6 +177,7 @@ def turned(camera, turn):
 class Fusion:
     def __init__(
         self,
+        memory,
         voxel=0.04,
         capacity=6000,
         keyframes=PROJECTORS,
@@ -184,7 +185,7 @@ class Fusion:
         head_imu=True,
         frame_delay=True,
     ):
-        self.volume = Volume(voxel=voxel, capacity=capacity, max_range=max_range)
+        self.volume = Volume(memory, voxel=voxel, capacity=capacity, max_range=max_range)
         self.poses = PoseTrack()
         self.head_imu = head_imu
         # (time, xyzw): the camera's orientation in the head IMU's world (+Y up, any heading)

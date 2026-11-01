@@ -112,7 +112,7 @@ def _merge(old, new, frame_type):
 class TofMesh:
     """Pilot-side handle: submit(), motion(), ranges(), poll(), status(), statistics(), close()."""
 
-    def __init__(self, intrinsics, *, capture_delay=0.0, voxel=0.04, capacity=6000):
+    def __init__(self, intrinsics, memory, *, capture_delay=0.0, voxel=0.04, capacity=6000):
         context = mp.get_context("spawn")
         self.intrinsics = intrinsics
         self.capture_delay = float(capture_delay)
@@ -122,7 +122,9 @@ class TofMesh:
         self.integrated = context.Value("Q", 0, lock=False)
         # A camera whose frames carry their own capture time (capture_delay 0) needs no measured
         # delay; the estimate is the fallback for one that only guesses (latency.FrameDelay).
-        options = dict(voxel=voxel, capacity=capacity, frame_delay=self.capture_delay > 0)
+        options = dict(
+            memory=memory, voxel=voxel, capacity=capacity, frame_delay=self.capture_delay > 0
+        )
         self.process = context.Process(
             target=_run,
             args=(self.inputs, self.outputs, self.notes, options, self.integrated),

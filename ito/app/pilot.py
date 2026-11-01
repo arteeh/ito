@@ -356,7 +356,11 @@ class Pilot:
             nonlocal worker_started
             worker_started = clock.now()
             with self.worker_lock:
-                self.worker = TofMesh(camera.intrinsics, capture_delay=camera.capture_delay)
+                self.worker = TofMesh(
+                    camera.intrinsics,
+                    self.settings.mesh_memory,
+                    capture_delay=camera.capture_delay,
+                )
 
         reconstruct()
         self.connections += 1

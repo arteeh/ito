@@ -6,6 +6,8 @@ from imgui_bundle import imgui
 from ito import diagnostics
 from ito.desktop.settings import AppSettings, load, save
 
+MEMORY_STEPS = (2, 3, 5, 7, 10, 14, 20, 28, 40)  # Fewer / More on the settings screen
+
 
 class SettingsScreen:
     def __init__(self, layout):
@@ -53,6 +55,17 @@ class SettingsScreen:
 
     def draw(self):
         s = self.settings
+        self.theme.heading("Mesh")
+        imgui.text(f"Mesh memory: {s.mesh_memory} ToF frames")
+        fewer = [m for m in MEMORY_STEPS if m < s.mesh_memory]
+        more = [m for m in MEMORY_STEPS if m > s.mesh_memory]
+        left, right = self.layout.row(1, 1)
+        if self.layout.button("Fewer", "memory fewer", left, disabled=not fewer):
+            self.change(mesh_memory=fewer[-1])
+        imgui.same_line()
+        if self.layout.button("More", "memory more", right, disabled=not more):
+            self.change(mesh_memory=more[0])
+        imgui.text_disabled("Fewer: the mesh follows the latest view. More: smoother, steadier.")
         self.theme.heading("Diagnostics")
         debug = diagnostics.current()
         imgui.text("Diagnostic logging")
