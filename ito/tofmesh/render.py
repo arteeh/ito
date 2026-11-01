@@ -28,6 +28,7 @@ import os
 
 import moderngl
 import numpy as np
+from OpenGL import GL
 
 from ito.render.pose import validate_pose
 
@@ -465,6 +466,7 @@ class MeshRenderer:
         self.shadow_fbo = context.framebuffer([self.shadows], self.shadow_depth)
         self.shadow_fbo.clear(1e9, 0, 0, 0)
         self.projectors = [None] * slots  # (camera_from_world, intrinsics, origin)
+        self.live_time = None  # exposure of the image in slot 0
         self.shadow_dirty = set()
         self.vbo = self.nbo = self.cbo = self.ibo = None
         self.vao = self.shadow_vao = None
@@ -534,6 +536,7 @@ class MeshRenderer:
             self.epoch = frame.epoch
             self.count = 0
             self.projectors = [None] * self.slots
+            self.live_time = None
             self.shadow_dirty.clear()
             self.shadow_stale.clear()
         if frame.positions is not None:
@@ -543,7 +546,9 @@ class MeshRenderer:
             self.shadow_stale.update(
                 k for k, p in enumerate(self.projectors) if k and p is not None
             )
-        for p in frame.projectors:
+        # The live frame first: a kept view is usually that same frame (fusion.py keeps the
+        # frame it is projecting live), and is then copied on the GPU from slot 0.
+        for p in sorted(frame.projectors, key=lambda p: p.slot):
             self._projector(p)
         return True
 
@@ -591,7 +596,18 @@ class MeshRenderer:
 
     def _projector(self, p):
         fx, fy, cx, cy, w, h = p.intrinsics
-        if p.image is not None:
+        if p.image is not None and p.slot and self.live_time == p.time:
+            # The image slot 0 holds already: a GPU copy, no second upload.
+            GL.glCopyImageSubData(
+                self.images.glo, GL.GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0,
+                self.images.glo, GL.GL_TEXTURE_2D_ARRAY, 0, 0, 0, p.slot, *self.image_size, 1,
+            )  # fmt: skip
+            sx, sy = self.image_size[0] / w, self.image_size[1] / h
+            fx, fy = fx * sx, fy * sy
+            cx, cy = (cx + 0.5) * sx - 0.5, (cy + 0.5) * sy - 0.5
+        elif p.image is not None:
+            if p.slot == 0:
+                self.live_time = p.time
             image = p.image
             if (w, h) != self.image_size:
                 # Rescale intrinsics to the slot size; nearest resampling is enough here.
@@ -886,8 +902,6 @@ class MeshRenderer:
         self.context.enable_only(moderngl.BLEND)
 
     def _blit(self, source, target, viewport):
-        from OpenGL import GL
-
         x, y, w, h = viewport
         GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, source.glo)
         GL.glBindFramebuffer(GL.GL_DRAW_FRAMEBUFFER, target.glo)
