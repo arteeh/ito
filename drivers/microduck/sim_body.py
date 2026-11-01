@@ -359,6 +359,7 @@ if __name__ == "__main__":
                 viewer = launch(model, data, **kwargs)
                 with viewer.lock():
                     mujoco.mjv_defaultFreeCamera(model, viewer.cam)
+                    viewer.opt.geomgroup[4] = 1  # the eye ring (sim.py)
                 close = viewer.close
 
                 def stop_cameras_then_close():

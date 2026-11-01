@@ -24,7 +24,12 @@ SCENES = RL / "mjlab_microduck/robot/microduck"
 
 def scene():
     """Upstream's scene and robot, furnished, with the robot's visual and contact geoms in
-    groups 2 and 3 (the head camera draws the visual ones)."""
+    groups 2 and 3 (the head camera draws the visual ones).
+
+    The eye ring around the lens goes in group 4, which only the viewer draws: the head camera
+    sits at the sensor, 8.5 mm behind the lens's front, and from there saw the ring as a solid
+    border round the frame's sides and corners (a fifth of the frame), which Ito then painted
+    onto the room. A real lens looks out from its front, past the ring."""
     state = Path(tempfile.gettempdir()) / "ito-microduck-scene"
     shutil.rmtree(state, ignore_errors=True)
     state.mkdir()
@@ -34,6 +39,8 @@ def scene():
     robot = ET.parse(SCENES / "robot_groundcontact.xml")
     for geom in robot.findall(".//worldbody//geom"):
         geom.set("group", "2" if geom.get("class") == "visual" else "3")
+        if geom.get("mesh") == "noenoeil" and geom.get("class") == "visual":
+            geom.set("group", "4")
     robot.write(state / "robot_groundcontact.xml")
     furnish(SCENES / "scene.xml").write(state / "scene.xml")
     return state / "scene.xml"
