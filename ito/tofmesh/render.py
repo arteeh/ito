@@ -338,6 +338,9 @@ class MeshRenderer:
         self.target = None
         self.projection_enabled = True
         self.epoch = None  # the worker run whose mesh and projectors are shown
+        # Kept views whose distance map is older than the mesh: refreshed one per drawn frame,
+        # so a mesh update (~12.7 a second) redraws only the live view's map at once.
+        self.shadow_stale = set()
         self.guess_enabled = _guess_setting() if guess is None else bool(guess)
         self.guess_dirty = False
         self._guess_resources()
@@ -387,9 +390,14 @@ class MeshRenderer:
             self.count = 0
             self.projectors = [None] * self.slots
             self.shadow_dirty.clear()
+            self.shadow_stale.clear()
         if frame.positions is not None:
             self._mesh(frame.positions, frame.normals, frame.colours, frame.triangles)
-            self.shadow_dirty.update(k for k, p in enumerate(self.projectors) if p is not None)
+            if self.projectors[0] is not None:
+                self.shadow_dirty.add(0)
+            self.shadow_stale.update(
+                k for k, p in enumerate(self.projectors) if k and p is not None
+            )
         for p in frame.projectors:
             self._projector(p)
         return True
@@ -457,6 +465,9 @@ class MeshRenderer:
         self.shadow_dirty.add(p.slot)
 
     def _shadows(self):
+        self.shadow_stale -= self.shadow_dirty
+        if self.shadow_stale:
+            self.shadow_dirty.add(self.shadow_stale.pop())
         if not self.shadow_dirty:
             return
         self.shadow_fbo.use()
