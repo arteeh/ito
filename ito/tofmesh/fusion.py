@@ -105,7 +105,39 @@ TILT_HOLD = 0.5
 # stream keeps where the head points over seconds. Measured in the sim (BigKangaroo, 1 Nov):
 # camera-pose error that changes within a second, walking, 1.13 -> 0.44 degrees median.
 HEADING_SECONDS = 1.0
+# The head IMU chip's fused orientation shakes while the duck walks: ~0.3 degrees within a second,
+# both in tilt (its accelerometer pulls it towards a "gravity" that a swaying head swings by
+# ~0.5 g at the gait's 2.3 Hz) and in heading (the virtual chip integrates each 60 Hz reading's
+# rate over the interval before it, which runs half a reading ahead of a head turning ~100
+# degrees a second). Sim, 1 Nov. So the orientation is the chip's gyro, integrated by the
+# trapezoid rule, tied to the chip's orientation by a complementary filter: the gyro keeps
+# what changes faster than GYRO_SECONDS, the chip what changes slower (gravity, and its own
+# bias handling). The gyro's bias (up to 1 degree a second) offsets the result by at most
+# GYRO_SECONDS of it, constant, never a shake. A fixed constant.
+GYRO_SECONDS = 0.3
+GYRO_GAP = 0.1  # seconds without a reading after which the filter starts over from the chip
 UP = np.array([0.0, 1.0, 0.0])
+
+
+def exp_rotation(v):
+    """3x3 rotation of a rotation vector (radians)."""
+    angle = float(np.linalg.norm(v))
+    if angle < 1e-12:
+        return np.eye(3)
+    k = np.asarray(v) / angle
+    skew = np.array([[0, -k[2], k[1]], [k[2], 0, -k[0]], [-k[1], k[0], 0]])
+    return np.eye(3) + np.sin(angle) * skew + (1 - np.cos(angle)) * skew @ skew
+
+
+def log_rotation(r):
+    """Rotation vector (radians) of a 3x3 rotation."""
+    x, y, z, w = quaternion(r)
+    if w < 0:
+        x, y, z, w = -x, -y, -z, -w
+    s = np.sqrt(x * x + y * y + z * z)
+    if s < 1e-12:
+        return np.zeros(3)
+    return np.array([x, y, z]) / s * 2 * np.arctan2(s, w)
 
 
 def heading_of(r):
@@ -153,6 +185,7 @@ class Fusion:
         self.head_imu = head_imu
         # (time, xyzw): the camera's orientation in the head IMU's world (+Y up, any heading)
         self.orientations = deque(maxlen=500)
+        self.attitude = None  # (time, sensor-to-world 3x3, gyro): the head IMU's filtered state
         self.unheaded = deque(maxlen=500)  # pose-stream samples (time, 3x3) not yet compared
         self.headings = deque(maxlen=500)  # (time, radians): pose-stream minus IMU heading
         self.last_turn = None  # (time, 3x3): the latest correction made
@@ -197,13 +230,33 @@ class Fusion:
 
     def imu(self, samples):
         """Head IMU samples with the chip's own orientation: [(pilot-clock time, sensor-to-world
-        xyzw, sensor-to-camera 3x3), ...], world +Y up, heading arbitrary."""
-        for when, orientation, mount in samples:
+        xyzw, sensor-to-camera 3x3[, gyro rad/s in sensor axes]), ...], world +Y up, heading
+        arbitrary. With the gyro, the orientation is the complementary filter of GYRO_SECONDS;
+        without it, the chip's."""
+        for when, orientation, mount, *gyro in samples:
             if self.orientations and when <= self.orientations[-1][0]:
                 continue
-            camera = rotation(orientation) @ np.asarray(mount, np.float64).T
+            sensor = self._attitude(when, rotation(orientation), gyro[0] if gyro else None)
+            camera = sensor @ np.asarray(mount, np.float64).T
             self.orientations.append((when, quaternion(camera)))
         self._compare_headings()
+
+    def _attitude(self, when, chip, gyro):
+        """The head IMU's sensor-to-world orientation at `when`: its gyro integrated since the last
+        reading, pulled towards the chip's `chip` by dt / GYRO_SECONDS of the way."""
+        last = self.attitude
+        gyro = None if gyro is None else np.asarray(gyro, np.float64)
+        if gyro is None or last is None or not 0 < when - last[0] <= GYRO_GAP:
+            self.attitude = (when, chip, gyro)
+            return chip
+        dt = when - last[0]
+        # The rate between two readings is their mean (the trapezoid rule): taking either end's
+        # alone puts the head half a reading early or late, ~0.8 degrees at a walk's head rates.
+        moved = last[1] @ exp_rotation((gyro + last[2]) / 2 * dt)
+        miss = log_rotation(moved.T @ chip)  # sensor axes
+        sensor = moved @ exp_rotation(miss * min(1.0, dt / GYRO_SECONDS))
+        self.attitude = (when, sensor, gyro)
+        return sensor
 
     def _orientation(self, when):
         """The camera's orientation in the IMU's world at `when` (3x3), or None past the newest

@@ -319,7 +319,12 @@ class Pilot:
             local = peer.clock.remote_to_local
             worker.imu(
                 [
-                    (local(s.time), s.orientation, camera_matrix(imu.mount)[:3, :3])
+                    (
+                        local(s.time),
+                        s.orientation,
+                        camera_matrix(imu.mount)[:3, :3],
+                        s.angular_velocity,
+                    )
                     for imu in message.imu
                     for s in imu.samples
                     if s.orientation is not None

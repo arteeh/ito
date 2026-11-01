@@ -191,7 +191,7 @@ class TofMesh:
             self._put(("ranges", grids), keep=True)
 
     def imu(self, samples):
-        """Head IMU: [(pilot-clock time, xyzw sensor-to-world, 3x3 sensor-to-camera), ...]."""
+        """Head IMU: [(pilot-clock time, xyzw sensor-to-world, 3x3 sensor-to-camera, gyro), ...]."""
         if samples:
             self._put(("imu", samples), keep=True)
 
