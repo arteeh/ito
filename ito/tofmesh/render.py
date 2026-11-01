@@ -7,6 +7,12 @@ rendered from the mesh) and takes the frames' colours, weighted towards the proj
 it most nearly along the eye's ray, so detail comes at camera resolution where a frame saw it.
 Slot 0 is the live frame; the others are kept views (fusion.py chooses them).
 
+One scene per displayed frame, however many views draw it (a headset's two eyes): prepare() runs
+once per frame (distance maps, atlas bake, guess pyramid, the fill's depth map) and every view
+chooses its colours from one viewer, the point between the pilot's eyes. Each eye only sees that
+scene from its own position; were the projector choice made per eye, the eyes, a few centimetres
+apart, would pick different frames for the same surface and see different textures on it.
+
 Guessed depth (#87): the ToF sees ~45 degrees, the camera far more, so most of the live frame
 has no mesh behind it. A guess places it in the world anyway, on the GPU, every time the live
 frame or the mesh changes: the live projector's distance map (the mesh, i.e. everything the ToF
@@ -129,7 +135,7 @@ uniform vec4 intrinsics[K];      // fx, fy, cx, cy in image pixels
 uniform vec3 origin[K];
 uniform float boost[K];          // 0: empty slot
 uniform vec2 image_size;
-uniform vec3 eye;
+uniform vec3 eye;                // the viewer's: between the pilot's eyes, the same for both
 uniform sampler2DArray atlas;
 uniform int atlas_layers;        // 0: no atlas yet
 in vec3 v_world;
@@ -582,27 +588,51 @@ void main() {
 
 
 # Guessed depth beyond the live frame (the view is wider and taller than the camera, and leads it
-# while turning): every pixel the mesh and the live guess leave empty gets a range from the view's
-# own depth map, its holes filled from the map's mipmaps (the nearest level that has something
-# there: one mipmap build instead of a push-pull's twenty passes), the floor rule, and the colour of
-# the kept view that saw that spot from the most similar direction. A spot no frame ever saw
-# stays empty.
-EYE_DEPTH_WIDTH = 256
+# while turning): every pixel the mesh and the live guess leave empty gets a range from the
+# viewer's depth map, its holes filled from the map's mipmaps (the nearest level that has
+# something there: one mipmap build instead of a push-pull's twenty passes), the floor rule, and
+# the colour of the kept view that saw that spot from the most similar direction. A spot no frame
+# ever saw stays empty. The map is the viewer's, drawn once per frame over every view's field and
+# its holes filled once (FILL_RESOLVE), so the filled surface lies in the world: each eye marches
+# its own ray to the first point behind it, and both eyes see one surface.
+FILL_DEPTH_WIDTH = 256
+FILL_STEPS = 24  # ray march steps from 0.1 m to GUESS_FAR, each ~20 % farther, then bisection
 
-EYE_DEPTH_FRAGMENT = """
+FILL_DEPTH_FRAGMENT = """
 #version 430
 out vec2 result;
 void main() { result = vec2(gl_FragCoord.w, 1.0); }  // 1 / depth along the view axis
 """
 
+FILL_RESOLVE = """
+#version 430
+uniform sampler2D filled;  // the viewer's inverse depth and weight, mipmapped
+out float result;          // inverse depth there or from the nearest level that has some; 0: none
+void main() {
+    vec2 st = gl_FragCoord.xy / vec2(textureSize(filled, 0));
+    int levels = textureQueryLevels(filled);
+    result = 0.0;
+    for (int l = 0; l < levels; ++l) {
+        vec2 m = textureLod(filled, st, float(l)).rg;  // weighted means of 1 / depth
+        if (m.y > 0.02) {
+            result = m.x / m.y;
+            break;
+        }
+    }
+}
+"""
+
 FILL_FRAGMENT = """
 #version 430
 #define K %(K)d
-uniform mat4 clip_to_world;
+#define STEPS %(STEPS)d
+uniform mat4 clip_to_world;  // this view's
 uniform vec2 size;
-uniform vec3 eye;
-uniform vec3 forward;
-uniform sampler2D filled;    // the view's inverse depth and weight, mipmapped
+uniform vec3 eye;            // this view's
+uniform vec3 viewer;         // the depth map's, between the eyes
+uniform vec3 forward;        // the depth map's axis
+uniform mat4 fill_clip;      // world to the depth map's clip space
+uniform sampler2D surface;   // the viewer's filled inverse depth (FILL_RESOLVE)
 uniform sampler2DArray images;
 uniform sampler2D shadows;
 uniform mat4 camera_from_world[K];
@@ -617,21 +647,37 @@ uniform float far;
 layout(early_fragment_tests) in;
 out vec4 f_colour;
 
+// Whether world point p lies behind the filled surface, as the viewer's map has it there.
+bool behind(vec3 p) {
+    vec4 c = fill_clip * vec4(p, 1.0);
+    if (c.w <= 1e-4) return false;
+    float inv = texture(surface, c.xy / c.w * 0.5 + 0.5).r;
+    return inv > 1e-4 && dot(p - viewer, forward) * inv >= 1.0;
+}
+
 void main() {
     vec2 st = gl_FragCoord.xy / size;
     vec4 a = clip_to_world * vec4(st * 2.0 - 1.0, -1.0, 1.0);
     vec4 b = clip_to_world * vec4(st * 2.0 - 1.0, 1.0, 1.0);
     vec3 dir = normalize(b.xyz / b.w - a.xyz / a.w);
-    float inv = 0.0;
-    int levels = textureQueryLevels(filled);
-    for (int l = 0; l < levels; ++l) {
-        vec2 c = textureLod(filled, st, float(l)).rg;  // weighted means of 1 / depth
-        if (c.y > 0.02) {
-            inv = c.x / c.y;
+    // This eye's ray to the first point behind the viewer's filled surface: the nearest
+    // surface it meets, as with any geometry (a surface the viewer sees in front hides the ones
+    // behind it from both eyes alike).
+    float r = far;
+    float step = pow(far / 0.1, 1.0 / float(STEPS));
+    float near = 0.1;
+    for (int i = 1; i <= STEPS; ++i) {
+        float t = 0.1 * pow(step, float(i));
+        if (behind(eye + dir * t)) {
+            for (int k = 0; k < 5; ++k) {
+                float m = 0.5 * (near + t);
+                if (behind(eye + dir * m)) t = m; else near = m;
+            }
+            r = t;
             break;
         }
+        near = t;
     }
-    float r = inv > 1e-4 ? 1.0 / (inv * max(dot(dir, forward), 1e-3)) : far;
     float height = eye.y - floor_height;
     if (height > floor_clearance && dir.y < -1e-3) r = min(r, height / -dir.y);
     r = clamp(r, 0.1, far);
@@ -652,9 +698,9 @@ void main() {
         // A measured surface in front of the spot hides it from this view.
         float nearest = texture(shadows, vec2((float(k) + uv.x) / float(K), 1.0 - uv.y)).r;
         if (d > nearest + 0.06 + 0.03 * d) continue;
-        // The view that looked at the spot most nearly along the pilot's ray: least parallax
+        // The view that looked at the spot most nearly along the viewer's ray: least parallax
         // if the guessed range is wrong.
-        float along = max(dot((p - origin[k]) / max(d, 1e-4), dir), 0.0);
+        float along = max(dot((p - origin[k]) / max(d, 1e-4), normalize(p - viewer)), 0.0);
         float edge = clamp(min(min(u, image_size.x - u), min(v, image_size.y - v))
                            / (0.06 * image_size.x), 0.0, 1.0);
         float w = max(boost[k] * along * along * edge, 1e-5);
@@ -769,8 +815,13 @@ class MeshRenderer:
         self.guess_program = self.guess_vbo = self.guess_ibo = self.guess_vao = None
         self.composite_program = self.composite_vao = None
         self.guess_target = None  # (size, framebuffer, colour texture, depth)
-        self.eye_depth_program = self.eye_depth_vao = self.fill_program = self.fill_vao = None
-        self.eye_depth = None  # the view's own depth map: texture, depth buffer, framebuffer
+        self.fill_depth_program = self.fill_depth_vao = self.fill_program = self.fill_vao = None
+        self.resolve_program = self.resolve_vao = None
+        # The viewer's depth map: texture, depth buffer, framebuffer; its holes filled: texture,
+        # framebuffer.
+        self.fill_depth = None
+        self.viewer = self.fill_clip = None  # prepare(): world from the viewer, the map's clip
+        self._uniforms = None
         self._guess_resources()
 
     def _guess_resources(self):
@@ -786,13 +837,18 @@ class MeshRenderer:
         self.push_vao = context.vertex_array(self.push_program, [])
         self.pull_vao = context.vertex_array(self.pull_program, [])
         self.levels = _pyramid(context, SHADOW_SIZE)
-        self.eye_depth_program = context.program(
-            vertex_shader=SHADOW_VERTEX, fragment_shader=EYE_DEPTH_FRAGMENT
+        self.fill_depth_program = context.program(
+            vertex_shader=SHADOW_VERTEX, fragment_shader=FILL_DEPTH_FRAGMENT
         )
         self.fill_program = context.program(
-            vertex_shader=COMPOSITE_VERTEX, fragment_shader=FILL_FRAGMENT % {"K": self.slots}
+            vertex_shader=COMPOSITE_VERTEX,
+            fragment_shader=FILL_FRAGMENT % {"K": self.slots, "STEPS": FILL_STEPS},
         )
         self.fill_vao = context.vertex_array(self.fill_program, [])
+        self.resolve_program = context.program(
+            vertex_shader=FULLSCREEN, fragment_shader=FILL_RESOLVE
+        )
+        self.resolve_vao = context.vertex_array(self.resolve_program, [])
         self.guess_program = context.program(
             vertex_shader=GUESS_VERTEX, fragment_shader=GUESS_FRAGMENT
         )
@@ -917,7 +973,7 @@ class MeshRenderer:
         if n > self.capacity[0] or t > self.capacity[1]:
             for b in (
                 self.vbo, self.nbo, self.cbo, self.ibo, self.bbo, self.vao, self.shadow_vao,
-                self.eye_depth_vao, self.bake_vao,
+                self.fill_depth_vao, self.bake_vao,
             ):  # fmt: skip
                 if b is not None:
                     b.release()
@@ -951,9 +1007,9 @@ class MeshRenderer:
             self.shadow_vao = self.context.vertex_array(
                 self.shadow_program, [(self.vbo, "3f", "position")], self.ibo, index_element_size=4
             )
-            if self.eye_depth_program is not None:
-                self.eye_depth_vao = self.context.vertex_array(
-                    self.eye_depth_program, [(self.vbo, "3f", "position")], self.ibo,
+            if self.fill_depth_program is not None:
+                self.fill_depth_vao = self.context.vertex_array(
+                    self.fill_depth_program, [(self.vbo, "3f", "position")], self.ibo,
                     index_element_size=4,
                 )  # fmt: skip
             self.capacity = cap
@@ -1104,53 +1160,71 @@ class MeshRenderer:
             self.guess_target = (size, self.context.framebuffer([colour], depth), colour, depth)
         return self.guess_target
 
-    def _fill(self, view_projection, world_from_eye, fbo, size):
-        """Pixels still empty after the mesh: a guessed range from the view's own depth map,
-        coloured by the kept view that saw that spot most nearly along the pilot's ray."""
-        if not any(p is not None for p in self.projectors):
-            return
-        w = EYE_DEPTH_WIDTH
-        eye_size = (w, max(1, round(w * size[1] / size[0])))
-        if self.eye_depth is None or self.eye_depth[0].size != eye_size:
-            for r in self.eye_depth or ():
+    def _fill_depth(self, projection, view_projection):
+        """The viewer's depth map for the fill (once per frame), its mipmaps built."""
+        w = FILL_DEPTH_WIDTH
+        # Square pixels: the projection's aspect (width over height) from its focal lengths.
+        size = (w, max(1, round(w * projection[0, 0] / projection[1, 1])))
+        if self.fill_depth is None or self.fill_depth[0].size != size:
+            for r in self.fill_depth or ():
                 r.release()
-            texture = self.context.texture(eye_size, 2, dtype="f4")
+            texture = self.context.texture(size, 2, dtype="f4")
             texture.repeat_x = texture.repeat_y = False
             texture.build_mipmaps()
             texture.filter = moderngl.LINEAR_MIPMAP_NEAREST, moderngl.LINEAR
-            depth = self.context.depth_renderbuffer(eye_size)
-            self.eye_depth = (texture, depth, self.context.framebuffer([texture], depth))
-        texture, _, target = self.eye_depth
+            depth = self.context.depth_renderbuffer(size)
+            surface = self.context.texture(size, 1, dtype="f4")
+            surface.filter = moderngl.NEAREST, moderngl.NEAREST
+            surface.repeat_x = surface.repeat_y = False
+            self.fill_depth = (
+                texture, depth, self.context.framebuffer([texture], depth),
+                surface, self.context.framebuffer([surface]),
+            )  # fmt: skip
+        texture, _, target, _, resolved = self.fill_depth
         target.use()
-        self.context.viewport = (0, 0, *eye_size)
+        self.context.viewport = (0, 0, *size)
         self.context.scissor = None
         self.context.enable_only(moderngl.DEPTH_TEST)
         target.clear(0, 0, 0, 0, depth=1.0)
-        if self.count and self.eye_depth_vao is not None:
-            self.eye_depth_program["world_to_clip"].write(
+        if self.count and self.fill_depth_vao is not None:
+            self.fill_depth_program["world_to_clip"].write(
                 view_projection.T.astype(np.float32).tobytes()
             )
-            self.eye_depth_vao.render(moderngl.TRIANGLES, vertices=self.count * 3)
+            self.fill_depth_vao.render(moderngl.TRIANGLES, vertices=self.count * 3)
         texture.build_mipmaps()
+        resolved.use()
+        self.context.enable_only(moderngl.NOTHING)
+        texture.use(0)
+        _set(self.resolve_program, filled=0)
+        self.resolve_vao.render(moderngl.TRIANGLES, vertices=3)
+
+    def _fill(self, view_projection, world_from_eye, fbo, size):
+        """Pixels still empty after the mesh: a guessed range from the viewer's depth map,
+        coloured by the kept view that saw that spot most nearly along the viewer's ray."""
+        if not any(p is not None for p in self.projectors):
+            return
+        surface = self.fill_depth[3]
         program = self.fill_program
         program["clip_to_world"].write(
             np.linalg.inv(view_projection).T.astype(np.float32).tobytes()
         )
+        program["fill_clip"].write(self.fill_clip.T.astype(np.float32).tobytes())
         program["camera_from_world"].write(self._uniforms["matrices"].tobytes())
         program["intrinsics"].write(self._uniforms["intrinsics"].tobytes())
         program["origin"].write(self._uniforms["origins"].tobytes())
         program["boost"].write(self._uniforms["boost"].tobytes())
-        texture.use(2)
+        surface.use(2)
         self.images.use(0)
         self.shadows.use(1)
         _set(
             program,
             size=tuple(float(x) for x in size),
             eye=tuple(float(x) for x in world_from_eye[:3, 3]),
-            forward=tuple(float(x) for x in -world_from_eye[:3, 2]),
+            viewer=tuple(float(x) for x in self.viewer[:3, 3]),
+            forward=tuple(float(x) for x in -self.viewer[:3, 2]),
             images=0,
             shadows=1,
-            filled=2,
+            surface=2,
             image_size=self.image_size,
             floor_height=FLOOR_HEIGHT,
             floor_clearance=FLOOR_CLEARANCE,
@@ -1191,43 +1265,22 @@ class MeshRenderer:
             self.target = (size, self.context.framebuffer([colour], depth), colour, depth)
         return self.target[1]
 
-    def draw(
-        self,
-        robot_camera,
-        head,
-        projection,
-        target=None,
-        *,
-        clear=(0.025, 0.035, 0.055, 1.0),
-        viewport=None,
-    ):
-        world_from_eye = validate_pose(robot_camera) @ validate_pose(head)
+    def prepare(self, robot_camera, head, projection):
+        """Once per displayed frame, before its views are drawn: what every view of the frame
+        shares. head is the viewer, the point between the pilot's eyes (a desktop's one view),
+        and projection covers every view's field (the fill's depth map is drawn with it)."""
+        self.viewer = validate_pose(robot_camera) @ validate_pose(head)
         projection = np.asarray(projection, dtype=np.float64)
         if projection.shape != (4, 4) or not np.isfinite(projection).all():
             raise ValueError("Projection must be a finite 4x4 matrix")
-        target = target if target is not None else self.context.screen
-        if target is None:
-            raise ValueError("An offscreen context needs an explicit framebuffer")
-        viewport = viewport if viewport is not None else (0, 0, *target.size)
-        if min(viewport[2:]) <= 0:
-            raise ValueError("Viewport dimensions must be positive")
         self._shadows()
         if (
             self.bake_due and self.atlas is not None and self.count and self.bake_vao is not None
             and self.projectors[0] is not None
         ):  # fmt: skip
             self._bake()
-        guess = self.projectors[0] is not None
-        if guess:
+        if self.projectors[0] is not None:
             self._guess_pyramid()
-        size = tuple(int(v) for v in viewport[2:])
-        fbo = self._offscreen(size)
-        fbo.use()
-        self.context.viewport = (0, 0, *size)
-        self.context.scissor = None
-        self.context.enable_only(moderngl.DEPTH_TEST)
-        fbo.clear(*(clear or (0, 0, 0, 1)), depth=1.0)
-        view_projection = projection @ _view(world_from_eye)
         matrices = np.zeros((self.slots, 4, 4), np.float32)
         intrinsics = np.zeros((self.slots, 4), np.float32)
         origins = np.zeros((self.slots, 3), np.float32)
@@ -1242,15 +1295,50 @@ class MeshRenderer:
         self._uniforms = dict(
             matrices=matrices, intrinsics=intrinsics, origins=origins, boost=boost
         )
+        self.fill_clip = projection @ _view(self.viewer)
+        if self.projectors[0] is not None:
+            self._fill_depth(projection, self.fill_clip)
+
+    def draw(
+        self,
+        robot_camera,
+        head,
+        projection,
+        target=None,
+        *,
+        clear=(0.025, 0.035, 0.055, 1.0),
+        viewport=None,
+    ):
+        """One view of the frame prepare() set up: the eye at head, with this projection."""
+        world_from_eye = validate_pose(robot_camera) @ validate_pose(head)
+        projection = np.asarray(projection, dtype=np.float64)
+        if projection.shape != (4, 4) or not np.isfinite(projection).all():
+            raise ValueError("Projection must be a finite 4x4 matrix")
+        target = target if target is not None else self.context.screen
+        if target is None:
+            raise ValueError("An offscreen context needs an explicit framebuffer")
+        viewport = viewport if viewport is not None else (0, 0, *target.size)
+        if min(viewport[2:]) <= 0:
+            raise ValueError("Viewport dimensions must be positive")
+        guess = self.projectors[0] is not None
+        size = tuple(int(v) for v in viewport[2:])
+        fbo = self._offscreen(size)
+        fbo.use()
+        self.context.viewport = (0, 0, *size)
+        self.context.scissor = None
+        self.context.enable_only(moderngl.DEPTH_TEST)
+        fbo.clear(*(clear or (0, 0, 0, 1)), depth=1.0)
+        view_projection = projection @ _view(world_from_eye)
+        uniforms = self._uniforms
         if self.count and self.vao is not None:
             program = self.program
             program["view_projection"].write(view_projection.T.astype(np.float32).tobytes())
-            program["eye"] = tuple(world_from_eye[:3, 3])
+            program["eye"] = tuple(self.viewer[:3, 3])
             program["image_size"] = self.image_size
-            program["camera_from_world"].write(matrices.tobytes())
-            program["intrinsics"].write(intrinsics.tobytes())
-            program["origin"].write(origins.tobytes())
-            program["boost"].write(boost.tobytes())
+            program["camera_from_world"].write(uniforms["matrices"].tobytes())
+            program["intrinsics"].write(uniforms["intrinsics"].tobytes())
+            program["origin"].write(uniforms["origins"].tobytes())
+            program["boost"].write(uniforms["boost"].tobytes())
             self.images.use(0)
             self.shadows.use(1)
             program["images"] = 0
@@ -1286,9 +1374,10 @@ class MeshRenderer:
             self.shadow_program, self.images, self.shadows, self.shadow_depth, self.shadow_fbo,
             self.push_vao, self.pull_vao, self.push_program, self.pull_program, self.guess_vao,
             self.guess_vbo, self.guess_ibo, self.guess_program, self.composite_vao,
-            self.composite_program, self.eye_depth_vao, self.eye_depth_program, self.fill_vao,
+            self.composite_program, self.fill_depth_vao, self.fill_depth_program, self.fill_vao,
+            self.resolve_vao, self.resolve_program,
             self.fill_program,
-            *(self.eye_depth or ()),
+            *(self.fill_depth or ()),
             *(r for level in self.levels for r in level[1:]),
             *(self.guess_target[1:] if self.guess_target is not None else ()),
         ):  # fmt: skip

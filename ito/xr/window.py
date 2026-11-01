@@ -18,7 +18,7 @@ from ito.render.performance import Performance
 from ito.render.pose import quaternion
 
 from .dispatch import XRDispatch
-from .input import VALID, Actions
+from .input import VALID, Actions, matrix
 from .session import HEADSET_POLL, HEADSET_WAIT, HUD_PANEL_PIXELS, Session
 
 log = logging.getLogger(__name__)
@@ -75,6 +75,22 @@ class PanelFollow:
         result = pose(yaw=yaw, pitch=pitch - PANEL_DROP)
         result[:3, 3] = self.position - PANEL_DISTANCE * result[:3, 2]
         return result
+
+
+def covering(views, middle):
+    """A projection from middle (between the eyes) whose field holds every eye's."""
+    to_middle = middle[:3, :3].T
+    xs, ys = [], []
+    for view in views:
+        rotation = to_middle @ matrix(view.pose)[:3, :3]
+        fov = view.fov
+        for x in (math.tan(fov.angle_left), math.tan(fov.angle_right)):
+            for y in (math.tan(fov.angle_down), math.tan(fov.angle_up)):
+                d = rotation @ (x, y, -1.0)
+                xs.append(d[0] / -d[2])
+                ys.append(d[1] / -d[2])
+    fov = xr.Fovf(*(math.atan(t) for t in (min(xs), max(xs), max(ys), min(ys))))
+    return Matrix4x4f.create_projection_fov(GraphicsAPI.OPENGL, fov, 0.02, 1000).as_numpy()
 
 
 class XRWindow(DesktopWindow):
@@ -296,8 +312,6 @@ class XRWindow(DesktopWindow):
                         | xr.ViewStateFlags.ORIENTATION_VALID_BIT
                     )
                     if view_state.view_state_flags & flags == flags:
-                        from .input import matrix
-
                         projection_views = []
                         if value.screenshot:
                             self.capture_number += 1
@@ -306,13 +320,18 @@ class XRWindow(DesktopWindow):
                         turn = xr.Quaternionf(*turn / np.linalg.norm(turn))
                         middle = matrix(xr.Posef(orientation=turn))
                         middle[:3, 3] = sum(v.pose.position.as_numpy() for v in views) / 2
-                        for index, (view, swapchain) in enumerate(
-                            zip(views, self.xr.eyes, strict=True)
-                        ):
-                            eye = matrix(view.pose)
-                            projection = Matrix4x4f.create_projection_fov(
+                        projections = [
+                            Matrix4x4f.create_projection_fov(
                                 GraphicsAPI.OPENGL, view.fov, 0.02, 1000
                             ).as_numpy()
+                            for view in views
+                        ]
+                        # One scene for both eyes, prepared once, seen from between them.
+                        self.prepare_view(current, middle, covering(views, middle), projections)
+                        for index, (view, swapchain, projection) in enumerate(
+                            zip(views, self.xr.eyes, projections, strict=True)
+                        ):
+                            eye = matrix(view.pose)
                             with swapchain.acquire() as target:
                                 GL.glEnable(GL.GL_FRAMEBUFFER_SRGB)
                                 self.draw_view(

@@ -219,6 +219,7 @@ class DesktopWindow:
             if min(size) > 0:
                 self.size = size
             projection = perspective(self.fov, self.size[0] / self.size[1])
+            self.prepare_view(current, pilot.head, projection)
             self.draw_view(current, pilot.head, projection, self.screen, (0, 0, *self.size))
             visible_time = current.video_time if current.flat_video else captured_at
             age = None if visible_time is None else max(0, now - visible_time)
@@ -293,6 +294,15 @@ class DesktopWindow:
 
     def glided(self, current, now):
         return replace(current, robot_camera=self.glide(current.robot_camera, now))
+
+    def prepare_view(self, current, head, projection, views=None):
+        """Once per displayed frame, before its views: head is the viewer between the eyes (the
+        one view on a desktop), projection covers every view's field, views are each view's
+        projection."""
+        if current.flat_video:
+            self.video_panel.prepare(views or [projection])
+        else:
+            self.renderer.prepare(current.robot_camera, head, projection)
 
     def draw_view(self, current, head, projection, target, viewport, center=None):
         if current.flat_video:
