@@ -104,8 +104,12 @@ void main() {
         // floor at a shallow angle (a bumpy ToF floor tips its normals further away), and floor
         // a kept view saw only that way otherwise showed the coarse, neighbour-filled voxel
         // colours (a smear) once the view turned past the live frame. A grazing view's weight is
-        // tiny, so any view facing the surface better still wins.
-        float facing = abs(dot(n, toward));
+        // tiny, so any view facing the surface better still wins. A view clearly from behind
+        // (n is turned to the eye) saw the other side of a one-sheet surface (a board, a table top
+        // from below, a chair back), not this one; a bumpy floor's normals tip far less.
+        float s = dot(n, toward);
+        if (s < -0.25) continue;
+        float facing = abs(s);
         float edge = clamp(min(min(u, image_size.x - u), min(v, image_size.y - v))
                            / (0.06 * image_size.x), 0.0, 1.0);
         // The floor keeps a grazing or border sample of the live frame in the blend
