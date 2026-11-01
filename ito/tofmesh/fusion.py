@@ -7,7 +7,9 @@ drive it):
                             sway and gear-play wobble of the head; its arbitrary heading is tied
                             to the pose stream's by a slow average of their difference
   ToF RangeGrid          -> pose at the grid's own time -> Volume.integrate (TSDF)
-  camera frame           -> pose at its exposure       -> Volume.paint (voxel colours)
+  camera frame           -> pose at its exposure (arrival minus the driver's capture_delay
+                            and the delay measured from the frames, latency.FrameDelay)
+                                                        -> Volume.paint (voxel colours)
                                                         -> projector frames for the renderer
   dirty blocks           -> surface.extract            -> one mesh, published a few times a second
 
@@ -22,6 +24,7 @@ import numpy as np
 
 from . import surface
 from .geometry import PoseTrack, angle_between, quaternion, rotation, slerp
+from .latency import FrameDelay
 from .volume import Volume
 from .zones import zones_from_grid
 
@@ -142,6 +145,8 @@ class Fusion:
         self.last_turn = None  # (time, 3x3): the latest correction made
         self.grids = []
         self.frames = []
+        self.frame_delay = FrameDelay()
+        self.frame_intrinsics = None
         self.meshes = {}
         self.keyframes = keyframes  # projector slots: 0 live, 1.. kept views
         self.kept = {}  # slot -> (world_from_camera, time)
@@ -161,7 +166,7 @@ class Fusion:
         self.mesh_changed = False
         self.stats = dict(
             tof_frames=0, tof_dropped=0, tilted=0, tilt_held=0, untilted=0, tof_voxels=0,
-            painted=0, frames=0, frames_dropped=0,
+            painted=0, frames=0, frames_dropped=0, frame_delay_extra_ms=0.0,
             vertices=0, triangles=0, blocks=0, evictions=0, fuse_ms=0.0, paint_ms=0.0,
             mesh_ms=0.0,
         )  # fmt: skip
@@ -282,6 +287,8 @@ class Fusion:
         driver's own pose for this frame, used when the pose stream does not cover it."""
         self.frames.append((image, exposed, intrinsics, fallback))
         del self.frames[:-4]
+        self.frame_delay.frame(image, exposed)
+        self.frame_intrinsics = intrinsics
 
     def step(self, now):
         """Fuse whatever the pose stream now covers; returns a MeshFrame when there is news."""
@@ -319,11 +326,14 @@ class Fusion:
             )
         self.grids = waiting
 
+        self._measure_frame_delay(now)
+        extra = self.frame_delay.extra
         frames, self.frames = self.frames, []
-        for image, exposed, intrinsics, fallback in frames:
+        for image, stamped, intrinsics, fallback in frames:
+            exposed = stamped - extra
             # Wait for the pose stream to pass the exposure rather than hold its end pose.
             if not self.covered(exposed) and now - exposed <= POSE_WAIT:
-                self.frames.append((image, exposed, intrinsics, fallback))
+                self.frames.append((image, stamped, intrinsics, fallback))
                 continue
             camera = self.pose(exposed, slack=0.05)
             if camera is None:
@@ -360,6 +370,22 @@ class Fusion:
                 self.mesh_changed = False
             news.projectors, self.pending_projectors = self.pending_projectors, []
         return news
+
+    def _measure_frame_delay(self, now):
+        """The frames' delay against the orientation track the frames are posed with: the head
+        IMU's where it has one, else the pose stream's."""
+        if self.frame_intrinsics is None or not self.frame_delay.due(now):
+            return
+        if self.head_imu and self.orientations:
+            times = [t for t, _ in self.orientations]
+            quaternions = [q for _, q in self.orientations]
+        else:
+            times = [t for t, _, _ in self.poses.samples]
+            quaternions = [q for _, _, q in self.poses.samples]
+        if len(times) >= 2:
+            track = np.array(times), np.array(quaternions)
+            self.frame_delay.estimate(now, *track, self.frame_intrinsics)
+            self.stats["frame_delay_extra_ms"] = self.frame_delay.extra * 1000
 
     def _project(self, image, camera, intrinsics, exposed):
         fx, fy, cx, cy = intrinsics
