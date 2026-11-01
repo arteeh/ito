@@ -3,8 +3,9 @@ drive it):
 
   driver Motion samples  -> PoseTrack (the robot's own camera pose: contact odometry for
                             position, trunk IMU + head joint encoders for orientation)
-  head IMU samples       -> the camera's tilt (its own gravity fusion); heading stays the pose
-                            stream's, since the head IMU's yaw is arbitrary
+  head IMU samples       -> the camera's orientation (its chip's own fusion): every quick turn,
+                            sway and gear-play wobble of the head; its arbitrary heading is tied
+                            to the pose stream's by a slow average of their difference
   ToF RangeGrid          -> pose at the grid's own time -> Volume.integrate (TSDF)
   camera frame           -> pose at its exposure       -> Volume.paint (voxel colours)
                                                         -> projector frames for the renderer
@@ -20,7 +21,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from . import surface
-from .geometry import PoseTrack, angle_between, rotation
+from .geometry import PoseTrack, angle_between, quaternion, rotation, slerp
 from .volume import Volume
 from .zones import zones_from_grid
 
@@ -82,12 +83,30 @@ class MeshFrame:
         return ((self.revision, self.captured_at),)
 
 
-# A head IMU reading tilts a pose only within this many seconds of it.
+# A head IMU reading orients a pose only within this many seconds of it.
 TILT_MATCH = 0.03
-# Without one that near (IMU batches arrive with the ToF, after the camera frames), the last
-# correction holds for this long, so the map never mixes tilted and untilted poses.
+# Without one that near, the last correction holds for this long, so the map never mixes
+# corrected and uncorrected poses.
 TILT_HOLD = 0.5
+# The head IMU's heading is arbitrary and drifts; the pose stream's (trunk IMU and head joint
+# encoders) is anchored but carries the head's gear play, ~1 degree per servo that flips with
+# the gait. The IMU's heading is tied to the pose stream's by their difference averaged over
+# this many seconds (a first-order low-pass): the IMU keeps every quick movement, the pose
+# stream keeps where the head points over seconds. Measured in the sim (BigKangaroo, 1 Nov):
+# camera-pose error that changes within a second, walking, 1.13 -> 0.44 degrees median.
+HEADING_SECONDS = 1.0
 UP = np.array([0.0, 1.0, 0.0])
+
+
+def heading_of(r):
+    """Angle (radians) about world +Y of a 3x3 rotation's view direction (-Z)."""
+    ahead = r @ np.array([0.0, 0.0, -1.0])
+    return float(np.arctan2(-ahead[0], -ahead[2]))
+
+
+def about_up(angle):
+    c, s = np.cos(angle), np.sin(angle)
+    return np.array([[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]])
 
 
 def tilt(camera, up):
@@ -116,8 +135,11 @@ class Fusion:
         self.volume = Volume(voxel=voxel, capacity=capacity, max_range=max_range)
         self.poses = PoseTrack()
         self.head_imu = head_imu
-        self.tilts = deque(maxlen=500)  # (time, world up in camera axes) from the head IMU
-        self.last_turn = None  # (time, 3x3): the latest tilt correction made
+        # (time, xyzw): the camera's orientation in the head IMU's world (+Y up, any heading)
+        self.orientations = deque(maxlen=500)
+        self.unheaded = deque(maxlen=500)  # pose-stream samples (time, 3x3) not yet compared
+        self.headings = deque(maxlen=500)  # (time, radians): pose-stream minus IMU heading
+        self.last_turn = None  # (time, 3x3): the latest correction made
         self.grids = []
         self.frames = []
         self.meshes = {}
@@ -147,38 +169,105 @@ class Fusion:
     def motion(self, samples):
         for when, world_from_camera in samples:
             self.poses.add(when, world_from_camera)
+            if self.head_imu:
+                self.unheaded.append((when, np.asarray(world_from_camera)[:3, :3]))
+        self._compare_headings()
 
     def imu(self, samples):
         """Head IMU samples with the chip's own orientation: [(pilot-clock time, sensor-to-world
-        xyzw, sensor-to-camera 3x3), ...]. Only gravity (tilt) is taken from them."""
+        xyzw, sensor-to-camera 3x3), ...], world +Y up, heading arbitrary."""
         for when, orientation, mount in samples:
-            if self.tilts and when <= self.tilts[-1][0]:
+            if self.orientations and when <= self.orientations[-1][0]:
                 continue
-            up = np.asarray(mount) @ rotation(orientation).T @ UP
-            self.tilts.append((when, up / np.linalg.norm(up)))
+            camera = rotation(orientation) @ np.asarray(mount, np.float64).T
+            self.orientations.append((when, quaternion(camera)))
+        self._compare_headings()
+
+    def _orientation(self, when):
+        """The camera's orientation in the IMU's world at `when` (3x3), or None without IMU
+        readings within TILT_MATCH on both sides (one, if it is that near)."""
+        o = self.orientations
+        if not o or when > o[-1][0] + TILT_MATCH or when < o[0][0] - TILT_MATCH:
+            return None
+        lo, hi = 0, len(o)
+        while lo < hi:  # first reading at or after `when`
+            mid = (lo + hi) // 2
+            if o[mid][0] < when:
+                lo = mid + 1
+            else:
+                hi = mid
+        after = o[lo] if lo < len(o) else None
+        before = o[lo - 1] if lo > 0 else None
+        if before and after and after[0] - before[0] <= 2 * TILT_MATCH and after[0] > before[0]:
+            f = (when - before[0]) / (after[0] - before[0])
+            return rotation(slerp(before[1], after[1], f))
+        near = min((r for r in (before, after) if r), key=lambda r: abs(r[0] - when))
+        return rotation(near[1]) if abs(near[0] - when) <= TILT_MATCH else None
+
+    def _compare_headings(self):
+        """Fold pose-stream samples the IMU now covers into the heading difference (low-pass)."""
+        if not self.orientations:
+            return
+        covered = self.orientations[-1][0]
+        while self.unheaded and self.unheaded[0][0] <= covered:
+            when, stream = self.unheaded.popleft()
+            imu = self._orientation(when)
+            if imu is None:
+                continue
+            difference = heading_of(stream @ imu.T)
+            if not self.headings or when - self.headings[-1][0] > TILT_HOLD:
+                value = difference  # first, or after a gap: start over
+            else:
+                last_time, last = self.headings[-1]
+                gain = 1.0 - np.exp(-(when - last_time) / HEADING_SECONDS)
+                change = (difference - last + np.pi) % (2 * np.pi) - np.pi  # shortest way round
+                value = last + gain * change
+            self.headings.append((when, float(value)))
+
+    def _heading(self, when):
+        """The heading difference as averaged up to `when` (None without one within TILT_HOLD)."""
+        h = self.headings
+        if not h or when < h[0][0] - TILT_HOLD:
+            return None
+        lo, hi = 0, len(h)
+        while lo < hi:  # first entry after `when`
+            mid = (lo + hi) // 2
+            if h[mid][0] <= when:
+                lo = mid + 1
+            else:
+                hi = mid
+        entry = h[lo - 1] if lo > 0 else h[0]
+        return entry[1] if abs(entry[0] - when) <= TILT_HOLD else None
+
+    def covered(self, when):
+        """Whether every source of `when`'s pose has passed it: the pose stream, and the head
+        IMU once it has spoken (its batches can arrive after the frames and grids)."""
+        latest = self.poses.latest
+        if latest is None or when > latest:
+            return False
+        return not (self.head_imu and self.orientations and when > self.orientations[-1][0])
 
     def pose(self, when, slack=0.1):
-        """The camera at `when`: the pose stream, its tilt from the head IMU where one is near."""
+        """The camera at `when`: position from the pose stream; orientation from the head IMU
+        where it has a reading near, its heading tied to the pose stream's (HEADING_SECONDS)."""
         camera = self.poses.at(when, slack=slack)
-        if camera is None or not self.head_imu or not self.tilts:
+        if camera is None or not self.head_imu or not self.orientations:
             return camera
-        times = [t for t, _ in self.tilts]
-        i = int(np.searchsorted(times, when))
-        near = [self.tilts[j] for j in (i - 1, i) if 0 <= j < len(self.tilts)]
-        near = [(t, u) for t, u in near if abs(t - when) <= TILT_MATCH]
-        if not near:
+        imu = self._orientation(when)
+        if imu is None:
             if self.last_turn is not None and abs(when - self.last_turn[0]) <= TILT_HOLD:
                 self.stats["tilt_held"] += 1
                 return turned(camera, self.last_turn[1])
             self.stats["untilted"] += 1
             return camera
-        if len(near) == 2 and near[1][0] > near[0][0]:
-            f = (when - near[0][0]) / (near[1][0] - near[0][0])
-            up = near[0][1] * (1 - f) + near[1][1] * f
+        heading = self._heading(when)
+        if heading is None:
+            # No heading comparison yet: the IMU's tilt only, the pose stream's heading.
+            up = imu.T @ UP
+            turn = tilt(camera, up / np.linalg.norm(up))
         else:
-            up = min(near, key=lambda n: abs(n[0] - when))[1]
+            turn = camera[:3, :3].T @ about_up(heading) @ imu
         self.stats["tilted"] += 1
-        turn = tilt(camera, up / np.linalg.norm(up))
         if self.last_turn is None or when >= self.last_turn[0]:
             self.last_turn = (when, turn)
         return turned(camera, turn)
@@ -199,13 +288,12 @@ class Fusion:
         latest = self.poses.latest
         waiting = []
         for grid in self.grids:
-            if latest is None or grid["time"] > latest:
-                if now - grid["time"] > POSE_WAIT:
-                    self.stats["tof_dropped"] += 1
-                else:
-                    waiting.append(grid)
+            if not self.covered(grid["time"]) and now - grid["time"] <= POSE_WAIT:
+                waiting.append(grid)
                 continue
-            camera = self.pose(grid["time"])
+            # Past the wait, a lagging head IMU no longer holds the grid up (pose() then holds
+            # its last correction); a pose stream that never reached it still drops it.
+            camera = None if latest is None or grid["time"] > latest else self.pose(grid["time"])
             if camera is None:
                 self.stats["tof_dropped"] += 1
                 continue
@@ -234,7 +322,7 @@ class Fusion:
         frames, self.frames = self.frames, []
         for image, exposed, intrinsics, fallback in frames:
             # Wait for the pose stream to pass the exposure rather than hold its end pose.
-            if (latest is None or exposed > latest) and now - exposed <= POSE_WAIT:
+            if not self.covered(exposed) and now - exposed <= POSE_WAIT:
                 self.frames.append((image, exposed, intrinsics, fallback))
                 continue
             camera = self.pose(exposed, slack=0.05)
