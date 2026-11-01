@@ -1,5 +1,4 @@
-"""The ToF mesh pipeline, without processes or windows (the worker and the tape replay both
-drive it):
+"""The ToF mesh pipeline, without processes or windows (the worker drives it):
 
   driver Motion samples  -> PoseTrack (the robot's own camera pose: contact odometry for
                             position, trunk IMU + head joint encoders for orientation)

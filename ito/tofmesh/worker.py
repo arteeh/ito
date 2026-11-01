@@ -27,13 +27,10 @@ TIMING_SUMMARY = 1.0  # seconds of mesh stage times per diagnostic log line
 
 
 def _run(inputs, outputs, notes, options, integrated):
-    from . import tape
     from .fusion import Fusion, MeshFrame
 
     try:
         fusion = Fusion(**options)
-        if tape.PATH:
-            tape.record(("options", options))  # so a replay runs the same Fusion
         outbox = None
         next_note = 0.0
         while True:
@@ -43,8 +40,6 @@ def _run(inputs, outputs, notes, options, integrated):
                 item = None
             while item is not None:
                 kind = item[0]
-                if tape.PATH:
-                    tape.record(item)
                 if kind == "stop":
                     return
                 if kind == "motion":
