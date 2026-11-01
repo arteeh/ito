@@ -164,8 +164,6 @@ def main():
                 "--sim-camera",
                 f"127.0.0.1:{FRAME_PORT}",
             ],
-            # Pollen's hardware encoder presets are not portable to every desktop NVENC driver.
-            os.environ | {"GST_PLUGIN_FEATURE_RANK": "x264enc:1024"},
         )
         wait("mediad", lambda: listening(MEDIA_PORT), children, 20)
         print("waiting for the body (python -m drivers.microduck.sim on the host)", flush=True)

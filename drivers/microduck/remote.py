@@ -7,6 +7,8 @@ import aiohttp
 from aiortc import RTCConfiguration, RTCPeerConnection, RTCSessionDescription
 from aiortc.sdp import candidate_from_sdp
 
+from ito.link import media
+
 
 class RemoteError(RuntimeError):
     pass
@@ -39,6 +41,8 @@ class Remote:
     def __init__(self, address, notification):
         self.address = address
         self.notification = notification
+        # mediad's H.264 goes on to Ito as it is (camera.Camera).
+        media.receive_h264(media.Passthrough)
         self.pc = RTCPeerConnection(RTCConfiguration(iceServers=[]))
         self.channel = None
         self.video = None
@@ -79,6 +83,14 @@ class Remote:
         def connection():
             if self.pc.connectionState in {"failed", "disconnected"}:
                 self.fail("Microduck WebRTC connection lost")
+
+    def keyframe(self):
+        """Ask mediad for a keyframe: an RTCP picture loss report on its video."""
+        receiver = self.video_receiver
+        if receiver is None or self.error:
+            return
+        for source in receiver.getSynchronizationSources():
+            asyncio.ensure_future(receiver._send_rtcp_pli(source.source))
 
     def fail(self, reason):
         self.error = RuntimeError(str(reason))

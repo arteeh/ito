@@ -2,7 +2,7 @@ import asyncio
 from collections.abc import Sequence
 
 import aiohttp
-from aiortc import RTCIceServer, RTCSessionDescription
+from aiortc import RTCIceServer, RTCRtpReceiver, RTCSessionDescription
 from pydantic import Field, ValidationError
 
 from ito.link import pairing
@@ -36,7 +36,14 @@ async def connect(
     peer = Peer("pilot", ice_servers=ice_servers)
     try:
         async with asyncio.timeout(connect_timeout):
-            peer.pc.addTransceiver("video", direction="recvonly")
+            # H.264 only: robots encode it on their hardware, and Ito decodes it on its GPU.
+            peer.pc.addTransceiver("video", direction="recvonly").setCodecPreferences(
+                [
+                    codec
+                    for codec in RTCRtpReceiver.getCapabilities("video").codecs
+                    if codec.mimeType in {"video/H264", "video/rtx"}
+                ]
+            )
             if not ice_servers:
                 from ito.link.routing import direct_interface
 

@@ -13,6 +13,7 @@ from ito import clock
 from ito.driver.adapter import Adapter
 from ito.driver.pairing import Pairing, PairingRefused, default_path
 from ito.link import Peer
+from ito.link.media import EncodedVideoTrack, forward_keyframes
 from ito.link.pairing import proof, token
 from ito.link.signaling import parse_offer
 from ito.protocol import (
@@ -331,7 +332,9 @@ class Driver:
                 if len(tracks) > offered:
                     raise ValueError(f"pilot must offer {len(tracks)} receiving video tracks")
                 for track in tracks:
-                    peer.pc.addTrack(track)
+                    sender = peer.pc.addTrack(track)
+                    if isinstance(track, EncodedVideoTrack):
+                        forward_keyframes(sender, track)
                 await peer.pc.setLocalDescription(await peer.pc.createAnswer())
             sdp = peer.pc.localDescription.sdp
             return web.json_response(

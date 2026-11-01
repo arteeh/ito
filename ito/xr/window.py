@@ -272,6 +272,7 @@ class XRWindow(DesktopWindow):
                     request = f"{commands[-1].replace('_', '-').upper()} requested"
                     log.info("Command: %s", commands[-1])
                 current = self.glided(state(), now)
+                self.straighten(source, current)
                 applied = []
                 for _ in range(MESHES_PER_FRAME):
                     update = source.poll()

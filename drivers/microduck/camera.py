@@ -1,13 +1,12 @@
 import asyncio
-from fractions import Fraction
 
 import av
 import numpy as np
-from aiortc import VideoStreamTrack
 from aiortc.mediastreams import MediaStreamError
 
 from ito import clock
-from ito.protocol import FrameMetadata, Intrinsics
+from ito.link.media import RTP_TIME_BASE, EncodedVideoTrack
+from ito.protocol import FrameMetadata, Intrinsics, Lens
 
 # RTP's video clock (RFC 6184) and how long its 32-bit timestamps take to wrap.
 RTP_RATE = 90_000
@@ -16,6 +15,9 @@ RTP_WRAP = 2**32 / RTP_RATE
 # (and not after): anything else is a pipeline that restarted its clock, and the frame falls back
 # to its arrival.
 LONGEST_DELAY = 1.0
+# Encoded frames waiting for one pilot's link: past this many it has fallen behind, and starts
+# again from the next keyframe.
+BACKLOG = 8
 
 # The widest pinhole Ito is given, degrees across: a pinhole's edges stretch as 1 / cos^2 of their
 # angle, so a wider one spends its pixels on smeared edges. The beta's lens (about 114
@@ -24,13 +26,23 @@ LONGEST_DELAY = 1.0
 MAX_RECTIFIED_HFOV_DEG = 100.0
 
 
+def keyframe(data):
+    """Whether an H.264 access unit (Annex B) holds an IDR slice."""
+    start = data.find(b"\x00\x00\x01")
+    while 0 <= start < len(data) - 3:
+        if data[start + 3] & 0x1F == 5:
+            return True
+        start = data.find(b"\x00\x00\x01", start + 3)
+    return False
+
+
 def rectified(matrix, distortion, width, height):
     """The camera matrix of the widest pinhole of the frame's size whose every pixel the distorted
-    frame covers (or the frame's own matrix when it has no distortion). It keeps the calibration's
-    principal point and pixel aspect and scales only the focal length: centring it would throw
-    away twice the offset on one side (an alpha's cy 474 of 720 would lose a third of the view
-    down). Each pixel's centre must map within the sent frame's outer pixel centres, so bilinear
-    remap never mixes in its black border."""
+    frame covers (or the frame's own matrix when it has no distortion), which Ito straightens the
+    frames to. It keeps the calibration's principal point and pixel aspect and scales only the
+    focal length: centring it would throw away twice the offset on one side (an alpha's cy 474 of
+    720 would lose a third of the view down). Each pixel's centre must map within the sent frame's
+    outer pixel centres, so bilinear sampling never mixes in its black border."""
     import cv2
 
     if not np.any(distortion):
@@ -89,15 +101,18 @@ def rectified(matrix, distortion, width, height):
 
 
 class Camera:
-    """The head camera's frames, rectified, each with when it was captured.
+    """The head camera's H.264, as mediad encoded it, each frame with when it was captured.
 
-    mediad starts every RTP timestamp at zero on CLOCK_MONOTONIC's `rtp.zero_ns` (its pipeline's
-    base time), and a camera stack that stamps its own frames (V4L2's buffer timestamps on a
-    robot; the simulator's exposures) makes that the capture: so a frame's RTP timestamp is when
-    it was captured, on the robot's clock. aiortc hands out `frame.pts` as the RTP timestamp minus
-    its first frame's (`rtp_origin()`), and `to_local(t_ns)` puts a robot time on this driver's
-    clock (the adapter's SourceClock). A mediad that says nothing about RTP time, or whose
-    frames are stamped on arrival, leaves only the receive time and the driver's FRAME_DELAY guess.
+    The frames go on to Ito as they came, with the lens they were taken through, and Ito
+    straightens them on its GPU: decoding and encoding them again here would cost the robot's
+    CPU and a frame of delay. mediad starts every RTP timestamp at zero on CLOCK_MONOTONIC's
+    `rtp.zero_ns` (its pipeline's base time), and a camera stack that stamps its own frames
+    (V4L2's buffer timestamps on a robot; the simulator's exposures) makes that the capture: so
+    a frame's RTP timestamp is when it was captured, on the robot's clock. aiortc hands out
+    `frame.pts` as the RTP timestamp minus its first frame's (`rtp_origin()`), and
+    `to_local(t_ns)` puts a robot time on this driver's clock (the adapter's SourceClock). A
+    mediad that says nothing about RTP time, or whose frames are stamped on arrival, leaves only
+    the receive time and the driver's FRAME_DELAY guess.
     """
 
     def __init__(
@@ -108,11 +123,8 @@ class Camera:
         asked_at=None,
         fallback_delay=0.0,
         rtp_origin=lambda: None,
+        keyframe=lambda: None,
     ):
-        import cv2
-
-        self.cv = cv2
-        cv2.setNumThreads(1)
         geometry = info.get("intrinsics")
         if not geometry or geometry.get("source") not in {"robot", "family", "sim"}:
             # mediad publishes no geometry it cannot vouch for (a beta has had a family solve
@@ -136,15 +148,18 @@ class Camera:
             raise ValueError("unsupported Microduck camera distortion")
         if not np.isfinite(distortion).all():
             raise ValueError("non-finite Microduck camera distortion")
+        if len(distortion) == 14:
+            if np.any(distortion[12:]):
+                raise ValueError("Ito does not straighten a tilted Microduck camera sensor")
+            distortion = distortion[:12]
         self.rectified = rectified(matrix, distortion, self.width, self.height)
-        self.maps = (
-            cv2.initUndistortRectifyMap(
-                matrix,
-                distortion,
-                None,
-                self.rectified,
-                (self.width, self.height),
-                cv2.CV_16SC2,
+        self.lens = (
+            Lens(
+                fx=float(matrix[0, 0]),
+                fy=float(matrix[1, 1]),
+                cx=float(matrix[0, 2]),
+                cy=float(matrix[1, 2]),
+                distortion=tuple(float(k) for k in distortion),
             )
             if np.any(distortion)
             else None
@@ -181,38 +196,33 @@ class Camera:
         self.stamped = 0  # frames with a believable capture time
         self.unstamped = 0  # frames whose stamp was missing or not believable
         self.measured = measured
-        self.latest = None
-        self.revision = 0
-        self.changed = asyncio.Event()
+        self.keyframe = keyframe  # asks mediad for a keyframe
+        self.frames = 0
+        self.tracks = set()
         self.closed = False
 
-    def rectify(self, frame):
-        """The frame as the pinhole Ito is told about (self.intrinsics)."""
-        if (frame.width, frame.height) != (self.width, self.height):
-            raise RuntimeError("Microduck camera resolution changed; restart the driver")
-        rgb = frame.to_ndarray(format="rgb24")
-        if self.maps is not None:
-            rgb = self.cv.remap(rgb, *self.maps, self.cv.INTER_LINEAR)
-        return np.ascontiguousarray(rgb)
-
     async def receive(self, track):
+        """mediad's encoded frames (Passthrough's av.Packets), on to every pilot's track."""
         while True:
             try:
                 async with asyncio.timeout(2):
-                    frame = await track.recv()
+                    packet = await track.recv()
             except TimeoutError as exc:
                 raise RuntimeError("Microduck camera stalled for two seconds") from exc
-            # mediad's WebRTC API exposes no per-frame capture timestamp. This is receive time,
-            # not sensor exposure time; keep that distinction visible in telemetry.
             received = clock.now()
-            captured = self.captured(frame, received)
+            captured = self.captured(packet, received)
             if captured is None and self.exact:
                 captured = received - self.fallback_delay
-            measured = self.measured(captured)
-            rgb = await asyncio.to_thread(self.rectify, frame)
-            self.latest = (rgb, received if captured is None else captured, measured)
-            self.revision += 1
-            self.changed.set()
+            data = bytes(packet)
+            frame = (
+                data,
+                received if captured is None else captured,
+                self.measured(captured),
+                keyframe(data),
+            )
+            self.frames += 1
+            for pilot in list(self.tracks):
+                pilot.put(frame)
 
     @property
     def exact(self):
@@ -240,47 +250,66 @@ class Camera:
 
     def close(self):
         self.closed = True
-        self.changed.set()
+        for pilot in list(self.tracks):
+            pilot.put(None)
 
 
-class Track(VideoStreamTrack):
+class Track(EncodedVideoTrack):
+    """One pilot's camera: mediad's frames as they are, from a keyframe on, each published
+    with its capture time and pose."""
+
     def __init__(self, camera, publish):
         super().__init__()
         self._id = "microduck-rgb"
         self.camera = camera
         self.publish = publish
-        self.revision = 0
+        self.frames = asyncio.Queue()
+        self.started = False  # past the first keyframe: frames before it cannot be decoded
         self.sequence = 0
         self.origin = None
+        camera.tracks.add(self)
+        camera.keyframe()
+
+    def put(self, frame):
+        if frame is not None and self.frames.qsize() >= BACKLOG:
+            while not self.frames.empty():
+                self.frames.get_nowait()
+            self.started = False
+            self.camera.keyframe()
+        if frame is not None and not self.started:
+            if not frame[3]:
+                return
+            self.started = True
+        self.frames.put_nowait(frame)
+
+    def keyframe(self):
+        self.camera.keyframe()
 
     async def recv(self):
-        camera = self.camera
-        while camera.revision == self.revision:
-            if camera.closed or self.readyState != "live":
-                raise MediaStreamError
-            camera.changed.clear()
-            await camera.changed.wait()
-        if camera.closed:
+        if self.camera.closed or self.readyState != "live":
             raise MediaStreamError
-        self.revision = camera.revision
-        rgb, captured, measured = camera.latest
+        frame = await self.frames.get()
+        if frame is None:
+            raise MediaStreamError
+        data, captured, measured, _ = frame
         if self.origin is None:
             self.origin = captured
-        frame = av.VideoFrame.from_ndarray(rgb, format="rgb24")
-        frame.pts = round((captured - self.origin) * 90000)
-        frame.time_base = Fraction(1, 90000)
+        packet = av.Packet(data)
+        packet.pts = round((captured - self.origin) * RTP_RATE)
+        packet.time_base = RTP_TIME_BASE
         self.publish(
             FrameMetadata(
                 camera="head",
                 sequence=self.sequence,
                 capture_time=captured,
-                video_pts=frame.pts,
+                video_pts=packet.pts,
                 **measured,
             )
         )
         self.sequence += 1
-        return frame
+        return packet
 
     def stop(self):
         super().stop()
-        self.camera.changed.set()
+        self.camera.tracks.discard(self)
+        self.frames.put_nowait(None)

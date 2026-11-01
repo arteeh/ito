@@ -13,8 +13,6 @@ DEFAULT_FOV = math.radians(60)
 class VideoPanel:
     def __init__(self, context):
         self.context = context
-        self.texture = None
-        self.stamp = None
         self.program = context.program(
             vertex_shader="""#version 430
                 uniform mat4 clip_from_panel;
@@ -46,24 +44,16 @@ class VideoPanel:
         width = min(width, FILL * fit_x, FILL * fit_y * aspect)
         return width, width / aspect
 
-    def draw(self, rgb, stamp, eye, projection, target, viewport, *, center=None, fov=None):
+    def draw(self, texture, stamp, eye, projection, target, viewport, *, center=None, fov=None):
+        """`texture`: the straightened camera frame (camera.CameraFeed), captured at `stamp`."""
         target.use()
         self.context.viewport = viewport
         target.clear(0.015, 0.02, 0.03, 1)
-        if rgb is None or clock.now() - stamp > 2:
+        if texture is None or clock.now() - stamp > 2:
             return
-        size = (rgb.shape[1], rgb.shape[0])
-        if self.texture is None or self.texture.size != size:
-            if self.texture:
-                self.texture.release()
-            self.texture = self.context.texture(size, 3, alignment=1)
-            self.texture.filter = (moderngl.LINEAR, moderngl.LINEAR)
-            self.stamp = None
-        if self.stamp != stamp:
-            self.texture.write(rgb.tobytes(), alignment=1)
-            self.stamp = stamp
+        size = texture.size
         self.context.disable(moderngl.DEPTH_TEST | moderngl.BLEND | moderngl.CULL_FACE)
-        self.texture.use(0)
+        texture.use(0)
         self.program["camera"] = 0
         self.program["half_size"] = self.half_size(projection, size[0] / size[1], fov)
         self.program["distance"] = DISTANCE
@@ -74,7 +64,5 @@ class VideoPanel:
         self.vao.render(moderngl.TRIANGLE_STRIP, vertices=4)
 
     def close(self):
-        if self.texture:
-            self.texture.release()
         self.vao.release()
         self.program.release()

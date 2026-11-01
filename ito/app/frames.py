@@ -157,9 +157,7 @@ class FrameJoin:
         out.append((frame, metadata))
 
     @staticmethod
-    def arrays(pair):
-        frame, metadata = pair
-        return (
-            frame.to_ndarray(format="rgb24"),
-            camera_matrix(metadata.camera_pose) if metadata.camera_pose is not None else None,
-        )
+    def camera(pair):
+        """The camera's 4x4 world pose at the joined frame's capture, or None."""
+        pose = pair[1].camera_pose
+        return camera_matrix(pose) if pose is not None else None

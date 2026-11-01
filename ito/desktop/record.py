@@ -1,5 +1,5 @@
 """ITO_RECORD=<dir> records the window as the pilot sees it (screen/) and each robot camera
-frame Ito receives (camera/): JPEGs plus frames.jsonl ("t" in Ito clock seconds), which
+frame Ito receives, as it came (camera/): JPEGs plus frames.jsonl ("t" in Ito clock seconds), which
 tools/session.py turns into videos. ITO_RECORD_FPS caps the screen rate (default 30)."""
 
 import json
@@ -68,8 +68,9 @@ class Recorder:
 
     def _writer(self) -> None:
         while (item := self.queue.get()) is not None:
-            name, rgb, t = item
+            name, image, t = item
             try:
+                rgb = image if isinstance(image, np.ndarray) else image.to_ndarray(format="rgb24")
                 self.streams[name].write(rgb, t)
             except Exception:
                 log.exception("Recording %s frame failed", name)
@@ -84,13 +85,11 @@ class Recorder:
         self._put(("screen", rgb, now))
 
     def camera(self, video, video_time) -> None:
+        """A camera frame as it arrived (an av.VideoFrame, through the robot's lens)."""
         if video is None or video_time == self.last_video:
             return
         self.last_video = video_time
-        rgb = np.asarray(video)
-        if rgb.dtype != np.uint8:
-            rgb = np.clip(rgb * (255 if rgb.max() <= 1.0 else 1), 0, 255).astype(np.uint8)
-        self._put(("camera", rgb.copy(), clock.now()))
+        self._put(("camera", video, clock.now()))
 
     def close(self) -> None:
         self.queue.put(None)
