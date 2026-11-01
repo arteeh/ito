@@ -1,5 +1,6 @@
 import atexit
 import collections
+import os
 import socket
 import struct
 import sys
@@ -29,6 +30,7 @@ class Fisheye:
         except ImportError:
             raise SystemExit("the sim body needs OpenCV: uv run --extra sim") from None
         self.cv = cv2
+        started = time.perf_counter()
         self.width, self.height = width, height
         u, v = np.meshgrid(np.arange(width, dtype=np.float64), np.arange(height, dtype=np.float64))
         ray = lens.rays(u, v, width, height)
@@ -68,6 +70,7 @@ class Fisheye:
         self.rect = mujoco.MjrRect(0, 0, *self.size)
         self.maps = cv2.convertMaps(map_x, map_y, cv2.CV_16SC2)
         self.atlas = np.empty((self.size[1], self.size[0], 3), np.uint8)
+        self.build_seconds = time.perf_counter() - started
 
     def views_drawn(self, renderer):
         """Draw every view into the framebuffer from the scene's camera."""
@@ -228,7 +231,17 @@ class ThreadedHeadCamera(HeadCamera):
     def loop(self):
         width, height = self.fisheye.size
         self.renderer = mujoco.Renderer(self.model, height=height, width=width)
-        print("== head camera: rendering", flush=True)
+        try:
+            from OpenGL import GL
+
+            gl = GL.glGetString(GL.GL_RENDERER).decode()
+        except Exception as exc:
+            gl = f"unknown ({exc})"
+        print(
+            f"== head camera: rendering, MUJOCO_GL={os.environ.get('MUJOCO_GL')} on {gl}; "
+            f"fisheye maps took {self.fisheye.build_seconds:.1f} s",
+            flush=True,
+        )
         body_server.mujoco = STEPPING
         STEPPING.hooks.append(self.before_step)
         try:

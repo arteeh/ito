@@ -48,13 +48,22 @@ def undistorted_radius(rd):
     for rays at or past 90 degrees."""
     rd = np.asarray(rd, np.float64)
     inner = rd <= _KNEE_D
-    r = np.where(inner, rd, _KNEE_U)
+    # Newton, only on the rays inside the knee and only until it has converged: the sim body
+    # solves this for every pixel of three frames at start-up.
+    target = rd[inner]
+    r = target.copy()
     for _ in range(30):
-        r = r - np.where(inner, (_radial(r) - rd) / _radial_slope(r), 0.0)
-        r = np.clip(r, 0.0, _KNEE_U)
+        r2 = r * r
+        step = (r * (1 + r2 * (K1 + r2 * (K2 + r2 * K3))) - target) / (
+            1 + r2 * (3 * K1 + r2 * (5 * K2 + r2 * 7 * K3))
+        )
+        r = np.clip(r - step, 0.0, _KNEE_U)
+        if not np.abs(step).max(initial=0.0) > 1e-15:
+            break
     angle = math.radians(KNEE_DEG) + (rd - _KNEE_D) * _KNEE_SLOPE
     outer = np.where(angle < math.pi / 2, np.tan(np.minimum(angle, math.pi / 2 - 1e-9)), np.inf)
-    return np.where(inner, r, outer)
+    outer[inner] = r
+    return outer
 
 
 def rays(u, v, width, height):
