@@ -120,6 +120,7 @@ class Zones:
         self.sure_across = _joined(inverse, 1, doubt=False)
         self.sure_down = _joined(inverse, 0, doubt=False)
         self.slope_u, self.slope_v = self._slopes()
+        self._cell_table = None  # lookup's per-cell table (_cells), made on first use
         # Set by guide(): per fine cell, the zone whose plane it takes (-1: lookup decides).
         self.label = None
         # Set by guide() with PLANES: per zone its region (-1: none) and per region the plane
@@ -184,83 +185,57 @@ class Zones:
         u, v = u[inside], v[inside]
         rn = np.clip(np.rint(v).astype(int), 0, self.rows - 1)
         cn = np.clip(np.rint(u).astype(int), 0, self.cols - 1)
-        nearest = np.where(self.valid[rn, cn], self.ranges[rn, cn], np.nan)
+        nearest = np.where(self.valid, self.ranges, np.nan).reshape(-1)[rn * self.cols + cn]
         if self.rows < 2 or self.cols < 2:
             out[inside] = nearest
             return out, distance, interpolated, free
         c0 = np.clip(np.floor(u).astype(int), 0, self.cols - 2)
         r0 = np.clip(np.floor(v).astype(int), 0, self.rows - 2)
+        # Everything that depends only on the four zones around a point comes from a table of
+        # the (rows - 1) x (cols - 1) cells between zone centres (_cells), gathered per point.
+        cell = r0 * (self.cols - 1) + c0
+        t = self._cells()
         # Past the outer zone centres: extrapolated where the border continues a plane, else the
         # value at the centres, which is not "interpolated" (so it never carves free space).
-        left = (c0 == 0) & self.flat_left[r0] & self.flat_left[r0 + 1]
-        right = (c0 == self.cols - 2) & self.flat_right[r0] & self.flat_right[r0 + 1]
-        top = (r0 == 0) & self.flat_top[c0] & self.flat_top[c0 + 1]
-        bottom = (r0 == self.rows - 2) & self.flat_bottom[c0] & self.flat_bottom[c0 + 1]
+        left, right = t["left"][cell], t["right"][cell]
+        top, bottom = t["top"][cell], t["bottom"][cell]
         fu = np.clip(u - c0, np.where(left, -0.5, 0.0), np.where(right, 1.5, 1.0))
         fv = np.clip(v - r0, np.where(top, -0.5, 0.0), np.where(bottom, 1.5, 1.0))
         within = ((u >= 0) | left) & ((u <= self.cols - 1) | right)
         within &= ((v >= 0) | top) & ((v <= self.rows - 1) | bottom)
-        corners = np.stack(
-            [
-                self.ranges[r0, c0],
-                self.ranges[r0, c0 + 1],
-                self.ranges[r0 + 1, c0],
-                self.ranges[r0 + 1, c0 + 1],
-            ],
-            axis=1,
+        # Bilinear weights of the measured corners (top left, top right, bottom left, bottom
+        # right); a missing zone (ST reports some as unmeasured every frame) is filled from the
+        # measured ones. Sums run corner by corner, in that order.
+        gu, gv = 1 - fu, 1 - fv
+        w0 = gu * gv * t["ok0"][cell]
+        w1 = fu * gv * t["ok1"][cell]
+        w2 = gu * fv * t["ok2"][cell]
+        w3 = fu * fv * t["ok3"][cell]
+        weight = w0 + w1 + w2 + w3
+        smooth = t["smooth"][cell] & (weight >= 0.25)
+        denominator = (
+            t["inverse0"][cell] * w0
+            + t["inverse1"][cell] * w1
+            + t["inverse2"][cell] * w2
+            + t["inverse3"][cell] * w3
         )
-        ok = np.stack(
-            [
-                self.valid[r0, c0],
-                self.valid[r0, c0 + 1],
-                self.valid[r0 + 1, c0],
-                self.valid[r0 + 1, c0 + 1],
-            ],
-            axis=1,
-        )
-        inverse = np.where(ok, 1.0 / np.where(ok, corners, 1.0), np.nan)
-        # Edge test over every pair of measured corners (sides and diagonals); a missing zone
-        # (ST reports some as unmeasured every frame) is filled from the measured ones.
-        near = np.where(ok, inverse, -np.inf).max(axis=1)
-        far = np.where(ok, inverse, np.inf).min(axis=1)
-        with np.errstate(invalid="ignore", divide="ignore"):
-            ratio = near / far
-        bilinear_w = (
-            np.stack([(1 - fu) * (1 - fv), fu * (1 - fv), (1 - fu) * fv, fu * fv], axis=1) * ok
-        )
-        weight = bilinear_w.sum(axis=1)
-        joined = (
-            self.joined_across[r0, c0]
-            & self.joined_across[r0 + 1, c0]
-            & self.joined_down[r0, c0]
-            & self.joined_down[r0, c0 + 1]
-        )
-        smooth = (ok.sum(axis=1) >= 2) & (ratio <= self.edge) & (weight >= 0.25) & joined
-        denominator = (np.nan_to_num(inverse) * bilinear_w).sum(axis=1)
         with np.errstate(divide="ignore", invalid="ignore"):
             bilinear = np.where(denominator > 0, weight / denominator, np.nan)
         smooth &= np.isfinite(bilinear)
         # Nearest zone (by footprint) where the corners disagree or one is missing.
         value = np.where(smooth, bilinear, nearest)
         interpolated[inside] = smooth & within
-        with np.errstate(invalid="ignore"):
-            closest = np.where(ok, corners, np.inf).min(axis=1)
+        closest = t["closest"][cell]
         inner = (u >= 0) & (u <= self.cols - 1) & (v >= 0) & (v <= self.rows - 1)
         known = np.where(
             smooth & within, bilinear, np.where(inner & np.isfinite(closest), closest, np.nan)
         )
         if self.region is not None:
             # Where all measured corners belong to one flat region, the region's plane.
-            regions = np.stack(
-                [self.region[r0, c0], self.region[r0, c0 + 1], self.region[r0 + 1, c0],
-                 self.region[r0 + 1, c0 + 1]],
-                axis=1,
-            )  # fmt: skip
-            first = np.where(ok, regions, -1).max(axis=1)
-            same = smooth & (first >= 0) & np.all(~ok | (regions == first[:, None]), axis=1)
+            same = smooth & self._one_region()[cell]
             if same.any():
                 flat = self._plane_range(
-                    first[same],
+                    self._first_region()[cell][same],
                     x[inside][same],
                     y[inside][same],
                     z[inside][same],
@@ -333,6 +308,76 @@ class Zones:
             if unlike.flat[best] > GUIDE_ALIKE:
                 sr[k], sc[k] = r * g + best // g, c * g + best % g
         return sr, sc
+
+    def _cells(self):
+        """Per cell between four zone centres (row-major over (rows - 1) x (cols - 1)), what
+        lookup needs that depends on the zones alone: which corners are measured (ok0..3: top
+        left, top right, bottom left, bottom right) and their inverse ranges (0 where not), the
+        nearest measured corner's range, whether the corners can be one surface, and whether
+        the cell continues a plane past the outer zone centres. Computed once per frame."""
+        if self._cell_table is not None:
+            return self._cell_table
+        r = np.repeat(np.arange(self.rows - 1), self.cols - 1)
+        c = np.tile(np.arange(self.cols - 1), self.rows - 1)
+        corners = np.stack(
+            [self.ranges[r, c], self.ranges[r, c + 1], self.ranges[r + 1, c],
+             self.ranges[r + 1, c + 1]],
+            axis=1,
+        )  # fmt: skip
+        ok = np.stack(
+            [self.valid[r, c], self.valid[r, c + 1], self.valid[r + 1, c],
+             self.valid[r + 1, c + 1]],
+            axis=1,
+        )  # fmt: skip
+        inverse = np.where(ok, 1.0 / np.where(ok, corners, 1.0), np.nan)
+        # Edge test over every pair of measured corners (sides and diagonals).
+        near = np.where(ok, inverse, -np.inf).max(axis=1)
+        far = np.where(ok, inverse, np.inf).min(axis=1)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            ratio = near / far
+        joined = (
+            self.joined_across[r, c]
+            & self.joined_across[r + 1, c]
+            & self.joined_down[r, c]
+            & self.joined_down[r, c + 1]
+        )
+        with np.errstate(invalid="ignore"):
+            closest = np.where(ok, corners, np.inf).min(axis=1)
+        zero = np.nan_to_num(inverse)
+        self._cell_table = dict(
+            left=(c == 0) & self.flat_left[r] & self.flat_left[r + 1],
+            right=(c == self.cols - 2) & self.flat_right[r] & self.flat_right[r + 1],
+            top=(r == 0) & self.flat_top[c] & self.flat_top[c + 1],
+            bottom=(r == self.rows - 2) & self.flat_bottom[c] & self.flat_bottom[c + 1],
+            smooth=(ok.sum(axis=1) >= 2) & (ratio <= self.edge) & joined,
+            closest=closest,
+            corners=(r, c),
+            **{f"ok{k}": ok[:, k] for k in range(4)},
+            **{f"inverse{k}": zero[:, k] for k in range(4)},
+        )
+        return self._cell_table
+
+    def _cell_regions(self):
+        """Per cell, the flat regions (see PLANES) of its four corners (-1: none) and which
+        corners are measured."""
+        r, c = self._cells()["corners"]
+        regions = np.stack(
+            [self.region[r, c], self.region[r, c + 1], self.region[r + 1, c],
+             self.region[r + 1, c + 1]],
+            axis=1,
+        )  # fmt: skip
+        ok = np.stack([self._cells()[f"ok{k}"] for k in range(4)], axis=1)
+        return regions, ok
+
+    def _first_region(self):
+        regions, ok = self._cell_regions()
+        return np.where(ok, regions, -1).max(axis=1)
+
+    def _one_region(self):
+        """Per cell: all measured corners in one flat region."""
+        regions, ok = self._cell_regions()
+        first = np.where(ok, regions, -1).max(axis=1)
+        return (first >= 0) & np.all(~ok | (regions == first[:, None]), axis=1)
 
     def _plane_range(self, region, x, y, z, distance):
         """Range along the rays of sensor-frame points (x, y, z, distance) to their region's
@@ -551,12 +596,12 @@ class Zones:
         for _ in range(3 * g):
             big_d[1:-1, 1:-1] = dist
             big_l[1:-1, 1:-1] = label
-            new_d, new_l = dist, label
+            new_d, new_l = dist.copy(), label.copy()
             for sl, cost in steps:
                 d = big_d[sl] + cost
                 better = d < new_d
-                new_d = np.where(better, d, new_d)
-                new_l = np.where(better, big_l[sl], new_l)
+                np.copyto(new_d, d, where=better)
+                np.copyto(new_l, big_l[sl], where=better)
             if np.array_equal(new_l, label) and np.allclose(new_d, dist, equal_nan=True):
                 break
             dist, label = new_d, new_l
