@@ -27,9 +27,12 @@ TRACKING_LOST = 2.0
 TRACKING_STEADY = 1.0
 TRACKING_GAP = 0.5
 RESTART_FIRST, RESTART_LONGEST, RESTART_HEALTHY = 1.0, 30.0, 60.0
-# ToF mesh: the eye is the robot camera's position averaged over one Microduck gait period. A
-# walking duck's head sways ~1.3 cm sideways at every step (sim, 1 Nov), which shook near
-# things in the view; the average cancels the sway and lags the walk by half of this.
+# ToF mesh: the eye is the robot camera's position averaged over the last Microduck gait period,
+# moved on by half the change from the period before's average. A walking duck's head sways
+# ~1.6 cm sideways at 2.3 Hz (sim, 1 Nov), which shook near things in the view; a whole period's
+# average has none of it. One average alone trails a steady walk by half a period; the change
+# between two consecutive ones is the walk's speed without the sway, and puts it back. A start
+# or stop is followed within two periods.
 EYE_AVERAGE = 0.42
 INPUT_FRESH, SHORT_STALL = 0.2, 1.0
 # Pilot state goes out as each input sample arrives (a headset's 72-90 Hz, a monitor's refresh),
@@ -367,7 +370,7 @@ class Pilot:
         where the robot started. The robot turns its head and body to look where the pilot
         looks, but those turns never rotate the view: the pilot is never turned by the robot.
         With `averaged_at` (a frame's capture time) the eye is the average position over the
-        last EYE_AVERAGE seconds.
+        last EYE_AVERAGE seconds, moved on by half its change from the EYE_AVERAGE before.
         """
         self.camera_pose = camera
         eye = camera[:3, 3]
@@ -376,9 +379,13 @@ class Pilot:
             if kept and averaged_at < kept[-1][0]:
                 kept.clear()  # a new session's clock
             kept.append((averaged_at, eye.copy()))
-            while averaged_at - kept[0][0] > EYE_AVERAGE:
+            while averaged_at - kept[0][0] > 2 * EYE_AVERAGE:
                 kept.popleft()
-            eye = sum(p for _, p in kept) / len(kept)
+            last = [p for t, p in kept if averaged_at - t <= EYE_AVERAGE]
+            before = [p for t, p in kept if averaged_at - t > EYE_AVERAGE]
+            eye = sum(last) / len(last)
+            if before:
+                eye = eye + (eye - sum(before) / len(before)) / 2
         self.state = replace(
             self.state,
             robot_camera=pose(eye),
