@@ -27,7 +27,9 @@ from .zones import zones_from_grid
 # A sensor reading waits this long for the pose stream to reach its time, then is dropped.
 POSE_WAIT = 0.4
 PAINT_INTERVAL = 0.15
-MESH_INTERVAL = 0.2
+# New geometry is re-meshed at once, after every fused ToF frame (~12.7 Hz), but not more often
+# than this: waiting for a slower re-mesh tick was up to 0.2 s of the mesh's lag.
+MESH_INTERVAL = 0.05
 # Colour-only changes (repainted voxels) reach the mesh this often; the live projector already
 # shows the current view at camera resolution, so the coarse vertex colours can lag.
 RECOLOUR_INTERVAL = 1.5
