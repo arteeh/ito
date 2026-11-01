@@ -387,8 +387,13 @@ class MeshRenderer:
         self.shadow_stale = set()
         self.guess_enabled = _guess_setting() if guess is None else bool(guess)
         self.guess_dirty = False
+        self.levels = []
+        self.push_program = self.pull_program = self.push_vao = self.pull_vao = None
+        self.guess_program = self.guess_vbo = self.guess_ibo = self.guess_vao = None
+        self.composite_program = self.composite_vao = None
         self.guess_target = None  # (size, framebuffer, colour texture, depth)
-        self._guess_resources()
+        if self.guess_enabled:  # ITO_GUESS_DEPTH=0: none of its GPU resources
+            self._guess_resources()
 
     def _guess_resources(self):
         """Push-pull pyramid over the live projector's distance map, the guess grid and the
