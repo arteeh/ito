@@ -33,6 +33,9 @@ MESH_INTERVAL = 0.05
 # Colour-only changes (repainted voxels) reach the mesh this often; the live projector already
 # shows the current view at camera resolution, so the coarse vertex colours can lag.
 RECOLOUR_INTERVAL = 1.5
+# ... spread over the re-meshes that follow, this many blocks each, so a repaint of most of the
+# view (the floor) does not stall the next ToF frame behind one long re-mesh.
+RECOLOUR_BATCH = 48
 LIVE_INTERVAL = 1 / 20
 # Projector slots: 0 the live frame, the rest kept views (the renderer's texture array).
 PROJECTORS = 12
@@ -126,6 +129,7 @@ class Fusion:
         self.last_live = -1e9
         self.last_mesh = -1e9
         self.last_recolour = -1e9
+        self.recolour = set()  # repainted blocks still to re-mesh
         self.revision = 0
         self.epoch = time.time()
         self.captured_at = None
@@ -250,7 +254,10 @@ class Fusion:
 
         news = None
         colours = now - self.last_recolour >= RECOLOUR_INTERVAL
-        changed = self.volume.dirty or self.volume.evicted or (colours and self.volume.painted)
+        changed = (
+            self.volume.dirty or self.volume.evicted or self.recolour
+            or (colours and self.volume.painted)
+        )  # fmt: skip
         if now - self.last_mesh >= MESH_INTERVAL and changed:
             self.last_mesh = now
             if colours:
@@ -302,7 +309,17 @@ class Fusion:
             self.meshes.pop(key, None)
         # A block's mesh reaches one voxel into its neighbours: new geometry re-meshes them too,
         # and so does a forgotten block (by its old key: its slot may hold another block now).
-        todo = set(dirty.tolist()) | set(painted.tolist())
+        todo = set(dirty.tolist())
+        self.recolour.update(painted.tolist())
+        self.recolour -= todo
+        batch = []
+        for slot in sorted(self.recolour):
+            if len(batch) == RECOLOUR_BATCH:
+                break
+            self.recolour.discard(slot)
+            if self.volume.slots.get(tuple(self.volume.keys[slot].tolist())) == slot:
+                batch.append(slot)  # (an evicted slot no longer holds the repainted block)
+        todo.update(batch)
         centres = [tuple(k) for k in self.volume.keys[dirty].tolist()] + list(evicted)
         for kx, ky, kz in centres:
             for dx in (-1, 0, 1):
