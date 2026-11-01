@@ -17,9 +17,13 @@ of a surface (towards the sensor), negative behind it.
 import numpy as np
 
 BLOCK = 8
-# Weight of a voxel saturates here, so a changed scene (a moved chair) relearns in seconds.
-MAX_WEIGHT = 40.0
-MAX_COLOUR_WEIGHT = 12.0
+# A voxel's weight saturates at `memory` (the pilot's "Mesh memory" setting): about that many
+# ToF frames at full trust. A new frame then counts for 1 / (memory + 1) of the surface, so the
+# mesh follows a changed scene or pose estimate (a moved chair, an edge seen again from a
+# corrected pose) within about that many frames; more frames average away more range noise.
+# Colour saturates at COLOUR_SHARE of it: the camera paints every PAINT_INTERVAL (0.15 s, the
+# ToF ~15 Hz) with weights of about one half, so colour forgets in about the same time.
+COLOUR_SHARE = 0.3
 # Free space seen through a voxel (well in front of the measured surface, along a ray whose range
 # is interpolated) also forgets this fraction of its weight per frame at full range trust: a
 # saturated surface that is gone (a moved object, a wall doubled by drift) fades in a few seconds,
@@ -54,7 +58,8 @@ _AROUND = np.stack(np.meshgrid(*[np.arange(-1, 2)] * 3, indexing="ij"), -1).resh
 
 
 class Volume:
-    def __init__(self, voxel=0.04, truncation=None, capacity=6000, max_range=4.0):
+    def __init__(self, memory, voxel=0.04, truncation=None, capacity=6000, max_range=4.0):
+        self.memory = float(memory)
         self.voxel = float(voxel)
         self.truncation = float(truncation if truncation is not None else 3.5 * voxel)
         self.capacity = int(capacity)
@@ -245,7 +250,7 @@ class Volume:
         total = old_w + w
         with np.errstate(invalid="ignore", divide="ignore"):
             fused = np.where(total > 0, (self.sdf[slots] * old_w + s * w) / total, 0)
-        weight = np.minimum(total, MAX_WEIGHT)
+        weight = np.minimum(total, self.memory)
         touched = w.reshape(len(slots), -1).any(axis=1)
         # Blocks only seen through re-mesh when their surface can have changed: a voxel changed
         # side or crossed the weight a mesh needs (surface.extract's min_weight).
@@ -367,7 +372,7 @@ class Volume:
         flat_colour[index] = (flat_colour[index] * old[:, None] + rgb * wc[:, None]) / total[
             :, None
         ]
-        flat_weight[index] = np.minimum(total, MAX_COLOUR_WEIGHT)
+        flat_weight[index] = np.minimum(total, COLOUR_SHARE * self.memory)
         self.painted.update(np.unique(target).tolist())
         return int(len(index))
 
