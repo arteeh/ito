@@ -100,12 +100,12 @@ void main() {
         float nearest = texture(shadows, atlas).r;
         if (d > nearest + 0.06 + 0.03 * d) continue;
         vec3 toward = (origin[k] - v_world) / max(d, 1e-4);
-        float facing = dot(n, toward);
-        // Kept views only where they face the surface; the live frame colours everything it
-        // sees, however grazing (the low camera sees the floor at a shallow angle, and a bumpy
-        // ToF floor tips its normals further away).
-        if (k == 0) facing = abs(facing);
-        else if (facing < 0.15) continue;
+        // Every frame colours what it sees unoccluded, however grazing: the low camera sees the
+        // floor at a shallow angle (a bumpy ToF floor tips its normals further away), and floor
+        // a kept view saw only that way otherwise showed the coarse, neighbour-filled voxel
+        // colours (a smear) once the view turned past the live frame. A grazing view's weight is
+        // tiny, so any view facing the surface better still wins.
+        float facing = abs(dot(n, toward));
         float edge = clamp(min(min(u, image_size.x - u), min(v, image_size.y - v))
                            / (0.06 * image_size.x), 0.0, 1.0);
         // The floor keeps a grazing or border sample of the live frame in the blend
