@@ -83,14 +83,8 @@ class Fisheye:
         forward, up = kept[0][0].astype(np.float64), kept[0][1].astype(np.float64)
         right = np.cross(forward, up)
         near = cameras[0].frustum_near
-        # MuJoCo lights a headlight along each drawn view's own axis, which would light every view
-        # differently and seam the fisheye: fix it along the camera's axis for all of them.
-        heads = [light for light in scene.lights[: scene.nlight] if light.headlight]
-        for light in heads:
-            light.headlight = 0
-            light.type = mujoco.mjtLightType.mjLIGHT_DIRECTIONAL
-            light.pos[:] = (np.array(cameras[0].pos) + np.array(cameras[1].pos)) / 2
-            light.dir[:] = forward
+        # The views need no lighting of their own: the scene's headlight is ambient only
+        # (scene.py), so all three views are lit alike and the fisheye has no seams.
         try:
             for yaw, left, top, w, h, focal, rect in self.views:
                 look = np.cos(yaw) * forward + np.sin(yaw) * right
@@ -103,8 +97,6 @@ class Fisheye:
                     camera.frustum_bottom = -near * (top + h / focal)
                 mujoco.mjr_render(rect, scene, context)
         finally:
-            for light in heads:
-                light.headlight = 1
             for camera, (f, _, center, bottom, top) in zip(cameras, kept, strict=True):
                 camera.forward[:] = f
                 camera.frustum_center, camera.frustum_bottom, camera.frustum_top = (

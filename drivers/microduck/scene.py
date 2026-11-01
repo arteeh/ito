@@ -36,18 +36,22 @@ def furnish(source: Path) -> ET.ElementTree:
     floor.set("size", "2 1.8 0.05")
     floor.set("pos", "0.7 0 0")
     ET.SubElement(scene.getroot(), "statistic", center="0.7 0 0.5", extent="4")
+    # A room is lit by its lamp and window, not from the viewer: MuJoCo's headlight follows the
+    # camera, so a wall brightened and darkened as the head turned. It keeps only the ambient
+    # (light bounced off the room), and the lights stay put, shadows on.
     visual = scene.find("visual")
-    visual.find("headlight").set("diffuse", "0.45 0.43 0.39")
-    visual.find("headlight").set("ambient", "0.35 0.35 0.35")
+    visual.find("headlight").set("diffuse", "0 0 0")
+    visual.find("headlight").set("ambient", "0.38 0.37 0.35")
     visual.find("global").set("azimuth", "45")
     visual.find("global").set("elevation", "-42")
     # MuJoCo scales clipping by model extent: retain millimetre-scale near vision in a room.
     ET.SubElement(visual, "map", znear="0.0003", zfar="10")
-    light = scene.find("worldbody/light")
-    light.set("pos", "0.3 -0.5 2.1")
-    light.set("dir", "0.2 0.3 -1")
-    light.set("directional", "false")
-    light.set("diffuse", "0.65 0.62 0.56")
+    scene.find("worldbody").remove(scene.find("worldbody/light"))
+    # Matte: MuJoCo's default specular (0.5) is a plastic sheen that moves with the viewer.
+    for material in asset.iter("material"):
+        if material.get("name", "").startswith("room_"):
+            material.set("specular", material.get("specular", "0.05"))
+            material.set("shininess", material.get("shininess", "0.1"))
     return scene
 
 
