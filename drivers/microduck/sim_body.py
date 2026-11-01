@@ -1,6 +1,5 @@
 import atexit
 import collections
-import os
 import socket
 import struct
 import sys
@@ -28,7 +27,7 @@ class Fisheye:
         try:
             import cv2
         except ImportError:
-            raise SystemExit("the sim body needs OpenCV now: re-run setup-sim.sh") from None
+            raise SystemExit("the sim body needs OpenCV: uv run --extra sim") from None
         self.cv = cv2
         self.width, self.height = width, height
         u, v = np.meshgrid(np.arange(width, dtype=np.float64), np.arange(height, dtype=np.float64))
@@ -119,9 +118,7 @@ class Fisheye:
 
 class HeadCamera(Camera):
     def __init__(self, model, name, width=None, height=None, mount=0):
-        height = int(os.environ.get("ITO_MICRODUCK_CAMERA_HEIGHT", lens.DEFAULT_HEIGHT))
-        width = lens.width_for(height)
-        self.fisheye = Fisheye(width, height)
+        self.fisheye = Fisheye(lens.WIDTH, lens.HEIGHT)
         # MuJoCo renders no larger than the offscreen buffer, which the scene sizes at 640x480.
         model.vis.global_.offwidth = max(model.vis.global_.offwidth, self.fisheye.size[0])
         model.vis.global_.offheight = max(model.vis.global_.offheight, self.fisheye.size[1])
@@ -176,7 +173,7 @@ class Stepping:
 STEPPING = Stepping()
 
 
-FPS = int(os.environ.get("ITO_MICRODUCK_CAMERA_FPS", 30))
+FPS = 30
 CAMERAS = []
 
 
@@ -231,8 +228,6 @@ class ThreadedHeadCamera(HeadCamera):
     def loop(self):
         width, height = self.fisheye.size
         self.renderer = mujoco.Renderer(self.model, height=height, width=width)
-        # sim.py waits for this line before starting robotd: the body answers the bus while the
-        # fisheye maps are built, seconds before physics runs.
         print("== head camera: rendering", flush=True)
         body_server.mujoco = STEPPING
         STEPPING.hooks.append(self.before_step)

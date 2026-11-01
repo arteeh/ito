@@ -1,0 +1,14 @@
+name: ito
+# The virtual Microduck's robot side: Pollen's robotd, tofd and mediad at the third_party/ pins,
+# and Ito's Microduck driver on port 8081. Its body runs outside, on the host:
+# uv run --extra sim python -m drivers.microduck.sim [--viewer]
+services:
+  microduck:
+    build:
+      context: .
+      dockerfile: drivers/microduck/Dockerfile
+    network_mode: host
+    init: true
+    volumes:
+      - ${HOME}/.config/ito:/config
+      - ${HOME}/.local/state/ito/microduck:/logs

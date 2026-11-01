@@ -1,19 +1,19 @@
 """Run a Windows build of Ito against the virtual Microduck, drive it with a script and
 record videos of it. Run in WSL on the Windows PC:
 
-    uv run tools/session.py BUILD NAME [--script FILE] [--sim-prefix DIR] [--viewer]
+    uv run --extra sim tools/session.py BUILD NAME [--script FILE] [--viewer]
 
 BUILD is a folder under %USERPROFILE%\\Projects\\ito\\builds (tools/build.sh). Output goes to
 %USERPROFILE%\\Projects\\ito\\out\\sessions\\NAME: screen.mp4 (the Ito window), camera.mp4 (the
 robot camera frames Ito received), steps.txt (when each script step started, in seconds and as
-frame numbers of both videos), ito.log, sim.log and the sim's own logs. Script steps are
-described in ito/desktop/input.py (PilotScript).
+frame numbers of both videos), ito.log, sim.log (the body) and the robot side's logs. Script
+steps are described in ito/desktop/input.py (PilotScript). The virtual Microduck is this
+checkout's: compose.yaml (rebuilt if changed) and drivers/microduck/sim.py.
 """
 
 import argparse
 import bisect
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -31,15 +31,14 @@ def output(*command):
 
 
 ROOT = Path(output("wslpath", output("cmd.exe", "/c", "echo %USERPROFILE%"))) / "Projects/ito"
-WSLG = Path("/tmp/.X11-unix/X0")
 
 
 def windows(path: Path) -> str:
     return output("wslpath", "-w", str(path))
 
 
-def stop_sim():
-    subprocess.run(["sh", str(ROOT / "stop-sim.sh")], capture_output=True)
+def compose(*command):
+    subprocess.run(["docker", "compose", "-f", str(HERE / "compose.yaml"), *command], check=True)
 
 
 def encode(stream: Path, video: Path, fps: int = 30) -> int:
@@ -91,7 +90,7 @@ def frame_times(stream: Path) -> list[float]:
 
 def step_times(log: Path, screen: list[float], camera: list[float]) -> str:
     """When each script step started (from ito.log): seconds into screen.mp4, and the first
-    frame number of screen.mp4 and camera.mp4 at or after it, for tools/frame.py."""
+    frame number of screen.mp4 and camera.mp4 at or after it."""
     lines = ["seconds  screen  camera  step"]
     for found in re.finditer(
         r"Pilot script step (\d+) t=([\d.]+): (.*)", log.read_text("utf-8", "replace")
@@ -111,22 +110,7 @@ def main():
     parser.add_argument("build")
     parser.add_argument("name")
     parser.add_argument("--script", type=Path, default=HERE / "tools/scripts/room-tour.json")
-    parser.add_argument(
-        "--sim-source",
-        type=Path,
-        default=HERE,
-        help="checkout whose drivers/microduck runs the sim (default this one)",
-    )
-    parser.add_argument(
-        "--sim-prefix",
-        type=Path,
-        default=Path.home() / ".local/share/ito-microduck",
-        help="sim install from drivers/microduck/setup-sim.sh",
-    )
     parser.add_argument("--viewer", action="store_true", help="also open the MuJoCo viewer")
-    parser.add_argument(
-        "--sim-args", default="", help='extra sim options, e.g. "--camera-height 1080"'
-    )
     args = parser.parse_args()
 
     exe = ROOT / "builds" / args.build / "ito" / "ito.exe"
@@ -136,49 +120,23 @@ def main():
     shutil.rmtree(out, ignore_errors=True)
     out.mkdir(parents=True)
     shutil.copy(args.script, out / "script.json")
-    source = subprocess.run(
-        ["git", "-C", str(args.sim_source), "log", "--oneline", "-1"],
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
     (out / "about.txt").write_text(
-        f"build {args.build}\nsim source {source}\nsim prefix {args.sim_prefix}\n"
-        f"sim args {args.sim_args}\n"
+        f"build {args.build}\nsim {output('git', 'log', '--oneline', '-1')}\n"
     )
 
-    stop_sim()
-    prefix = args.sim_prefix
+    logs = Path.home() / ".local/state/ito/microduck"
+    logs.mkdir(parents=True, exist_ok=True)
+    compose("up", "-d", "--build", "--force-recreate", "--quiet-pull")
     sim_log = (out / "sim.log").open("w")
     sim = subprocess.Popen(
-        [
-            str(prefix / "ito-venv/bin/python"),
-            "-m",
-            "drivers.microduck.sim",
-            "--microduck",
-            str(prefix / "microduck"),
-            "--rl",
-            str(prefix / "microduck_rl"),
-            "--policies",
-            str(prefix / "policies/current"),
-            *(["--viewer"] if args.viewer else []),
-            # The head camera's lens is three pinhole renders a frame: llvmpipe, on a CPU shared
-            # with the physics and the encoder, can fall behind 30 fps. WSLg's GPU keeps up.
-            *(["--gl", "glfw"] if not args.viewer and WSLG.exists() else []),
-            *args.sim_args.split(),
-        ],
-        cwd=args.sim_source,
+        [sys.executable, "-m", "drivers.microduck.sim", *(["--viewer"] if args.viewer else [])],
+        cwd=HERE,
         stdout=sim_log,
         stderr=subprocess.STDOUT,
-        env=os.environ
-        | ({"DISPLAY": os.environ.get("DISPLAY", ":0")} if WSLG.exists() else {})
-        | {
-            "PYTHONPATH": str(args.sim_source),
-            "GST_PLUGIN_PATH": str(prefix / "gst-plugins-rs/target/debug"),
-        },
     )
     try:
         deadline = time.monotonic() + 90
-        while "Pairing code" not in (out / "sim.log").read_text(errors="replace"):
+        while "Virtual Microduck ready" not in output("docker", "logs", "ito-microduck-1"):
             if sim.poll() is not None or time.monotonic() > deadline:
                 sys.exit("sim did not start:\n" + (out / "sim.log").read_text()[-2000:])
             time.sleep(0.5)
@@ -198,11 +156,10 @@ def main():
         if result.returncode:
             print(f"ito exited {result.returncode}", flush=True)
     finally:
-        stop_sim()
+        sim.terminate()
         sim.wait(timeout=30)
-        shutil.copytree(
-            Path.home() / ".local/state/ito/microduck-sim", out / "sim-logs", dirs_exist_ok=True
-        )
+        compose("down")
+        shutil.copytree(logs, out / "sim-logs", dirs_exist_ok=True)
 
     for name in ("screen", "camera"):
         if (rec / name / "frames.jsonl").exists():

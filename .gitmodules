@@ -1,5 +1,5 @@
-# The Pollen stack for the Microduck sim. The gitlinks pin the exact commits;
-# drivers/microduck/setup-sim.sh reads them from here.
+# The Pollen stack for the virtual Microduck. The gitlinks pin the exact commits; compose.yaml
+# builds the robot side from them, drivers/microduck/sim.py runs the body from microduck_rl.
 # microduck: release tag daemon-v0.18.3 plus the beta board's simulated head IMU,
 # ToF, calibrated camera and home-relative gaze commands (API v48), frames that carry
 # their capture time in their RTP timestamps and a simulated head IMU clocked by its

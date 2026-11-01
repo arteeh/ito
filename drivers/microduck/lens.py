@@ -24,8 +24,6 @@ DISTORTION = (  # OpenCV's k1 k2 p1 p2 k3
     0.0008719998338708391,
     -0.022368269599378002,
 )
-RESOLUTIONS = {360: "360p30", 720: "720p30", 1080: "1080p30"}
-DEFAULT_HEIGHT = 720
 KNEE_DEG = 54.0
 
 K1, K2, P1, P2, K3 = DISTORTION
@@ -43,10 +41,6 @@ def _radial_slope(r):
 _KNEE_D = _radial(_KNEE_U)
 # d(angle) / d(distorted radius) at the knee, which the lens keeps beyond it.
 _KNEE_SLOPE = 1 / (1 + _KNEE_U**2) / _radial_slope(_KNEE_U)
-
-
-def width_for(height):
-    return height * 16 // 9
 
 
 def undistorted_radius(rd):

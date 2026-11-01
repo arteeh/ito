@@ -18,7 +18,7 @@ RTP_WRAP = 2**32 / RTP_RATE
 LONGEST_DELAY = 1.0
 
 # The widest pinhole Ito is given, degrees across: a pinhole's edges stretch as 1 / cos^2 of their
-# angle, so a wider one spends MASt3R's 512 pixels on smeared edges. The beta's lens (about 114
+# angle, so a wider one spends its pixels on smeared edges. The beta's lens (about 114
 # across, 60 down) holds a 16:9 pinhole only 91.6 wide anyway (its 60 down binds); whichever is
 # narrower wins.
 MAX_RECTIFIED_HFOV_DEG = 100.0

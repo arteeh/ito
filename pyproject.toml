@@ -26,7 +26,8 @@ ito = "ito.app.__main__:main"
 ito-driver-microduck = "drivers.microduck.cli:main"
 
 [project.optional-dependencies]
-microduck = ["opencv-python-headless==4.11.0.86"]
+# The virtual Microduck's body (drivers/microduck/sim.py), at microduck_rl's locked versions.
+sim = ["mujoco==3.10.0", "onnxruntime==1.24.4", "opencv-python-headless==4.11.0.86"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["ito", "drivers"]

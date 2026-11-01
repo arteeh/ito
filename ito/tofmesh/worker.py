@@ -21,7 +21,10 @@ log = logging.getLogger(__name__)
 
 FRAME_RATE = 15.0  # camera frames forwarded per second
 FRAME_WIDTH = 640  # their width in the worker (colour and projectors)
-CLOSE_WAIT = 3.0
+# Stopping the worker: STOP_WAIT to queue the stop, EXIT_WAIT to leave its loop and exit, then
+# KILL_WAIT after a terminate. CLOSE_WAIT is all of it: what close() may take.
+STOP_WAIT, EXIT_WAIT, KILL_WAIT = 0.5, 3.0, 1.0
+CLOSE_WAIT = STOP_WAIT + EXIT_WAIT + KILL_WAIT
 BACKLOG = 64  # geometry batches held while the worker's queue is full (a few seconds)
 TIMING_SUMMARY = 1.0  # seconds of mesh stage times per diagnostic log line
 
@@ -272,13 +275,13 @@ class TofMesh:
             return
         self._closed = True
         try:
-            self.inputs.put(("stop",), timeout=0.5)
+            self.inputs.put(("stop",), timeout=STOP_WAIT)
         except (queue.Full, ValueError):
             pass
-        self.process.join(CLOSE_WAIT)
+        self.process.join(EXIT_WAIT)
         if self.process.is_alive():
             self.process.terminate()
-            self.process.join(1)
+            self.process.join(KILL_WAIT)
         for q in (self.inputs, self.outputs, self.notes):
             q.cancel_join_thread()
             q.close()

@@ -39,9 +39,8 @@ PAN_LIMIT = 1.50
 # mediad's frames reach the driver about 90 ms after robotd reports the head pose they were
 # taken at (encoding, WebRTC, decoding). Only a guess for a mediad that does not say when its
 # frames were captured (camera.Camera.captured): the twin's real delay moves between 79 and 132 ms
-# within one session. Measured on the simulated twin by matching
-# MASt3R-SLAM's turns to the robot's: taking the pose from receive time instead puts a
-# brisk turn's frames 5-10 degrees off and makes SLAM restart its map against the robot.
+# within one session. Measured on the simulated twin: taking the pose from receive time instead
+# puts a brisk turn's frames 5-10 degrees off.
 FRAME_DELAY = 0.09
 GAIT_PERIOD = 0.42
 GAZE_DISTANCE = 10.0
