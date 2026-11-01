@@ -14,10 +14,12 @@ ever measured, seen from the live camera) has its holes filled by push-pull (an 
 that averages inverse range down, then fills each hole from the coarser level up: the nearest
 measured surfaces extended outwards), and a ray that meets the floor (y = 0 in the robot's
 odometry frame) before that is put on the floor. The live frame is then drawn as a grid at
-those ranges: desaturated, dimmed and hatched so it never passes for measured, broken where
-neighbouring guesses jump (an edge), and only where no mesh is drawn (its depth is pushed
-behind every real surface), so it never covers a measured one and gives way as soon as the ToF
-measures that spot.
+those ranges: desaturated, dimmed and cross-hatched in world space (the hatching stays on the
+surface as the view moves, and both eyes of a headset see the same), so it never passes for
+measured, and broken where neighbouring guesses jump (an edge). Guesses are drawn into a layer
+of their own with ordinary depth (so nearer guesses hide farther ones from any eye position),
+and that layer is composited only into pixels where no mesh was drawn: a guess never covers a
+measured surface and gives way as soon as the ToF measures that spot.
 
 Same draw contract as the splat renderer (ito/render/renderer.py), so the desktop and XR windows
 can use either: draw(robot_camera, head, projection, target, viewport=...).
@@ -287,9 +289,29 @@ void main() {
     vec3 p = v_world / hatch;
     float line = max(stripes(p.x + p.y + p.z), stripes(p.x - p.y - p.z));
     g *= 1.0 - 0.45 * line;
-    f_colour = vec4(g, 1.0);
-    // Behind every real surface: drawn only where no mesh is.
-    gl_FragDepth = 0.9999 + 0.0001 * gl_FragCoord.z;
+    f_colour = vec4(g, 1.0);  // alpha 1: this pixel holds a guess (the composite reads it)
+}
+"""
+
+# The guess layer into the view: only where the view's depth is still the clear value, i.e. no
+# mesh was drawn there (depth test <= at depth 1.0), and only where the layer holds a guess.
+COMPOSITE_VERTEX = """
+#version 430
+void main() {
+    vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+    gl_Position = vec4(p * 2.0 - 1.0, 1.0, 1.0);
+}
+"""
+
+COMPOSITE_FRAGMENT = """
+#version 430
+uniform sampler2D layer;
+out vec4 f_colour;
+void main() {
+    vec4 c = texelFetch(layer, ivec2(gl_FragCoord.xy), 0);
+    if (c.a < 0.5) discard;
+    f_colour = vec4(c.rgb, 1.0);
+    gl_FragDepth = 1.0;
 }
 """
 
@@ -365,11 +387,17 @@ class MeshRenderer:
         self.shadow_stale = set()
         self.guess_enabled = _guess_setting() if guess is None else bool(guess)
         self.guess_dirty = False
+        self.guess_target = None  # (size, framebuffer, colour texture, depth)
         self._guess_resources()
 
     def _guess_resources(self):
-        """Push-pull pyramid over the live projector's distance map, and the guess grid."""
+        """Push-pull pyramid over the live projector's distance map, the guess grid and the
+        program that composites the guess layer."""
         context = self.context
+        self.composite_program = context.program(
+            vertex_shader=COMPOSITE_VERTEX, fragment_shader=COMPOSITE_FRAGMENT
+        )
+        self.composite_vao = context.vertex_array(self.composite_program, [])
         self.push_program = context.program(vertex_shader=FULLSCREEN, fragment_shader=PUSH)
         self.pull_program = context.program(vertex_shader=FULLSCREEN, fragment_shader=PULL)
         self.push_vao = context.vertex_array(self.push_program, [])
@@ -571,6 +599,34 @@ class MeshRenderer:
         )
         self.guess_vao.render(moderngl.TRIANGLES)
 
+    def _guess_layer(self, size):
+        if self.guess_target is None or self.guess_target[0] != size:
+            if self.guess_target is not None:
+                for r in self.guess_target[1:]:
+                    r.release()
+            colour = self.context.texture(size, 4)
+            colour.filter = moderngl.NEAREST, moderngl.NEAREST
+            depth = self.context.depth_renderbuffer(size)
+            self.guess_target = (size, self.context.framebuffer([colour], depth), colour, depth)
+        return self.guess_target
+
+    def _guesses(self, view_projection, fbo, size):
+        """Draw the guesses into their own layer (ordinary depth among themselves), then into
+        `fbo` where it still has its clear depth: wherever no mesh was drawn."""
+        _, layer, colour, _ = self._guess_layer(size)
+        layer.use()
+        self.context.viewport = (0, 0, *size)
+        self.context.enable_only(moderngl.DEPTH_TEST)
+        layer.clear(0, 0, 0, 0, depth=1.0)
+        self._draw_guess(view_projection)
+        fbo.use()
+        self.context.viewport = (0, 0, *size)
+        self.context.depth_func = "<="
+        colour.use(0)
+        _set(self.composite_program, layer=0)
+        self.composite_vao.render(moderngl.TRIANGLES, vertices=3)
+        self.context.depth_func = "<"
+
     # -- drawing -------------------------------------------------------------------------
     def sort(self, robot_camera, head):
         """Meshes need no sorting; kept for the windows' splat-renderer contract."""
@@ -646,7 +702,7 @@ class MeshRenderer:
             self.vao.render(moderngl.TRIANGLES, vertices=self.count * 3)
             self.draw_count += 1
         if guess:
-            self._draw_guess(view_projection)
+            self._guesses(view_projection, fbo, size)
         x, y, w, h = viewport
         self.context.copy_framebuffer(target, fbo) if (
             (x, y) == (0, 0) and tuple(target.size) == size
@@ -669,8 +725,10 @@ class MeshRenderer:
             self.vbo, self.nbo, self.cbo, self.ibo, self.vao, self.shadow_vao, self.program,
             self.shadow_program, self.images, self.shadows, self.shadow_depth, self.shadow_fbo,
             self.push_vao, self.pull_vao, self.push_program, self.pull_program, self.guess_vao,
-            self.guess_vbo, self.guess_ibo, self.guess_program,
+            self.guess_vbo, self.guess_ibo, self.guess_program, self.composite_vao,
+            self.composite_program,
             *(r for level in self.levels for r in level[1:]),
+            *(self.guess_target[1:] if self.guess_target is not None else ()),
         ):  # fmt: skip
             if r is not None:
                 r.release()
