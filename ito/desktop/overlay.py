@@ -23,6 +23,14 @@ class PilotStatus:
     link_lagging: bool = False
     focus_hold: bool = False
 
+    @property
+    def stopped(self) -> bool:
+        """Connected, but the robot will not move for the pilot: disarmed, e-stopped or faulted
+        (the stopped prompt says why and how to resume)."""
+        return self.link == "CONNECTED" and (
+            not self.armed or self.e_stop or self.detail.startswith("fault")
+        )
+
 
 class Overlay:
     def __init__(self, context: moderngl.Context):
@@ -153,10 +161,7 @@ class Overlay:
         if xr_mode:
             width, height = imgui.get_io().display_size
             maximum_height = height - 36
-            stopped = status.link == "CONNECTED" and (
-                not status.armed or status.e_stop or status.detail.startswith("fault")
-            )
-            if stopped or self.theme.stopped.alpha(self.theme.t) > 0:
+            if status.stopped or self.theme.stopped.alpha(self.theme.t) > 0:
                 style = imgui.get_style()
                 scale = style.font_scale_main * style.font_scale_dpi
                 prompt_height = (
@@ -203,6 +208,7 @@ class Overlay:
         if xr_mode:
             imgui.text("Aim + trigger to select | stick to drive")
             imgui.text("B e-stop | X stop | A resume | Y recenter")
+            imgui.text("Left stick click: keep this panel shown while driving")
         else:
             imgui.text("WASD move | PgUp/PgDn rise/fall | Home recenter")
             imgui.text("Tab release mouse" if captured else "Click scene / Tab for mouse-look")
@@ -236,8 +242,7 @@ class Overlay:
         imgui.end()
 
     def _stopped_prompt(self, status, driving, xr_mode):
-        fault = status.detail.startswith("fault")
-        visible = status.link == "CONNECTED" and (not status.armed or status.e_stop or fault)
+        visible = status.stopped
         alpha = self.theme.stopped.show(visible, self.theme.t)
         if visible:
             self.prompt_status = status

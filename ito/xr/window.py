@@ -378,11 +378,13 @@ class XRWindow(DesktopWindow):
                     if self.panel_hovered or status.robot_state != "active":
                         self.panel_until = now + PANEL_LINGER
                     shown = self.panel_visible
+                    # Shown whenever the robot will not move for the pilot (disconnected, or
+                    # the stopped prompt's reasons), never only by the driver's own state.
                     self.panel_visible = (
                         self.actions.panel_pinned
                         or now < self.panel_until
                         or status.link != "CONNECTED"
-                        or status.e_stop
+                        or status.stopped
                     )
                     if self.actions.head_flags & VALID == VALID:
                         self.panel_pose = self.panel.update(
