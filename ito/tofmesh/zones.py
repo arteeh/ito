@@ -45,6 +45,15 @@ GUIDE_COLOUR = 40.0
 # Zones whose image colours (at their centres) differ by at most this are taken as one surface
 # where lookup interpolates between them (no edge to place).
 GUIDE_ALIKE = 0.12
+# Planes from the image (`Zones._planes`, part of guide): neighbouring zones that are one surface
+# and look alike form a region; a region of at least PLANE_ZONES zones that a plane fits (every
+# zone within PLANE_FIT + PLANE_FIT * range metres) is drawn as that plane, so table tops, walls
+# and floors come out flat and straight instead of following each zone's noise. Off by default
+# (ITO_TOF_PLANES=1 turns it on): by eye in the sim it changed little on top of the guided edges
+# (a slightly smoother floor, a seam here and there).
+PLANES = os.environ.get("ITO_TOF_PLANES", "0") == "1"
+PLANE_ZONES = 4
+PLANE_FIT = 0.015
 
 
 def _joined(inverse, axis, doubt=True):
@@ -110,6 +119,10 @@ class Zones:
         self.slope_u, self.slope_v = self._slopes()
         # Set by guide(): per fine cell, the zone whose plane it takes (-1: lookup decides).
         self.label = None
+        # Set by guide() with PLANES: per zone its region (-1: none) and per region the plane
+        # 1/z = a + b x + c y (z depth along the view axis, x, y = tangents of the ray).
+        self.region = None
+        self.planes = None
 
     @property
     def count(self):
@@ -233,6 +246,26 @@ class Zones:
         known = np.where(
             smooth & within, bilinear, np.where(inner & np.isfinite(closest), closest, np.nan)
         )
+        if self.region is not None:
+            # Where all measured corners belong to one flat region, the region's plane.
+            regions = np.stack(
+                [self.region[r0, c0], self.region[r0, c0 + 1], self.region[r0 + 1, c0],
+                 self.region[r0 + 1, c0 + 1]],
+                axis=1,
+            )  # fmt: skip
+            first = np.where(ok, regions, -1).max(axis=1)
+            same = smooth & (first >= 0) & np.all(~ok | (regions == first[:, None]), axis=1)
+            if same.any():
+                flat = self._plane_range(
+                    first[same],
+                    x[inside][same],
+                    y[inside][same],
+                    z[inside][same],
+                    distance[inside][same],
+                )
+                good = np.isfinite(flat)
+                value[same] = np.where(good, flat, value[same])
+                known[same] = np.where(good & within[same], flat, known[same])
         if self.label is not None:
             # Where zones disagree or one is missing, the camera image chose which measured
             # zone's surface each fine cell belongs to (guide): that zone's plane, extended to
@@ -243,8 +276,8 @@ class Zones:
             zone = self.label[fi, fj]
             chosen = zone >= 0
             if chosen.any():
-                z = zone[chosen]
-                zr, zc = z // self.cols, z % self.cols
+                picked = zone[chosen]
+                zr, zc = picked // self.cols, picked % self.cols
                 i0 = self.inverse[zr, zc]
                 i = (
                     i0
@@ -255,11 +288,94 @@ class Zones:
                 i = np.where((i > 0.5 * i0) & (i < 2 * i0), i, i0)
                 planar = np.full(len(u), np.nan)
                 planar[chosen] = 1.0 / i
+                if self.region is not None:
+                    # The zone's flat region's plane where it has one.
+                    region = self.region[zr, zc]
+                    has = region >= 0
+                    if has.any():
+                        idx = np.nonzero(chosen)[0][has]
+                        sel = np.nonzero(inside)[0][idx]
+                        flat = self._plane_range(region[has], x[sel], y[sel], z[sel], distance[sel])
+                        planar[idx] = np.where(np.isfinite(flat), flat, planar[idx])
                 value = np.where(chosen, planar, value)
                 known = np.where(chosen & inner, planar, np.where(chosen, np.nan, known))
         out[inside] = value
         free[inside] = known
         return out, distance, interpolated, free
+
+    def _plane_range(self, region, x, y, z, distance):
+        """Range along the rays of sensor-frame points (x, y, z, distance) to their region's
+        plane; NaN where the plane is behind, parallel, or more than twice as far as the ray's
+        own distance would allow (a plane extended too far)."""
+        a, b, c = self.planes[region].T
+        with np.errstate(divide="ignore", invalid="ignore"):
+            tx, ty = x / -z, y / -z
+            inverse_depth = a + b * tx + c * ty
+            # range = depth * |(tx, ty, 1)| = depth * distance / -z
+            r = (distance / -z) / inverse_depth
+        return np.where((inverse_depth > 0) & (z < 0) & (r < 8.0), r, np.nan)
+
+    def _planes(self, colours, seen):
+        """Flat regions (see PLANES) from the zones' image colours (rows, cols, 3) at their
+        centres and whether the camera saw them."""
+        self.region = self.planes = None
+        known = self.valid & seen
+        ids = -np.ones((self.rows, self.cols), np.int64)
+        alike = lambda p, q: np.linalg.norm(colours[p] - colours[q]) <= GUIDE_ALIKE  # noqa: E731
+
+        def one(p, q, joined):
+            if not (known[p] and known[q] and joined):
+                return False
+            ratio = max(self.ranges[p], self.ranges[q]) / min(self.ranges[p], self.ranges[q])
+            return ratio <= SMALL_JUMP and alike(p, q)
+
+        regions = []
+        for r in range(self.rows):
+            for c in range(self.cols):
+                if not known[r, c] or ids[r, c] >= 0:
+                    continue
+                ids[r, c] = len(regions)
+                members, todo = [], [(r, c)]
+                while todo:
+                    p = todo.pop()
+                    members.append(p)
+                    pr, pc = p
+                    for q, joined in (
+                        (
+                            (pr, pc + 1),
+                            pc + 1 < self.cols and self.sure_across[pr, min(pc, self.cols - 2)],
+                        ),
+                        ((pr, pc - 1), pc > 0 and self.sure_across[pr, pc - 1]),
+                        (
+                            (pr + 1, pc),
+                            pr + 1 < self.rows and self.sure_down[min(pr, self.rows - 2), pc],
+                        ),
+                        ((pr - 1, pc), pr > 0 and self.sure_down[pr - 1, pc]),
+                    ):
+                        if joined and ids[q] < 0 and one(p, q, True):
+                            ids[q] = ids[r, c]
+                            todo.append(q)
+                regions.append(members)
+        across, up = self.centres()
+        d = self.direction(across, up)
+        tx, ty = d[..., 0] / -d[..., 2], d[..., 1] / -d[..., 2]
+        depth = self.ranges * -d[..., 2]
+        planes = np.full((len(regions), 3), np.nan)
+        region = -np.ones((self.rows, self.cols), np.int64)
+        for k, members in enumerate(regions):
+            if len(members) < PLANE_ZONES:
+                continue
+            rr, cc = np.array(members).T
+            A = np.stack([np.ones(len(rr)), tx[rr, cc], ty[rr, cc]], 1)
+            coef = np.linalg.lstsq(A, 1.0 / depth[rr, cc], rcond=None)[0]
+            with np.errstate(divide="ignore"):
+                fitted = (1.0 / (A @ coef)) / -d[rr, cc, 2]
+            measured = self.ranges[rr, cc]
+            if np.all(np.abs(fitted - measured) <= PLANE_FIT + PLANE_FIT * measured):
+                planes[k] = coef
+                region[rr, cc] = k
+        if (region >= 0).any():
+            self.region, self.planes = region, planes
 
     def _slopes(self):
         """Per zone, how inverse range changes per zone step along columns and rows, from the
@@ -306,7 +422,7 @@ class Zones:
         So a table top's range reaches as far as the table's colour does and the wall's range
         the rest of the way, instead of the two meeting half-way between zone centres or being
         blended into a slope (a "curtain"). Returns the number of cells labelled."""
-        self.label = None
+        self.label = self.region = self.planes = None
         g = GUIDE_SCALE
         rows, cols = self.rows * g, self.cols * g
         if self.rows < 2 or self.cols < 2 or not self.count:
@@ -372,6 +488,8 @@ class Zones:
                     spread = np.fmax(spread, d)
         alike = spread[r0, c0] <= GUIDE_ALIKE
         trusted |= smooth & inner & alike
+        if PLANES:
+            self._planes(middle, seen[g // 2 :: g, g // 2 :: g])
         # Seeds: the centre cell of every measured zone, labelled with its zone.
         label = np.full((rows, cols), -1, np.int64)
         dist = np.full((rows, cols), np.inf)
