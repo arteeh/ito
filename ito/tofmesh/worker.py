@@ -32,6 +32,8 @@ def _run(inputs, outputs, notes, options, integrated):
 
     try:
         fusion = Fusion(**options)
+        if tape.PATH:
+            tape.record(("options", options))  # so a replay runs the same Fusion
         outbox = None
         next_note = 0.0
         while True:

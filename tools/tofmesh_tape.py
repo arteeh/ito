@@ -67,7 +67,9 @@ def main():
     renderer = MeshRenderer(ctx)
     fbo = ctx.framebuffer([ctx.renderbuffer((w, h), 4)], ctx.depth_renderbuffer((w, h)))
     shade = ctx.program(vertex_shader=SHADE_VERTEX, fragment_shader=SHADE_FRAGMENT)
-    fusion = Fusion()
+    # The live worker's Fusion options, recorded first (frame_delay off for a stamping camera).
+    options = items[0][1][1] if items and items[0][1][0] == "options" else {}
+    fusion = Fusion(**options)
     mesh, fy, rows, i, now = None, None, [], 0, t0
     while times and (i < len(items) or now - t0 < times[-1]):
         now += 1 / 60

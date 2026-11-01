@@ -1,7 +1,9 @@
 """ITO_TOFMESH_TAPE=<file>: the ToF mesh worker appends every input it gets (motion, head IMU, ToF
 grids, camera frames as JPEG) with its pilot-clock arrival time to <file>, a stream of pickles.
 tools/tofmesh_tape.py feeds such a file through Fusion again, so two versions of the pipeline (or
-one with a feature on and off) can be compared on exactly the inputs a live session had.
+one with a feature on and off) can be compared on exactly the inputs a live session had. The first
+item is ("options", the worker's Fusion options), e.g. frame_delay off for a camera that stamps
+its frames; recordings made before it (1 Nov) have none and replay with Fusion's defaults.
 Unset (the default), nothing is recorded.
 
 For tests only: encoding every camera frame takes the worker's time, so a recorded session's mesh

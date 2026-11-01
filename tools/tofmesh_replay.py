@@ -77,9 +77,9 @@ class Tape:
                 mount = rotation(imu["mount"]["orientation"])
                 for smp in imu["samples"]:
                     if smp.get("orientation") and lo - 1 <= smp["time"] <= hi:
-                        out.append(
-                            (smp["time"] + 0.02, "imu", (smp["time"], smp["orientation"], mount))
-                        )
+                        gyro = smp.get("angular_velocity")
+                        reading = (smp["time"], smp["orientation"], mount, gyro)
+                        out.append((smp["time"] + 0.02, "imu", reading))
             for g in s.get("ranges", []):
                 if lo <= g["time"] <= hi:
                     mount = g["mount"]
