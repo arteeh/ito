@@ -240,15 +240,6 @@ def simulation(
             raise RuntimeError(
                 f"the body speaks {hello}, not protocol 2 for a beta: re-run setup-sim.sh"
             )
-        # The body answers before its physics loop runs (building the head camera takes seconds).
-        # A robotd started then rises and starts walking against a frozen duck, and the duck is
-        # flung over when physics starts.
-        deadline = time.monotonic() + 60
-        while "== head camera: rendering" not in (logs / "body.log").read_text(errors="replace"):
-            check(children, logs)
-            if time.monotonic() >= deadline:
-                raise RuntimeError(f"body did not start stepping; see {logs / 'body.log'}")
-            time.sleep(0.1)
         launch(
             "robot",
             [
@@ -262,16 +253,6 @@ def simulation(
             ],
             os.environ | {"ORT_DYLIB_PATH": str(ort[0])},
         )
-        deadline = time.monotonic() + 20
-        ctl = [str(binaries / "robotctl"), "--robot-socket", str(robot_socket)]
-        while True:
-            result = subprocess.run(ctl + ["robot", "enable"], capture_output=True, timeout=3)
-            if result.returncode == 0:
-                break
-            check(children, logs)
-            if time.monotonic() >= deadline:
-                raise RuntimeError(f"robot enable failed: {result.stderr.decode()}")
-            time.sleep(0.2)
         launch(
             "tof",
             [
@@ -318,6 +299,25 @@ def simulation(
                 if time.monotonic() >= deadline:
                     raise RuntimeError(f"mediad did not listen; see {logs / 'media.log'}") from None
                 time.sleep(0.2)
+        # Torque on only once the body is stepping. It answers the bus while it builds the head
+        # camera (seconds), and a robotd enabled then ramps, rises and starts walking against a
+        # frozen duck, which is flung over when physics starts. Until enabled, the body holds it.
+        deadline = time.monotonic() + 60
+        while "== head camera: rendering" not in (logs / "body.log").read_text(errors="replace"):
+            check(children, logs)
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"body did not start stepping; see {logs / 'body.log'}")
+            time.sleep(0.1)
+        deadline = time.monotonic() + 20
+        ctl = [str(binaries / "robotctl"), "--robot-socket", str(robot_socket)]
+        while True:
+            result = subprocess.run(ctl + ["robot", "enable"], capture_output=True, timeout=3)
+            if result.returncode == 0:
+                break
+            check(children, logs)
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"robot enable failed: {result.stderr.decode()}")
+            time.sleep(0.2)
         launch(
             "driver",
             [
