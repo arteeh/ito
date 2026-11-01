@@ -14,9 +14,8 @@ ever measured, seen from the live camera) has its holes filled by push-pull (an 
 that averages inverse range down, then fills each hole from the coarser level up: the nearest
 measured surfaces extended outwards), and a ray that meets the floor (y = 0 in the robot's
 odometry frame) before that is put on the floor. The live frame is then drawn as a grid at
-those ranges: desaturated, dimmed and cross-hatched in world space (the hatching stays on the
-surface as the view moves, and both eyes of a headset see the same), so it never passes for
-measured, and broken where neighbouring guesses jump (an edge). Guesses are drawn into a layer
+those ranges, in the frame's own colours like any measured surface (user, 1 Nov: no dimming or
+hatching), and broken where neighbouring guesses jump (an edge). Guesses are drawn into a layer
 of their own with ordinary depth (so nearer guesses hide farther ones from any eye position),
 and that layer is composited only into pixels where no mesh was drawn: a guess never covers a
 measured surface and gives way as soon as the ToF measures that spot.
@@ -150,8 +149,6 @@ FLOOR_HEIGHT = 0.0  # the odometry frame's floor
 # The floor rule needs the camera above it: odometry that drifted the camera down to the floor
 # would put every downward ray on the floor a few centimetres away.
 FLOOR_CLEARANCE = 0.05
-# World-space hatching of guessed surfaces: stripe period (m) and darkening.
-HATCH = 0.06
 
 FULLSCREEN = """
 #version 430
@@ -265,31 +262,15 @@ void main() {
 GUESS_FRAGMENT = """
 #version 430
 uniform sampler2DArray images;
-uniform float hatch;
 in vec2 v_uv;
 in vec3 v_world;
 in float v_keep;
 in float v_measured;
 out vec4 f_colour;
 
-// Stripes of one family across world space, antialiased; 1 on a stripe.
-float stripes(float s) {
-    float w = max(fwidth(s), 1e-4);
-    return 1.0 - smoothstep(0.1 - w, 0.1 + w, abs(fract(s) - 0.5));
-}
-
 void main() {
     if (v_keep < 0.999 || v_measured > 0.999) discard;
-    vec3 c = texture(images, vec3(v_uv, 0.0)).rgb;
-    float l = dot(c, vec3(0.299, 0.587, 0.114));
-    // A guess must never pass for a measured surface: washed out, cooler, dimmer, hatched.
-    vec3 g = mix(vec3(l), c, 0.35) * vec3(0.72, 0.78, 0.95);
-    // Two families of planes through the world, so every surface shows at least one; fixed in
-    // the world, so the hatching does not swim when the view moves and both eyes agree.
-    vec3 p = v_world / hatch;
-    float line = max(stripes(p.x + p.y + p.z), stripes(p.x - p.y - p.z));
-    g *= 1.0 - 0.45 * line;
-    f_colour = vec4(g, 1.0);  // alpha 1: this pixel holds a guess (the composite reads it)
+    f_colour = vec4(texture(images, vec3(v_uv, 0.0)).rgb, 1.0);  // alpha 1: this pixel holds a guess (the composite reads it)
 }
 """
 
@@ -600,7 +581,6 @@ class MeshRenderer:
             filled=2,
             measured=3,
             floor_clearance=FLOOR_CLEARANCE,
-            hatch=HATCH,
         )
         self.guess_vao.render(moderngl.TRIANGLES)
 
