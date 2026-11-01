@@ -3,9 +3,9 @@
 The mesh carries a colour per vertex (the volume's voxel colours, a few centimetres coarse:
 the map's memory). On top, a handful of camera frames act as slide projectors: every fragment
 looks itself up in each projector that sees it unoccluded (a distance map per projector,
-rendered from the mesh) and takes the frames' colours, weighted towards the projector facing it
-most squarely and nearest, so detail comes at camera resolution where a frame saw it. Slot 0 is
-the live frame; the others are kept views (fusion.py chooses them).
+rendered from the mesh) and takes the frames' colours, weighted towards the projector looking at
+it most nearly along the eye's ray, so detail comes at camera resolution where a frame saw it.
+Slot 0 is the live frame; the others are kept views (fusion.py chooses them).
 
 Guessed depth (#87): the ToF sees ~45 degrees, the camera far more, so most of the live frame
 has no mesh behind it. A guess places it in the world anyway, on the GPU, every time the live
@@ -27,8 +27,8 @@ every live frame is also baked into a texture atlas at about the camera's resolu
 block owns six square tiles, one per axis direction (+X, -X, +Y, ...), and a triangle lives in
 the tiles of the directions its face points along (a planar projection of the block onto that
 axis, fixed in the world, so re-meshing a block keeps its texture in place). A texel keeps the
-frame that saw it best (facing it most squarely, nearest and nearest the image's middle, the
-same weight the projectors use) and is replaced only by a view about as good (BAKE_KEEP): seen
+frame that saw it best (facing it most squarely, nearest and nearest the image's middle) and
+is replaced only by a view about as good (BAKE_KEEP): seen
 areas stay as sharp as their best view, and a view as good refreshes them (a moved object). The
 atlas joins the projector blend with the weight of the best view it had. Tiles of a block the
 volume forgot are cleared when its slot is given to a new block (MeshFrame.cleared).
@@ -112,17 +112,6 @@ float along(vec3 n, int d) {
 }
 """
 
-# A view's weight also falls off away from its image's middle (q: fx, fy, cx, cy): of the frames of
-# a turn that all see a spot, the one that saw it nearest the middle (the way the pilot looks at
-# it) wins. Its lens edges and the floor's height error (at a grazing angle a centimetre moves
-# a floor point by many pixels) are worst at the border.
-CENTRAL_GLSL = """
-float central(vec4 q, float u, float v) {
-    vec2 r = vec2((u - q.z) / q.x, (v - q.w) / q.y);
-    return 1.0 / (1.0 + 2.0 * dot(r, r));
-}
-"""
-
 FRAGMENT = """
 #version 430
 #define K %(K)d
@@ -150,7 +139,6 @@ in vec3 v_local;
 flat in int v_slot;
 out vec4 f_colour;
 %(TILE_GLSL)s
-%(CENTRAL_GLSL)s
 // The atlas at this fragment: rgb and the weight of the view it kept (alpha^4), blended over the
 // tiles of the directions the triangle faces; w 0 where none of them was baked here.
 vec4 baked(vec3 face) {
@@ -369,7 +357,14 @@ uniform float shadow_slots;
 in vec3 v_world;
 in vec3 v_normal;
 flat in ivec4 v_tile;
-%(CENTRAL_GLSL)s
+// A baked view's weight also falls off away from its image's middle (q: fx, fy, cx, cy): of the
+// frames of a turn that all see a spot, the one that saw it nearest the middle wins. Lens edges
+// and the floor's height error (a centimetre moves a grazing floor point by many pixels) are
+// worst at the border.
+float central(vec4 q, float u, float v) {
+    vec2 r = vec2((u - q.z) / q.x, (v - q.w) / q.y);
+    return 1.0 / (1.0 + 2.0 * dot(r, r));
+}
 
 void main() {
     ivec2 texel = ivec2(gl_FragCoord.xy);
@@ -718,7 +713,7 @@ def _shader(source, slots=PROJECTORS):
     tile = TILE_GLSL % {"TILE": TILE, "SIDE": LAYER // TILE, "SPAN": TILE_SPAN}
     return source % {
         "K": slots, "TILE_GLSL": tile, "DRAW_FACING": DRAW_FACING, "BAKE_FACING": BAKE_FACING,
-        "BAKE_KEEP": BAKE_KEEP, "LAYER": LAYER, "CENTRAL_GLSL": CENTRAL_GLSL,
+        "BAKE_KEEP": BAKE_KEEP, "LAYER": LAYER,
     }  # fmt: skip
 
 
