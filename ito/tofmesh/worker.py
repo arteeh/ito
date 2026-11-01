@@ -264,6 +264,7 @@ class TofMesh:
             "tofmesh_frame_delay_extra_ms": s.get("frame_delay_extra_ms"),
             "tofmesh_untilted": s.get("untilted"),
             "tofmesh_tilt_held": s.get("tilt_held"),
+            "tofmesh_tilt_ahead": s.get("tilt_ahead"),
             "tofmesh_volume_mb": s.get("volume_mb"),
             "tofmesh_ingress_dropped": self.dropped,
         }

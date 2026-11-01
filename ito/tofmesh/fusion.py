@@ -166,7 +166,7 @@ class Fusion:
         self.mesh_changed = False
         self.stats = dict(
             tof_frames=0, tof_dropped=0, tilted=0, tilt_held=0, untilted=0, tof_voxels=0,
-            painted=0, frames=0, frames_dropped=0, frame_delay_extra_ms=0.0,
+            tilt_ahead=0, painted=0, frames=0, frames_dropped=0, frame_delay_extra_ms=0.0,
             vertices=0, triangles=0, blocks=0, evictions=0, fuse_ms=0.0, paint_ms=0.0,
             mesh_ms=0.0,
         )  # fmt: skip
@@ -189,10 +189,10 @@ class Fusion:
         self._compare_headings()
 
     def _orientation(self, when):
-        """The camera's orientation in the IMU's world at `when` (3x3), or None without IMU
-        readings within TILT_MATCH on both sides (one, if it is that near)."""
+        """The camera's orientation in the IMU's world at `when` (3x3), or None past the newest
+        reading or without readings within TILT_MATCH on both sides (one, if it is that near)."""
         o = self.orientations
-        if not o or when > o[-1][0] + TILT_MATCH or when < o[0][0] - TILT_MATCH:
+        if not o or when > o[-1][0] or when < o[0][0] - TILT_MATCH:
             return None
         lo, hi = 0, len(o)
         while lo < hi:  # first reading at or after `when`
@@ -258,24 +258,39 @@ class Fusion:
         camera = self.poses.at(when, slack=slack)
         if camera is None or not self.head_imu or not self.orientations:
             return camera
+        turn = self._turn(when, camera)
+        if turn is not None:
+            self.stats["tilted"] += 1
+            if self.last_turn is None or when >= self.last_turn[0]:
+                self.last_turn = (when, turn)
+            return turned(camera, turn)
+        newest = self.orientations[-1][0]
+        if newest < when <= newest + TILT_HOLD:
+            # The IMU has not reached `when` yet (its batches can trail the ToF's): the
+            # correction it gives at its newest reading, on the pose stream's movement since.
+            then = self.poses.at(newest, slack=slack)
+            turn = None if then is None else self._turn(newest, then)
+            if turn is not None:
+                self.stats["tilt_ahead"] += 1
+                return turned(camera, turn)
+        if self.last_turn is not None and abs(when - self.last_turn[0]) <= TILT_HOLD:
+            self.stats["tilt_held"] += 1
+            return turned(camera, self.last_turn[1])
+        self.stats["untilted"] += 1
+        return camera
+
+    def _turn(self, when, camera):
+        """The correction (3x3, camera axes) that turns the pose stream's camera at `when` into
+        the IMU's orientation there, or None without an IMU reading."""
         imu = self._orientation(when)
         if imu is None:
-            if self.last_turn is not None and abs(when - self.last_turn[0]) <= TILT_HOLD:
-                self.stats["tilt_held"] += 1
-                return turned(camera, self.last_turn[1])
-            self.stats["untilted"] += 1
-            return camera
+            return None
         heading = self._heading(when)
         if heading is None:
             # No heading comparison yet: the IMU's tilt only, the pose stream's heading.
             up = imu.T @ UP
-            turn = tilt(camera, up / np.linalg.norm(up))
-        else:
-            turn = camera[:3, :3].T @ about_up(heading) @ imu
-        self.stats["tilted"] += 1
-        if self.last_turn is None or when >= self.last_turn[0]:
-            self.last_turn = (when, turn)
-        return turned(camera, turn)
+            return tilt(camera, up / np.linalg.norm(up))
+        return camera[:3, :3].T @ about_up(heading) @ imu
 
     def ranges(self, grids):
         self.grids.extend(grids)
@@ -295,11 +310,11 @@ class Fusion:
         latest = self.poses.latest
         waiting = []
         for grid in self.grids:
-            if not self.covered(grid["time"]) and now - grid["time"] <= POSE_WAIT:
+            # Grids wait for the pose stream only: the head IMU's batches can trail them by tens
+            # of milliseconds, which would add to the mesh's lag; pose() bridges that gap.
+            if (latest is None or grid["time"] > latest) and now - grid["time"] <= POSE_WAIT:
                 waiting.append(grid)
                 continue
-            # Past the wait, a lagging head IMU no longer holds the grid up (pose() then holds
-            # its last correction); a pose stream that never reached it still drops it.
             camera = None if latest is None or grid["time"] > latest else self.pose(grid["time"])
             if camera is None:
                 self.stats["tof_dropped"] += 1
