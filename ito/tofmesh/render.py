@@ -270,7 +270,8 @@ out vec4 f_colour;
 
 void main() {
     if (v_keep < 0.999 || v_measured > 0.999) discard;
-    f_colour = vec4(texture(images, vec3(v_uv, 0.0)).rgb, 1.0);  // alpha 1: this pixel holds a guess (the composite reads it)
+    // Alpha 1: this pixel holds a guess (the composite reads it).
+    f_colour = vec4(texture(images, vec3(v_uv, 0.0)).rgb, 1.0);
 }
 """
 
