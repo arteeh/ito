@@ -673,21 +673,18 @@ class MeshRenderer:
         intrinsics = (fx * sx, fy * sy, (cx + 0.5) * sx - 0.5, (cy + 0.5) * sy - 0.5)
         self._push_pull(self.levels, self.shadows, SHADOW_SIZE, intrinsics)
 
-    def _push_pull(self, levels, source, source_size, intrinsics=None):
-        """Push-pull over `levels`; level 0 from `source` (a distance map, with these
-        intrinsics) or, without intrinsics, already drawn (inverse depth and weight)."""
+    def _push_pull(self, levels, source, source_size, intrinsics):
+        """Push-pull over `levels`; level 0 from `source`, a distance map with these
+        intrinsics."""
         self.context.enable_only(moderngl.NOTHING)
         self.context.scissor = None
         for index, (size, pushed, fbo, _, _) in enumerate(levels):
-            if index == 0 and intrinsics is None:
-                source, source_size = pushed, size
-                continue
             fbo.use()
             self.context.viewport = (0, 0, *size)
             source.use(0)
             _set(
                 self.push_program, source=0, first=int(index == 0), source_size=source_size,
-                intrinsics=intrinsics or (1.0, 1.0, 0.0, 0.0),
+                intrinsics=intrinsics,
             )  # fmt: skip
             self.push_vao.render(moderngl.TRIANGLES, vertices=3)
             source, source_size = pushed, size
