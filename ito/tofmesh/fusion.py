@@ -65,6 +65,8 @@ class MeshFrame:
     projectors: list = field(default_factory=list)
     camera: np.ndarray | None = None  # latest posed camera, world_from_camera
     epoch: float = 0.0
+    # Where the time went for the ToF frame of `captured_at` (diagnostics): see Fusion.step.
+    timing: dict | None = None
 
     @property
     def observations(self):
@@ -125,6 +127,8 @@ class Fusion:
         self.revision = 0
         self.epoch = time.time()
         self.captured_at = None
+        self.timing = None  # the newest fused ToF frame's stage times, until it is meshed
+        self.meshed_timing = None  # ... and once meshed, until published
         self.camera = None
         self.mesh_changed = False
         self.stats = dict(
@@ -203,10 +207,20 @@ class Fusion:
             zones = zones_from_grid(grid)
             world_from_sensor = camera @ zones.mount
             fused = self.volume.integrate(zones, world_from_sensor, grid["time"], camera[:3, 3])
+            ended = time.perf_counter()
             self.stats["tof_frames"] += 1
             self.stats["tof_voxels"] = fused
-            self.stats["fuse_ms"] = (time.perf_counter() - started) * 1000
+            self.stats["fuse_ms"] = (ended - started) * 1000
             self.captured_at = grid["time"]
+            # Stage times of this frame (ms): sensor to pilot (link), pilot to fusion start
+            # (worker queue and waiting for the pose stream), fusion; _remesh adds the rest.
+            received = grid.get("received")
+            self.timing = dict(
+                link_ms=None if received is None else (received - grid["time"]) * 1000,
+                queued_ms=None if received is None else (now - received) * 1000,
+                integrate_ms=(ended - started) * 1000,
+                integrated=ended,
+            )
         self.grids = waiting
 
         frames, self.frames = self.frames, []
@@ -243,6 +257,7 @@ class Fusion:
             news = MeshFrame(self.revision, self.captured_at, camera=self.camera, epoch=self.epoch)
             if self.mesh_changed:
                 news.positions, news.normals, news.colours, news.triangles = self.combined()
+                news.timing, self.meshed_timing = self.meshed_timing, None
                 self.mesh_changed = False
             news.projectors, self.pending_projectors = self.pending_projectors, []
         return news
@@ -300,7 +315,18 @@ class Fusion:
                 else:
                     self.meshes[key] = (pos, nrm, col, tri)
         self.mesh_changed = True
-        self.stats["mesh_ms"] = (time.perf_counter() - started) * 1000
+        ended = time.perf_counter()
+        self.stats["mesh_ms"] = (ended - started) * 1000
+        if self.timing is not None:
+            # The newest ToF frame is in this mesh: how long it waited for a re-mesh, and the
+            # re-mesh itself (the worker adds when it was sent, the pilot when it arrived).
+            self.meshed_timing = dict(
+                self.timing,
+                to_mesh_ms=(started - self.timing.pop("integrated")) * 1000,
+                mesh_ms=(ended - started) * 1000,
+                meshed_blocks=len(slots),
+            )
+            self.timing = None
         self.stats["blocks"] = self.volume.used
         self.stats["evictions"] = self.volume.evictions
 

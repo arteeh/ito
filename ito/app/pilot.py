@@ -325,10 +325,12 @@ class Pilot:
         ):
             return
         local = peer.clock.remote_to_local
+        received = clock.now()
         worker.ranges(
             [
                 dict(
                     time=local(grid.time),
+                    received=received,
                     mount=camera_matrix(grid.mount),
                     shape=(grid.rows, grid.cols),
                     field_of_view=grid.field_of_view,

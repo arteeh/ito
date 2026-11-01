@@ -15,7 +15,7 @@ from collections import deque
 
 import numpy as np
 
-from ito import clock
+from ito import clock, diagnostics
 
 log = logging.getLogger(__name__)
 
@@ -59,6 +59,8 @@ def _run(inputs, outputs, notes, options, integrated):
             if news is not None:
                 outbox = news if outbox is None else _merge(outbox, news, MeshFrame)
             if outbox is not None:
+                if outbox.timing is not None:
+                    outbox.timing["sent"] = clock.now()
                 try:
                     outputs.put_nowait(outbox)
                     outbox = None
@@ -87,6 +89,7 @@ def _merge(old, new, frame_type):
     merged = frame_type(new.revision, source.captured_at, camera=new.camera, epoch=new.epoch)
     merged.positions, merged.normals = source.positions, source.normals
     merged.colours, merged.triangles = source.colours, source.triangles
+    merged.timing = source.timing
     slots = {p.slot: p for p in old.projectors}
     slots.update({p.slot: p for p in new.projectors})
     merged.projectors = list(slots.values())
@@ -208,6 +211,20 @@ class TofMesh:
             return None
         if frame.positions is not None and len(frame.triangles):
             self.has_mesh = True
+        if frame.timing is not None and frame.captured_at is not None:
+            # Where the time went between a ToF frame and its mesh reaching the pilot (the
+            # windows add the draw); ITO_DEBUG / diagnostic logging only.
+            now = clock.now()
+            timing = {k: v for k, v in frame.timing.items() if k != "sent"}
+            sent = frame.timing.get("sent")
+            diagnostics.event(
+                "tofmesh_mesh",
+                revision=frame.revision,
+                sensor_to_pilot_ms=(now - frame.captured_at) * 1000,
+                to_pilot_ms=None if sent is None else (now - sent) * 1000,
+                triangles=len(frame.triangles),
+                **timing,
+            )
         return frame
 
     def status(self):
