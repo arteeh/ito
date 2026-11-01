@@ -166,6 +166,9 @@ class DesktopWindow:
             )
         finally:
             self.performance.close(metrics)
+            if self.readback is not None:  # the screen grab's pixel buffer (its last grab unread)
+                GL.glDeleteBuffers(1, [self.readback[0]])
+                self.readback = None
             if recorder is not None:
                 recorder.close()
 
@@ -179,11 +182,14 @@ class DesktopWindow:
             buffer, length, (taken, size) = self.readback
             GL.glBindBuffer(GL.GL_PIXEL_PACK_BUFFER, buffer)
             address = GL.glMapBufferRange(GL.GL_PIXEL_PACK_BUFFER, 0, length, GL.GL_MAP_READ_BIT)
-            pixels = ctypes.string_at(address, length)
-            GL.glUnmapBuffer(GL.GL_PIXEL_PACK_BUFFER)
+            pixels = None
+            if address:  # a failed mapping returns null: that grab is skipped
+                pixels = ctypes.string_at(address, length)
+                GL.glUnmapBuffer(GL.GL_PIXEL_PACK_BUFFER)
             GL.glBindBuffer(GL.GL_PIXEL_PACK_BUFFER, 0)
             self.readback = (buffer, length, None)
-            recorder.screen(taken, pixels, size)
+            if pixels is not None:
+                recorder.screen(taken, pixels, size)
         now = clock.now()
         if not recorder.due(now):
             return
