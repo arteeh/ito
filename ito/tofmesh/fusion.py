@@ -318,11 +318,16 @@ class Fusion:
 
     def covered(self, when):
         """Whether every source of `when`'s pose has passed it: the pose stream, and the head
-        IMU once it has spoken (its batches can arrive after the frames and grids)."""
+        IMU once it has spoken (its batches can arrive after the frames and grids), unless it
+        has fallen more than TILT_HOLD behind the pose stream (stopped): then pose() does
+        without it, and the frames do not each wait POSE_WAIT for it."""
         latest = self.poses.latest
         if latest is None or when > latest:
             return False
-        return not (self.head_imu and self.orientations and when > self.orientations[-1][0])
+        if not (self.head_imu and self.orientations):
+            return True
+        newest = self.orientations[-1][0]
+        return when <= newest or latest - newest > TILT_HOLD
 
     def pose(self, when, slack=0.1):
         """The camera at `when`: position from the pose stream; orientation from the head IMU
@@ -373,7 +378,9 @@ class Fusion:
         `intrinsics` (fx, fy, cx, cy), exposed at pilot-clock `exposed`. `fallback` is the
         driver's own pose for this frame, used when the pose stream does not cover it."""
         self.frames.append((image, exposed, intrinsics, fallback))
-        del self.frames[:-4]
+        if len(self.frames) > 4:
+            self.stats["frames_dropped"] += len(self.frames) - 4
+            del self.frames[:-4]
         if self.frame_delay is not None:
             self.frame_delay.frame(image, exposed)
         self.frame_intrinsics = intrinsics
