@@ -168,17 +168,21 @@ def _fill(colour, known, triangles):
     a = triangles.reshape(-1)
     b = np.roll(triangles, 1, axis=1).reshape(-1)
     a, b = np.concatenate([a, b]), np.concatenate([b, a])  # every edge, both ways
-    n = len(colour)
+    keep = ~known[a]  # only edges into uncoloured vertices matter
+    a, b = a[keep], b[keep]
     for _ in range(FILL_ROUNDS):
         source = known[b]
         if not source.any():
             break
-        count = np.bincount(a[source], minlength=n)
-        new = (count > 0) & ~known
-        if not new.any():
-            break
+        into, src = a[source], b[source]
+        vertices, slot, count = np.unique(into, return_inverse=True, return_counts=True)
+        total = np.zeros((len(vertices), 3))
         for c in range(3):
-            total = np.bincount(a[source], weights=colour[b[source], c], minlength=n)
-            colour[new, c] = total[new] / count[new]
-        known |= new
+            total[:, c] = np.bincount(slot, weights=colour[src, c], minlength=len(vertices))
+        colour[vertices] = total / count[:, None]
+        known[vertices] = True
+        left = ~known[a]
+        a, b = a[left], b[left]
+        if not len(a):
+            break
     return colour
