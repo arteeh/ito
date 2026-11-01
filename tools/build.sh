@@ -8,7 +8,7 @@ set -eu
 ref=${1:-HEAD}
 commit=$(git rev-parse --short "$ref^{commit}")
 name=$(git rev-parse --abbrev-ref "$ref" | sed 's#^origin/##; s#/#-#g')
-[ "$name" = HEAD ] && name=$commit
+case $name in ""|HEAD) name=$commit ;; esac
 win=$(wslpath "$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r')")/Projects/ito
 snap=$win/snap/$name
 rm -rf "$snap" "$win/builds/$name"
