@@ -21,6 +21,7 @@ shapes the surface, never carves).
 """
 
 import math
+import os
 
 import numpy as np
 
@@ -31,8 +32,22 @@ SMALL_JUMP = 1.15
 # by at most this fraction of the inverse range (a plane is close to linear in inverse range).
 CONTINUITY = 0.1
 
+# Image-guided edges (`Zones.guide`): where the range steps between zones (an edge, a gap), the
+# step is placed along the camera frame's colour edges instead of half-way between zone centres.
+# ITO_TOF_GUIDE=0 turns it off (the step then falls at the zone footprints, as before).
+GUIDE = os.environ.get("ITO_TOF_GUIDE", "1") != "0"
+# Fine cells per zone along each axis (odd, so a zone centre is the centre of a fine cell): 7
+# gives ~0.8 deg cells, 1.4 cm at 1 m, 5.6 cm at 4 m (the volume's voxels are 4 cm).
+GUIDE_SCALE = 7
+# Cost of crossing a colour difference (RGB, 0..1, Euclidean) in fine cells of distance: a
+# wall/table edge (~0.5) costs about three zones' width, wood grain (~0.05) under half a zone.
+GUIDE_COLOUR = 40.0
+# Zones whose image colours (at their centres) differ by at most this are taken as one surface
+# where lookup interpolates between them (no edge to place).
+GUIDE_ALIKE = 0.12
 
-def _joined(inverse, axis):
+
+def _joined(inverse, axis, doubt=True):
     """Whether each pair of neighbouring zones along `axis` (0: rows, 1: columns) can be one
     surface, from the inverse ranges (NaN: unmeasured). Shape: one less along `axis`."""
     i = np.moveaxis(inverse, axis, -1)
@@ -53,6 +68,12 @@ def _joined(inverse, axis):
     # Lines on both sides are needed to tell a crease from a step; with one or none, the ratio
     # test alone decides. Pairs with an unmeasured zone are left to the missing-zone fill.
     unknown = ~np.isfinite(left) | ~np.isfinite(right)
+    if not doubt:
+        # Only what the measured zones show: a small step, a line through two zones on one
+        # side passing the other, or (with lines on both sides) a crease between them.
+        with np.errstate(invalid="ignore"):
+            line = (np.abs(left) <= tolerance) | (np.abs(right) <= tolerance)
+        return np.moveaxis(small | line | (crosses & ~unknown), -1, axis)
     joined = small | crosses | unknown | ~np.isfinite(a) | ~np.isfinite(b)
     return np.moveaxis(joined, -1, axis)
 
@@ -82,6 +103,13 @@ class Zones:
         self.flat_right = _flat(*inverse[:, ::-1][:, :3].T) if cols >= 3 else no[:rows]
         self.flat_top = _flat(*inverse[:3]) if rows >= 3 else no[:cols]
         self.flat_bottom = _flat(*inverse[::-1][:3]) if rows >= 3 else no[:cols]
+        self.inverse = inverse
+        # Joined by lines through measured zones on both sides (no benefit of the doubt).
+        self.sure_across = _joined(inverse, 1, doubt=False)
+        self.sure_down = _joined(inverse, 0, doubt=False)
+        self.slope_u, self.slope_v = self._slopes()
+        # Set by guide(): per fine cell, the zone whose plane it takes (-1: lookup decides).
+        self.label = None
 
     @property
     def count(self):
@@ -197,15 +225,194 @@ class Zones:
             bilinear = np.where(denominator > 0, weight / denominator, np.nan)
         smooth &= np.isfinite(bilinear)
         # Nearest zone (by footprint) where the corners disagree or one is missing.
-        out[inside] = np.where(smooth, bilinear, nearest)
+        value = np.where(smooth, bilinear, nearest)
         interpolated[inside] = smooth & within
         with np.errstate(invalid="ignore"):
             closest = np.where(ok, corners, np.inf).min(axis=1)
         inner = (u >= 0) & (u <= self.cols - 1) & (v >= 0) & (v <= self.rows - 1)
-        free[inside] = np.where(
+        known = np.where(
             smooth & within, bilinear, np.where(inner & np.isfinite(closest), closest, np.nan)
         )
+        if self.label is not None:
+            # Where zones disagree or one is missing, the camera image chose which measured
+            # zone's surface each fine cell belongs to (guide): that zone's plane, extended to
+            # this point, and free space up to it.
+            g = GUIDE_SCALE
+            fi = np.clip(((v + 0.5) * g).astype(int), 0, self.rows * g - 1)
+            fj = np.clip(((u + 0.5) * g).astype(int), 0, self.cols * g - 1)
+            zone = self.label[fi, fj]
+            chosen = zone >= 0
+            if chosen.any():
+                z = zone[chosen]
+                zr, zc = z // self.cols, z % self.cols
+                i0 = self.inverse[zr, zc]
+                i = (
+                    i0
+                    + self.slope_u[zr, zc] * (u[chosen] - zc)
+                    + self.slope_v[zr, zc] * (v[chosen] - zr)
+                )
+                # A plane extended until it runs away (to infinity or behind) keeps its range.
+                i = np.where((i > 0.5 * i0) & (i < 2 * i0), i, i0)
+                planar = np.full(len(u), np.nan)
+                planar[chosen] = 1.0 / i
+                value = np.where(chosen, planar, value)
+                known = np.where(chosen & inner, planar, np.where(chosen, np.nan, known))
+        out[inside] = value
+        free[inside] = known
         return out, distance, interpolated, free
+
+    def _slopes(self):
+        """Per zone, how inverse range changes per zone step along columns and rows, from the
+        neighbours on the same surface: of the two one-sided differences the smaller when they
+        agree in sign, none when they don't (a zone standing out, or into, its neighbours: a
+        table leg); one side alone only if it continues a plane (three zones collinear in
+        inverse range) or is a small step."""
+        inverse = self.inverse
+
+        def along(i):
+            n = np.full((i.shape[0], 1), np.nan)
+            left = i - np.hstack([n, i[:, :-1]])  # i[c] - i[c-1]
+            right = np.hstack([i[:, 1:], n]) - i  # i[c+1] - i[c]
+            left2 = np.hstack([n, i[:, :-1]]) - np.hstack([n, n, i[:, :-2]])
+            right2 = np.hstack([i[:, 2:], n, n]) - np.hstack([i[:, 1:], n])
+            with np.errstate(invalid="ignore"):
+                both = np.where(
+                    left * right > 0, np.where(np.abs(left) < np.abs(right), left, right), 0.0
+                )
+                small = (SMALL_JUMP - 1) * i
+                lone_l = (np.abs(left) <= small) | (np.abs(left - left2) <= CONTINUITY * i)
+                lone_r = (np.abs(right) <= small) | (np.abs(right - right2) <= CONTINUITY * i)
+            ok_l, ok_r = np.isfinite(left), np.isfinite(right)
+            out = np.where(ok_l & ok_r, both, 0.0)
+            out = np.where(ok_l & ~ok_r & lone_l, left, out)
+            out = np.where(ok_r & ~ok_l & lone_r, right, out)
+            return np.where(np.isfinite(i), out, 0.0)
+
+        # Rows run downwards in zone coordinates (v), as columns do rightwards (u).
+        return along(inverse), along(inverse.T).T
+
+    def guide(self, image, project):
+        """Use a camera frame taken at about the same moment to decide, wherever neighbouring
+        zones disagree (an edge: a table in front of a wall) or one is missing, which zone's
+        surface each part of the view belongs to. image: (h, w, 3) uint8; project: sensor-frame
+        points (N, 3) -> pixel (u, v) arrays of that image (NaN behind the camera).
+
+        On a fine grid over the field of view (GUIDE_SCALE cells per zone), a cell whose four
+        surrounding zones are all measured and one surface keeps lookup's interpolation. Every
+        other cell is labelled with the measured zone nearest to it *along the image*: a
+        geodesic distance over the grid in which crossing a colour difference costs as much as
+        travelling GUIDE_COLOUR cells per unit of colour (edge-aware fill). The cell then takes
+        that zone's plane (its range, tilted by its neighbours on the same surface: `_slopes`).
+        So a table top's range reaches as far as the table's colour does and the wall's range
+        the rest of the way, instead of the two meeting half-way between zone centres or being
+        blended into a slope (a "curtain"). Returns the number of cells labelled."""
+        self.label = None
+        g = GUIDE_SCALE
+        rows, cols = self.rows * g, self.cols * g
+        if self.rows < 2 or self.cols < 2 or not self.count:
+            return 0
+        fu = (np.arange(cols) + 0.5) / g - 0.5  # zone coordinates of the fine cell centres
+        fv = (np.arange(rows) + 0.5) / g - 0.5
+        uu, vv = np.meshgrid(fu, fv)
+        across = (uu + 0.5) * self.step[0] - self.fov[0] / 2
+        up = self.fov[1] / 2 - (vv + 0.5) * self.step[1]
+        rays = self.direction(across.ravel(), up.ravel())
+        base, _, smooth, _ = self.lookup(rays)
+        base, smooth = base.reshape(rows, cols), smooth.reshape(rows, cols)
+        # Trusted as interpolated: at least three of the four surrounding zones measured (lookup
+        # fills one missing corner from the others), within the grazing ratio, and every pair of
+        # measured neighbours joined by what the measured zones show (no benefit of the doubt).
+        c0 = np.clip(np.floor(uu).astype(int), 0, self.cols - 2)
+        r0 = np.clip(np.floor(vv).astype(int), 0, self.rows - 2)
+        tl, tr = self.valid[r0, c0], self.valid[r0, c0 + 1]
+        bl, br = self.valid[r0 + 1, c0], self.valid[r0 + 1, c0 + 1]
+        corners = np.stack(
+            [self.ranges[r0, c0], self.ranges[r0, c0 + 1], self.ranges[r0 + 1, c0],
+             self.ranges[r0 + 1, c0 + 1]]
+        )  # fmt: skip
+        counted = tl.astype(int) + tr + bl + br
+        with np.errstate(invalid="ignore"):
+            ratio = np.fmax.reduce(corners, 0) / np.fmin.reduce(corners, 0)
+        sure = (
+            (self.sure_across[r0, c0] | ~(tl & tr)) & (self.sure_across[r0 + 1, c0] | ~(bl & br))
+            & (self.sure_down[r0, c0] | ~(tl & bl)) & (self.sure_down[r0, c0 + 1] | ~(tr & br))
+        )  # fmt: skip
+        inner = (uu >= 0) & (uu <= self.cols - 1) & (vv >= 0) & (vv <= self.rows - 1)
+        trusted = (counted >= 3) & inner & ((ratio <= SMALL_JUMP) | ((ratio <= self.edge) & sure))
+        # The camera's colour at each cell, seen at the cell's present range (camera and sensor
+        # sit centimetres apart, so a wrong range moves it little): the mean of the 2x2 pixels
+        # around the cell's point (cells are ~4 px apart in a 640-wide frame).
+        h, w = image.shape[:2]
+        depth = np.where(np.isfinite(base), base, np.nanmedian(self.ranges[self.valid]))
+        px, py = project(rays * depth.reshape(-1, 1))
+        x0 = np.floor(np.nan_to_num(np.asarray(px), nan=-9.0) - 0.5)
+        y0 = np.floor(np.nan_to_num(np.asarray(py), nan=-9.0) - 0.5)
+        seen = (x0 >= 0) & (x0 <= w - 2) & (y0 >= 0) & (y0 <= h - 2)
+        if not seen.any():
+            return 0
+        x0 = np.where(seen, x0, 0).astype(np.intp)
+        y0 = np.where(seen, y0, 0).astype(np.intp)
+        flat = image.reshape(-1, 3)
+        at = y0 * w + x0
+        colour = (
+            flat[at].astype(np.float32) + flat[at + 1] + flat[at + w] + flat[at + w + 1]
+        ).reshape(rows, cols, 3) * (1 / (4 * 255.0))
+        seen = seen.reshape(rows, cols)
+        # Also trusted: what lookup interpolates between zones that all look alike in the image
+        # (a floor seen at a shallow angle beside a missing zone): no edge to place there.
+        middle = colour[g // 2 :: g, g // 2 :: g]
+        known = self.valid & seen[g // 2 :: g, g // 2 :: g]
+        zc = np.where(known[..., None], middle, np.nan)
+        quads = np.stack([zc[:-1, :-1], zc[:-1, 1:], zc[1:, :-1], zc[1:, 1:]])
+        with np.errstate(invalid="ignore"):
+            spread = np.zeros((self.rows - 1, self.cols - 1))
+            for i in range(4):
+                for j in range(i + 1, 4):
+                    d = np.linalg.norm(quads[i] - quads[j], axis=-1)
+                    spread = np.fmax(spread, d)
+        alike = spread[r0, c0] <= GUIDE_ALIKE
+        trusted |= smooth & inner & alike
+        # Seeds: the centre cell of every measured zone, labelled with its zone.
+        label = np.full((rows, cols), -1, np.int64)
+        dist = np.full((rows, cols), np.inf)
+        cr, cc = np.nonzero(self.valid)
+        label[cr * g + g // 2, cc * g + g // 2] = cr * self.cols + cc
+        dist[cr * g + g // 2, cc * g + g // 2] = 0.0
+        # Geodesic distance over the 8-neighbour grid by Jacobi relaxation; a cell to label is at
+        # most about a zone from a measured zone centre (more past missing zones).
+        steps = []
+        padded = np.zeros((rows + 2, cols + 2, 3))
+        padded[1:-1, 1:-1] = colour
+        open_ = np.zeros((rows + 2, cols + 2), bool)
+        open_[1:-1, 1:-1] = seen
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dy or dx:
+                    sl = (slice(1 + dy, 1 + dy + rows), slice(1 + dx, 1 + dx + cols))
+                    difference = np.linalg.norm(colour - padded[sl], axis=-1)
+                    cost = np.where(
+                        open_[sl] & seen, math.hypot(dy, dx) + GUIDE_COLOUR * difference, np.inf
+                    )
+                    steps.append((sl, cost))
+        big_d = np.full((rows + 2, cols + 2), np.inf)
+        big_l = np.full((rows + 2, cols + 2), -1, np.int64)
+        for _ in range(3 * g):
+            big_d[1:-1, 1:-1] = dist
+            big_l[1:-1, 1:-1] = label
+            new_d, new_l = dist, label
+            for sl, cost in steps:
+                d = big_d[sl] + cost
+                better = d < new_d
+                new_d = np.where(better, d, new_d)
+                new_l = np.where(better, big_l[sl], new_l)
+            if np.array_equal(new_l, label) and np.allclose(new_d, dist, equal_nan=True):
+                break
+            dist, label = new_d, new_l
+        todo = ~trusted & (label >= 0)
+        if not todo.any():
+            return 0
+        self.label = np.where(todo, label, -1)
+        return int(todo.sum())
 
 
 def zones_from_grid(grid, sensor_to_camera=None):

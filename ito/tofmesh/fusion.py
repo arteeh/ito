@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from . import surface
+from . import zones as zones_module
 from .geometry import PoseTrack, angle_between, quaternion, rotation, slerp
 from .latency import FrameDelay
 from .volume import Volume
@@ -49,6 +50,12 @@ KEY_DISTANCE = 0.25
 # A kept view this old is replaced by a new frame looking about the same way, so a changed scene
 # (an object gone) is not projected from an old picture of it.
 KEY_REFRESH = 3.0
+# A ToF frame's edges are placed along the camera frame nearest to it in time (zones.guide), if
+# one is this near. Frames reach the worker ~0.1 s after their exposure, ToF frames sooner, and
+# a ToF frame does not wait for its frame (that would add the video's delay to the mesh's): it
+# takes the newest one, projected with the poses of both moments, so only things that moved in
+# between land off their edge.
+GUIDE_MATCH = 0.2
 
 
 @dataclass
@@ -147,6 +154,7 @@ class Fusion:
         self.frames = []
         self.frame_delay = FrameDelay()
         self.frame_intrinsics = None
+        self.posed = deque(maxlen=6)  # recent posed frames: (exposed, image, camera, intrinsics)
         self.meshes = {}
         self.keyframes = keyframes  # projector slots: 0 live, 1.. kept views
         self.kept = {}  # slot -> (world_from_camera, time)
@@ -167,6 +175,7 @@ class Fusion:
         self.stats = dict(
             tof_frames=0, tof_dropped=0, tilted=0, tilt_held=0, untilted=0, tof_voxels=0,
             tilt_ahead=0, painted=0, frames=0, frames_dropped=0, frame_delay_extra_ms=0.0,
+            guided=0, unguided=0, guide_ms=0.0,
             vertices=0, triangles=0, blocks=0, evictions=0, fuse_ms=0.0, paint_ms=0.0,
             mesh_ms=0.0,
         )  # fmt: skip
@@ -308,39 +317,7 @@ class Fusion:
     def step(self, now):
         """Fuse whatever the pose stream now covers; returns a MeshFrame when there is news."""
         latest = self.poses.latest
-        waiting = []
-        for grid in self.grids:
-            # Grids wait for the pose stream only: the head IMU's batches can trail them by tens
-            # of milliseconds, which would add to the mesh's lag; pose() bridges that gap.
-            if (latest is None or grid["time"] > latest) and now - grid["time"] <= POSE_WAIT:
-                waiting.append(grid)
-                continue
-            camera = None if latest is None or grid["time"] > latest else self.pose(grid["time"])
-            if camera is None:
-                self.stats["tof_dropped"] += 1
-                continue
-            started = time.perf_counter()
-            zones = zones_from_grid(grid)
-            world_from_sensor = camera @ zones.mount
-            fused = self.volume.integrate(zones, world_from_sensor, grid["time"], camera[:3, 3])
-            ended = time.perf_counter()
-            self.stats["tof_frames"] += 1
-            self.stats["tof_voxels"] = fused
-            self.stats["fuse_ms"] = (ended - started) * 1000
-            self.captured_at = grid["time"]
-            # Stage times of this frame (ms): sensor to pilot (link), pilot to fusion start
-            # (worker queue, waiting for the pose stream, and earlier grids of the same batch
-            # being fused), fusion; _remesh adds the rest. `received` is the pilot's ito.clock,
-            # which is perf_counter, system-wide.
-            received = grid.get("received")
-            self.timing = dict(
-                link_ms=None if received is None else (received - grid["time"]) * 1000,
-                queued_ms=None if received is None else (started - received) * 1000,
-                integrate_ms=(ended - started) * 1000,
-                integrated=ended,
-            )
-        self.grids = waiting
-
+        # Frames first, so a ToF frame below finds the camera frames posed up to its time.
         self._measure_frame_delay(now)
         extra = self.frame_delay.extra
         frames, self.frames = self.frames, []
@@ -358,12 +335,48 @@ class Fusion:
                 continue
             self.stats["frames"] += 1
             self.camera = camera
+            self.posed.append((exposed, image, camera, intrinsics))
             self._project(image, camera, intrinsics, exposed)
             if exposed - self.last_paint >= PAINT_INTERVAL:
                 self.last_paint = exposed
                 started = time.perf_counter()
                 self.stats["painted"] = self.volume.paint(image, camera, intrinsics, exposed)
                 self.stats["paint_ms"] = (time.perf_counter() - started) * 1000
+
+        waiting = []
+        for grid in self.grids:
+            # Grids wait for the pose stream only: the head IMU's batches can trail them by tens
+            # of milliseconds, which would add to the mesh's lag; pose() bridges that gap.
+            if (latest is None or grid["time"] > latest) and now - grid["time"] <= POSE_WAIT:
+                waiting.append(grid)
+                continue
+            camera = None if latest is None or grid["time"] > latest else self.pose(grid["time"])
+            if camera is None:
+                self.stats["tof_dropped"] += 1
+                continue
+            started = time.perf_counter()
+            zones = zones_from_grid(grid)
+            world_from_sensor = camera @ zones.mount
+            guide_ms = self._guide(zones, world_from_sensor, grid["time"])
+            fused = self.volume.integrate(zones, world_from_sensor, grid["time"], camera[:3, 3])
+            ended = time.perf_counter()
+            self.stats["tof_frames"] += 1
+            self.stats["tof_voxels"] = fused
+            self.stats["fuse_ms"] = (ended - started) * 1000
+            self.captured_at = grid["time"]
+            # Stage times of this frame (ms): sensor to pilot (link), pilot to fusion start
+            # (worker queue, waiting for the pose stream, and earlier grids of the same batch
+            # being fused), fusion; _remesh adds the rest. `received` is the pilot's ito.clock,
+            # which is perf_counter, system-wide.
+            received = grid.get("received")
+            self.timing = dict(
+                link_ms=None if received is None else (received - grid["time"]) * 1000,
+                queued_ms=None if received is None else (started - received) * 1000,
+                integrate_ms=(ended - started) * 1000,
+                guide_ms=guide_ms,
+                integrated=ended,
+            )
+        self.grids = waiting
 
         news = None
         colours = now - self.last_recolour >= RECOLOUR_INTERVAL
@@ -401,6 +414,32 @@ class Fusion:
             track = np.array(times), np.array(quaternions)
             self.frame_delay.estimate(now, *track, self.frame_intrinsics)
             self.stats["frame_delay_extra_ms"] = self.frame_delay.extra * 1000
+
+    def _guide(self, zones, world_from_sensor, when):
+        """Edges of this ToF frame along the camera frame nearest in time (zones.guide)."""
+        if not zones_module.GUIDE or not self.posed:
+            return 0.0
+        exposed, image, camera, intrinsics = min(self.posed, key=lambda f: abs(f[0] - when))
+        if abs(exposed - when) > GUIDE_MATCH:
+            self.stats["unguided"] += 1
+            return 0.0
+        started = time.perf_counter()
+        fx, fy, cx, cy = intrinsics
+        sensor_to_image = np.linalg.inv(camera) @ world_from_sensor
+
+        def project(points):
+            p = points @ sensor_to_image[:3, :3].T + sensor_to_image[:3, 3]
+            z = -p[:, 2]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                u = np.where(z > 0.02, cx + fx * p[:, 0] / z, np.nan)
+                v = np.where(z > 0.02, cy - fy * p[:, 1] / z, np.nan)
+            return u, v
+
+        self.stats["guided"] = zones.guide(image, project)
+        self.stats["guide_dt_ms"] = (when - exposed) * 1000
+        ms = (time.perf_counter() - started) * 1000
+        self.stats["guide_ms"] = ms
+        return ms
 
     def _project(self, image, camera, intrinsics, exposed):
         fx, fy, cx, cy = intrinsics
