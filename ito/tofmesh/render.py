@@ -145,6 +145,9 @@ GUESS_GRID = (128, 72)
 GUESS_FAR = 8.0
 GUESS_EDGE = 1.3
 FLOOR_HEIGHT = 0.0  # the odometry frame's floor
+# The floor rule needs the camera above it: odometry that drifted the camera down to the floor
+# would put every downward ray on the floor a few centimetres away.
+FLOOR_CLEARANCE = 0.05
 
 FULLSCREEN = """
 #version 430
@@ -211,6 +214,7 @@ uniform sampler2D filled;    // inverse depth, holes filled (push-pull)
 uniform sampler2D measured;  // weight 1 where the mesh itself is
 uniform vec2 grid_step;      // one grid cell in image uv
 uniform float floor_height;
+uniform float floor_clearance;
 uniform float far;
 uniform float edge;
 in vec2 uv;                  // over the image, v down
@@ -231,7 +235,8 @@ float range_at(vec2 st) {
     vec3 d = ray(st);
     float inv = texture(filled, vec2(st.x, 1.0 - st.y)).r;
     float r = inv > 1.0 / far ? length(camera_ray(st)) / inv : far;
-    if (d.y < -1e-3) r = min(r, (origin.y - floor_height) / -d.y);
+    float height = origin.y - floor_height;
+    if (height > floor_clearance && d.y < -1e-3) r = min(r, height / -d.y);
     return clamp(r, 0.1, far);
 }
 
@@ -544,6 +549,7 @@ class MeshRenderer:
             images=0,
             filled=2,
             measured=3,
+            floor_clearance=FLOOR_CLEARANCE,
         )
         self.guess_vao.render(moderngl.TRIANGLES)
 
