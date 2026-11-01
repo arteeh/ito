@@ -242,7 +242,8 @@ class Volume:
         slots = self.visible(camera_from_world, intrinsics, (w, h), distance)
         if not len(slots):
             return 0
-        sdf = self.sdf[slots].reshape(len(slots), -1)
+        grid = self.sdf[slots]
+        sdf = grid.reshape(len(slots), -1)
         near = (self.weight[slots].reshape(len(slots), -1) > 0) & (np.abs(sdf) < self.voxel)
         block, voxel = np.nonzero(near)
         if not len(block):
@@ -255,24 +256,41 @@ class Volume:
             u = cx + fx * local[:, 0] / z
             v = cy - fy * local[:, 1] / z
         ok = (z > 0.05) & (z < distance) & (u >= 0) & (u <= w - 1) & (v >= 0) & (v <= h - 1)
-        block, voxel, u, v, z = block[ok], voxel[ok], u[ok], v[ok], z[ok]
+        block, voxel, u, v, z, local = block[ok], voxel[ok], u[ok], v[ok], z[ok], local[ok]
         if not len(z):
             return 0
-        # Occlusion: a coarse depth buffer of the surface voxels themselves, holes closed by a
-        # 3x3 minimum; a voxel more than 1.5 voxels behind the nearest surface is hidden.
-        scale = 8
+        # Occlusion: a depth buffer of the surface voxels themselves, each drawn as a square of
+        # its own size on screen (so a surface leaves no gaps between its voxels at any range),
+        # in 4-pixel cells. Each voxel writes the farthest depth its own surface reaches across
+        # that square, which grows with the grazing angle (the signed distance's slope against
+        # the ray); a voxel behind that depth is hidden. So a box hides the floor behind it, but
+        # nearer floor does not hide farther floor: the low camera sees the floor nearly edge-on,
+        # where a fixed margin over a 3x3 minimum of 8-pixel cells hid every floor voxel beyond
+        # ~1 m, so it was never painted (grey in the mesh).
+        scale = 4
         gw, gh = w // scale + 1, h // scale + 1
-        gu = (u / scale).astype(np.int64)
-        gv = (v / scale).astype(np.int64)
-        cell = gv * gw + gu
-        depth = np.full(gw * gh, np.inf)
-        np.minimum.at(depth, cell, z)
-        grid = depth.reshape(gh, gw)
-        padded = np.pad(grid, 1, constant_values=np.inf)
-        closed = np.min(
-            [padded[dy : dy + gh, dx : dx + gw] for dy in range(3) for dx in range(3)], axis=0
-        ).ravel()
-        seen = z <= closed[cell] + 1.5 * self.voxel + 0.02 * z
+        gu = (u / scale).astype(np.int64) + 6  # 6 cells of margin on every side
+        gv = (v / scale).astype(np.int64) + 6
+        f = min(fx, fy)
+        reach = np.clip(np.ceil(0.75 * f * self.voxel / z / scale), 1, 6).astype(np.int64)
+        normal = np.stack(np.gradient(grid, axis=(1, 2, 3)), -1).reshape(len(slots), -1, 3)
+        normal = normal[block, voxel] @ camera_from_world[:3, :3].T
+        ray = local / np.linalg.norm(local, axis=1, keepdims=True)
+        cos = np.abs((normal * ray).sum(1)) / np.maximum(np.linalg.norm(normal, axis=1), 1e-9)
+        cos = np.maximum(cos, 0.02)
+        slope = np.sqrt(1 - cos * cos) / cos  # depth change per lateral distance
+        across = (reach + 0.71) * scale * z / f  # from this voxel to the far side of its square
+        # A plane's inverse depth is linear across the image: the depth it reaches there.
+        with np.errstate(divide="ignore"):
+            far = z / np.maximum(1 - slope * across / z, 0)
+        depth = np.full((gh + 12, gw + 12), np.inf)
+        for k in range(int(reach.max()) + 1):
+            at = reach >= k
+            for dy in range(-k, k + 1):
+                for dx in range(-k, k + 1):
+                    if max(abs(dx), abs(dy)) == k:  # the ring this reach adds
+                        np.minimum.at(depth, (gv[at] + dy, gu[at] + dx), far[at])
+        seen = z <= depth[gv, gu] + 1.5 * self.voxel + 0.02 * z
         block, voxel, u, v, z = block[seen], voxel[seen], u[seen], v[seen], z[seen]
         x0 = np.floor(u).astype(np.int64)
         y0 = np.floor(v).astype(np.int64)
