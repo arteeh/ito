@@ -240,6 +240,15 @@ def simulation(
             raise RuntimeError(
                 f"the body speaks {hello}, not protocol 2 for a beta: re-run setup-sim.sh"
             )
+        # The body answers before its physics loop runs (building the head camera takes seconds).
+        # A robotd started then rises and starts walking against a frozen duck, and the duck is
+        # flung over when physics starts.
+        deadline = time.monotonic() + 60
+        while "== head camera: rendering" not in (logs / "body.log").read_text(errors="replace"):
+            check(children, logs)
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"body did not start stepping; see {logs / 'body.log'}")
+            time.sleep(0.1)
         launch(
             "robot",
             [

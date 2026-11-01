@@ -231,6 +231,9 @@ class ThreadedHeadCamera(HeadCamera):
     def loop(self):
         width, height = self.fisheye.size
         self.renderer = mujoco.Renderer(self.model, height=height, width=width)
+        # sim.py waits for this line before starting robotd: the body answers the bus while the
+        # fisheye maps are built, seconds before physics runs.
+        print("== head camera: rendering", flush=True)
         body_server.mujoco = STEPPING
         STEPPING.hooks.append(self.before_step)
         try:
