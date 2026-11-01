@@ -126,6 +126,8 @@ float central(vec4 q, float u, float v) {
 FRAGMENT = """
 #version 430
 #define K %(K)d
+// Radians between a view's ray and the eye's at which the view's weight halves (before ^6).
+#define VIEW_ANGLE 0.1
 uniform sampler2DArray images;
 uniform sampler2D shadows;
 uniform mat4 camera_from_world[K];
@@ -189,6 +191,9 @@ void main() {
         float light = 0.5 + 0.35 * max(dot(n, normalize(vec3(0.3, 1.0, 0.2))), 0.0);
         base = vec3(0.5) * light;
     }
+    vec3 to_eye = eye - v_world;
+    float eye_distance = max(length(to_eye), 1e-4);
+    to_eye /= eye_distance;
     vec3 sum = vec3(0.0);
     float total = 0.0;
     for (int k = 0; k < K; ++k) {
@@ -206,22 +211,26 @@ void main() {
         float nearest = texture(shadows, atlas).r;
         if (d > nearest + 0.06 + 0.03 * d) continue;
         vec3 toward = (origin[k] - v_world) / max(d, 1e-4);
-        // Every frame colours what it sees unoccluded, however grazing: the low camera sees the
-        // floor at a shallow angle (a bumpy ToF floor tips its normals further away), and floor
-        // a kept view saw only that way otherwise showed the coarse, neighbour-filled voxel
-        // colours (a smear) once the view turned past the live frame. A grazing view's weight is
-        // tiny, so any view facing the surface better still wins. A view clearly from behind
-        // (n is turned to the eye) saw the other side of a one-sheet surface (a board, a table top
-        // from below, a chair back), not this one; a bumpy floor's normals tip far less.
-        float s = dot(n, toward);
-        if (s < -0.25) continue;
-        float facing = abs(s);
+        // A view clearly from behind (n is turned to the eye) saw the other side of a one-sheet
+        // surface (a board, a table top from below, a chair back), not this one; a bumpy floor's
+        // normals tip far less, so floor seen at a grazing angle is still coloured.
+        if (dot(n, toward) < -0.25) continue;
+        // The mesh is coarse (8x8 ToF zones, 4 cm voxels): its edges miss the image's by
+        // centimetres. A frame seen from the eye's own direction puts every pixel back where
+        // that frame saw it, whatever the mesh's error; one from aside shifts the error onto the
+        // screen (background on a table leg's edge, a flap of wall hanging off a table top). So
+        // the view looking at the fragment most nearly along the eye's ray wins (unstructured
+        // lumigraph weighting), not the one facing the surface most squarely.
+        float angle = acos(clamp(dot(toward, to_eye), -1.0, 1.0));
+        float along = 1.0 / (1.0 + angle * angle / (VIEW_ANGLE * VIEW_ANGLE));
+        // Of views along the same ray, one nearer than the eye resolves as much detail as the
+        // screen shows; a farther one less.
+        float detail = clamp((eye_distance + 0.5) / (d + 0.5), 0.5, 1.0);
         float edge = clamp(min(min(u, image_size.x - u), min(v, image_size.y - v))
                            / (0.06 * image_size.x), 0.0, 1.0);
-        // The floor keeps a grazing or border sample of the live frame in the blend
-        // (w^6 stays a normal float), where it is the only view.
-        float w = max(boost[k] * facing * facing * edge * central(q, u, v) / (1.0 + 0.5 * d * d),
-                      1e-5);
+        // A border sample stays in the blend (w^6 stays a normal float) where it is the only
+        // view.
+        float w = max(boost[k] * along * detail * edge, 1e-5);
         // A steep power: the best view nearly alone, so small pose errors between views do
         // not show as double images.
         float w2 = w * w;
