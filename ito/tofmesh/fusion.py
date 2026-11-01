@@ -215,11 +215,13 @@ class Fusion:
             self.stats["fuse_ms"] = (ended - started) * 1000
             self.captured_at = grid["time"]
             # Stage times of this frame (ms): sensor to pilot (link), pilot to fusion start
-            # (worker queue and waiting for the pose stream), fusion; _remesh adds the rest.
+            # (worker queue, waiting for the pose stream, and earlier grids of the same batch
+            # being fused), fusion; _remesh adds the rest. `received` is the pilot's ito.clock,
+            # which is perf_counter, system-wide.
             received = grid.get("received")
             self.timing = dict(
                 link_ms=None if received is None else (received - grid["time"]) * 1000,
-                queued_ms=None if received is None else (now - received) * 1000,
+                queued_ms=None if received is None else (started - received) * 1000,
                 integrate_ms=(ended - started) * 1000,
                 integrated=ended,
             )
