@@ -305,7 +305,8 @@ void main() {
 
 # Guessed depth beyond the live frame (the view is wider and taller than the camera, and leads it
 # while turning): every pixel the mesh and the live guess leave empty gets a range from the view's
-# own depth map, its holes filled by the same push-pull (and the floor rule), and the colour of
+# own depth map, its holes filled from the map's mipmaps (the nearest level that has something
+# there: one mipmap build instead of a push-pull's twenty passes), the floor rule, and the colour of
 # the kept view that saw that spot from the most similar direction. A spot no frame ever saw
 # stays empty.
 EYE_DEPTH_WIDTH = 256
@@ -323,7 +324,7 @@ uniform mat4 clip_to_world;
 uniform vec2 size;
 uniform vec3 eye;
 uniform vec3 forward;
-uniform sampler2D filled;    // the view's inverse depth, holes filled (push-pull)
+uniform sampler2D filled;    // the view's inverse depth and weight, mipmapped
 uniform sampler2DArray images;
 uniform sampler2D shadows;
 uniform mat4 camera_from_world[K];
@@ -343,7 +344,15 @@ void main() {
     vec4 a = clip_to_world * vec4(st * 2.0 - 1.0, -1.0, 1.0);
     vec4 b = clip_to_world * vec4(st * 2.0 - 1.0, 1.0, 1.0);
     vec3 dir = normalize(b.xyz / b.w - a.xyz / a.w);
-    float inv = texture(filled, st).r;
+    float inv = 0.0;
+    int levels = textureQueryLevels(filled);
+    for (int l = 0; l < levels; ++l) {
+        vec2 c = textureLod(filled, st, float(l)).rg;  // weighted means of 1 / depth
+        if (c.y > 0.02) {
+            inv = c.x / c.y;
+            break;
+        }
+    }
     float r = inv > 1e-4 ? 1.0 / (inv * max(dot(dir, forward), 1e-3)) : far;
     float height = eye.y - floor_height;
     if (height > floor_clearance && dir.y < -1e-3) r = min(r, height / -dir.y);
@@ -477,8 +486,7 @@ class MeshRenderer:
         self.composite_program = self.composite_vao = None
         self.guess_target = None  # (size, framebuffer, colour texture, depth)
         self.eye_depth_program = self.eye_depth_vao = self.fill_program = self.fill_vao = None
-        self.eye_levels = []  # push-pull over the view's own depth map
-        self.eye_depth = None  # its depth renderbuffer and framebuffer
+        self.eye_depth = None  # the view's own depth map: texture, depth buffer, framebuffer
         if self.guess_enabled:  # ITO_GUESS_DEPTH=0: none of its GPU resources
             self._guess_resources()
 
@@ -718,19 +726,16 @@ class MeshRenderer:
             return
         w = EYE_DEPTH_WIDTH
         eye_size = (w, max(1, round(w * size[1] / size[0])))
-        if not self.eye_levels or self.eye_levels[0][0] != eye_size:
-            for level in self.eye_levels:
-                for r in level[1:]:
-                    r.release()
-            if self.eye_depth is not None:
-                for r in self.eye_depth:
-                    r.release()
-            self.eye_levels = _pyramid(self.context, eye_size)
+        if self.eye_depth is None or self.eye_depth[0].size != eye_size:
+            for r in self.eye_depth or ():
+                r.release()
+            texture = self.context.texture(eye_size, 2, dtype="f4")
+            texture.repeat_x = texture.repeat_y = False
+            texture.build_mipmaps()
+            texture.filter = moderngl.LINEAR_MIPMAP_NEAREST, moderngl.LINEAR
             depth = self.context.depth_renderbuffer(eye_size)
-            self.eye_depth = (
-                depth, self.context.framebuffer([self.eye_levels[0][1]], depth)
-            )  # fmt: skip
-        target = self.eye_depth[1]
+            self.eye_depth = (texture, depth, self.context.framebuffer([texture], depth))
+        texture, _, target = self.eye_depth
         target.use()
         self.context.viewport = (0, 0, *eye_size)
         self.context.scissor = None
@@ -741,7 +746,7 @@ class MeshRenderer:
                 view_projection.T.astype(np.float32).tobytes()
             )
             self.eye_depth_vao.render(moderngl.TRIANGLES, vertices=self.count * 3)
-        self._push_pull(self.eye_levels, None, eye_size)
+        texture.build_mipmaps()
         program = self.fill_program
         program["clip_to_world"].write(
             np.linalg.inv(view_projection).T.astype(np.float32).tobytes()
@@ -750,7 +755,7 @@ class MeshRenderer:
         program["intrinsics"].write(self._uniforms["intrinsics"].tobytes())
         program["origin"].write(self._uniforms["origins"].tobytes())
         program["boost"].write(self._uniforms["boost"].tobytes())
-        self.eye_levels[0][3].use(2)
+        texture.use(2)
         self.images.use(0)
         self.shadows.use(1)
         _set(
@@ -897,7 +902,6 @@ class MeshRenderer:
             self.guess_vbo, self.guess_ibo, self.guess_program, self.composite_vao,
             self.composite_program, self.eye_depth_vao, self.eye_depth_program, self.fill_vao,
             self.fill_program,
-            *(r for level in self.eye_levels for r in level[1:]),
             *(self.eye_depth or ()),
             *(r for level in self.levels for r in level[1:]),
             *(self.guess_target[1:] if self.guess_target is not None else ()),
