@@ -1,7 +1,6 @@
 import argparse
 import contextlib
 import json
-import math
 import os
 import signal
 import socket
@@ -65,8 +64,6 @@ def simulation(
     viewer=False,
     gl=None,
     camera_height=None,
-    blur=1,
-    calibrated=True,
     head_imu=None,
     imu_noise=1.0,
     tof_noise=1.0,
@@ -87,7 +84,6 @@ def simulation(
         "ITO_MICRODUCK_CAMERA_HEIGHT": str(camera_height),
         "ITO_MICRODUCK_CAMERA_FPS": "30",
     }
-    sim_env["ITO_MICRODUCK_BLUR"] = str(blur)
     on_screen = sim_env["MUJOCO_GL"] == "glfw"
     if on_screen and Path("/dev/dxg").exists() and "GALLIUM_DRIVER" not in os.environ:
         # WSL's Mesa defaults to llvmpipe; d3d12 renders the viewer and head camera on the GPU.
@@ -146,18 +142,18 @@ def simulation(
             "[media]",
             f'quality = "{lens.RESOLUTIONS[camera_height]}"',
         ]
-        if calibrated:
-            # The rendered lens (lens.py), as a calibration of it would be written.
-            media += [
-                "[media.intrinsics]",
-                f"width = {lens.WIDTH}",
-                f"height = {lens.HEIGHT}",
-                f"fx = {lens.F_PX!r}",
-                f"fy = {lens.F_PX!r}",
-                f"cx = {lens.WIDTH / 2!r}",
-                f"cy = {lens.HEIGHT / 2!r}",
-                f"distortion = [{', '.join(map(repr, lens.DISTORTION))}]",
-            ]
+        # A sim mediad publishes a plain pinhole unless told the lens: the one rendered
+        # (lens.py), which is the family calibration a real beta's mediad publishes.
+        media += [
+            "[media.intrinsics]",
+            f"width = {lens.WIDTH}",
+            f"height = {lens.HEIGHT}",
+            f"fx = {lens.FX!r}",
+            f"fy = {lens.FY!r}",
+            f"cx = {lens.CX!r}",
+            f"cy = {lens.CY!r}",
+            f"distortion = [{', '.join(map(repr, lens.DISTORTION))}]",
+        ]
         media_config.write_text("\n".join(media) + "\n")
         policies = {
             "walk": "velstand",
@@ -183,10 +179,8 @@ def simulation(
         robot_model = ET.parse(source_scene.parent / "robot_groundcontact.xml")
         for geom in robot_model.findall(".//worldbody//geom"):
             geom.set("group", "2" if geom.get("class") == "visual" else "3")
-        gear_play(robot_model)
         robot_model.write(state / "robot_groundcontact.xml")
         scene = furnish(source_scene)
-        ET.SubElement(scene.find("visual"), "quality", shadowsize="256", offsamples="1")
         scene_path = state / "scene.xml"
         scene.write(scene_path)
         children = []
@@ -330,9 +324,7 @@ def simulation(
                 "--robot",
                 f"ws://127.0.0.1:{media_port}",
             ],
-            os.environ
-            | {"ITO_MICRODUCK_BLUR": str(blur)}
-            | ({"ITO_MICRODUCK_EXPOSURE": "0"} if blur == 1 else {}),
+            os.environ,
         )
         deadline = time.monotonic() + 30
         while True:
@@ -349,43 +341,6 @@ def simulation(
         yield SimpleNamespace(body=body, children=children, code=code, port=driver_port)
 
 
-# The head's four servos. Each has gear play between its output, which its encoder reads and
-# robotd's kinematics place the camera by, and the link it turns: ~2 degrees total per servo,
-# upstream's own model of the real robot (microduck_rl's add_backlash.py). The camera, the head
-# IMU and the ToF ride on the links, so the twin's head wobbles off its kinematics the way a
-# duck's does, which is what a head IMU is for. The legs keep the play-free model the walking
-# policy was trained on.
-HEAD_JOINTS = ("neck_pitch", "head_pitch", "head_yaw", "head_roll")
-GEAR_PLAY = math.radians(1.0)  # each way
-
-
-def gear_play(robot):
-    defaults = robot.getroot().find("default")
-    play = ET.SubElement(ET.SubElement(defaults, "default", {"class": "backlash"}), "joint")
-    play.attrib.update(
-        damping="0.01",
-        frictionloss="0",
-        armature="0.001",
-        limited="true",
-        range=f"{-GEAR_PLAY!r} {GEAR_PLAY!r}",
-        solreflimit="0.01 1",
-        solimplimit="0.95 0.999 0.0001 0.5 2",
-    )
-    for body in robot.getroot().iter("body"):
-        for joint in list(body.findall("joint")):
-            if joint.get("name") in HEAD_JOINTS:
-                passive = ET.Element(
-                    "joint",
-                    {
-                        "axis": joint.get("axis"),
-                        "name": f"passive_{joint.get('name')}_backlash",
-                        "type": "hinge",
-                        "class": "backlash",
-                    },
-                )
-                body.insert(list(body).index(joint) + 1, passive)
-
-
 def arguments(parser):
     parser.add_argument("--microduck", type=Path, required=True)
     parser.add_argument("--rl", type=Path, required=True)
@@ -395,11 +350,6 @@ def arguments(parser):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     arguments(parser)
-    parser.add_argument(
-        "--uncalibrated",
-        action="store_true",
-        help="a beta with no [media.intrinsics], which publishes no camera geometry",
-    )
     parser.add_argument(
         "--no-head-imu", dest="head_imu", action="store_false", default=None, help="no head IMU"
     )
@@ -424,12 +374,6 @@ def main():
         type=int,
         choices=sorted(lens.RESOLUTIONS),
         help="head camera frame height in pixels (16:9), mediad's quality rung; default 720",
-    )
-    parser.add_argument(
-        "--blur",
-        type=int,
-        default=1,
-        help="average this many back-to-back renders into each frame: motion blur",
     )
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8081)
@@ -458,8 +402,6 @@ def main():
             viewer=args.viewer,
             gl=args.gl,
             camera_height=args.camera_height,
-            blur=args.blur,
-            calibrated=not args.uncalibrated,
             head_imu=args.head_imu,
             imu_noise=args.imu_noise,
             tof_noise=args.tof_noise,

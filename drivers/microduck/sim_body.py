@@ -127,18 +127,13 @@ class HeadCamera(Camera):
         model.vis.global_.offheight = max(model.vis.global_.offheight, self.fisheye.size[1])
         super().__init__(model, name, *self.fisheye.size, mount=mount)
         self.width, self.height = width, height
-        self.blur = max(1, int(os.environ.get("ITO_MICRODUCK_BLUR", 1)))
         self.option = mujoco.MjvOption()
-        self.option.geomgroup[2] = 0
         self.option.geomgroup[5] = 1
 
     def render(self, world):
-        frames = []
-        for _ in range(self.blur):
-            with world.lock:
-                self.scene(world.data)
-            frames.append(self.draw())
-        self.publish(frames)
+        with world.lock:
+            self.scene(world.data)
+        self.publish(self.draw())
 
     def uyvy(self, rgb):
         """mjlab's to_uyvy (BT.601 full range, chroma averaged across each pair) in OpenCV:
@@ -156,13 +151,9 @@ class HeadCamera(Camera):
         self.renderer.update_scene(data, camera=self.camera, scene_option=self.option)
 
     def draw(self):
-        # MuJoCo's shadow pass produces dark floor triangles at this low camera height.
-        # Keep the head image clean without changing the viewer or the robot's physics.
-        self.renderer.scene.flags[mujoco.mjtRndFlag.mjRND_SHADOW] = False
         return self.fisheye.rgb(self.renderer)
 
-    def publish(self, frames, exposed_ns=None):
-        rgb = frames[0] if self.blur == 1 else np.mean(frames, axis=0).astype(np.uint8)
+    def publish(self, rgb, exposed_ns=None):
         packed = self.uyvy(rgb)
         with self.lock:
             self.latest = packed
@@ -205,7 +196,6 @@ class ThreadedHeadCamera(HeadCamera):
         self.thread = None
         self.stopping = threading.Event()
         self.shots = collections.deque()
-        self.taking = []
         self.due = None
         # Before GLFW goes: rendering on after the viewer closed and GLFW terminated
         # segfaulted the body in make_context_current (GLFW 3.4, Ubuntu 26.04).
@@ -222,17 +212,13 @@ class ThreadedHeadCamera(HeadCamera):
         period = 1.0 / max(1, FPS)
         if self.due is None or data.time < self.due - 1.0:
             self.due = data.time
-        if not self.taking and data.time < self.due - 1e-9:
-            return
-        self.taking.append(
-            (data.time, data.qpos.copy(), data.mocap_pos.copy(), data.mocap_quat.copy())
-        )
-        if len(self.taking) < self.blur:
+        if data.time < self.due - 1e-9:
             return
         with self.fresh:
-            self.shots.append(self.taking)
+            self.shots.append(
+                (data.time, data.qpos.copy(), data.mocap_pos.copy(), data.mocap_quat.copy())
+            )
             self.fresh.notify_all()
-        self.taking = []
         self.due = max(self.due + period, data.time)
 
     def stop(self):
@@ -276,7 +262,7 @@ class ThreadedHeadCamera(HeadCamera):
                 while len(self.shots) > 2:
                     self.shots.popleft()
                     dropped += 1
-                states = self.shots.popleft()
+                state = self.shots.popleft()
             now = time.perf_counter()
             if next_frame is None or now - next_frame > period:
                 late += next_frame is not None
@@ -284,15 +270,11 @@ class ThreadedHeadCamera(HeadCamera):
             elif next_frame > now:
                 time.sleep(next_frame - now)
             start = time.perf_counter()
-            frames = []
-            for state in states:
-                self.pose(kept, state)
-                self.scene(kept)
-                frames.append(self.draw())
+            self.pose(kept, state)
+            self.scene(kept)
             # The exposure on CLOCK_MONOTONIC, the clock robotd and tofd stamp with: the physics
-            # time of the state drawn (the middle one when frames blur together).
-            middle = states[len(states) // 2][0]
-            self.publish(frames, self.world.epoch_ns + round(middle * 1e9))
+            # time of the state drawn.
+            self.publish(self.draw(), self.world.epoch_ns + round(state[0] * 1e9))
             with self.lock:
                 self.seq += 1
                 self.fresh.notify_all()

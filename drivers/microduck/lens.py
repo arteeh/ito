@@ -1,66 +1,87 @@
-"""The beta's head camera (GC2093, upright) and its lens, which the simulated one shares.
+"""The beta's head camera (GC2093, upright) and its lens, which the simulated one renders.
 
-The lens figures are the camera module's datasheet: NOMINAL, not a calibration. 1/2.9" sensor,
-2.75 um pixels, 1920x1080 active; field of view 116 degrees across, 60 down, 142.2 corner to
-corner (MAX DFOV 165: the lens's own image circle, wider than this sensor). No pinhole does that
-(116 across would be 84 down): the lens squeezes its edges, between equisolid and orthographic.
-The fit below goes through all three figures exactly; its focal length, 1060 px = 2.92 mm, is the
-2.8 mm class of M12 lens such a module carries. A real beta publishes geometry only from its own
-calibration (solved with OpenCV's rational model, see DISTORTION); the sim renders this nominal
-lens and publishes it as that calibration would."""
+The lens is upstream's family calibration of the beta camera (microduck fb8875e,
+robotd-params' CameraIntrinsics::beta(), solved on unit sky-gtc on the 1280x720 frame), which
+mediad publishes for every real beta. The sim renders it and publishes the same figures.
+
+Its five-term radial polynomial folds back 57.9 degrees off the axis: past that a wider ray lands
+nearer the centre. That is short of the frame's right edge and corners, which the calibration's
+views did not reach, so it cannot describe them. Past KNEE_DEG the sim continues the lens at its
+slope there (angle linear in image radius), which puts the frame at about 114 by 60 degrees, the
+module's datasheet 116 by 60. Ito's rectified view stays inside KNEE_DEG."""
+
+import math
 
 import numpy as np
 
-WIDTH, HEIGHT = 1920, 1080  # the active array; the figures below are at this size
-FOV_H_DEG, FOV_V_DEG, FOV_D_DEG, MAX_DFOV_DEG = 116.0, 60.0, 142.2, 165.0
-# Kannala-Brandt through those three fields, principal point central: a ray theta radians off
-# the axis lands F_PX * (theta + KB[0] theta^3 + KB[1] theta^5) pixels from the centre. It rises
-# monotonically to 89 degrees; at 82.5 (MAX DFOV / 2) it is 1183 px, a 6.5 mm image circle.
-F_PX = 1060.0026
-KB = (-0.09718408, -0.00547611)
-# The same lens in OpenCV's rational model (k1 k2 p1 p2 k3 k4 k5 k6; fx = fy = F_PX, centre
-# 960, 540): what calibrateCamera with CALIB_RATIONAL_MODEL makes of it, within 0.006 px of the
-# curve above out to the frame's corners. OpenCV's plain five terms cannot hold this lens: their
-# best fit misses by 117 px at the corners (13 px already at 60 degrees) and folds back on itself.
-DISTORTION = (
-    0.7803425815871512,
-    0.10952142059157981,
-    0.0,
-    0.0,
-    0.0014081666387639196,
-    1.2107073041396799,
-    0.339970004705214,
-    0.016612549934926498,
+WIDTH, HEIGHT = 1280, 720  # the calibration's frame; other sizes scale it
+FX, FY = 695.6216231288809, 696.0209167299262
+CX, CY = 627.4740538073111, 363.60566030048255
+DISTORTION = (  # OpenCV's k1 k2 p1 p2 k3
+    -0.368607360841971,
+    0.13550162561831905,
+    0.00012682873881955374,
+    0.0008719998338708391,
+    -0.022368269599378002,
 )
 RESOLUTIONS = {360: "360p30", 720: "720p30", 1080: "1080p30"}
 DEFAULT_HEIGHT = 720
+KNEE_DEG = 54.0
+
+K1, K2, P1, P2, K3 = DISTORTION
+_KNEE_U = math.tan(math.radians(KNEE_DEG))  # pinhole radius of the knee
+
+
+def _radial(r):
+    return r * (1 + K1 * r**2 + K2 * r**4 + K3 * r**6)
+
+
+def _radial_slope(r):
+    return 1 + 3 * K1 * r**2 + 5 * K2 * r**4 + 7 * K3 * r**6
+
+
+_KNEE_D = _radial(_KNEE_U)
+# d(angle) / d(distorted radius) at the knee, which the lens keeps beyond it.
+_KNEE_SLOPE = 1 / (1 + _KNEE_U**2) / _radial_slope(_KNEE_U)
 
 
 def width_for(height):
     return height * 16 // 9
 
 
-def radius_px(theta, width=WIDTH):
-    """Pixels from the image centre at which a ray theta radians off the axis lands."""
-    t = np.asarray(theta, np.float64)
-    return width / WIDTH * F_PX * (t + KB[0] * t**3 + KB[1] * t**5)
-
-
-def angle(radius, width=WIDTH):
-    """Radians off the axis of the ray landing radius pixels from the centre (radius_px's
-    inverse; the curve rises monotonically to well past the frame's corners)."""
-    r = np.asarray(radius, np.float64) * (WIDTH / width) / F_PX
-    t = r.copy()
-    for _ in range(8):
-        t -= (t + KB[0] * t**3 + KB[1] * t**5 - r) / (1 + 3 * KB[0] * t**2 + 5 * KB[1] * t**4)
-    return t
+def undistorted_radius(rd):
+    """Pinhole radius (tan of the angle off the axis) of distorted normalised radius rd; inf
+    for rays at or past 90 degrees."""
+    rd = np.asarray(rd, np.float64)
+    inner = rd <= _KNEE_D
+    r = np.where(inner, rd, _KNEE_U)
+    for _ in range(30):
+        r = r - np.where(inner, (_radial(r) - rd) / _radial_slope(r), 0.0)
+        r = np.clip(r, 0.0, _KNEE_U)
+    angle = math.radians(KNEE_DEG) + (rd - _KNEE_D) * _KNEE_SLOPE
+    outer = np.where(angle < math.pi / 2, np.tan(np.minimum(angle, math.pi / 2 - 1e-9)), np.inf)
+    return np.where(inner, r, outer)
 
 
 def rays(u, v, width, height):
     """Unit view rays (x right, y down, z forward) of pixels u, v (OpenCV's convention: integer
-    coordinates are pixel centres, the axis at width / 2, height / 2)."""
-    x, y = np.asarray(u, np.float64) - width / 2, np.asarray(v, np.float64) - height / 2
-    r = np.hypot(x, y)
-    t = angle(r, width)
-    s = np.where(r > 0, np.sin(t) / np.maximum(r, 1e-12), 0.0)
-    return np.stack([x * s, y * s, np.cos(t)], -1)
+    coordinates are pixel centres) on a width x height frame."""
+    s = width / WIDTH
+    xd = (np.asarray(u, np.float64) - CX * s) / (FX * s)
+    yd = (np.asarray(v, np.float64) - CY * height / HEIGHT) / (FY * height / HEIGHT)
+    # The tangential terms are a pixel or two: remove them at the current estimate, then solve
+    # the radial part exactly. Past the knee they stay as they are at it.
+    x, y = xd, yd
+    for _ in range(5):
+        shrink = np.minimum(1.0, _KNEE_U / np.maximum(np.hypot(x, y), 1e-12))
+        tx_, ty_ = x * shrink, y * shrink
+        r2 = tx_ * tx_ + ty_ * ty_
+        tx = 2 * P1 * tx_ * ty_ + P2 * (r2 + 2 * tx_ * tx_)
+        ty = P1 * (r2 + 2 * ty_ * ty_) + 2 * P2 * tx_ * ty_
+        ex, ey = xd - tx, yd - ty
+        rd = np.hypot(ex, ey)
+        ru = undistorted_radius(rd)
+        scale = np.where(rd > 0, ru / np.maximum(rd, 1e-12), 1.0)
+        x, y = ex * scale, ey * scale
+    ray = np.stack([x, y, np.ones_like(x)], -1)
+    return ray / np.linalg.norm(ray, axis=-1, keepdims=True)

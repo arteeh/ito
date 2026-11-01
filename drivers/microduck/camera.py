@@ -18,9 +18,9 @@ RTP_WRAP = 2**32 / RTP_RATE
 LONGEST_DELAY = 1.0
 
 # The widest pinhole Ito is given, degrees across: a pinhole's edges stretch as 1 / cos^2 of their
-# angle, so a wider one spends MASt3R's 512 pixels on smeared edges. The beta's lens (116 across,
-# 60 down) holds a 16:9 pinhole only 91.4 wide anyway (its 60 down binds), already stretching
-# the lens 2.2x at the sides and 2.7x in the corners; whichever is narrower wins.
+# angle, so a wider one spends MASt3R's 512 pixels on smeared edges. The beta's lens (about 114
+# across, 60 down) holds a 16:9 pinhole only 91.6 wide anyway (its 60 down binds); whichever is
+# narrower wins.
 MAX_RECTIFIED_HFOV_DEG = 100.0
 
 
@@ -115,9 +115,9 @@ class Camera:
         cv2.setNumThreads(1)
         geometry = info.get("intrinsics")
         if not geometry or geometry.get("source") not in {"robot", "family", "sim"}:
-            # mediad publishes no geometry it cannot vouch for. A beta's GC2093 has no family
-            # solve (microduck 0.17.4), so a beta that has not been calibrated sends none, and
-            # every direction Ito drew from a guessed lens would be quietly wrong.
+            # mediad publishes no geometry it cannot vouch for (a beta has had a family solve
+            # since microduck 0.18), and every direction Ito drew from a guessed lens would be
+            # quietly wrong.
             raise RuntimeError(
                 "the Microduck publishes no camera geometry (media.video has no intrinsics): "
                 "calibrate its camera (duckslam calib intrinsics) and write the solve to "
@@ -130,8 +130,7 @@ class Camera:
             [[geometry["fx"], 0, geometry["cx"]], [0, geometry["fy"], geometry["cy"]], [0, 0, 1]],
             np.float64,
         )
-        # OpenCV's order, k1 k2 p1 p2 k3 and on: a beta's lens needs the rational model's 8
-        # (lens.py), which microduck's [media.intrinsics] carries as it is.
+        # OpenCV's order, k1 k2 p1 p2 k3 and on, as microduck's [media.intrinsics] carries it.
         distortion = np.array(geometry.get("distortion") or [0.0] * 5, np.float64)
         if distortion.shape not in {(4,), (5,), (8,), (12,), (14,)}:
             raise ValueError("unsupported Microduck camera distortion")

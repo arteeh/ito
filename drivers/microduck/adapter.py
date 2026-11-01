@@ -176,7 +176,7 @@ class MicroduckAdapter(Adapter):
         told = os.environ.get("ITO_MICRODUCK_EXPOSURE")
         if told:
             return float(told)
-        if self.camera.source == "sim" and os.environ.get("ITO_MICRODUCK_BLUR", "1") == "1":
+        if self.camera.source == "sim":
             return 0.0
         return None
 

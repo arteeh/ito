@@ -92,7 +92,7 @@ tracked against keyframes, linked by retrieval and solved as one global Sim(3) g
 camera relocalises and maps nothing meanwhile. The robot's pose places the map once, at the
 first frame. Frames go in as upstream's dataloader makes them (long side 512, centre crop to
 16-pixel multiples), taken as already undistorted (the Microduck driver rectifies its beta's
-wide lens, 116 by 60 degrees, into the widest pinhole it covers, 91.4 by 60); an Input
+wide lens, about 114 by 60 degrees, into the widest pinhole it covers, 91.6 by 60); an Input
 resolution below 100 % makes them smaller (448, 368, 256), which upstream does not do: its
 matching is tuned at 512. The large
 buffers (keyframes, graph edges, the solve's inputs) are allocated once, at start: Settings >
@@ -110,7 +110,7 @@ Virtual Microduck on Ubuntu: `drivers/microduck/setup-sim.sh /path/to/prefix`, t
 It builds Pollen's stack at the `third_party/` submodule pins (microduck at a release tag, microduck_rl's develop) and runs this checkout's driver.
 On Windows, use the prefix `~/.local/share/ito-microduck` in the default WSL distro; `drivers/microduck/microduck-sim.cmd` and `ito-microduck.cmd` launch it from there.
 An install from before the beta's lens (Oct 2026) needs OpenCV in its body venv: re-run `setup-sim.sh`, or `PREFIX/tools/uv pip install --python PREFIX/microduck_rl/.venv/bin/python opencv-python-headless==4.11.0.86` (the sim says so if it is missing).
-From built checkouts: `uv run --extra microduck python -m drivers.microduck.sim --microduck /path/to/microduck --rl /path/to/microduck_rl --policies /path/to/policies/current [--viewer] [--camera-height 360|720|1080]` (the Microduck beta, with its lens's datasheet figures until a beta is calibrated; `drivers/microduck/lens.py`).
+From built checkouts: `uv run --extra microduck python -m drivers.microduck.sim --microduck /path/to/microduck --rl /path/to/microduck_rl --policies /path/to/policies/current [--viewer] [--camera-height 360|720|1080]` (the Microduck beta, with upstream's calibration of its lens; `drivers/microduck/lens.py`).
 Enter the printed address and pairing code in Ito; Ctrl+C or closing the viewer stops the complete robot.
 
 ## Development and releases
