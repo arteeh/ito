@@ -135,7 +135,9 @@ def extract(volume, slots, min_weight=0.1):
 
     pos_flat = positions.astype(np.float32)
     nrm_flat = gradient.astype(np.float32)
-    alpha = (cws > 0).astype(np.float32) * 255
+    known = cws > 0
+    mean = _fill(mean, known, triangles)
+    alpha = known.astype(np.float32) * 255
     rgba = np.concatenate([mean, alpha[:, None]], 1).clip(0, 255).astype(np.uint8)
     starts = np.searchsorted(blk, np.arange(m + 1))
     order = np.argsort(tri_block, kind="stable")
@@ -151,3 +153,32 @@ def extract(volume, slots, min_weight=0.1):
             continue
         out.append((key, pos_flat[a:b], nrm_flat[a:b], rgba[a:b], tris.astype(np.uint32)))
     return out
+
+
+FILL_ROUNDS = 12
+
+
+def _fill(colour, known, triangles):
+    """Vertices no camera frame coloured (their voxels never painted: seen only at a grazing
+    angle, or hidden behind a bump) take their painted neighbours' colour along the mesh, ring by
+    ring, so the renderer has a colour for them instead of grey. Updates `known` in place."""
+    if known.all() or not known.any() or not len(triangles):
+        return colour
+    colour = np.where(known[:, None], colour, 0.0)
+    a = triangles.reshape(-1)
+    b = np.roll(triangles, 1, axis=1).reshape(-1)
+    a, b = np.concatenate([a, b]), np.concatenate([b, a])  # every edge, both ways
+    n = len(colour)
+    for _ in range(FILL_ROUNDS):
+        source = known[b]
+        if not source.any():
+            break
+        count = np.bincount(a[source], minlength=n)
+        new = (count > 0) & ~known
+        if not new.any():
+            break
+        for c in range(3):
+            total = np.bincount(a[source], weights=colour[b[source], c], minlength=n)
+            colour[new, c] = total[new] / count[new]
+        known |= new
+    return colour
