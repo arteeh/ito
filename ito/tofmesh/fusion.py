@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from . import surface
+from . import volume as volume_module
 from .geometry import PoseTrack, angle_between, quaternion, rotation, slerp
 from .latency import FrameDelay
 from .volume import Volume
@@ -76,6 +77,11 @@ class MeshFrame:
     normals: np.ndarray | None = None
     colours: np.ndarray | None = None
     triangles: np.ndarray | None = None
+    # Per vertex: its position in its block's voxels (x, y, z from the block's corner) and the
+    # block's volume slot, which addresses the block's tiles in the renderer's texture atlas.
+    blocks: np.ndarray | None = None
+    # Slots handed to new blocks since the last mesh: their atlas tiles hold a forgotten block's.
+    cleared: list = field(default_factory=list)
     projectors: list = field(default_factory=list)
     camera: np.ndarray | None = None  # latest posed camera, world_from_camera
     epoch: float = 0.0
@@ -204,6 +210,7 @@ class Fusion:
         self.last_mesh = -1e9
         self.last_recolour = -1e9
         self.recolour = set()  # repainted blocks still to re-mesh
+        self.cleared = set()  # slots of new blocks, until a mesh is published
         self.revision = 0
         self.epoch = time.time()
         self.captured_at = None
@@ -462,7 +469,10 @@ class Fusion:
             self.revision += 1
             news = MeshFrame(self.revision, self.captured_at, camera=self.camera, epoch=self.epoch)
             if self.mesh_changed:
-                news.positions, news.normals, news.colours, news.triangles = self.combined()
+                news.positions, news.normals, news.colours, news.triangles, news.blocks = (
+                    self.combined()
+                )
+                news.cleared, self.cleared = sorted(self.cleared), set()
                 news.timing, self.meshed_timing = self.meshed_timing, None
                 self.mesh_changed = False
             news.projectors, self.pending_projectors = self.pending_projectors, []
@@ -547,6 +557,8 @@ class Fusion:
     def _remesh(self, colours):
         started = time.perf_counter()
         dirty, painted, evicted = self.volume.take_dirty(colours)
+        self.cleared |= self.volume.fresh
+        self.volume.fresh = set()
         for key in evicted:
             self.meshes.pop(key, None)
         # A block's mesh reaches one voxel into its neighbours: new geometry re-meshes them too,
@@ -572,12 +584,18 @@ class Fusion:
                         if s is not None:
                             todo.add(s)
         slots = np.array(sorted(todo), np.int64)
+        voxel = self.volume.voxel
         for start in range(0, len(slots), 256):
-            for key, pos, nrm, col, tri in surface.extract(self.volume, slots[start : start + 256]):
+            chunk = slots[start : start + 256]
+            meshes = surface.extract(self.volume, chunk)
+            for slot, (key, pos, nrm, col, tri) in zip(chunk.tolist(), meshes, strict=True):
                 if pos is None:
                     self.meshes.pop(key, None)
-                else:
-                    self.meshes[key] = (pos, nrm, col, tri)
+                    continue
+                block = np.empty((len(pos), 4), np.float32)
+                block[:, :3] = pos / voxel - np.array(key) * volume_module.BLOCK
+                block[:, 3] = slot
+                self.meshes[key] = (pos, nrm, col, tri, block)
         self.mesh_changed = True
         ended = time.perf_counter()
         self.stats["mesh_ms"] = (ended - started) * 1000
@@ -598,13 +616,17 @@ class Fusion:
         parts = list(self.meshes.values())
         if not parts:
             empty = np.zeros((0, 3), np.float32)
-            return empty, empty, np.zeros((0, 4), np.uint8), np.zeros((0, 3), np.uint32)
+            return (
+                empty, empty, np.zeros((0, 4), np.uint8), np.zeros((0, 3), np.uint32),
+                np.zeros((0, 4), np.float32),
+            )  # fmt: skip
         counts = np.array([len(p[0]) for p in parts])
         offsets = np.concatenate([[0], np.cumsum(counts)[:-1]]).astype(np.uint32)
         positions = np.concatenate([p[0] for p in parts])
         normals = np.concatenate([p[1] for p in parts])
         colours = np.concatenate([p[2] for p in parts])
         triangles = np.concatenate([p[3] + o for p, o in zip(parts, offsets, strict=True)])
+        blocks = np.concatenate([p[4] for p in parts])
         self.stats["vertices"] = len(positions)
         self.stats["triangles"] = len(triangles)
-        return positions, normals, colours, triangles
+        return positions, normals, colours, triangles, blocks

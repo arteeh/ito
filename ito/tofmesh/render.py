@@ -19,7 +19,22 @@ hatching), and broken where neighbouring guesses jump (an edge). Guesses are dra
 of their own with ordinary depth (so nearer guesses hide farther ones from any eye position),
 and that layer is composited only into pixels where no mesh was drawn: a guess never covers a
 measured surface and gives way as soon as the ToF measures that spot.
+
+Texture memory: the kept views are few (PROJECTORS) and the oldest is replaced, so a slow 360
+degree turn outlived them and everything seen more than about half a turn ago fell back to the
+vertex colours: 4 cm voxels averaged over many frames, a smear (the floor's planks gone). So
+every live frame is also baked into a texture atlas at about the camera's resolution: every
+block owns six square tiles, one per axis direction (+X, -X, +Y, ...), and a triangle lives in
+the tiles of the directions its face points along (a planar projection of the block onto that
+axis, fixed in the world, so re-meshing a block keeps its texture in place). A texel keeps the
+frame that saw it best (facing it most squarely and nearest, the same weight the projectors
+use) and is replaced only by a view about as good or better (BAKE_KEEP): seen areas stay as sharp
+as their best view, and a view as good refreshes them (a moved object). The atlas joins the
+projector blend with the weight of the view it kept. Tiles of a block the volume forgot are
+cleared when its slot is given to a new block (MeshFrame.cleared).
 """
+
+import logging
 
 import moderngl
 import numpy as np
@@ -29,8 +44,26 @@ from ito.render.pose import validate_pose
 
 from .fusion import PROJECTORS
 
+log = logging.getLogger(__name__)
+
 SHADOW_SIZE = (256, 144)
 NEAR, FAR = 0.05, 30.0
+
+# Texture atlas: a tile is TILE texels square and spans TILE_SPAN voxels of its block, from one
+# voxel before the block's corner (a block's vertices reach half a voxel past its faces): 6.25 mm
+# texels at 4 cm voxels, the camera frame's own resolution (640 wide) about 2 m away.
+TILE = 64
+TILE_SPAN = 10.0
+DIRECTIONS = 6
+LAYER = 4096  # an atlas layer is LAYER texels square: (LAYER / TILE)^2 tiles
+LAYER_TILES = (LAYER // TILE) ** 2
+# A triangle is baked into the tile of every direction its face is within ~78 degrees of, and
+# drawn from those within ~75 (so a drawn tile was always baked).
+BAKE_FACING = 0.2
+DRAW_FACING = 0.25
+# A texel takes a new view's colour when that view's weight is at least this share of the weight
+# of the view it holds.
+BAKE_KEEP = 0.7
 
 VERTEX = """
 #version 430
@@ -38,14 +71,44 @@ uniform mat4 view_projection;
 in vec3 position;
 in vec3 normal;
 in vec4 colour;
+in vec4 block;
 out vec3 v_world;
 out vec3 v_normal;
 out vec4 v_colour;
+out vec3 v_local;
+flat out int v_slot;
 void main() {
     v_world = position;
     v_normal = normal;
     v_colour = colour;
+    v_local = block.xyz;
+    v_slot = int(block.w + 0.5);
     gl_Position = view_projection * vec4(position, 1.0);
+}
+"""
+
+# A tile's texel coordinates (in its atlas layer) of a point at `local` voxels of its block, for
+# direction d (axis d / 2, + for even d), and the tile's layer and corner.
+TILE_GLSL = """
+const int TILE = %(TILE)d;
+const int LAYER_SIDE = %(SIDE)d;  // tiles per layer side
+const float TILE_SPAN = %(SPAN)f;
+
+ivec3 tile_corner(int slot, int d) {
+    int t = slot * 6 + d;
+    int within = t %% (LAYER_SIDE * LAYER_SIDE);
+    return ivec3((within %% LAYER_SIDE) * TILE, (within / LAYER_SIDE) * TILE,
+                 t / (LAYER_SIDE * LAYER_SIDE));
+}
+
+vec2 tile_uv(vec3 local, int d) {
+    int a = d / 2;
+    vec2 p = a == 0 ? local.yz : a == 1 ? local.zx : local.xy;
+    return (p + 1.0) / TILE_SPAN * float(TILE);
+}
+
+float along(vec3 n, int d) {
+    return (d %% 2 == 0 ? 1.0 : -1.0) * n[d / 2];
 }
 """
 
@@ -60,12 +123,49 @@ uniform vec3 origin[K];
 uniform float boost[K];          // 0: empty slot
 uniform vec2 image_size;
 uniform vec3 eye;
+uniform sampler2DArray atlas;
+uniform int atlas_layers;        // 0: no atlas yet
 in vec3 v_world;
 in vec3 v_normal;
 in vec4 v_colour;
+in vec3 v_local;
+flat in int v_slot;
 out vec4 f_colour;
+%(TILE_GLSL)s
+// The atlas at this fragment: rgb and the weight of the view it kept (alpha^4), blended over the
+// tiles of the directions the triangle faces; w 0 where none of them was baked here.
+vec4 baked(vec3 face) {
+    if (v_slot < 0) return vec4(0.0);
+    vec3 rgb = vec3(0.0);
+    float quality = 0.0, total = 0.0;
+    for (int d = 0; d < 6; ++d) {
+        float a = along(face, d);
+        if (a < %(DRAW_FACING)f) continue;
+        ivec3 corner = tile_corner(v_slot, d);
+        if (corner.z >= atlas_layers) continue;
+        // Bilinear over the texels that were baked (an unbaked one is no colour, not black).
+        vec2 p = tile_uv(v_local, d) - 0.5;
+        ivec2 i0 = ivec2(floor(p));
+        vec2 f = p - vec2(i0);
+        for (int j = 0; j < 2; ++j)
+            for (int i = 0; i < 2; ++i) {
+                ivec2 q = clamp(i0 + ivec2(i, j), ivec2(0), ivec2(TILE - 1));
+                vec4 t = texelFetch(atlas, ivec3(corner.xy + q, corner.z), 0);
+                if (t.a <= 0.0) continue;
+                float w = a * a * (i == 1 ? f.x : 1.0 - f.x) * (j == 1 ? f.y : 1.0 - f.y);
+                float t2 = t.a * t.a;
+                rgb += w * t.rgb;
+                quality += w * t2 * t2;
+                total += w;
+            }
+    }
+    return total > 1e-6 ? vec4(rgb / total, quality / total) : vec4(0.0);
+}
 
 void main() {
+    // The triangle's own normal (towards free space), which picks its atlas tiles as the bake did.
+    vec3 face = normalize(cross(dFdx(v_world), dFdy(v_world)));
+    if (dot(face, v_normal) < 0.0) face = -face;
     vec3 n = normalize(v_normal);
     // Normals point to free space; a surface seen from behind shows its back the same colour.
     if (dot(n, eye - v_world) < 0.0) n = -n;
@@ -116,10 +216,138 @@ void main() {
         sum += w6 * texture(images, vec3(st, float(k))).rgb;
         total += w6;
     }
-    // Any frame that sees the fragment colours it fully; the voxel colours (or grey) only
-    // where no frame does.
+    if (atlas_layers > 0) {
+        vec4 b = baked(face);
+        if (b.a > 0.0) {
+            float w = max(b.a, 1e-5);
+            float w2 = w * w;
+            float w6 = w2 * w2 * w2;
+            sum += w6 * b.rgb;
+            total += w6;
+        }
+    }
+    // Any frame that sees the fragment (or the atlas, kept from one) colours it fully; the
+    // voxel colours (or grey) only where none does.
     vec3 colour = total > 0.0 ? sum / total : base;
     f_colour = vec4(colour, 1.0);
+}
+"""
+
+# Baking the live frame into the atlas: every triangle is drawn in atlas space (texel = fragment),
+# once per tile it belongs to, grown by about a texel so the texels along its edges are baked
+# too (the draw samples them bilinearly); each texel looks its world point up in the live frame
+# like the projectors do and keeps the better view.
+BAKE_VERTEX = """
+#version 430
+in vec3 position;
+in vec3 normal;
+in vec4 block;
+out vec3 g_world;
+out vec3 g_normal;
+out vec3 g_local;
+out int g_slot;
+void main() {
+    g_world = position;
+    g_normal = normal;
+    g_local = block.xyz;
+    g_slot = int(block.w + 0.5);
+}
+"""
+
+BAKE_GEOMETRY = """
+#version 430
+layout(triangles) in;
+layout(triangle_strip, max_vertices = 9) out;
+uniform mat4 world_to_clip;  // the live camera's
+in vec3 g_world[];
+in vec3 g_normal[];
+in vec3 g_local[];
+in int g_slot[];
+out vec3 v_world;
+out vec3 v_normal;
+flat out ivec4 v_tile;  // corner x, y, layer, and the tile's side
+%(TILE_GLSL)s
+void main() {
+    // Only triangles the live camera may see.
+    vec4 c[3];
+    for (int i = 0; i < 3; ++i) c[i] = world_to_clip * vec4(g_world[i], 1.0);
+    for (int a = 0; a < 3; ++a) {
+        if (c[0][a] > c[0].w && c[1][a] > c[1].w && c[2][a] > c[2].w) return;
+        if (c[0][a] < -c[0].w && c[1][a] < -c[1].w && c[2][a] < -c[2].w) return;
+    }
+    vec3 face = cross(g_world[1] - g_world[0], g_world[2] - g_world[0]);
+    float size = length(face);
+    if (size < 1e-12) return;
+    face /= size;
+    if (dot(face, g_normal[0] + g_normal[1] + g_normal[2]) < 0.0) face = -face;
+    vec3 world_centre = (g_world[0] + g_world[1] + g_world[2]) / 3.0;
+    vec3 normal_centre = (g_normal[0] + g_normal[1] + g_normal[2]) / 3.0;
+    for (int d = 0; d < 6; ++d) {
+        if (along(face, d) < %(BAKE_FACING)f) continue;
+        ivec3 corner = tile_corner(g_slot[0], d);
+        vec2 p[3];
+        for (int i = 0; i < 3; ++i) p[i] = vec2(corner.xy) + tile_uv(g_local[i], d);
+        vec2 centre = (p[0] + p[1] + p[2]) / 3.0;
+        // Grown about its centre so its edges move out by about a texel (by its inradius).
+        float area = abs((p[1].x - p[0].x) * (p[2].y - p[0].y)
+                         - (p[2].x - p[0].x) * (p[1].y - p[0].y));
+        float perimeter = distance(p[0], p[1]) + distance(p[1], p[2]) + distance(p[2], p[0]);
+        float grow = 1.0 + min(1.0 / max(area / max(perimeter, 1e-6), 1e-3), 2.0);
+        for (int i = 0; i < 3; ++i) {
+            vec2 q = centre + (p[i] - centre) * grow;
+            v_world = world_centre + (g_world[i] - world_centre) * grow;
+            v_normal = normal_centre + (g_normal[i] - normal_centre) * grow;
+            v_tile = ivec4(corner, TILE);
+            gl_Position = vec4(q / float(%(LAYER)d) * 2.0 - 1.0, 0.0, 1.0);
+            EmitVertex();
+        }
+        EndPrimitive();
+    }
+}
+"""
+
+BAKE_FRAGMENT = """
+#version 430
+layout(binding = 0, rgba8) uniform image2DArray atlas;
+uniform sampler2DArray images;
+uniform sampler2D shadows;
+uniform mat4 camera_from_world;
+uniform vec4 intrinsics;
+uniform vec3 origin;
+uniform vec2 image_size;
+uniform float shadow_slots;
+in vec3 v_world;
+in vec3 v_normal;
+flat in ivec4 v_tile;
+
+void main() {
+    ivec2 texel = ivec2(gl_FragCoord.xy);
+    if (any(lessThan(texel, v_tile.xy)) || any(greaterThanEqual(texel, v_tile.xy + v_tile.w)))
+        return;  // grown past its tile
+    vec4 c = camera_from_world * vec4(v_world, 1.0);
+    float z = -c.z;
+    if (z < 0.05) return;
+    float u = intrinsics.z + intrinsics.x * c.x / z;
+    float v = intrinsics.w - intrinsics.y * c.y / z;
+    if (u < 0.0 || v < 0.0 || u > image_size.x - 1.0 || v > image_size.y - 1.0) return;
+    vec2 st = vec2((u + 0.5) / image_size.x, (v + 0.5) / image_size.y);
+    float d = length(v_world - origin);
+    float nearest = texture(shadows, vec2(st.x / shadow_slots, 1.0 - st.y)).r;
+    if (d > nearest + 0.06 + 0.03 * d) return;
+    // The projectors' weight (render FRAGMENT), without the live frame's boost.
+    float s = dot(normalize(v_normal), (origin - v_world) / max(d, 1e-4));
+    if (s < -0.25) return;
+    float edge = clamp(min(min(u, image_size.x - u), min(v, image_size.y - v))
+                       / (0.06 * image_size.x), 0.0, 1.0);
+    float w = s * s * edge / (1.0 + 0.5 * d * d);
+    if (w <= 0.0) return;
+    ivec3 at = ivec3(texel, v_tile.z);
+    float kept = imageLoad(atlas, at).a;
+    kept *= kept;
+    if (w < %(BAKE_KEEP)f * kept * kept) return;
+    // Alpha holds the weight's fourth root: 8 bits keep the low weights of a grazing floor apart.
+    float a = max(sqrt(sqrt(w)), 1.0 / 255.0);
+    imageStore(atlas, at, vec4(texture(images, vec3(st, 0.0)).rgb, a));
 }
 """
 
@@ -429,6 +657,15 @@ def pinhole_projection(fx, fy, cx, cy, width, height, near=NEAR, far=FAR):
     return p
 
 
+def _shader(source, slots=PROJECTORS):
+    """A shader source with the atlas constants (and K, the projector slots) filled in."""
+    tile = TILE_GLSL % {"TILE": TILE, "SIDE": LAYER // TILE, "SPAN": TILE_SPAN}
+    return source % {
+        "K": slots, "TILE_GLSL": tile, "DRAW_FACING": DRAW_FACING, "BAKE_FACING": BAKE_FACING,
+        "BAKE_KEEP": BAKE_KEEP, "LAYER": LAYER,
+    }  # fmt: skip
+
+
 def _set(program, **values):
     for name, value in values.items():
         if name in program:  # the compiler drops unused uniforms
@@ -441,8 +678,16 @@ class MeshRenderer:
         self.slots = slots
         self.image_size = tuple(image_size)
         self.program = context.program(
-            vertex_shader=VERTEX, fragment_shader=FRAGMENT % {"K": slots}
+            vertex_shader=VERTEX, fragment_shader=_shader(FRAGMENT, slots)
         )
+        self.bake_program = context.program(
+            vertex_shader=BAKE_VERTEX,
+            geometry_shader=_shader(BAKE_GEOMETRY, slots),
+            fragment_shader=_shader(BAKE_FRAGMENT, slots),
+        )
+        self.atlas = None  # the texture atlas, layers added as the volume's slots fill
+        self.atlas_target = context.empty_framebuffer((LAYER, LAYER))
+        self.bake_due = False  # a new live frame to bake
         self.shadow_program = context.program(
             vertex_shader=SHADOW_VERTEX, fragment_shader=SHADOW_FRAGMENT
         )
@@ -458,8 +703,8 @@ class MeshRenderer:
         self.projectors = [None] * slots  # (camera_from_world, intrinsics, origin)
         self.live_time = None  # exposure of the image in slot 0
         self.shadow_dirty = set()
-        self.vbo = self.nbo = self.cbo = self.ibo = None
-        self.vao = self.shadow_vao = None
+        self.vbo = self.nbo = self.cbo = self.ibo = self.bbo = None
+        self.vao = self.shadow_vao = self.bake_vao = None
         self.capacity = (0, 0)
         self.count = 0  # triangles
         self.target = None
@@ -524,8 +769,18 @@ class MeshRenderer:
             self.live_time = None
             self.shadow_dirty.clear()
             self.shadow_stale.clear()
+            self._clear_atlas()
+        if self.atlas is not None:
+            for slot in getattr(frame, "cleared", ()):
+                self._clear_tiles(slot)
         if frame.positions is not None:
-            self._mesh(frame.positions, frame.normals, frame.colours, frame.triangles)
+            blocks = getattr(frame, "blocks", None)
+            if blocks is None:
+                blocks = np.zeros((len(frame.positions), 4), np.float32)
+                blocks[:, 3] = -1e6  # no slot: no atlas tile
+            elif len(blocks):
+                self._atlas_for(int(blocks[:, 3].max()))
+            self._mesh(frame.positions, frame.normals, frame.colours, frame.triangles, blocks)
             if self.projectors[0] is not None:
                 self.shadow_dirty.add(0)
             self.shadow_stale.update(
@@ -539,12 +794,79 @@ class MeshRenderer:
 
     apply = upload
 
-    def _mesh(self, positions, normals, colours, triangles):
+    # -- texture atlas -------------------------------------------------------------------
+    def _atlas_for(self, slot):
+        """Grow the atlas to hold this volume slot's tiles (a layer, 64 MB, at a time; the old
+        layers copied over on the GPU)."""
+        layers = (slot * DIRECTIONS + DIRECTIONS - 1) // LAYER_TILES + 1
+        have = 0 if self.atlas is None else self.atlas.size[2]
+        if layers <= have:
+            return
+        atlas = self.context.texture_array((LAYER, LAYER, layers), 4, dtype="f1")
+        atlas.filter = moderngl.NEAREST, moderngl.NEAREST
+        atlas.repeat_x = atlas.repeat_y = False
+        zeros = bytes(LAYER * LAYER * 4)
+        for layer in range(have, layers):
+            atlas.write(zeros, viewport=(0, 0, layer, LAYER, LAYER, 1))
+        if self.atlas is not None:
+            GL.glCopyImageSubData(
+                self.atlas.glo, GL.GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0,
+                atlas.glo, GL.GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, LAYER, LAYER, have,
+            )  # fmt: skip
+            self.atlas.release()
+        self.atlas = atlas
+        log.info(
+            "ToF mesh texture atlas: %d layer(s), %d MB, for volume slots up to %d",
+            layers, layers * LAYER * LAYER * 4 // 2**20, layers * LAYER_TILES // DIRECTIONS - 1,
+        )  # fmt: skip
+
+    def _clear_tiles(self, slot):
+        """Forget the texture of the block that held this slot."""
+        side = LAYER // TILE
+        zeros = bytes(TILE * TILE * 4)
+        for d in range(DIRECTIONS):
+            t = slot * DIRECTIONS + d
+            layer, within = divmod(t, LAYER_TILES)
+            if layer >= self.atlas.size[2]:
+                return
+            y, x = divmod(within, side)
+            self.atlas.write(zeros, viewport=(x * TILE, y * TILE, layer, TILE, TILE, 1))
+
+    def _clear_atlas(self):
+        if self.atlas is not None:
+            zeros = bytes(LAYER * LAYER * 4)
+            for layer in range(self.atlas.size[2]):
+                self.atlas.write(zeros, viewport=(0, 0, layer, LAYER, LAYER, 1))
+
+    def _bake(self):
+        """The live frame into the atlas, wherever it sees the mesh better than the atlas's view."""
+        self.bake_due = False
+        camera_from_world, (fx, fy, cx, cy), origin = self.projectors[0]
+        clip = pinhole_projection(fx, fy, cx, cy, *self.image_size) @ camera_from_world
+        program = self.bake_program
+        program["world_to_clip"].write(clip.T.astype(np.float32).tobytes())
+        program["camera_from_world"].write(camera_from_world.T.astype(np.float32).tobytes())
+        self.images.use(1)
+        self.shadows.use(2)
+        _set(
+            program, images=1, shadows=2, intrinsics=(fx, fy, cx, cy),
+            origin=tuple(float(x) for x in origin), image_size=self.image_size,
+            shadow_slots=float(self.slots),
+        )  # fmt: skip
+        self.atlas.bind_to_image(0, read=True, write=True)
+        self.atlas_target.use()
+        self.context.viewport = (0, 0, LAYER, LAYER)
+        self.context.scissor = None
+        self.context.enable_only(moderngl.NOTHING)
+        self.bake_vao.render(moderngl.TRIANGLES, vertices=self.count * 3)
+        self.context.memory_barrier()
+
+    def _mesh(self, positions, normals, colours, triangles, blocks):
         n, t = len(positions), len(triangles)
         if n > self.capacity[0] or t > self.capacity[1]:
             for b in (
-                self.vbo, self.nbo, self.cbo, self.ibo, self.vao, self.shadow_vao,
-                self.eye_depth_vao,
+                self.vbo, self.nbo, self.cbo, self.ibo, self.bbo, self.vao, self.shadow_vao,
+                self.eye_depth_vao, self.bake_vao,
             ):  # fmt: skip
                 if b is not None:
                     b.release()
@@ -552,6 +874,7 @@ class MeshRenderer:
             self.vbo = self.context.buffer(reserve=cap[0] * 12)
             self.nbo = self.context.buffer(reserve=cap[0] * 12)
             self.cbo = self.context.buffer(reserve=cap[0] * 4)
+            self.bbo = self.context.buffer(reserve=cap[0] * 16)
             self.ibo = self.context.buffer(reserve=cap[1] * 12)
             self.vao = self.context.vertex_array(
                 self.program,
@@ -559,6 +882,17 @@ class MeshRenderer:
                     (self.vbo, "3f", "position"),
                     (self.nbo, "3f", "normal"),
                     (self.cbo, "4f1", "colour"),
+                    (self.bbo, "4f", "block"),
+                ],
+                self.ibo,
+                index_element_size=4,
+            )
+            self.bake_vao = self.context.vertex_array(
+                self.bake_program,
+                [
+                    (self.vbo, "3f", "position"),
+                    (self.nbo, "3f", "normal"),
+                    (self.bbo, "4f", "block"),
                 ],
                 self.ibo,
                 index_element_size=4,
@@ -576,6 +910,7 @@ class MeshRenderer:
             self.vbo.write(np.ascontiguousarray(positions, np.float32))
             self.nbo.write(np.ascontiguousarray(normals, np.float32))
             self.cbo.write(np.ascontiguousarray(colours, np.uint8))
+            self.bbo.write(np.ascontiguousarray(blocks, np.float32))
             self.ibo.write(np.ascontiguousarray(triangles, np.uint32))
         self.count = t
 
@@ -593,6 +928,7 @@ class MeshRenderer:
         elif p.image is not None:
             if p.slot == 0:
                 self.live_time = p.time
+                self.bake_due = True
             image = p.image
             if (w, h) != self.image_size:
                 # Rescale intrinsics to the slot size; nearest resampling is enough here.
@@ -825,6 +1161,11 @@ class MeshRenderer:
         if min(viewport[2:]) <= 0:
             raise ValueError("Viewport dimensions must be positive")
         self._shadows()
+        if (
+            self.bake_due and self.atlas is not None and self.count and self.bake_vao is not None
+            and self.projectors[0] is not None
+        ):  # fmt: skip
+            self._bake()
         guess = self.projectors[0] is not None
         if guess:
             self._guess_pyramid()
@@ -863,6 +1204,9 @@ class MeshRenderer:
             self.shadows.use(1)
             program["images"] = 0
             program["shadows"] = 1
+            if self.atlas is not None:
+                self.atlas.use(2)
+            _set(program, atlas=2, atlas_layers=0 if self.atlas is None else self.atlas.size[2])
             self.vao.render(moderngl.TRIANGLES, vertices=self.count * 3)
         if guess:
             # Under the live guess (both at depth 1.0; the live frame's own guess wins).
@@ -886,7 +1230,8 @@ class MeshRenderer:
 
     def close(self):
         for r in (
-            self.vbo, self.nbo, self.cbo, self.ibo, self.vao, self.shadow_vao, self.program,
+            self.vbo, self.nbo, self.cbo, self.ibo, self.bbo, self.vao, self.shadow_vao,
+            self.bake_vao, self.bake_program, self.atlas, self.atlas_target, self.program,
             self.shadow_program, self.images, self.shadows, self.shadow_depth, self.shadow_fbo,
             self.push_vao, self.pull_vao, self.push_program, self.pull_program, self.guess_vao,
             self.guess_vbo, self.guess_ibo, self.guess_program, self.composite_vao,

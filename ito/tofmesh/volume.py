@@ -72,6 +72,7 @@ class Volume:
         self.dirty = set()  # geometry changed
         self.painted = set()  # only colours changed
         self.evicted = set()
+        self.fresh = set()  # slots given to a new block (the renderer clears their texture)
         self.evictions = 0
         self._lookup = None  # (sorted codes, their slots) of the allocated blocks, see _slots_of
         local = np.stack(np.meshgrid(*[np.arange(BLOCK)] * 3, indexing="ij"), -1).reshape(-1, 3)
@@ -111,6 +112,7 @@ class Volume:
             self.weight[slot] = 0
             self.colour[slot] = 0
             self.colour_weight[slot] = 0
+            self.fresh.add(slot)
             out.append(slot)
         slots = np.array(out, np.int64)
         self.touched[slots] = now

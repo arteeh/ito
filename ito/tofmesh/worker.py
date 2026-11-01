@@ -93,6 +93,8 @@ def _merge(old, new, frame_type):
     merged = frame_type(new.revision, source.captured_at, camera=new.camera, epoch=new.epoch)
     merged.positions, merged.normals = source.positions, source.normals
     merged.colours, merged.triangles = source.colours, source.triangles
+    merged.blocks = source.blocks
+    merged.cleared = sorted(set(old.cleared) | set(new.cleared))
     merged.timing = source.timing
     slots = {p.slot: p for p in old.projectors}
     slots.update({p.slot: p for p in new.projectors})
