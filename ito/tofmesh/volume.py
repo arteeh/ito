@@ -319,7 +319,7 @@ class Volume:
         normal = normal[block, voxel] @ camera_from_world[:3, :3].T
         ray = local / np.linalg.norm(local, axis=1, keepdims=True)
         cos = np.abs((normal * ray).sum(1)) / np.maximum(np.linalg.norm(normal, axis=1), 1e-9)
-        cos = np.maximum(cos, 0.02)
+        cos = np.clip(cos, 0.02, 1.0)  # roundoff can put a parallel pair past 1 (sqrt of < 0)
         slope = np.sqrt(1 - cos * cos) / cos  # depth change per lateral distance
         across = (reach + 0.71) * scale * z / f  # from this voxel to the far side of its square
         # A plane's inverse depth is linear across the image: the depth it reaches there.
