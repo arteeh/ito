@@ -554,8 +554,9 @@ class Fusion:
             if self.volume.slots.get(tuple(self.volume.keys[slot].tolist())) == slot:
                 batch.append(slot)  # (an evicted slot no longer holds the repainted block)
         todo.update(batch)
-        centres = [tuple(k) for k in self.volume.keys[dirty].tolist()] + list(evicted)
-        for kx, ky, kz in centres:
+        around = self.volume.neighbourhood(dirty).reshape(-1)
+        todo.update(around[around != self.volume.capacity].tolist())
+        for kx, ky, kz in evicted:
             for dx in (-1, 0, 1):
                 for dy in (-1, 0, 1):
                     for dz in (-1, 0, 1):

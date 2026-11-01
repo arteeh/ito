@@ -26,6 +26,31 @@ MAX_COLOUR_WEIGHT = 12.0
 # while one stray ray only dents it.
 CARVE = 0.2
 MESH_WEIGHT = 0.1  # a voxel takes part in the mesh from this weight (surface.extract)
+# Block keys as one integer each (_code): each axis offset by KEY_OFFSET into 21 bits, so codes
+# sort as the keys do (x, then y, then z). 2^20 blocks of 32 cm is 300 km each way.
+KEY_OFFSET = 2**20
+
+
+def _code(keys):
+    """(N, 3) int64 block keys -> (N,) int64, ordered like the keys (lexicographically)."""
+    k = keys + KEY_OFFSET
+    return (k[:, 0] << 42) | (k[:, 1] << 21) | k[:, 2]
+
+
+def _unique_keys(keys):
+    """np.unique(keys, axis=0), the same keys in the same order, without its slow row sort."""
+    _, first = np.unique(_code(keys), return_index=True)
+    return keys[first]
+
+
+# Offsets (dy, dx) of the ring of cells at Chebyshev distance k, for k up to 6 (paint).
+_RINGS = [
+    np.array([(dy, dx) for dy in range(-k, k + 1) for dx in range(-k, k + 1)
+              if max(abs(dx), abs(dy)) == k], np.int64).reshape(-1, 2)
+    for k in range(7)
+]  # fmt: skip
+# The offsets of a block's 27-neighbourhood (itself included), in (dx, dy, dz) order.
+_AROUND = np.stack(np.meshgrid(*[np.arange(-1, 2)] * 3, indexing="ij"), -1).reshape(-1, 3)
 
 
 class Volume:
@@ -48,6 +73,7 @@ class Volume:
         self.painted = set()  # only colours changed
         self.evicted = set()
         self.evictions = 0
+        self._lookup = None  # (sorted codes, their slots) of the allocated blocks, see _slots_of
         local = np.stack(np.meshgrid(*[np.arange(BLOCK)] * 3, indexing="ij"), -1).reshape(-1, 3)
         self.local = (local + 0.5) * self.voxel  # voxel centres inside a block (512, 3)
 
@@ -66,7 +92,7 @@ class Volume:
         """Slots of the blocks containing these world points, allocating missing ones."""
         if not len(points):
             return np.zeros(0, np.int64)
-        keys = np.unique(self._key(points), axis=0)
+        keys = _unique_keys(self._key(points))
         out = []
         missing = []
         for key in map(tuple, keys.tolist()):
@@ -76,6 +102,8 @@ class Volume:
             else:
                 out.append(slot)
         taken = self._take(len(missing), now, position, set(out))
+        if taken:
+            self._lookup = None
         for key, slot in zip(missing, taken, strict=False):
             self.slots[key] = slot
             self.keys[slot] = key
@@ -103,6 +131,7 @@ class Volume:
         score = (now - self.touched[candidates]) * (1 + far)
         short = min(short, len(candidates))
         stalest = candidates[np.argpartition(-score, short - 1)[:short]]
+        self._lookup = None
         for slot in stalest.tolist():
             key = tuple(self.keys[slot].tolist())
             del self.slots[key]
@@ -118,9 +147,22 @@ class Volume:
         no `touched` refresh)."""
         if not len(points):
             return np.zeros(0, np.int64)
-        keys = np.unique(self._key(points), axis=0)
-        found = [self.slots.get(k) for k in map(tuple, keys.tolist())]
-        return np.array([s for s in found if s is not None], np.int64)
+        slots = self._slots_of(_unique_keys(self._key(points)))
+        return slots[slots != self.capacity]
+
+    def _slots_of(self, keys):
+        """Slot of each block key (N, 3), or the empty row (capacity) where none is allocated."""
+        if self._lookup is None:
+            slots = np.fromiter(self.slots.values(), np.int64, len(self.slots))
+            codes = _code(self.keys[slots])
+            order = np.argsort(codes)
+            self._lookup = codes[order], slots[order]
+        codes, slots = self._lookup
+        wanted = _code(keys)
+        at = np.minimum(np.searchsorted(codes, wanted), max(len(codes) - 1, 0))
+        if not len(codes):
+            return np.full(len(wanted), self.capacity, np.int64)
+        return np.where(codes[at] == wanted, slots[at], self.capacity)
 
     def centres(self, slots):
         """World centres of every voxel of these blocks, (len(slots), 512, 3)."""
@@ -283,14 +325,19 @@ class Volume:
         # A plane's inverse depth is linear across the image: the depth it reaches there.
         with np.errstate(divide="ignore"):
             far = z / np.maximum(1 - slope * across / z, 0)
-        depth = np.full((gh + 12, gw + 12), np.inf)
+        # Every voxel's square at once: the cells of each ring k around it (for the voxels whose
+        # reach is at least k), the nearest depth per cell kept (a minimum: order-free).
+        width = gw + 12
+        depth = np.full((gh + 12) * width, np.inf)
+        centre = gv * width + gu
+        cells, values = [], []
         for k in range(int(reach.max()) + 1):
             at = reach >= k
-            for dy in range(-k, k + 1):
-                for dx in range(-k, k + 1):
-                    if max(abs(dx), abs(dy)) == k:  # the ring this reach adds
-                        np.minimum.at(depth, (gv[at] + dy, gu[at] + dx), far[at])
-        seen = z <= depth[gv, gu] + 1.5 * self.voxel + 0.02 * z
+            ring = _RINGS[k][:, 0] * width + _RINGS[k][:, 1]
+            cells.append((centre[at][:, None] + ring[None, :]).reshape(-1))
+            values.append(np.repeat(far[at], len(ring)))
+        np.minimum.at(depth, np.concatenate(cells), np.concatenate(values))
+        seen = z <= depth[centre] + 1.5 * self.voxel + 0.02 * z
         block, voxel, u, v, z = block[seen], voxel[seen], u[seen], v[seen], z[seen]
         x0 = np.floor(u).astype(np.int64)
         y0 = np.floor(v).astype(np.int64)
@@ -332,14 +379,6 @@ class Volume:
     def neighbourhood(self, slots):
         """(len(slots), 3, 3, 3) slot of each block and its 26 neighbours (missing: the empty
         row)."""
-        empty = self.capacity
-        out = np.full((len(slots), 3, 3, 3), empty, np.int64)
-        for i, slot in enumerate(slots):
-            kx, ky, kz = self.keys[slot]
-            for dx in (-1, 0, 1):
-                for dy in (-1, 0, 1):
-                    for dz in (-1, 0, 1):
-                        s = self.slots.get((kx + dx, ky + dy, kz + dz))
-                        if s is not None:
-                            out[i, dx + 1, dy + 1, dz + 1] = s
-        return out
+        slots = np.asarray(slots, np.int64)
+        keys = self.keys[slots][:, None, :] + _AROUND[None, :, :]  # (M, 27, 3)
+        return self._slots_of(keys.reshape(-1, 3)).reshape(len(slots), 3, 3, 3)
