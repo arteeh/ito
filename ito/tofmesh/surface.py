@@ -35,11 +35,16 @@ _LOCAL_FLAT = np.add.reduce(
     np.meshgrid(_LOCAL_OF * BLOCK * BLOCK, _LOCAL_OF * BLOCK, _LOCAL_OF, indexing="ij")
 )
 _SIGN = (CORNERS * 2 - 1).astype(np.float32)  # (8, 3)
+# Offset of each cell corner from the cell's corner 0, in flattened (R, R, R) region indices.
+_CORNER_OFFSET = (CORNERS[:, 0] * R + CORNERS[:, 1]) * R + CORNERS[:, 2]
 
 
-def _cells(a):
-    """The (M, N, N, N) values of `a` (M, R, R, R) at each corner of every cell."""
-    return [a[:, x : x + N, y : y + N, z : z + N] for x, y, z in CORNERS]
+def _corners(a):
+    """How many of every cell's eight corners are set in `a` (M, R, R, R) bool: (M, N, N, N)."""
+    c = a.view(np.uint8)
+    c = c[:, :-1] + c[:, 1:]
+    c = c[:, :, :-1] + c[:, :, 1:]
+    return c[:, :, :, :-1] + c[:, :, :, 1:]
 
 
 def extract(volume, slots, min_weight=0.1):
@@ -56,43 +61,55 @@ def extract(volume, slots, min_weight=0.1):
     valid = volume.weight.reshape(-1)[flat] >= min_weight
     negative = sdf < 0
 
-    # Active cells: all eight corners weighted, signs mixed.
-    corners_valid = _cells(valid)
-    corners_negative = _cells(negative)
-    all_valid = np.logical_and.reduce(corners_valid)
-    any_negative = np.logical_or.reduce(corners_negative)
-    all_negative = np.logical_and.reduce(corners_negative)
-    active = all_valid & any_negative & ~all_negative
+    # Active cells: all eight corners weighted, signs mixed (counted over each 2x2x2 of corners,
+    # one axis at a time).
+    valid_corners = _corners(valid)
+    negative_corners = _corners(negative)
+    active = (valid_corners == 8) & (negative_corners > 0) & (negative_corners < 8)
     blk, ci, cj, ck = np.nonzero(active)  # block-major, so each block's vertices are contiguous
     count = len(blk)
     vid = np.full(active.shape, -1, np.int64)
     vid[blk, ci, cj, ck] = np.arange(count)
 
-    # The eight corners of every active cell.
-    corner_flat = np.stack([flat[blk, ci + x, cj + y, ck + z] for x, y, z in CORNERS], 1)  # (A, 8)
-    s = volume.sdf.reshape(-1)[corner_flat]
+    # The eight corners of every active cell (one gather: corner 0's place in the region plus
+    # each corner's offset).
+    corner0 = ((blk * R + ci) * R + cj) * R + ck
+    corner_flat = flat.reshape(-1)[corner0[:, None] + _CORNER_OFFSET[None, :]]  # (A, 8)
+    s = sdf.reshape(-1)[corner0[:, None] + _CORNER_OFFSET[None, :]]
 
-    # Vertex positions: mean of the edge crossings, in cell units.
-    total = np.zeros((count, 3), np.float32)
+    # Vertex positions: mean of the edge crossings, in cell units. An edge runs from corner a
+    # (0 on its axis) to b (1 on it): its crossing is corner a's other two coordinates and t along
+    # the axis. Summed per coordinate in float32, edge by edge (the same float32 sums as adding
+    # whole points: float64 has room for every float32 sum to round only once).
+    total = np.zeros((3, count), np.float32)
     crossings = np.zeros(count, np.float32)
     for a, b in EDGES:
         sa, sb = s[:, a], s[:, b]
         crossing = (sa < 0) != (sb < 0)
         with np.errstate(divide="ignore", invalid="ignore"):
-            t = np.where(crossing, sa / (sa - sb), 0)
-        point = CORNERS[a] + t[:, None] * (CORNERS[b] - CORNERS[a])
-        total += np.where(crossing[:, None], point, 0)
+            t = np.where(crossing, sa / (sa - sb), np.float32(0))
+        axis = int(np.argmax(CORNERS[b] - CORNERS[a]))
+        for c in range(3):
+            if c == axis:
+                total[c] += t
+            elif CORNERS[a][c]:
+                total[c] += crossing
         crossings += crossing
-    inside = total / np.maximum(crossings, 1)[:, None]
+    inside = total.T / np.maximum(crossings, 1)[:, None]
 
     # Normal: the signed distance's gradient over the cell, pointing to free space.
     gradient = s @ _SIGN
     gradient /= np.maximum(np.linalg.norm(gradient, axis=-1, keepdims=True), 1e-9)
 
     cw = volume.colour_weight.reshape(-1)[corner_flat]  # (A, 8)
-    rgb = volume.colour.reshape(-1, 3)[corner_flat]  # (A, 8, 3)
     cws = cw.sum(-1)
-    mean = (rgb * cw[..., None]).sum(-2) / np.maximum(cws, 1e-6)[:, None]
+    # Colour-weighted mean of the corners' colours, summed corner by corner (as a sum over that
+    # axis of an (A, 8, 3) product does, without making it).
+    rgb = volume.colour.reshape(-1, 3)
+    mean = rgb[corner_flat[:, 0]] * cw[:, :1]
+    for c in range(1, 8):
+        mean += rgb[corner_flat[:, c]] * cw[:, c : c + 1]
+    mean /= np.maximum(cws, 1e-6)[:, None]
 
     # Cell c's corner 0 is voxel c-1, whose centre is at (c - 1 + 0.5) voxels.
     cell = np.stack([ci, cj, ck], 1)
@@ -144,10 +161,9 @@ def extract(volume, slots, min_weight=0.1):
     triangles, tri_block = triangles[order], tri_block[order]
     tri_starts = np.searchsorted(tri_block, np.arange(m + 1))
     out = []
-    for i, slot in enumerate(slots):
+    for i, key in enumerate(map(tuple, volume.keys[slots].tolist())):
         a, b = starts[i], starts[i + 1]
         tris = triangles[tri_starts[i] : tri_starts[i + 1]] - a
-        key = tuple(int(x) for x in volume.keys[slot])
         if not len(tris):
             out.append((key, None, None, None, None))
             continue
@@ -175,10 +191,14 @@ def _fill(colour, known, triangles):
         if not source.any():
             break
         into, src = a[source], b[source]
-        vertices, slot, count = np.unique(into, return_inverse=True, return_counts=True)
+        # Per vertex reached: how many coloured neighbours, and their colours' sum (bincount adds
+        # in input order, so the same sums as binning by unique vertex).
+        counts = np.bincount(into, minlength=len(colour))
+        vertices = np.flatnonzero(counts)
+        count = counts[vertices]
         total = np.zeros((len(vertices), 3))
         for c in range(3):
-            total[:, c] = np.bincount(slot, weights=colour[src, c], minlength=len(vertices))
+            total[:, c] = np.bincount(into, weights=colour[src, c], minlength=len(colour))[vertices]
         colour[vertices] = total / count[:, None]
         known[vertices] = True
         left = ~known[a]
