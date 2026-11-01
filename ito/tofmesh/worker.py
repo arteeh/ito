@@ -111,7 +111,11 @@ class TofMesh:
         self.outputs = context.Queue(maxsize=3)
         self.notes = context.Queue(maxsize=16)
         self.integrated = context.Value("Q", 0, lock=False)
-        options = dict(voxel=voxel, capacity=capacity, keyframes=keyframes)
+        # A camera whose frames carry their own capture time (capture_delay 0) needs no measured
+        # delay; the estimate is the fallback for one that only guesses (latency.FrameDelay).
+        options = dict(
+            voxel=voxel, capacity=capacity, keyframes=keyframes, frame_delay=self.capture_delay > 0
+        )
         self.process = context.Process(
             target=_run,
             args=(self.inputs, self.outputs, self.notes, options, self.integrated),

@@ -140,7 +140,13 @@ def turned(camera, turn):
 
 class Fusion:
     def __init__(
-        self, voxel=0.04, capacity=6000, keyframes=PROJECTORS, max_range=4.0, head_imu=True
+        self,
+        voxel=0.04,
+        capacity=6000,
+        keyframes=PROJECTORS,
+        max_range=4.0,
+        head_imu=True,
+        frame_delay=True,
     ):
         self.volume = Volume(voxel=voxel, capacity=capacity, max_range=max_range)
         self.poses = PoseTrack()
@@ -152,7 +158,9 @@ class Fusion:
         self.last_turn = None  # (time, 3x3): the latest correction made
         self.grids = []
         self.frames = []
-        self.frame_delay = FrameDelay()
+        # The frames' real delay, measured, for a camera that does not stamp its frames (None for
+        # one that does: their capture_time is then the capture).
+        self.frame_delay = FrameDelay() if frame_delay else None
         self.frame_intrinsics = None
         self.posed = deque(maxlen=6)  # recent posed frames: (exposed, image, camera, intrinsics)
         self.meshes = {}
@@ -311,7 +319,8 @@ class Fusion:
         driver's own pose for this frame, used when the pose stream does not cover it."""
         self.frames.append((image, exposed, intrinsics, fallback))
         del self.frames[:-4]
-        self.frame_delay.frame(image, exposed)
+        if self.frame_delay is not None:
+            self.frame_delay.frame(image, exposed)
         self.frame_intrinsics = intrinsics
 
     def step(self, now):
@@ -319,7 +328,7 @@ class Fusion:
         latest = self.poses.latest
         # Frames first, so a ToF frame below finds the camera frames posed up to its time.
         self._measure_frame_delay(now)
-        extra = self.frame_delay.extra
+        extra = 0.0 if self.frame_delay is None else self.frame_delay.extra
         frames, self.frames = self.frames, []
         for image, stamped, intrinsics, fallback in frames:
             exposed = stamped - extra
@@ -402,7 +411,11 @@ class Fusion:
     def _measure_frame_delay(self, now):
         """The frames' delay against the orientation track the frames are posed with: the head
         IMU's where it has one, else the pose stream's."""
-        if self.frame_intrinsics is None or not self.frame_delay.due(now):
+        if (
+            self.frame_delay is None
+            or self.frame_intrinsics is None
+            or not self.frame_delay.due(now)
+        ):
             return
         if self.head_imu and self.orientations:
             times = [t for t, _ in self.orientations]
