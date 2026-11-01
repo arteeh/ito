@@ -23,6 +23,7 @@ FRAME_RATE = 15.0  # camera frames forwarded per second
 FRAME_WIDTH = 640  # their width in the worker (colour and projectors)
 CLOSE_WAIT = 3.0
 BACKLOG = 64  # geometry batches held while the worker's queue is full (a few seconds)
+TIMING_SUMMARY = 1.0  # seconds of mesh stage times per diagnostic log line
 
 
 def _run(inputs, outputs, notes, options, integrated):
@@ -127,6 +128,8 @@ class TofMesh:
         self._closed = False
         self.backlog = deque()
         self.dropped = 0
+        self.timings = []  # this second's mesh stage times, for the diagnostic log
+        self.timings_since = clock.now()
         # Frames go to the worker strided to about FRAME_WIDTH: pixel i of the strided image is
         # pixel i * step + step // 2 of the full one.
         step = self.step = max(1, round(intrinsics.width / FRAME_WIDTH))
@@ -212,20 +215,29 @@ class TofMesh:
         if frame.positions is not None and len(frame.triangles):
             self.has_mesh = True
         if frame.timing is not None and frame.captured_at is not None:
-            # Where the time went between a ToF frame and its mesh reaching the pilot (the
-            # windows add the draw); ITO_DEBUG / diagnostic logging only.
-            now = clock.now()
-            timing = {k: v for k, v in frame.timing.items() if k != "sent"}
-            sent = frame.timing.get("sent")
-            diagnostics.event(
-                "tofmesh_mesh",
-                revision=frame.revision,
-                sensor_to_pilot_ms=(now - frame.captured_at) * 1000,
-                to_pilot_ms=None if sent is None else (now - sent) * 1000,
-                triangles=len(frame.triangles),
-                **timing,
-            )
+            self._timing(frame)
         return frame
+
+    def _timing(self, frame):
+        """Where the time went between a ToF frame and its mesh reaching the pilot (the windows
+        add the draw). Meshes arrive ~12.7 a second, so the diagnostic log (ITO_DEBUG /
+        diagnostic logging only) gets one summary a second: count, median and max per stage."""
+        now = clock.now()
+        row = {k: v for k, v in frame.timing.items() if k != "sent" and v is not None}
+        row["sensor_to_pilot_ms"] = (now - frame.captured_at) * 1000
+        if frame.timing.get("sent") is not None:
+            row["to_pilot_ms"] = (now - frame.timing["sent"]) * 1000
+        row["triangles"] = len(frame.triangles)
+        self.timings.append(row)
+        if now - self.timings_since < TIMING_SUMMARY:
+            return
+        rows, self.timings, self.timings_since = self.timings, [], now
+        summary = {}
+        for key in sorted({k for r in rows for k in r}):
+            values = [r[key] for r in rows if key in r]
+            summary[key] = float(np.median(values))
+            summary[key + "_max"] = float(max(values))
+        diagnostics.event("tofmesh_mesh", meshes=len(rows), **summary)
 
     def status(self):
         if self.error:
