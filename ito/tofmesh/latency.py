@@ -18,8 +18,8 @@ from collections import deque
 import numpy as np
 
 THUMB_WIDTH = 160
-WINDOW = 3.0  # seconds of frame pairs an estimate uses
-EVERY = 1.0  # seconds between estimates
+WINDOW = 2.0  # seconds of frame pairs an estimate uses
+EVERY = 0.5  # seconds between estimates
 MOVED = 1.0  # thumbnail pixels a pair must be predicted to move to count
 CLIP = 5.0  # thumbnail pixels: a worse match counts no more than this
 PAIRS = 30  # moving pairs an estimate needs
