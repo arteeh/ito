@@ -38,7 +38,9 @@ HEAD_LIMITS = {
 GAZE_PAN = (-1.40, 1.40)
 PAN_LIMIT = 1.50
 # mediad's frames reach the driver about 90 ms after robotd reports the head pose they were
-# taken at (encoding, WebRTC, decoding). Measured on the simulated twin by matching
+# taken at (encoding, WebRTC, decoding). Only a guess for a mediad that does not say when its
+# frames were captured (camera.Camera.captured): the twin's real delay moves between 79 and 132 ms
+# within one session. Measured on the simulated twin by matching
 # MASt3R-SLAM's turns to the robot's: taking the pose from receive time instead puts a
 # brisk turn's frames 5-10 degrees off and makes SLAM restart its map against the robot.
 FRAME_DELAY = 0.09
@@ -110,6 +112,13 @@ class SourceClock:
             return source, "robot t_ns"
         self.lags.append(received - source)
         return source + min(self.lags), "robot t_ns, offset by arrival"
+
+    def known(self, t_ns):
+        """A robot time in seconds on this clock, learning nothing from it (a frame's capture
+        is long before it arrives, unlike a reading); None until readings have set the offset."""
+        if self.shared is None or (not self.shared and not self.lags):
+            return None
+        return t_ns / 1e9 + (0.0 if self.shared else min(self.lags))
 
 
 class MicroduckAdapter(Adapter):
@@ -187,7 +196,16 @@ class MicroduckAdapter(Adapter):
                 raise RuntimeError("Microduck driver requires the alpha head model")
             self.joint_names = model["joint_names"]
             self._tof_fov = math.radians(model.get("tof_fov_deg") or 45.0)
-            self.camera = Camera(await self.remote.call("media.video"), self._frame_metadata)
+            asked = clock.now()
+            video = await self.remote.call("media.video")
+            self.camera = Camera(
+                video,
+                self._frame_metadata,
+                to_local=self._source_clock.known,
+                rtp_origin=self.remote.rtp_origin,
+                asked_at=(asked + clock.now()) / 2,
+                fallback_delay=FRAME_DELAY,
+            )
             self._description = RobotDescription(
                 name="Microduck",
                 motion_noise=MOTION_NOISE,
@@ -196,7 +214,8 @@ class MicroduckAdapter(Adapter):
                         name="head",
                         track_id="microduck-rgb",
                         intrinsics=self.camera.intrinsics,
-                        capture_delay=FRAME_DELAY,
+                        # 0: capture_time is the capture itself, the camera's own stamp.
+                        capture_delay=0.0 if self.camera.exact else FRAME_DELAY,
                         exposure=self._exposure(),
                     ),
                 ),
@@ -212,7 +231,10 @@ class MicroduckAdapter(Adapter):
                 ),
             )
             self._telemetry.update(
-                camera_calibration=self.camera.source, camera_timestamp="driver receive time"
+                camera_calibration=self.camera.source,
+                camera_timestamp=(
+                    "camera capture (RTP)" if self.camera.exact else "driver receive time"
+                ),
             )
             await self.remote.call("robot.stop")
             if self.head_imu is not False:
@@ -466,10 +488,12 @@ class MicroduckAdapter(Adapter):
             pose = frames.camera_in_world(
                 data["imu"]["quat"], position, (camera["pos"], camera["quat"]), self._origin
             )
-            if now >= self._pose_due:
-                self._pose_due = max(self._pose_due + METADATA_POSE_INTERVAL, now - 0.05)
-                self._poses.append((now, *pose, values["base_yaw"]))
-            self._moved(data, now, pose, camera)
+            # Kept by the robot's own time of the reading, the clock frames are captured on.
+            source, stamp = self._source_clock(data.get("t_ns"), now)
+            if source >= self._pose_due and (not self._poses or source > self._poses[-1][0]):
+                self._pose_due = max(self._pose_due + METADATA_POSE_INTERVAL, source - 0.05)
+                self._poses.append((source, *pose, values["base_yaw"]))
+            self._moved(data, source, stamp, pose, camera)
             for name, angle in zip(("yaw", "pitch", "roll"), frames.angles(pose[1]), strict=True):
                 values[f"camera_{name}"] = angle
             if self._measured_at is not None:
@@ -502,8 +526,7 @@ class MicroduckAdapter(Adapter):
             self._ranges_pending.clear()
         self._telemetry.update(head_imu_hz=self._imu_rate.hz(), tof_hz=self._tof_rate.hz())
 
-    def _moved(self, data, received, pose, camera):
-        source, stamp = self._source_clock(data.get("t_ns"), received)
+    def _moved(self, data, source, stamp, pose, camera):
         previous = self._previous_motion
         if previous is not None and source <= previous[0]:
             return
@@ -538,10 +561,16 @@ class MicroduckAdapter(Adapter):
             motion_gyro="head FK" if gyro_from_fk else "head IMU",
         )
 
-    def _frame_metadata(self):
+    def _frame_metadata(self, captured=None):
+        """The camera's pose at a frame's capture (`captured`, this driver's clock), or at its
+        arrival minus FRAME_DELAY when the frame does not say."""
         if not self._poses:
             return {}
-        position, orientation, body_yaw = frames.at(self._poses, clock.now() - FRAME_DELAY)
+        when = clock.now() - FRAME_DELAY if captured is None else captured
+        self._telemetry.update(
+            camera_stamped=self.camera.stamped, camera_unstamped=self.camera.unstamped
+        )
+        position, orientation, body_yaw = frames.at(self._poses, when)
         return dict(camera_pose=Pose(position=position, orientation=orientation), body_yaw=body_yaw)
 
     def telemetry(self):

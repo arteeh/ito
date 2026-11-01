@@ -161,11 +161,12 @@ class HeadCamera(Camera):
         self.renderer.scene.flags[mujoco.mjtRndFlag.mjRND_SHADOW] = False
         return self.fisheye.rgb(self.renderer)
 
-    def publish(self, frames):
+    def publish(self, frames, exposed_ns=None):
         rgb = frames[0] if self.blur == 1 else np.mean(frames, axis=0).astype(np.uint8)
         packed = self.uyvy(rgb)
         with self.lock:
             self.latest = packed
+            self.latest_ns = exposed_ns
 
 
 class Stepping:
@@ -288,7 +289,10 @@ class ThreadedHeadCamera(HeadCamera):
                 self.pose(kept, state)
                 self.scene(kept)
                 frames.append(self.draw())
-            self.publish(frames)
+            # The exposure on CLOCK_MONOTONIC, the clock robotd and tofd stamp with: the physics
+            # time of the state drawn (the middle one when frames blur together).
+            middle = states[len(states) // 2][0]
+            self.publish(frames, self.world.epoch_ns + round(middle * 1e9))
             with self.lock:
                 self.seq += 1
                 self.fresh.notify_all()
@@ -309,21 +313,51 @@ class ThreadedHeadCamera(HeadCamera):
     def next_frame(self, seen, timeout=1.0):
         with self.fresh:
             if not self.fresh.wait_for(lambda: self.seq != seen, timeout):
-                return seen, None
-            return self.seq, self.latest
+                return seen, None, None
+            return self.seq, self.latest, getattr(self, "latest_ns", None)
+
+
+# A reader (mediad) that sends these four bytes on connecting gets each frame's exposure:
+# the same four bytes back, then [len u32][exposed u64, CLOCK_MONOTONIC ns, 0 unknown][frame].
+# One that does not (an older mediad) gets [len u32][frame], as before.
+STAMPS = b"ITS1"
+STAMPS_WAIT = 0.5  # seconds a reader has to ask before frames go out unstamped
 
 
 class FrameHandler(body_server.FrameHandler):
     def handle(self):
         camera = self.server.camera
         self.request.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        print(f"== camera: a reader connected from {self.client_address}", flush=True)
+        self.request.settimeout(STAMPS_WAIT)
+        asked = b""
+        try:
+            while len(asked) < len(STAMPS):
+                chunk = self.request.recv(len(STAMPS) - len(asked))
+                if not chunk:
+                    break
+                asked += chunk
+        except (TimeoutError, OSError):
+            pass
+        self.request.settimeout(None)
+        stamped = asked == STAMPS
+        print(
+            f"== camera: a reader connected from {self.client_address}, "
+            f"{'stamped' if stamped else 'unstamped'} frames",
+            flush=True,
+        )
         seen = 0
         try:
+            if stamped:
+                self.request.sendall(STAMPS)
             while True:
-                seen, frame = camera.next_frame(seen)
+                seen, frame, exposed = camera.next_frame(seen)
                 if frame is not None:
-                    self.request.sendall(struct.pack("<I", len(frame)) + frame)
+                    header = (
+                        struct.pack("<IQ", len(frame), exposed or 0)
+                        if stamped
+                        else struct.pack("<I", len(frame))
+                    )
+                    self.request.sendall(header + frame)
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
         print("== camera: the reader went away", flush=True)

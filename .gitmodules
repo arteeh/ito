@@ -2,7 +2,8 @@
 # drivers/microduck/setup-sim.sh reads them from here.
 # microduck: release tag daemon-v0.17.4 plus the beta board's simulated head IMU,
 # ToF, calibrated camera and home-relative gaze commands (arteeh fork,
-# branch feat/beta-sim-0.17.4).
+# branch feat/beta-sim-0.17.4), plus frames that carry their capture time in their
+# RTP timestamps (branch feat/frame-stamps, one commit on it).
 # microduck_rl: its develop branch (no releases) plus the matching simulated sensors
 # and per-board camera mount (arteeh fork, same branch name). gst-plugins-rs: 0.14.5+.
 [submodule "third_party/microduck"]

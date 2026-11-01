@@ -9,6 +9,14 @@ from aiortc.mediastreams import MediaStreamError
 from ito import clock
 from ito.protocol import FrameMetadata, Intrinsics
 
+# RTP's video clock (RFC 6184) and how long its 32-bit timestamps take to wrap.
+RTP_RATE = 90_000
+RTP_WRAP = 2**32 / RTP_RATE
+# A frame's capture time is believed only if it puts the frame at most this long before it arrived
+# (and not after): anything else is a pipeline that restarted its clock, and the frame falls back
+# to its arrival.
+LONGEST_DELAY = 1.0
+
 # The widest pinhole Ito is given, degrees across: a pinhole's edges stretch as 1 / cos^2 of their
 # angle, so a wider one spends MASt3R's 512 pixels on smeared edges. The beta's lens (116 across,
 # 60 down) holds a 16:9 pinhole only 91.4 wide anyway (its 60 down binds), already stretching
@@ -81,7 +89,26 @@ def rectified(matrix, distortion, width, height):
 
 
 class Camera:
-    def __init__(self, info, measured=dict):
+    """The head camera's frames, rectified, each with when it was captured.
+
+    mediad starts every RTP timestamp at zero on CLOCK_MONOTONIC's `rtp.zero_ns` (its pipeline's
+    base time), and a camera stack that stamps its own frames (V4L2's buffer timestamps on a
+    robot; the simulator's exposures) makes that the capture: so a frame's RTP timestamp is when
+    it was captured, on the robot's clock. aiortc hands out `frame.pts` as the RTP timestamp minus
+    its first frame's (`rtp_origin()`), and `to_local(t_ns)` puts a robot time on this driver's
+    clock (the adapter's SourceClock). A mediad that says nothing about RTP time, or whose
+    frames are stamped on arrival, leaves only the receive time and the driver's FRAME_DELAY guess.
+    """
+
+    def __init__(
+        self,
+        info,
+        measured=dict,
+        to_local=None,
+        asked_at=None,
+        fallback_delay=0.0,
+        rtp_origin=lambda: None,
+    ):
         import cv2
 
         self.cv = cv2
@@ -132,6 +159,28 @@ class Camera:
             cy=float(self.rectified[1, 2]),
         )
         self.source = geometry["source"]
+        rtp = info.get("rtp") or {}
+        self.rtp_zero = (
+            rtp.get("zero_ns")
+            if to_local is not None
+            and rtp.get("stamps") == "capture"
+            and rtp.get("clock_rate") == RTP_RATE
+            and isinstance(rtp.get("zero_ns"), int)
+            else None
+        )
+        # The robot's CLOCK_MONOTONIC minus ours, roughly (the answer's travel time): enough to
+        # pick which wrap of the RTP clock a frame is in, never used for the time itself.
+        mono = info.get("mono_ns")
+        self.robot_ahead = (
+            mono / 1e9 - asked_at if isinstance(mono, int) and asked_at is not None else 0.0
+        )
+        self.to_local = to_local
+        self.rtp_origin = rtp_origin  # aiortc's frame.pts is the RTP timestamp minus this
+        # With capture times promised, a frame without a believable one is put this long before
+        # its arrival, so it still means "captured" like the others.
+        self.fallback_delay = fallback_delay
+        self.stamped = 0  # frames with a believable capture time
+        self.unstamped = 0  # frames whose stamp was missing or not believable
         self.measured = measured
         self.latest = None
         self.revision = 0
@@ -157,11 +206,38 @@ class Camera:
             # mediad's WebRTC API exposes no per-frame capture timestamp. This is receive time,
             # not sensor exposure time; keep that distinction visible in telemetry.
             received = clock.now()
-            measured = self.measured()
+            captured = self.captured(frame, received)
+            if captured is None and self.exact:
+                captured = received - self.fallback_delay
+            measured = self.measured(captured)
             rgb = await asyncio.to_thread(self.rectify, frame)
-            self.latest = (rgb, received, measured)
+            self.latest = (rgb, received if captured is None else captured, measured)
             self.revision += 1
             self.changed.set()
+
+    @property
+    def exact(self):
+        """Whether frames carry their capture time (until one turns out not to)."""
+        return self.rtp_zero is not None
+
+    def captured(self, frame, received):
+        """When `frame` was captured, on this driver's clock, from its RTP timestamp; None
+        without a believable one."""
+        origin = self.rtp_origin() if self.rtp_zero is not None else None
+        if origin is None or frame.pts is None:
+            self.unstamped += self.rtp_zero is not None
+            return None
+        ticks = (int(frame.pts) + origin) % 2**32
+        since_zero = ticks / RTP_RATE
+        robot_now = received + self.robot_ahead
+        wraps = round((robot_now - self.rtp_zero / 1e9 - since_zero) / RTP_WRAP)
+        t_ns = self.rtp_zero + round((since_zero + wraps * RTP_WRAP) * 1e9)
+        local = self.to_local(t_ns)
+        if local is None or not 0.0 <= received - local <= LONGEST_DELAY:
+            self.unstamped += 1
+            return None
+        self.stamped += 1
+        return local
 
     def close(self):
         self.closed = True

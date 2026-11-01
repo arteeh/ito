@@ -27,6 +27,14 @@ def echo_h264_profile(offer, answer):
     return _PROFILE.sub(lambda m: m.group(1) + offered.get(m.group(2), m.group(3)), answer)
 
 
+def rtp_origin(receiver):
+    """The RTP timestamp aiortc subtracts from every frame's pts: its first frame's. aiortc keeps
+    it private (TimestampMapper, aiortc 1.x); None if that ever changes or nothing arrived yet."""
+    mapper = getattr(receiver, "_RTCRtpReceiver__timestamp_mapper", None)
+    origin = getattr(mapper, "_origin", None)
+    return origin if isinstance(origin, int) else None
+
+
 class Remote:
     def __init__(self, address, notification):
         self.address = address
@@ -34,17 +42,24 @@ class Remote:
         self.pc = RTCPeerConnection(RTCConfiguration(iceServers=[]))
         self.channel = None
         self.video = None
+        self.video_receiver = None
         self.ready = asyncio.Event()
         self.pending = {}
         self.sequence = 0
         self.error = None
         self.task = None
         self.http = None
+        # The video's RTP timestamps are `frame.pts + rtp_origin()` (mod 2^32).
+        self.rtp_origin = lambda: rtp_origin(self.video_receiver)
 
         @self.pc.on("track")
         def track(value):
             if value.kind == "video" and self.video is None:
                 self.video = value
+                self.video_receiver = next(
+                    (t.receiver for t in self.pc.getTransceivers() if t.receiver.track is value),
+                    None,
+                )
             else:
                 value.stop()
 
