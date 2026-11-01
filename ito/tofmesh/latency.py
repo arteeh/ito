@@ -27,6 +27,10 @@ PAIRS = 30  # moving pairs an estimate needs
 # costs come out nearly flat. The estimate moves only to a delay that matches clearly better
 # than the current one, by this fraction of the median cost.
 BETTER = 0.05
+# And only when the costs have one clear valley: the best at most this fraction of the median.
+# Slow head movements leave image noise of the same size as the motion, and a jagged curve
+# whose lowest point means nothing (a live sim run jumped from +0 to +185 ms on one).
+VALLEY = 0.65
 PEAK = 0.08  # phase-correlation peak below which a pair is no match at all
 # Extra delays tried, seconds on top of the driver's capture_delay.
 CANDIDATES = np.round(np.arange(-0.09, 0.2101, 0.005), 3)
@@ -161,7 +165,8 @@ class FrameDelay:
         costs = np.minimum(miss, CLIP).mean(axis=1)
         best = int(np.argmin(costs))
         self.cost = float(costs[best])
-        if costs[current] - costs[best] < BETTER * float(np.median(costs)):
+        typical = float(np.median(costs))
+        if costs[best] > VALLEY * typical or costs[current] - costs[best] < BETTER * typical:
             return
         offset = 0.0
         if 0 < best < len(costs) - 1:  # the minimum between grid points (parabola)
