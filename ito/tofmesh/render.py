@@ -334,6 +334,8 @@ uniform vec2 image_size;
 uniform float floor_height;
 uniform float floor_clearance;
 uniform float far;
+// Depth tested before the shader runs (the triangle is at depth 1.0): only empty pixels pay.
+layout(early_fragment_tests) in;
 out vec4 f_colour;
 
 void main() {
@@ -375,8 +377,7 @@ void main() {
         total += w6;
     }
     if (total <= 0.0) discard;  // no frame ever saw this spot
-    f_colour = vec4(sum / total, 1.0);
-    gl_FragDepth = 1.0;  // still empty for the live guess's composite, which wins
+    f_colour = vec4(sum / total, 1.0);  // depth stays 1.0: the live guess's composite wins
 }
 """
 
