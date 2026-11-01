@@ -7,9 +7,23 @@ rendered from the mesh) and takes the frames' colours, weighted towards the proj
 most squarely and nearest, so detail comes at camera resolution where a frame saw it. Slot 0 is
 the live frame; the others are kept views (fusion.py chooses them).
 
+Guessed depth (#87): the ToF sees ~45 degrees, the camera far more, so most of the live frame
+has no mesh behind it. A guess places it in the world anyway, on the GPU, every time the live
+frame or the mesh changes: the live projector's distance map (the mesh, i.e. everything the ToF
+ever measured, seen from the live camera) has its holes filled by push-pull (an image pyramid
+that averages inverse range down, then fills each hole from the coarser level up: the nearest
+measured surfaces extended outwards), and a ray that meets the floor (y = 0 in the robot's
+odometry frame) before that is put on the floor. The live frame is then drawn as a grid at
+those ranges: desaturated, dimmed and hatched so it never passes for measured, broken where
+neighbouring guesses jump (an edge), and only where no mesh is drawn (its depth is pushed
+behind every real surface), so it never covers a measured one and gives way as soon as the ToF
+measures that spot.
+
 Same draw contract as the splat renderer (ito/render/renderer.py), so the desktop and XR windows
 can use either: draw(robot_camera, head, projection, target, viewport=...).
 """
+
+import os
 
 import moderngl
 import numpy as np
@@ -124,6 +138,139 @@ out float range_out;
 void main() { range_out = length(v_world - origin); }
 """
 
+# Guessed depth: one vertex per GUESS_GRID pixels of the shadow-map resolution, ranges capped at
+# GUESS_FAR (beyond the ToF's 4 m nothing is known), a break where neighbouring guesses differ
+# by more than GUESS_EDGE.
+GUESS_GRID = (128, 72)
+GUESS_FAR = 8.0
+GUESS_EDGE = 1.3
+FLOOR_HEIGHT = 0.0  # the odometry frame's floor
+
+FULLSCREEN = """
+#version 430
+void main() {
+    vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}
+"""
+
+# Push: level 0 from the live projector's distance map (inverse depth along the camera axis,
+# weight 1 where measured: a hole filled with a mean depth continues a surface as a plane facing
+# the camera, where a mean range would bend it into a sphere around it), each next level the
+# weighted mean of 2x2 texels.
+PUSH = """
+#version 430
+uniform sampler2D source;
+uniform int first;
+uniform ivec2 source_size;
+uniform vec4 intrinsics;  // fx, fy, cx, cy of the level-0 (shadow map) pixels
+out vec2 result;
+void main() {
+    ivec2 p = ivec2(gl_FragCoord.xy);
+    if (first == 1) {
+        float r = texelFetch(source, p, 0).r;
+        // Row 0 of the map is the image's bottom row.
+        vec2 q = vec2(gl_FragCoord.x - 0.5, float(source_size.y) - gl_FragCoord.y - 0.5);
+        vec2 d = (q - intrinsics.zw) / intrinsics.xy;
+        float z = r / length(vec3(d, 1.0));
+        result = (r > 0.0 && r < 1e8) ? vec2(1.0 / z, 1.0) : vec2(0.0);
+        return;
+    }
+    vec2 sum = vec2(0.0);
+    for (int j = 0; j < 2; ++j)
+        for (int i = 0; i < 2; ++i) {
+            vec2 c = texelFetch(source, min(p * 2 + ivec2(i, j), source_size - 1), 0).rg;
+            sum += vec2(c.x * c.y, c.y);
+        }
+    result = sum.y > 0.0 ? vec2(sum.x / sum.y, min(sum.y, 1.0)) : vec2(0.0);
+}
+"""
+
+# Pull: each level's holes (weight < 1) filled from the coarser, already filled level.
+PULL = """
+#version 430
+uniform sampler2D pushed;
+uniform sampler2D coarse;
+uniform vec2 size;
+out vec2 result;
+void main() {
+    vec2 own = texelFetch(pushed, ivec2(gl_FragCoord.xy), 0).rg;
+    vec2 c = texture(coarse, gl_FragCoord.xy / size).rg;
+    result = vec2(own.x * own.y + c.x * (1.0 - own.y), max(own.y, c.y));
+}
+"""
+
+GUESS_VERTEX = """
+#version 430
+uniform mat4 view_projection;
+uniform mat3 world_from_camera;
+uniform vec3 origin;
+uniform vec4 intrinsics;     // fx, fy, cx, cy in image pixels
+uniform vec2 image_size;
+uniform sampler2D filled;    // inverse depth, holes filled (push-pull)
+uniform sampler2D measured;  // weight 1 where the mesh itself is
+uniform vec2 grid_step;      // one grid cell in image uv
+uniform float floor_height;
+uniform float far;
+uniform float edge;
+in vec2 uv;                  // over the image, v down
+out vec2 v_uv;
+out float v_keep;
+out float v_measured;
+
+vec3 camera_ray(vec2 st) {  // not normalized: z = -1
+    vec2 p = st * image_size - 0.5;
+    return vec3((p.x - intrinsics.z) / intrinsics.x, -(p.y - intrinsics.w) / intrinsics.y, -1.0);
+}
+
+vec3 ray(vec2 st) {
+    return world_from_camera * normalize(camera_ray(st));
+}
+
+float range_at(vec2 st) {
+    vec3 d = ray(st);
+    float inv = texture(filled, vec2(st.x, 1.0 - st.y)).r;
+    float r = inv > 1.0 / far ? length(camera_ray(st)) / inv : far;
+    if (d.y < -1e-3) r = min(r, (origin.y - floor_height) / -d.y);
+    return clamp(r, 0.1, far);
+}
+
+void main() {
+    float r = range_at(uv);
+    float lo = r, hi = r;
+    for (int k = 0; k < 4; ++k) {
+        vec2 o = vec2(k == 0 ? 1.0 : k == 1 ? -1.0 : 0.0, k == 2 ? 1.0 : k == 3 ? -1.0 : 0.0);
+        float n = range_at(clamp(uv + o * grid_step, 0.0, 1.0));
+        lo = min(lo, n);
+        hi = max(hi, n);
+    }
+    v_keep = hi <= lo * edge ? 1.0 : 0.0;
+    v_measured = texture(measured, vec2(uv.x, 1.0 - uv.y)).g;
+    v_uv = uv;
+    gl_Position = view_projection * vec4(origin + ray(uv) * r, 1.0);
+}
+"""
+
+GUESS_FRAGMENT = """
+#version 430
+uniform sampler2DArray images;
+in vec2 v_uv;
+in float v_keep;
+in float v_measured;
+out vec4 f_colour;
+void main() {
+    if (v_keep < 0.999 || v_measured > 0.999) discard;
+    vec3 c = texture(images, vec3(v_uv, 0.0)).rgb;
+    float l = dot(c, vec3(0.299, 0.587, 0.114));
+    // A guess must never pass for a measured surface: washed out, cooler, dimmer, hatched.
+    vec3 g = mix(vec3(l), c, 0.35) * vec3(0.72, 0.78, 0.95);
+    if (mod(gl_FragCoord.x + gl_FragCoord.y, 6.0) < 1.5) g *= 0.55;
+    f_colour = vec4(g, 1.0);
+    // Behind every real surface: drawn only where no mesh is.
+    gl_FragDepth = 0.9999 + 0.0001 * gl_FragCoord.z;
+}
+"""
+
 
 def _view(world_from_eye):
     rotation = world_from_eye[:3, :3]
@@ -146,8 +293,22 @@ def pinhole_projection(fx, fy, cx, cy, width, height, near=NEAR, far=FAR):
     return p
 
 
+def _guess_setting():
+    """On unless ITO_GUESS_DEPTH=0. (Not an app setting: a settings file with a field the main
+    edition does not know would make main builds drop the user's settings.)"""
+    return os.environ.get("ITO_GUESS_DEPTH", "1").lower() not in {"0", "off", "false", "no"}
+
+
+def _set(program, **values):
+    for name, value in values.items():
+        if name in program:  # the compiler drops unused uniforms
+            program[name] = value
+
+
 class MeshRenderer:
-    def __init__(self, context: moderngl.Context, slots=PROJECTORS, image_size=(640, 360)):
+    def __init__(
+        self, context: moderngl.Context, slots=PROJECTORS, image_size=(640, 360), guess=None
+    ):
         self.context = context
         self.slots = slots
         self.image_size = tuple(image_size)
@@ -177,6 +338,44 @@ class MeshRenderer:
         self.target = None
         self.projection_enabled = True
         self.epoch = None  # the worker run whose mesh and projectors are shown
+        self.guess_enabled = _guess_setting() if guess is None else bool(guess)
+        self.guess_dirty = False
+        self._guess_resources()
+
+    def _guess_resources(self):
+        """Push-pull pyramid over the live projector's distance map, and the guess grid."""
+        context = self.context
+        self.push_program = context.program(vertex_shader=FULLSCREEN, fragment_shader=PUSH)
+        self.pull_program = context.program(vertex_shader=FULLSCREEN, fragment_shader=PULL)
+        self.push_vao = context.vertex_array(self.push_program, [])
+        self.pull_vao = context.vertex_array(self.pull_program, [])
+        self.levels = []  # (size, pushed texture, its fbo, pulled texture, its fbo)
+        w, h = SHADOW_SIZE
+        while True:
+            level = [(w, h)]
+            for _ in range(2):
+                texture = context.texture((w, h), 2, dtype="f4")
+                texture.filter = moderngl.LINEAR, moderngl.LINEAR
+                texture.repeat_x = texture.repeat_y = False
+                level += [texture, context.framebuffer([texture])]
+            self.levels.append(level)
+            if w == 1 and h == 1:
+                break
+            w, h = (w + 1) // 2, (h + 1) // 2
+        self.guess_program = context.program(
+            vertex_shader=GUESS_VERTEX, fragment_shader=GUESS_FRAGMENT
+        )
+        gw, gh = GUESS_GRID
+        u, v = np.meshgrid(np.linspace(0, 1, gw + 1), np.linspace(0, 1, gh + 1))
+        uv = np.stack([u, v], -1).astype(np.float32).reshape(-1, 2)
+        i = np.arange(gh)[:, None] * (gw + 1) + np.arange(gw)[None, :]
+        quads = np.stack([i, i + 1, i + gw + 1, i + 1, i + gw + 2, i + gw + 1], -1)
+        self.guess_vbo = context.buffer(uv.tobytes())
+        self.guess_ibo = context.buffer(quads.astype(np.uint32).tobytes())
+        self.guess_vao = context.vertex_array(
+            self.guess_program, [(self.guess_vbo, "2f", "uv")], self.guess_ibo,
+            index_element_size=4,
+        )  # fmt: skip
 
     # -- updates -------------------------------------------------------------------------
     def upload(self, frame):
@@ -276,7 +475,66 @@ class MeshRenderer:
             self.shadow_program["origin"] = tuple(origin)
             self.shadow_vao.render(moderngl.TRIANGLES, vertices=self.count * 3)
         self.context.scissor = None
+        if 0 in self.shadow_dirty:
+            self.guess_dirty = True
         self.shadow_dirty.clear()
+
+    def _guess_pyramid(self):
+        """Fill the holes of the live projector's distance map (slot 0 of the shadow atlas)."""
+        if not self.guess_dirty:
+            return
+        self.guess_dirty = False
+        self.context.enable_only(moderngl.NOTHING)
+        self.context.scissor = None
+        _, (fx, fy, cx, cy), _ = self.projectors[0]
+        sx, sy = SHADOW_SIZE[0] / self.image_size[0], SHADOW_SIZE[1] / self.image_size[1]
+        intrinsics = (fx * sx, fy * sy, (cx + 0.5) * sx - 0.5, (cy + 0.5) * sy - 0.5)
+        source, source_size = self.shadows, SHADOW_SIZE
+        for index, (size, pushed, fbo, _, _) in enumerate(self.levels):
+            fbo.use()
+            self.context.viewport = (0, 0, *size)
+            source.use(0)
+            _set(
+                self.push_program, source=0, first=int(index == 0), source_size=source_size,
+                intrinsics=intrinsics,
+            )  # fmt: skip
+            self.push_vao.render(moderngl.TRIANGLES, vertices=3)
+            source, source_size = pushed, size
+        coarse = self.levels[-1][1]  # the top level's pull is its push
+        for size, pushed, _, pulled, fbo in reversed(self.levels):
+            fbo.use()
+            self.context.viewport = (0, 0, *size)
+            pushed.use(0)
+            coarse.use(1)
+            _set(self.pull_program, pushed=0, coarse=1, size=size)
+            self.pull_vao.render(moderngl.TRIANGLES, vertices=3)
+            coarse = pulled
+
+    def _draw_guess(self, view_projection):
+        camera_from_world, (fx, fy, cx, cy), origin = self.projectors[0]
+        world_from_camera = np.linalg.inv(camera_from_world)
+        program = self.guess_program
+        program["view_projection"].write(view_projection.T.astype(np.float32).tobytes())
+        program["world_from_camera"].write(
+            np.ascontiguousarray(world_from_camera[:3, :3].T, np.float32).tobytes()
+        )
+        self.images.use(0)
+        self.levels[0][3].use(2)  # filled
+        self.levels[0][1].use(3)  # measured
+        _set(
+            program,
+            origin=tuple(float(x) for x in origin),
+            intrinsics=(fx, fy, cx, cy),
+            image_size=self.image_size,
+            grid_step=(1 / GUESS_GRID[0], 1 / GUESS_GRID[1]),
+            floor_height=FLOOR_HEIGHT,
+            far=GUESS_FAR,
+            edge=GUESS_EDGE,
+            images=0,
+            filled=2,
+            measured=3,
+        )
+        self.guess_vao.render(moderngl.TRIANGLES)
 
     # -- drawing -------------------------------------------------------------------------
     def sort(self, robot_camera, head):
@@ -314,6 +572,9 @@ class MeshRenderer:
         if min(viewport[2:]) <= 0:
             raise ValueError("Viewport dimensions must be positive")
         self._shadows()
+        guess = self.guess_enabled and self.projection_enabled and self.projectors[0] is not None
+        if guess:
+            self._guess_pyramid()
         size = tuple(int(v) for v in viewport[2:])
         fbo = self._offscreen(size)
         fbo.use()
@@ -321,8 +582,8 @@ class MeshRenderer:
         self.context.scissor = None
         self.context.enable_only(moderngl.DEPTH_TEST)
         fbo.clear(*(clear or (0, 0, 0, 1)), depth=1.0)
+        view_projection = projection @ _view(world_from_eye)
         if self.count and self.vao is not None:
-            view_projection = projection @ _view(world_from_eye)
             program = self.program
             program["view_projection"].write(view_projection.T.astype(np.float32).tobytes())
             program["eye"] = tuple(world_from_eye[:3, 3])
@@ -349,6 +610,8 @@ class MeshRenderer:
             program["shadows"] = 1
             self.vao.render(moderngl.TRIANGLES, vertices=self.count * 3)
             self.draw_count += 1
+        if guess:
+            self._draw_guess(view_projection)
         x, y, w, h = viewport
         self.context.copy_framebuffer(target, fbo) if (
             (x, y) == (0, 0) and tuple(target.size) == size
@@ -370,6 +633,9 @@ class MeshRenderer:
         for r in (
             self.vbo, self.nbo, self.cbo, self.ibo, self.vao, self.shadow_vao, self.program,
             self.shadow_program, self.images, self.shadows, self.shadow_depth, self.shadow_fbo,
+            self.push_vao, self.pull_vao, self.push_program, self.pull_program, self.guess_vao,
+            self.guess_vbo, self.guess_ibo, self.guess_program,
+            *(r for level in self.levels for r in level[1:]),
         ):  # fmt: skip
             if r is not None:
                 r.release()
