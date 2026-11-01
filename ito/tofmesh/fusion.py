@@ -246,7 +246,9 @@ class Fusion:
         reading, pulled towards the chip's `chip` by dt / GYRO_SECONDS of the way."""
         last = self.attitude
         gyro = None if gyro is None else np.asarray(gyro, np.float64)
-        if gyro is None or last is None or not 0 < when - last[0] <= GYRO_GAP:
+        # Starts over from the chip without a rate at both ends: after a reading without gyro
+        # too, as the trapezoid below needs the two.
+        if gyro is None or last is None or last[2] is None or not 0 < when - last[0] <= GYRO_GAP:
             self.attitude = (when, chip, gyro)
             return chip
         dt = when - last[0]
