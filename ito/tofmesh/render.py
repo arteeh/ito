@@ -126,8 +126,13 @@ float central(vec4 q, float u, float v) {
 FRAGMENT = """
 #version 430
 #define K %(K)d
-// Radians between a view's ray and the eye's at which the view's weight halves (before ^6).
+// Radians between a view's ray and the eye's at which the view's weight halves (before ^6);
+// EDGE_VIEW_ANGLE near a silhouette in that view: within EDGE_TEXELS of the view's distance map
+// (~1.3 degrees) the inverse range bends by more than EDGE_JUMP of its own value.
 #define VIEW_ANGLE 0.1
+#define EDGE_VIEW_ANGLE 0.03
+#define EDGE_TEXELS 3.0
+#define EDGE_JUMP 0.15
 uniform sampler2DArray images;
 uniform sampler2D shadows;
 uniform mat4 camera_from_world[K];
@@ -176,6 +181,24 @@ vec4 baked(vec3 face) {
     return total > 1e-6 ? vec4(rgb / total, quality / total) : vec4(0.0);
 }
 
+float inverse_range(vec2 atlas, vec2 offset, float lo, float hi) {
+    vec2 texel = 1.0 / vec2(textureSize(shadows, 0));
+    vec2 at = atlas + offset * texel;
+    // Within this view's slot of the atlas (which wraps around).
+    at = clamp(at, vec2(lo, 0.0) + 0.5 * texel, vec2(hi, 1.0) - 0.5 * texel);
+    return 1.0 / texture(shadows, at).r;  // empty: 1e9, nearly 0
+}
+
+bool silhouette(vec2 atlas, int k, float inverse) {
+    float lo = float(k) / float(K), hi = float(k + 1) / float(K);
+    float r = EDGE_TEXELS;
+    float across = inverse_range(atlas, vec2(-r, 0.0), lo, hi)
+                   + inverse_range(atlas, vec2(r, 0.0), lo, hi) - 2.0 * inverse;
+    float down = inverse_range(atlas, vec2(0.0, -r), lo, hi)
+                 + inverse_range(atlas, vec2(0.0, r), lo, hi) - 2.0 * inverse;
+    return max(abs(across), abs(down)) > EDGE_JUMP * inverse;
+}
+
 void main() {
     // The triangle's own normal (towards free space), which picks its atlas tiles as the bake did.
     vec3 face = normalize(cross(dFdx(v_world), dFdy(v_world)));
@@ -222,7 +245,12 @@ void main() {
         // the view looking at the fragment most nearly along the eye's ray wins (unstructured
         // lumigraph weighting), not the one facing the surface most squarely.
         float angle = acos(clamp(dot(toward, to_eye), -1.0, 1.0));
-        float along = 1.0 / (1.0 + angle * angle / (VIEW_ANGLE * VIEW_ANGLE));
+        // Near a silhouette in this view (its distance map jumps within a few texels: the
+        // inverse range is not linear across the fragment, as it is on a plane) the mesh's edge
+        // and the image's disagree most, so there the view must look along the eye's ray more
+        // closely still. The live frame seen from where it was taken is exact at any edge.
+        float view_angle = silhouette(atlas, k, 1.0 / d) ? EDGE_VIEW_ANGLE : VIEW_ANGLE;
+        float along = 1.0 / (1.0 + angle * angle / (view_angle * view_angle));
         // Of views along the same ray, one nearer than the eye resolves as much detail as the
         // screen shows; a farther one less.
         float detail = clamp((eye_distance + 0.5) / (d + 0.5), 0.5, 1.0);
