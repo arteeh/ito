@@ -1,3 +1,4 @@
+import ctypes
 import json
 import logging
 import math
@@ -55,6 +56,7 @@ class DesktopWindow:
     ):
         self.context = self.renderer = self.overlay = self.input = self.video_panel = None
         self.gpu = None
+        self.readback = None  # (pixel buffer, its size, pending (time, size) or None)
         if (
             min(size) < 64
             or fps < 1
@@ -168,15 +170,39 @@ class DesktopWindow:
                 recorder.close()
 
     def _record(self, recorder: Recorder, current):
+        """The screen grab reads into a pixel buffer and is collected a frame later (the frame
+        loop's finish has completed it by then): a direct glReadPixels waited for the GPU in the
+        frame loop, 4-26 ms, and recorded sessions missed 2-3 times as many 90 Hz frames as the
+        same session unrecorded."""
         recorder.camera(current.video, current.video_time)
+        if self.readback is not None and self.readback[2] is not None:
+            buffer, length, (taken, size) = self.readback
+            GL.glBindBuffer(GL.GL_PIXEL_PACK_BUFFER, buffer)
+            address = GL.glMapBufferRange(GL.GL_PIXEL_PACK_BUFFER, 0, length, GL.GL_MAP_READ_BIT)
+            pixels = ctypes.string_at(address, length)
+            GL.glUnmapBuffer(GL.GL_PIXEL_PACK_BUFFER)
+            GL.glBindBuffer(GL.GL_PIXEL_PACK_BUFFER, 0)
+            self.readback = (buffer, length, None)
+            recorder.screen(taken, pixels, size)
         now = clock.now()
         if not recorder.due(now):
             return
+        size = tuple(self.size)
+        length = size[0] * size[1] * 3
+        if self.readback is None or self.readback[1] != length:
+            if self.readback is not None:
+                GL.glDeleteBuffers(1, [self.readback[0]])
+            buffer = GL.glGenBuffers(1)
+            GL.glBindBuffer(GL.GL_PIXEL_PACK_BUFFER, buffer)
+            GL.glBufferData(GL.GL_PIXEL_PACK_BUFFER, length, None, GL.GL_STREAM_READ)
+            self.readback = (buffer, length, None)
         GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, 0)
         GL.glReadBuffer(GL.GL_BACK)
         GL.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1)
-        pixels = GL.glReadPixels(0, 0, *self.size, GL.GL_RGB, GL.GL_UNSIGNED_BYTE)
-        recorder.screen(now, pixels, self.size)
+        GL.glBindBuffer(GL.GL_PIXEL_PACK_BUFFER, self.readback[0])
+        GL.glReadPixels(0, 0, *size, GL.GL_RGB, GL.GL_UNSIGNED_BYTE, ctypes.c_void_p(0))
+        GL.glBindBuffer(GL.GL_PIXEL_PACK_BUFFER, 0)
+        self.readback = (self.readback[0], length, (now, size))
 
     def _draw_loop(
         self, source, state, on_input, max_frames, metrics, save_settings, dispatch, recorder
