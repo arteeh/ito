@@ -253,31 +253,29 @@ class ThreadedHeadCamera(HeadCamera):
             mujoco.mj_tendon(self.model, kept)
 
     def frames(self):
+        """Each shot drawn as soon as physics takes it, the newest if drawing fell behind, as a
+        camera's frame leaves once it is exposed. Drawn on a 30 Hz schedule of its own instead,
+        a shot waited up to a frame for its turn, at a phase that moved only when a frame came
+        late. `late`: frames begun more than a frame after their exposure."""
         period = 1.0 / max(1, FPS)
         kept = mujoco.MjData(self.model)
-        next_frame = None
         costs, late, dropped, window = [], 0, 0, time.perf_counter()
         while not self.stopping.is_set():
             with self.fresh:
                 self.fresh.wait_for(lambda: self.shots or self.stopping.is_set(), timeout=0.5)
                 if self.stopping.is_set() or not self.shots:
                     continue
-                while len(self.shots) > 2:
-                    self.shots.popleft()
-                    dropped += 1
-                state = self.shots.popleft()
-            now = time.perf_counter()
-            if next_frame is None or now - next_frame > period:
-                late += next_frame is not None
-                next_frame = now
-            elif next_frame > now:
-                time.sleep(next_frame - now)
+                dropped += len(self.shots) - 1
+                state = self.shots[-1]
+                self.shots.clear()
+            # The exposure on CLOCK_MONOTONIC, the clock robotd and tofd stamp with: the physics
+            # time of the state drawn.
+            exposed = self.world.epoch_ns + round(state[0] * 1e9)
+            late += time.monotonic_ns() - exposed > period * 1e9
             start = time.perf_counter()
             self.pose(kept, state)
             self.scene(kept)
-            # The exposure on CLOCK_MONOTONIC, the clock robotd and tofd stamp with: the physics
-            # time of the state drawn.
-            self.publish(self.draw(), self.world.epoch_ns + round(state[0] * 1e9))
+            self.publish(self.draw(), exposed)
             with self.lock:
                 self.seq += 1
                 self.fresh.notify_all()
@@ -293,7 +291,6 @@ class ThreadedHeadCamera(HeadCamera):
                     flush=True,
                 )
                 costs, late, dropped, window = [], 0, 0, done
-            next_frame += period
 
     def next_frame(self, seen, timeout=1.0):
         with self.fresh:

@@ -11,7 +11,7 @@ from dataclasses import replace
 from ito import clock, diagnostics
 from ito.desktop import DesktopState, PilotStatus
 from ito.desktop.settings import load as app_settings
-from ito.link import PairingError, connect
+from ito.link import PairingError, connect, media
 from ito.protocol import Command, FrameMetadata, Motion, Paired, PilotState, Pose, Sensors, Status
 from ito.rates import CounterRate, Rate
 from ito.render import pose
@@ -96,6 +96,7 @@ class Pilot:
         self.settings_revision = 0
         self.last_frame = 0.0
         self.camera_rate = Rate()
+        self.frame_cameras = deque(maxlen=16)  # (capture time, camera pose) of shown frames
         self.motion_time = -1.0
         self.backend_rate = CounterRate()
 
@@ -207,15 +208,27 @@ class Pilot:
                 age_ms=(clock.now() - captured) * 1000,
             )
             return
-        rgb, camera = FrameJoin.arrays(pair)
+        camera = FrameJoin.camera(pair)
         self.last_frame = clock.now()
-        self.state = replace(self.state, video=rgb, video_time=captured)
+        self.frame_cameras.append((captured, camera))
+        self.state = replace(self.state, video=pair[0], video_time=captured)
         if camera is not None:
             self._anchor(camera, captured)
+
+    def camera_frame(self, image, captured):
+        """From the window, which straightens each decoded frame on the GPU: the frame captured
+        at `captured`, strided to the ToF mesh's colour size (worker.frame_size)."""
+        loop = self.loop
+        if loop is not None:
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(self._colour, image, captured)
+
+    def _colour(self, image, captured):
+        camera = next((c for t, c in reversed(self.frame_cameras) if t == captured), None)
         if self.worker is None or self.failure:
             return
         self.camera_rate.tick()
-        self.worker.submit(rgb, camera, captured)
+        self.worker.submit(image, camera, captured)
 
     def _motion(self, message, peer):
         fresh = []
@@ -335,6 +348,8 @@ class Pilot:
             flat_video=True,
             video=None,
             video_fov=2 * math.atan(camera.intrinsics.width / (2 * camera.intrinsics.fx)),
+            video_intrinsics=camera.intrinsics,
+            video_lens=camera.lens,
         )
 
         def reconstruct():
@@ -583,6 +598,8 @@ class Pilot:
                 delay = min(4, delay * 2)
 
     def start(self):
+        media.receive_h264(media.VideoDecoder)
+
         def run():
             with contextlib.suppress(asyncio.CancelledError), clock.fine_timers():
                 asyncio.run(self._run())

@@ -1,4 +1,4 @@
-"""Wire v4: metres, xyzw rotations, and local monotonic seconds for timestamps."""
+"""Wire v5: metres, xyzw rotations, and local monotonic seconds for timestamps."""
 
 from typing import Annotated, Literal, Self
 
@@ -13,7 +13,7 @@ from pydantic import (
     model_validator,
 )
 
-VERSION = 4
+VERSION = 5
 MAX_MESSAGE_BYTES = 1_500_000
 Number = Annotated[float, Field(allow_inf_nan=False)]
 Time = Annotated[Number, Field(ge=0)]
@@ -54,10 +54,34 @@ class Intrinsics(Model):
         return self
 
 
+class Lens(Model):
+    """The lens a camera's frames come through, in OpenCV's model: camera ray (x, y, 1) lands
+    on pixel (fx x' + cx, fy y' + cy), (x', y') being (x, y) distorted by `distortion`, OpenCV's
+    k1 k2 p1 p2 [k3 [k4 k5 k6 [s1 s2 s3 s4]]]. Pixel centres are whole numbers."""
+
+    fx: Number = Field(gt=0)
+    fy: Number = Field(gt=0)
+    cx: Number
+    cy: Number
+    distortion: tuple[Number, ...]
+
+    @field_validator("distortion")
+    @classmethod
+    def opencv_length(cls, value):
+        if len(value) not in {4, 5, 8, 12}:
+            raise ValueError("distortion has 4, 5, 8 or 12 coefficients")
+        return value
+
+
 class Camera(Model):
     name: Name
     track_id: Name
     intrinsics: Intrinsics
+    lens: Lens | None = Field(
+        default=None,
+        description="The lens the frames are sent through, which Ito straightens to the "
+        "`intrinsics` pinhole; None when they already are that pinhole",
+    )
     extrinsics: Pose = Field(default_factory=Pose, description="Camera-to-robot transform")
     capture_delay: Number = Field(
         default=0,
@@ -89,7 +113,7 @@ class DegreeOfFreedom(Model):
 
 
 class Message(Model):
-    version: Literal[4] = VERSION
+    version: Literal[5] = VERSION
 
     @model_validator(mode="after")
     def wire_version(self, info: ValidationInfo) -> Self:

@@ -198,6 +198,7 @@ class MicroduckAdapter(Adapter):
                 self._frame_metadata,
                 to_local=self._source_clock.known,
                 rtp_origin=self.remote.rtp_origin,
+                keyframe=self.remote.keyframe,
                 asked_at=(asked + clock.now()) / 2,
                 fallback_delay=FRAME_DELAY,
             )
@@ -209,6 +210,7 @@ class MicroduckAdapter(Adapter):
                         name="head",
                         track_id="microduck-rgb",
                         intrinsics=self.camera.intrinsics,
+                        lens=self.camera.lens,
                         # 0: capture_time is the capture itself, the camera's own stamp.
                         capture_delay=0.0 if self.camera.exact else FRAME_DELAY,
                         exposure=self._exposure(),
@@ -248,7 +250,7 @@ class MicroduckAdapter(Adapter):
                 )
             ]
             async with asyncio.timeout(5):
-                while not self.camera.latest or not self._state_at:
+                while not self.camera.frames or not self._state_at:
                     self._check()
                     await asyncio.sleep(0.02)
         except Exception:

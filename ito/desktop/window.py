@@ -12,6 +12,7 @@ from OpenGL import GL
 from ito import clock, diagnostics
 from ito.render import current_context, perspective, pose
 from ito.render.anchor import AnchorGlide
+from ito.render.camera import CameraFeed
 from ito.render.gpu import GPU
 from ito.render.performance import Performance
 from ito.render.pose import FloatArray
@@ -31,8 +32,11 @@ MESHES_PER_FRAME = 2
 class DesktopState:
     robot_camera: FloatArray = field(default_factory=pose)
     status: PilotStatus = field(default_factory=PilotStatus)
+    # The latest camera frame as decoded (an av.VideoFrame), the camera's pinhole and lens.
     video: object | None = field(default=None, repr=False, compare=False)
     video_time: float = 0
+    video_intrinsics: object | None = None
+    video_lens: object | None = None
     video_fov: float | None = None
     flat_video: bool = False
     # Yaw of the robot camera's view in the map's world, positive to the left: where
@@ -51,6 +55,7 @@ class DesktopWindow:
         capture_dir: Path = Path("captures"),
     ):
         self.context = self.renderer = self.overlay = self.input = self.video_panel = None
+        self.camera = None
         self.gpu = None
         self.readback = None  # (pixel buffer, its size, pending (time, size) or None)
         if (
@@ -88,6 +93,7 @@ class DesktopWindow:
             self.gpu = GPU() if "nvidia" in self.context.info["GL_VENDOR"].lower() else None
             self.renderer = MeshRenderer(self.context)
             self.video_panel = VideoPanel(self.context)
+            self.camera = CameraFeed(self.context)
             if self.gpu is not None:
                 self.gpu.start()
             self.overlay = Overlay(self.context)
@@ -208,6 +214,7 @@ class DesktopWindow:
                 applied.append(frame)
                 revision, captured_at = frame.revision, frame.captured_at
             current = self.glided(state(), now)
+            self.straighten(source, current)
             size = pygame.display.get_window_size()
             if min(size) > 0:
                 self.size = size
@@ -276,13 +283,21 @@ class DesktopWindow:
                     time.sleep(remaining)
             pacing.tick(0)
 
+    def straighten(self, source, current):
+        """The newest camera frame to RGB on the GPU, and on to the ToF mesh's colour."""
+        image = self.camera.update(
+            current.video, current.video_time, current.video_intrinsics, current.video_lens
+        )
+        if image is not None:
+            source.camera_frame(image, current.video_time)
+
     def glided(self, current, now):
         return replace(current, robot_camera=self.glide(current.robot_camera, now))
 
     def draw_view(self, current, head, projection, target, viewport, center=None):
         if current.flat_video:
             self.video_panel.draw(
-                current.video,
+                self.camera.texture,
                 current.video_time,
                 head,
                 projection,
@@ -295,7 +310,14 @@ class DesktopWindow:
             self.renderer.draw(current.robot_camera, head, projection, target, viewport=viewport)
 
     def close(self) -> None:
-        for resource in (self.input, self.overlay, self.video_panel, self.renderer, self.gpu):
+        for resource in (
+            self.input,
+            self.overlay,
+            self.video_panel,
+            self.camera,
+            self.renderer,
+            self.gpu,
+        ):
             if resource is not None:
                 resource.close()
         if self.context is not None:

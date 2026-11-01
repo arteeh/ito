@@ -11,7 +11,10 @@ class Adapter(ABC):
 
     The robot must also enforce its own hardware deadman. media_tracks returns fresh
     tracks per connection (use aiortc's MediaRelay for a persistent camera source).
-    Camera track IDs must match description; publish metadata at camera capture time.
+    Camera track IDs must match description; publish metadata at camera capture time. A
+    camera's video goes to Ito as H.264: a track's frames are encoded by aiortc, or handed out
+    already encoded (ito.link.media.EncodedVideoTrack). Frames sent through the camera's
+    described `lens` are straightened by Ito.
     A robot that knows its camera's motion publishes it as it is measured, stamped at the
     source, and describes its noise in RobotDescription.motion_noise. Sensors on a camera
     (an IMU, a time-of-flight grid) are published as they arrive; a robot without them, or

@@ -29,6 +29,13 @@ BACKLOG = 64  # geometry batches held while the worker's queue is full (a few se
 TIMING_SUMMARY = 1.0  # seconds of mesh stage times per diagnostic log line
 
 
+def frame_size(width, height):
+    """The size of the camera frames the worker takes, strided to about FRAME_WIDTH from the
+    (width, height) frame, and the stride: their pixel i is pixel i * step + step // 2."""
+    step = max(1, round(width / FRAME_WIDTH))
+    return (len(range(step // 2, width, step)), len(range(step // 2, height, step))), step
+
+
 def _run(inputs, outputs, notes, options, integrated):
     from .fusion import Fusion, MeshFrame
 
@@ -133,9 +140,7 @@ class TofMesh:
         self.dropped = 0
         self.timings = []  # this second's mesh stage times, for the diagnostic log
         self.timings_since = clock.now()
-        # Frames go to the worker strided to about FRAME_WIDTH: pixel i of the strided image is
-        # pixel i * step + step // 2 of the full one.
-        step = self.step = max(1, round(intrinsics.width / FRAME_WIDTH))
+        _, step = frame_size(intrinsics.width, intrinsics.height)
         self.frame_intrinsics = (
             intrinsics.fx / step,
             intrinsics.fy / step,
@@ -165,14 +170,13 @@ class TofMesh:
         except ValueError:  # the queue was closed under us (the pilot retiring this worker)
             return False
 
-    def submit(self, rgb, camera, captured_at):
-        """A camera frame (h, w, 3) uint8 at the described pinhole; `camera` is the driver's
-        pose for it (used only when the motion stream does not cover the frame)."""
+    def submit(self, image, camera, captured_at):
+        """A camera frame at the described pinhole, strided as frame_size says, (h, w, 3) uint8;
+        `camera` is the driver's pose for it (used only when the motion stream does not
+        cover the frame)."""
         if captured_at - self.last_frame < 1 / FRAME_RATE:
             return False
         self.last_frame = captured_at
-        s = self.step
-        image = np.ascontiguousarray(rgb[s // 2 :: s, s // 2 :: s]) if s > 1 else rgb
         intrinsics = self.frame_intrinsics
         fallback = None if camera is None else np.asarray(camera, np.float64)
         return self._put(("frame", image, captured_at - self.capture_delay, intrinsics, fallback))
