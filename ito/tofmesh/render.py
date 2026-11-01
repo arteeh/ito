@@ -303,6 +303,102 @@ void main() {
 """
 
 
+# Guessed depth beyond the live frame (the view is wider and taller than the camera, and leads it
+# while turning): every pixel the mesh and the live guess leave empty gets a range from the view's
+# own depth map, its holes filled by the same push-pull (and the floor rule), and the colour of
+# the kept view that saw that spot from the most similar direction. A spot no frame ever saw
+# stays empty.
+EYE_DEPTH_WIDTH = 256
+
+EYE_DEPTH_FRAGMENT = """
+#version 430
+out vec2 result;
+void main() { result = vec2(gl_FragCoord.w, 1.0); }  // 1 / depth along the view axis
+"""
+
+FILL_FRAGMENT = """
+#version 430
+#define K %(K)d
+uniform mat4 clip_to_world;
+uniform vec2 size;
+uniform vec3 eye;
+uniform vec3 forward;
+uniform sampler2D filled;    // the view's inverse depth, holes filled (push-pull)
+uniform sampler2DArray images;
+uniform sampler2D shadows;
+uniform mat4 camera_from_world[K];
+uniform vec4 intrinsics[K];
+uniform vec3 origin[K];
+uniform float boost[K];
+uniform vec2 image_size;
+uniform float floor_height;
+uniform float floor_clearance;
+uniform float far;
+out vec4 f_colour;
+
+void main() {
+    vec2 st = gl_FragCoord.xy / size;
+    vec4 a = clip_to_world * vec4(st * 2.0 - 1.0, -1.0, 1.0);
+    vec4 b = clip_to_world * vec4(st * 2.0 - 1.0, 1.0, 1.0);
+    vec3 dir = normalize(b.xyz / b.w - a.xyz / a.w);
+    float inv = texture(filled, st).r;
+    float r = inv > 1e-4 ? 1.0 / (inv * max(dot(dir, forward), 1e-3)) : far;
+    float height = eye.y - floor_height;
+    if (height > floor_clearance && dir.y < -1e-3) r = min(r, height / -dir.y);
+    r = clamp(r, 0.1, far);
+    vec3 p = eye + dir * r;
+    vec3 sum = vec3(0.0);
+    float total = 0.0;
+    for (int k = 0; k < K; ++k) {
+        if (boost[k] <= 0.0) continue;
+        vec4 c = camera_from_world[k] * vec4(p, 1.0);
+        float z = -c.z;
+        if (z < 0.05) continue;
+        vec4 q = intrinsics[k];
+        float u = q.z + q.x * c.x / z;
+        float v = q.w - q.y * c.y / z;
+        if (u < 0.0 || v < 0.0 || u > image_size.x - 1.0 || v > image_size.y - 1.0) continue;
+        vec2 uv = vec2((u + 0.5) / image_size.x, (v + 0.5) / image_size.y);
+        float d = length(p - origin[k]);
+        // A measured surface in front of the spot hides it from this view.
+        float nearest = texture(shadows, vec2((float(k) + uv.x) / float(K), 1.0 - uv.y)).r;
+        if (d > nearest + 0.06 + 0.03 * d) continue;
+        // The view that looked at the spot most nearly along the pilot's ray: least parallax
+        // if the guessed range is wrong.
+        float along = max(dot((p - origin[k]) / max(d, 1e-4), dir), 0.0);
+        float edge = clamp(min(min(u, image_size.x - u), min(v, image_size.y - v))
+                           / (0.06 * image_size.x), 0.0, 1.0);
+        float w = max(boost[k] * along * along * edge, 1e-5);
+        float w2 = w * w;
+        float w6 = w2 * w2 * w2;
+        sum += w6 * texture(images, vec3(uv, float(k))).rgb;
+        total += w6;
+    }
+    if (total <= 0.0) discard;  // no frame ever saw this spot
+    f_colour = vec4(sum / total, 1.0);
+    gl_FragDepth = 1.0;  // still empty for the live guess's composite, which wins
+}
+"""
+
+
+def _pyramid(context, size):
+    """Push-pull levels from `size` down to 1x1: (size, pushed texture, its fbo, pulled texture,
+    its fbo)."""
+    levels = []
+    w, h = size
+    while True:
+        level = [(w, h)]
+        for _ in range(2):
+            texture = context.texture((w, h), 2, dtype="f4")
+            texture.filter = moderngl.LINEAR, moderngl.LINEAR
+            texture.repeat_x = texture.repeat_y = False
+            level += [texture, context.framebuffer([texture])]
+        levels.append(level)
+        if w == 1 and h == 1:
+            return levels
+        w, h = (w + 1) // 2, (h + 1) // 2
+
+
 def _view(world_from_eye):
     rotation = world_from_eye[:3, :3]
     view = np.eye(4)
@@ -379,6 +475,9 @@ class MeshRenderer:
         self.guess_program = self.guess_vbo = self.guess_ibo = self.guess_vao = None
         self.composite_program = self.composite_vao = None
         self.guess_target = None  # (size, framebuffer, colour texture, depth)
+        self.eye_depth_program = self.eye_depth_vao = self.fill_program = self.fill_vao = None
+        self.eye_levels = []  # push-pull over the view's own depth map
+        self.eye_depth = None  # its depth renderbuffer and framebuffer
         if self.guess_enabled:  # ITO_GUESS_DEPTH=0: none of its GPU resources
             self._guess_resources()
 
@@ -394,19 +493,14 @@ class MeshRenderer:
         self.pull_program = context.program(vertex_shader=FULLSCREEN, fragment_shader=PULL)
         self.push_vao = context.vertex_array(self.push_program, [])
         self.pull_vao = context.vertex_array(self.pull_program, [])
-        self.levels = []  # (size, pushed texture, its fbo, pulled texture, its fbo)
-        w, h = SHADOW_SIZE
-        while True:
-            level = [(w, h)]
-            for _ in range(2):
-                texture = context.texture((w, h), 2, dtype="f4")
-                texture.filter = moderngl.LINEAR, moderngl.LINEAR
-                texture.repeat_x = texture.repeat_y = False
-                level += [texture, context.framebuffer([texture])]
-            self.levels.append(level)
-            if w == 1 and h == 1:
-                break
-            w, h = (w + 1) // 2, (h + 1) // 2
+        self.levels = _pyramid(context, SHADOW_SIZE)
+        self.eye_depth_program = context.program(
+            vertex_shader=SHADOW_VERTEX, fragment_shader=EYE_DEPTH_FRAGMENT
+        )
+        self.fill_program = context.program(
+            vertex_shader=COMPOSITE_VERTEX, fragment_shader=FILL_FRAGMENT % {"K": self.slots}
+        )
+        self.fill_vao = context.vertex_array(self.fill_program, [])
         self.guess_program = context.program(
             vertex_shader=GUESS_VERTEX, fragment_shader=GUESS_FRAGMENT
         )
@@ -449,7 +543,10 @@ class MeshRenderer:
     def _mesh(self, positions, normals, colours, triangles):
         n, t = len(positions), len(triangles)
         if n > self.capacity[0] or t > self.capacity[1]:
-            for b in (self.vbo, self.nbo, self.cbo, self.ibo, self.vao, self.shadow_vao):
+            for b in (
+                self.vbo, self.nbo, self.cbo, self.ibo, self.vao, self.shadow_vao,
+                self.eye_depth_vao,
+            ):  # fmt: skip
                 if b is not None:
                     b.release()
             cap = (max(1024, int(n * 1.5)), max(1024, int(t * 1.5)))
@@ -470,6 +567,11 @@ class MeshRenderer:
             self.shadow_vao = self.context.vertex_array(
                 self.shadow_program, [(self.vbo, "3f", "position")], self.ibo, index_element_size=4
             )
+            if self.eye_depth_program is not None:
+                self.eye_depth_vao = self.context.vertex_array(
+                    self.eye_depth_program, [(self.vbo, "3f", "position")], self.ibo,
+                    index_element_size=4,
+                )  # fmt: skip
             self.capacity = cap
         if n:
             self.vbo.write(np.ascontiguousarray(positions, np.float32))
@@ -537,24 +639,31 @@ class MeshRenderer:
         if not self.guess_dirty:
             return
         self.guess_dirty = False
-        self.context.enable_only(moderngl.NOTHING)
-        self.context.scissor = None
         _, (fx, fy, cx, cy), _ = self.projectors[0]
         sx, sy = SHADOW_SIZE[0] / self.image_size[0], SHADOW_SIZE[1] / self.image_size[1]
         intrinsics = (fx * sx, fy * sy, (cx + 0.5) * sx - 0.5, (cy + 0.5) * sy - 0.5)
-        source, source_size = self.shadows, SHADOW_SIZE
-        for index, (size, pushed, fbo, _, _) in enumerate(self.levels):
+        self._push_pull(self.levels, self.shadows, SHADOW_SIZE, intrinsics)
+
+    def _push_pull(self, levels, source, source_size, intrinsics=None):
+        """Push-pull over `levels`; level 0 from `source` (a distance map, with these
+        intrinsics) or, without intrinsics, already drawn (inverse depth and weight)."""
+        self.context.enable_only(moderngl.NOTHING)
+        self.context.scissor = None
+        for index, (size, pushed, fbo, _, _) in enumerate(levels):
+            if index == 0 and intrinsics is None:
+                source, source_size = pushed, size
+                continue
             fbo.use()
             self.context.viewport = (0, 0, *size)
             source.use(0)
             _set(
                 self.push_program, source=0, first=int(index == 0), source_size=source_size,
-                intrinsics=intrinsics,
+                intrinsics=intrinsics or (1.0, 1.0, 0.0, 0.0),
             )  # fmt: skip
             self.push_vao.render(moderngl.TRIANGLES, vertices=3)
             source, source_size = pushed, size
-        coarse = self.levels[-1][1]  # the top level's pull is its push
-        for size, pushed, _, pulled, fbo in reversed(self.levels):
+        coarse = levels[-1][1]  # the top level's pull is its push
+        for size, pushed, _, pulled, fbo in reversed(levels):
             fbo.use()
             self.context.viewport = (0, 0, *size)
             pushed.use(0)
@@ -600,6 +709,68 @@ class MeshRenderer:
             depth = self.context.depth_renderbuffer(size)
             self.guess_target = (size, self.context.framebuffer([colour], depth), colour, depth)
         return self.guess_target
+
+    def _fill(self, view_projection, world_from_eye, fbo, size):
+        """Pixels still empty after the mesh: a guessed range from the view's own depth map,
+        coloured by the kept view that saw that spot most nearly along the pilot's ray."""
+        if not any(p is not None for p in self.projectors):
+            return
+        w = EYE_DEPTH_WIDTH
+        eye_size = (w, max(1, round(w * size[1] / size[0])))
+        if not self.eye_levels or self.eye_levels[0][0] != eye_size:
+            for level in self.eye_levels:
+                for r in level[1:]:
+                    r.release()
+            if self.eye_depth is not None:
+                for r in self.eye_depth:
+                    r.release()
+            self.eye_levels = _pyramid(self.context, eye_size)
+            depth = self.context.depth_renderbuffer(eye_size)
+            self.eye_depth = (
+                depth, self.context.framebuffer([self.eye_levels[0][1]], depth)
+            )  # fmt: skip
+        target = self.eye_depth[1]
+        target.use()
+        self.context.viewport = (0, 0, *eye_size)
+        self.context.scissor = None
+        self.context.enable_only(moderngl.DEPTH_TEST)
+        target.clear(0, 0, 0, 0, depth=1.0)
+        if self.count and self.eye_depth_vao is not None:
+            self.eye_depth_program["world_to_clip"].write(
+                view_projection.T.astype(np.float32).tobytes()
+            )
+            self.eye_depth_vao.render(moderngl.TRIANGLES, vertices=self.count * 3)
+        self._push_pull(self.eye_levels, None, eye_size)
+        program = self.fill_program
+        program["clip_to_world"].write(
+            np.linalg.inv(view_projection).T.astype(np.float32).tobytes()
+        )
+        program["camera_from_world"].write(self._uniforms["matrices"].tobytes())
+        program["intrinsics"].write(self._uniforms["intrinsics"].tobytes())
+        program["origin"].write(self._uniforms["origins"].tobytes())
+        program["boost"].write(self._uniforms["boost"].tobytes())
+        self.eye_levels[0][3].use(2)
+        self.images.use(0)
+        self.shadows.use(1)
+        _set(
+            program,
+            size=tuple(float(x) for x in size),
+            eye=tuple(float(x) for x in world_from_eye[:3, 3]),
+            forward=tuple(float(x) for x in -world_from_eye[:3, 2]),
+            images=0,
+            shadows=1,
+            filled=2,
+            image_size=self.image_size,
+            floor_height=FLOOR_HEIGHT,
+            floor_clearance=FLOOR_CLEARANCE,
+            far=GUESS_FAR,
+        )
+        fbo.use()
+        self.context.viewport = (0, 0, *size)
+        self.context.enable_only(moderngl.DEPTH_TEST)
+        self.context.depth_func = "<="
+        self.fill_vao.render(moderngl.TRIANGLES, vertices=3)
+        self.context.depth_func = "<"
 
     def _guesses(self, view_projection, fbo, size):
         """Draw the guesses into their own layer (ordinary depth among themselves), then into
@@ -665,23 +836,26 @@ class MeshRenderer:
         self.context.enable_only(moderngl.DEPTH_TEST)
         fbo.clear(*(clear or (0, 0, 0, 1)), depth=1.0)
         view_projection = projection @ _view(world_from_eye)
+        matrices = np.zeros((self.slots, 4, 4), np.float32)
+        intrinsics = np.zeros((self.slots, 4), np.float32)
+        origins = np.zeros((self.slots, 3), np.float32)
+        boost = np.zeros(self.slots, np.float32)
+        for k, entry in enumerate(self.projectors):
+            if entry is None:
+                continue
+            matrices[k] = entry[0].T
+            intrinsics[k] = entry[1]
+            origins[k] = entry[2]
+            boost[k] = 2.0 if k == 0 else 1.0
+        self._uniforms = dict(
+            matrices=matrices, intrinsics=intrinsics, origins=origins, boost=boost
+        )
         if self.count and self.vao is not None:
             program = self.program
             program["view_projection"].write(view_projection.T.astype(np.float32).tobytes())
             program["eye"] = tuple(world_from_eye[:3, 3])
             program["image_size"] = self.image_size
             program["projection"] = 1.0 if self.projection_enabled else 0.0
-            matrices = np.zeros((self.slots, 4, 4), np.float32)
-            intrinsics = np.zeros((self.slots, 4), np.float32)
-            origins = np.zeros((self.slots, 3), np.float32)
-            boost = np.zeros(self.slots, np.float32)
-            for k, entry in enumerate(self.projectors):
-                if entry is None:
-                    continue
-                matrices[k] = entry[0].T
-                intrinsics[k] = entry[1]
-                origins[k] = entry[2]
-                boost[k] = 2.0 if k == 0 else 1.0
             program["camera_from_world"].write(matrices.tobytes())
             program["intrinsics"].write(intrinsics.tobytes())
             program["origin"].write(origins.tobytes())
@@ -693,6 +867,9 @@ class MeshRenderer:
             self.vao.render(moderngl.TRIANGLES, vertices=self.count * 3)
             self.draw_count += 1
         if guess:
+            # Under the live guess (both at depth 1.0; the live frame's own guess wins).
+            self._fill(view_projection, world_from_eye, fbo, size)
+            fbo.use()
             self._guesses(view_projection, fbo, size)
         x, y, w, h = viewport
         self.context.copy_framebuffer(target, fbo) if (
@@ -717,7 +894,10 @@ class MeshRenderer:
             self.shadow_program, self.images, self.shadows, self.shadow_depth, self.shadow_fbo,
             self.push_vao, self.pull_vao, self.push_program, self.pull_program, self.guess_vao,
             self.guess_vbo, self.guess_ibo, self.guess_program, self.composite_vao,
-            self.composite_program,
+            self.composite_program, self.eye_depth_vao, self.eye_depth_program, self.fill_vao,
+            self.fill_program,
+            *(r for level in self.eye_levels for r in level[1:]),
+            *(self.eye_depth or ()),
             *(r for level in self.levels for r in level[1:]),
             *(self.guess_target[1:] if self.guess_target is not None else ()),
         ):  # fmt: skip
