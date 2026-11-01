@@ -45,6 +45,9 @@ GUIDE_COLOUR = 40.0
 # Zones whose image colours (at their centres) differ by at most this are taken as one surface
 # where lookup interpolates between them (no edge to place).
 GUIDE_ALIKE = 0.12
+# The near side of an edge seeds from the part of its footprint that looks least like what is
+# behind it (`Zones._foreground`). ITO_TOF_FOREGROUND=0 turns it off.
+GUIDE_FOREGROUND = os.environ.get("ITO_TOF_FOREGROUND", "1") != "0"
 # Planes from the image (`Zones._planes`, part of guide): neighbouring zones that are one surface
 # and look alike form a region; a region of at least PLANE_ZONES zones that a plane fits (every
 # zone within PLANE_FIT + PLANE_FIT * range metres) is drawn as that plane, so table tops, walls
@@ -303,6 +306,34 @@ class Zones:
         free[inside] = known
         return out, distance, interpolated, free
 
+    def _foreground(self, cr, cc, sr, sc, colour, seen, zc):
+        """Seed cells of the zones (rows cr, columns cc; centre cells sr, sc): a zone nearer than
+        a neighbour (the near side of an edge) reports the nearest thing in its footprint, which
+        may not be what its centre sees (a table leg off-centre, the wall at the centre). Its
+        seed moves to the cell of its footprint that looks least like the farther neighbours
+        (their centre colours), if that cell is unlike them all by more than GUIDE_ALIKE."""
+        g = GUIDE_SCALE
+        sr, sc = sr.copy(), sc.copy()
+        for k, (r, c) in enumerate(zip(cr.tolist(), cc.tolist(), strict=True)):
+            here = self.ranges[r, c]
+            behind = [
+                zc[q]
+                for q in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1))
+                if 0 <= q[0] < self.rows and 0 <= q[1] < self.cols and self.valid[q]
+                and self.ranges[q] > SMALL_JUMP * here and np.isfinite(zc[q]).all()
+            ]  # fmt: skip
+            if not behind:
+                continue
+            patch = colour[r * g : (r + 1) * g, c * g : (c + 1) * g]
+            unlike = (
+                np.min([np.linalg.norm(patch - b, axis=-1) for b in behind], axis=0)
+                * seen[r * g : (r + 1) * g, c * g : (c + 1) * g]
+            )
+            best = int(np.argmax(unlike))
+            if unlike.flat[best] > GUIDE_ALIKE:
+                sr[k], sc[k] = r * g + best // g, c * g + best % g
+        return sr, sc
+
     def _plane_range(self, region, x, y, z, distance):
         """Range along the rays of sensor-frame points (x, y, z, distance) to their region's
         plane; NaN where the plane is behind, parallel, or more than twice as far as the ray's
@@ -494,8 +525,11 @@ class Zones:
         label = np.full((rows, cols), -1, np.int64)
         dist = np.full((rows, cols), np.inf)
         cr, cc = np.nonzero(self.valid)
-        label[cr * g + g // 2, cc * g + g // 2] = cr * self.cols + cc
-        dist[cr * g + g // 2, cc * g + g // 2] = 0.0
+        sr, sc = cr * g + g // 2, cc * g + g // 2
+        if GUIDE_FOREGROUND:
+            sr, sc = self._foreground(cr, cc, sr, sc, colour, seen, zc)
+        label[sr, sc] = cr * self.cols + cc
+        dist[sr, sc] = 0.0
         # Geodesic distance over the 8-neighbour grid by Jacobi relaxation; a cell to label is at
         # most about a zone from a measured zone centre (more past missing zones).
         steps = []
