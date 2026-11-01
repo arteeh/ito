@@ -1,4 +1,3 @@
-import json
 import logging
 import math
 import time
@@ -10,12 +9,10 @@ from imgui_bundle import imgui
 from OpenGL import GL
 from xr.utils import GraphicsAPI, Matrix4x4f
 
-from ito import clock, diagnostics, edition
+from ito import clock, diagnostics
 from ito.app.menu_layout import MenuLayout
 from ito.desktop import DesktopWindow
-from ito.desktop.window import DesktopState
-from ito.reconstruction import SplatUpdate
-from ito.reconstruction.admission import PUBLICATION_PACKETS
+from ito.desktop.window import MESHES_PER_FRAME, DesktopState
 from ito.render import pose
 from ito.render.performance import Performance
 from ito.render.pose import quaternion
@@ -204,15 +201,14 @@ class XRWindow(DesktopWindow):
             def poll(self):
                 return None
 
+            def statistics(self):
+                return {}
+
         if not hasattr(self, "menu_panel"):
             self.menu_panel = Swapchain(self.xr, (768, 768))
         runtime_panel = self.xr.panel
         self.xr.panel, self.panel_size = self.menu_panel, (1.05, 1.05)
         self.overlay.leave = False
-        from ito.render.scene import GaussianBuffer
-
-        if not edition.TOFMESH:  # the ToF mesh keeps its map behind the menu
-            self.renderer.upload(GaussianBuffer(np.empty((0, 4, 4), np.float32)))
         choice = None
 
         def draw(size):
@@ -238,32 +234,23 @@ class XRWindow(DesktopWindow):
         state,
         on_input=None,
         on_sample=None,
-        max_frames=0,
-        metrics=None,
-        save_settings=None,
         menu=None,
     ):
         self.performance = Performance()
         try:
             dispatch = XRDispatch(self, state)
-            dispatch.run(
-                lambda: self._run(source, state, on_input, max_frames, metrics, dispatch, menu),
-                on_sample,
-            )
+            dispatch.run(lambda: self._run(source, state, on_input, dispatch, menu), on_sample)
         except xr.XrException as exc:
             raise RuntimeError(f"OpenXR session failed: {type(exc).__name__}: {exc}") from exc
-        finally:
-            self.performance.close(metrics)
 
-    def _run(self, source, state, on_input, max_frames, metrics, dispatch, menu=None):
+    def _run(self, source, state, on_input, dispatch, menu=None):
         revision = captured_at = None
-        pending = None
         frames = 0
         request = None
         previous = clock.now()
         mouse_until = 0.0
         recenters = self.recenters
-        while not max_frames or frames < max_frames:
+        while True:
             self.xr.poll()
             if self.xr.exiting:
                 break
@@ -286,26 +273,14 @@ class XRWindow(DesktopWindow):
                     log.info("Command: %s", commands[-1])
                 current = self.glided(state(), now)
                 applied = []
-                for _ in range(PUBLICATION_PACKETS):
-                    update = pending if pending is not None else source.poll()
+                for _ in range(MESHES_PER_FRAME):
+                    update = source.poll()
                     if update is None:
                         break
-                    if isinstance(update, SplatUpdate):
-                        if not self.renderer.apply(update):
-                            pending = update
-                            break
-                    elif getattr(update, "kind", None) == "mesh":
-                        self.renderer.upload(update)
-                        applied.append(update)
-                    elif update.revision != revision:
-                        self.renderer.upload(update.gaussians)
-                    if isinstance(update, SplatUpdate):
-                        applied.append(update)
-                    pending = None
+                    self.renderer.upload(update)
+                    applied.append(update)
                     revision, captured_at = update.revision, update.captured_at
-                captures = []
                 rendered = False
-                eye_poses = []
                 if frame.should_render:
                     view_state, views = xr.locate_views(
                         self.xr.session,
@@ -330,13 +305,10 @@ class XRWindow(DesktopWindow):
                         turn = xr.Quaternionf(*turn / np.linalg.norm(turn))
                         middle = matrix(xr.Posef(orientation=turn))
                         middle[:3, 3] = sum(v.pose.position.as_numpy() for v in views) / 2
-                        if not current.flat_video:
-                            self.renderer.sort(current.robot_camera, middle)
                         for index, (view, swapchain) in enumerate(
                             zip(views, self.xr.eyes, strict=True)
                         ):
                             eye = matrix(view.pose)
-                            eye_poses.append(eye.tolist())
                             projection = Matrix4x4f.create_projection_fov(
                                 GraphicsAPI.OPENGL, view.fov, 0.02, 1000
                             ).as_numpy()
@@ -348,15 +320,10 @@ class XRWindow(DesktopWindow):
                                     projection,
                                     target,
                                     viewport=(0, 0, *swapchain.size),
-                                    sort=False,
                                     center=middle,
                                 )
                                 if value.screenshot:
-                                    captures.append(
-                                        self._capture_target(
-                                            target, "left" if index == 0 else "right"
-                                        )
-                                    )
+                                    self._capture_target(target, "left" if index == 0 else "right")
                             projection_views.append(
                                 xr.CompositionLayerProjectionView(
                                     pose=view.pose, fov=view.fov, sub_image=swapchain.sub_image
@@ -416,31 +383,21 @@ class XRWindow(DesktopWindow):
                         if menu:
                             menu(self.xr.panel.size)
                         else:
-                            budget = self.overlay.draw(
+                            self.overlay.draw(
                                 current.status,
                                 1 / max(dt, 1e-6),
-                                self.renderer.count,
-                                None if captured_at is None else max(0, now - captured_at),
                                 False,
                                 request,
-                                live=True,
                                 target=target,
                                 xr_mode=True,
                                 performance=self.performance.last,
                                 driving=any(value.movement),
                                 panel_shown=self.panel_visible,
                             )
-                            if budget is not None:
-                                if budget <= self.splat_limit:
-                                    source.set_max_splats(budget)
-                                else:
-                                    self.overlay.error = (
-                                        f"This GPU supports at most {self.splat_limit:,} splats"
-                                    )
                         dispatch.ui(io, self.overlay.commands)
                         self.overlay.commands.clear()
                         if value.screenshot:
-                            captures.append(self._capture_target(target, "panel"))
+                            self._capture_target(target, "panel")
                         GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, target.glo)
                         GL.glBindFramebuffer(GL.GL_DRAW_FRAMEBUFFER, 0)
                         GL.glBlitFramebuffer(
@@ -476,11 +433,7 @@ class XRWindow(DesktopWindow):
                 if rendered:
                     self.context.finish()
                     period = frame.predicted_display_period / 1e9
-                    if hasattr(source, "display_completed"):
-                        source.display_completed(now, period)
-                    statistics = self.performance.worker_statistics | (
-                        source.statistics() if hasattr(source, "statistics") else {}
-                    )
+                    statistics = source.statistics()
                     statistics.update(
                         camera_hz=current.status.rates[1],
                         pilot_input_hz=current.status.rates[0],
@@ -513,42 +466,6 @@ class XRWindow(DesktopWindow):
                     rendered=rendered,
                     performance=performance,
                 )
-                if metrics:
-                    metrics.write(
-                        json.dumps(
-                            {
-                                "frame": frames,
-                                "time": now,
-                                "frame_ms": dt * 1000,
-                                "predicted_display_time": at,
-                                "should_render": bool(frame.should_render),
-                                "rendered": rendered,
-                                "performance": performance,
-                                "capture_to_splat_visible_ms": self.performance.latest_latency,
-                                "head": value.head.tolist(),
-                                "head_flags": self.actions.head_flags,
-                                "eyes": eye_poses,
-                                "hands": {k: p.model_dump() for k, p in value.hands.items()},
-                                "trackers": {k: p.model_dump() for k, p in value.trackers.items()},
-                                "axes": value.axes,
-                                "commands": commands,
-                                "active": value.active,
-                                "gaussians": self.renderer.count,
-                                "sorts": self.renderer.sorts,
-                                "panel_visible": self.panel_visible,
-                                "revision": revision,
-                                "link": current.status.link,
-                                "robot_state": current.status.robot_state,
-                                "e_stop": current.status.e_stop,
-                                "session": self.xr.state.name,
-                                "recenters": self.recenters,
-                                "haptic_pulses": self.actions.haptic_pulses,
-                                "captures": captures,
-                            }
-                        )
-                        + "\n"
-                    )
-                    metrics.flush()
                 if value.quit or self.overlay.leave:
                     break
 

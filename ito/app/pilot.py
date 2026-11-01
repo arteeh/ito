@@ -8,24 +8,20 @@ import traceback
 from collections import deque
 from dataclasses import replace
 
-from ito import clock, diagnostics, edition
+from ito import clock, diagnostics
 from ito.desktop import DesktopState, PilotStatus
 from ito.desktop.settings import load as app_settings
 from ito.link import PairingError, connect
-from ito.link.audio import Audio
 from ito.protocol import Command, FrameMetadata, Motion, Paired, PilotState, Pose, Sensors, Status
 from ito.rates import CounterRate, Rate
-from ito.reconstruction import CLOSE_WAIT, Reconstruction
 from ito.render import pose
 from ito.render.pose import quaternion
+from ito.tofmesh.worker import CLOSE_WAIT, TofMesh
 
 from . import settings
 from .frames import FrameJoin, camera_matrix
 
 log = logging.getLogger(__name__)
-TRACKING_LOST = 2.0
-TRACKING_STEADY = 1.0
-TRACKING_GAP = 0.5
 RESTART_FIRST, RESTART_LONGEST, RESTART_HEALTHY = 1.0, 30.0, 60.0
 # ToF mesh: the eye is the robot camera's position averaged over the last Microduck gait period,
 # moved on by half the change from the period before's average. A walking duck's head sways
@@ -43,7 +39,7 @@ INPUT_FRESH, SHORT_STALL = 0.2, 1.0
 # one (1/120 s) made a desktop pilot's samples wait out the interval, which doubled
 # input-to-robot latency on Windows (#31).
 SEND_INTERVAL, HEARTBEAT = 0.002, 1 / 60
-# Quitting waits for the workers as long as their close() may take (reconstruction.CLOSE_WAIT);
+# Quitting waits for the workers as long as their close() may take (worker.CLOSE_WAIT);
 # a healthy one is gone in about 0.6 s.
 LINK_WAIT, WORKER_WAIT = 1.0, CLOSE_WAIT
 
@@ -58,28 +54,17 @@ class Pilot:
         address,
         *,
         defaults=None,
-        splat_limit=None,
         overrides=None,
-        camera=None,
-        cameras=1,
-        audio_source="device",
-        audio_sink="device",
-        persist=True,
         code=None,
         credential=None,
     ):
-        self.audio_options = (audio_source, audio_sink)
-        self.audio = None
-        self.mic_muted = self.speaker_muted = False
-        self.address, self.camera_name, self.cameras = address, camera, cameras
-        self.persist = persist
+        self.address = address
         self.code = code
         self.credential = credential
         self.refusal = None
         self.description = None
         self.settings = defaults or settings.Settings(**app_settings().model_dump())
         self.defaults = self.settings
-        self.splat_limit = splat_limit
         self.overrides = overrides or {}
         self.state = DesktopState(status=PilotStatus(link="CONNECTING"))
         self.telemetry = {}
@@ -90,52 +75,26 @@ class Pilot:
         self.stalled = False
         self.resumed = False
         self.focus_hold = False
-        self.budget_change = None
         self.worker = None
         self.worker_lock = threading.Lock()
         self.retiring = []
         self.failure = None
-        self.backend = "rgbd"
         self.reconstruction_status = ""
-        self.tracked_frames = 0
-        self.tracking = False
-        self.tracking_steady_since = 0.0
-        self.slam_view = False
         self.restart_at = None
         self.stop = threading.Event()
         self.thread = None
         self.loop = self.task = None
-        self.matched_frames = 0
         self.connections = 0
         self.camera_pose = pose()
         self.eye_positions = deque()  # (time, camera position) for EYE_AVERAGE
-        self.last_tracking = 0.0
         self.settings_revision = 0
         self.last_frame = 0.0
-        self.extrinsics = pose()
         self.camera_rate = Rate()
-        self.motion_rate = Rate()
         self.motion_time = -1.0
         self.backend_rate = CounterRate()
 
-    @property
-    def max_splats(self):
-        return min(self.settings.max_splats, self.splat_limit or self.settings.max_splats)
-
-    def set_max_splats(self, value):
-        if self.splat_limit is not None and value > self.splat_limit:
-            raise ValueError(f"This GPU supports at most {self.splat_limit:,} slots")
-        settings.Settings.model_validate(self.settings.model_dump() | {"max_splats": value})
-        self.budget_change = value
-
     def input(self, value):
         for command in value.commands:
-            if command in {"mute_mic", "mute_speaker"}:
-                name = "mic_muted" if command == "mute_mic" else "speaker_muted"
-                setattr(self, name, not getattr(self, name))
-                if self.audio:
-                    setattr(self.audio, name, getattr(self, name))
-                continue
             if command == "focus_stop":
                 self.focus_hold = self.resumed and (self.armed or self.stalled)
             else:
@@ -162,15 +121,6 @@ class Pilot:
             return {}
         try:
             return self.worker.statistics() if self.worker is not None else {}
-        finally:
-            self.worker_lock.release()
-
-    def display_completed(self, began, period):
-        if not self.worker_lock.acquire(False):
-            return
-        try:
-            if self.worker is not None and not self.failure:
-                self.worker.display_completed(began, period)
         finally:
             self.worker_lock.release()
 
@@ -221,35 +171,14 @@ class Pilot:
                 e_stop=status.state == "e-stopped" if status else old.e_stop,
                 robot_state=status.state if status else old.robot_state if link == old.link else "",
                 detail=detail or (f"{status.state}: {status.reason}" if status else ""),
-                input_latency_ms=self.telemetry.get("pilot_input_latency_ms") if peer else None,
                 rates=rates,
-                motion_hz=self.motion_rate.hz()
-                if peer and peer.description.motion_noise is not None
-                else None,
                 reconstruction=self.reconstruction_status,
-                audio=self._audio_status(peer),
-                robot_audio=self.telemetry.get("audio", "") if peer else "",
-                robot_microphone=bool(peer) and "microphone" in peer.description.capabilities,
-                robot_speaker=bool(peer) and "speaker" in peer.description.capabilities,
-                mic_muted=self.mic_muted,
-                speaker_muted=self.speaker_muted,
                 armed=self.armed,
                 focus_hold=self.focus_hold,
             ),
         )
 
-    def _audio_status(self, peer):
-        if not peer or not self.audio:
-            return ""
-        capabilities = peer.description.capabilities
-        parts = [f"mic {self.audio.input_status}"] if "speaker" in capabilities else []
-        if "microphone" in capabilities:
-            parts.append(f"speaker {self.audio.output_status}")
-        return "Audio: " + " | ".join(parts) if parts else ""
-
     def _save(self, name):
-        if not self.persist:
-            return False
         try:
             settings.save(self.address, name, self.settings)
             settings.remember(self.address, name, self.credential)
@@ -272,28 +201,15 @@ class Pilot:
                 age_ms=(clock.now() - captured) * 1000,
             )
             return
-        rgb, depth, camera, _ = FrameJoin.arrays(pair, peer.clock)
+        rgb, camera = FrameJoin.arrays(pair)
         self.last_frame = clock.now()
         self.state = replace(self.state, video=rgb, video_time=captured)
-        if self.backend in ("rgbd", "tofmesh") and camera is not None:
-            self._anchor(camera, captured if self.backend == "tofmesh" else None)
+        if camera is not None:
+            self._anchor(camera, captured)
         if self.worker is None or self.failure:
             return
-        if self.backend == "rgbd" and (depth is None or camera is None):
-            return
-        if self.backend == "slam":
-            camera = self._prior(camera, pair[1])
         self.camera_rate.tick()
-        try:
-            accepted = self.worker.submit(rgb, depth, camera, captured)
-        except ValueError as exc:
-            self.failure = str(exc)
-            self.reconstruction_status = str(exc) + "; showing flat camera feed"
-            self.state = replace(self.state, flat_video=True)
-            return
-        if accepted:
-            self.matched_frames += 1
-            self.last_frame = clock.now()
+        self.worker.submit(rgb, camera, captured)
 
     def _motion(self, message, peer):
         fresh = []
@@ -302,42 +218,35 @@ class Pilot:
             if local <= self.motion_time:
                 continue
             self.motion_time = local
-            self.motion_rate.tick()
             fresh.append(
                 (local, camera_matrix(sample.camera_pose), sample.angular_velocity, sample.state)
             )
         worker = self.worker
-        if fresh and worker is not None and not self.failure and self.backend == "tofmesh":
+        if fresh and worker is not None and not self.failure:
             worker.motion(fresh)
         return fresh
 
     def _sensors(self, message, peer):
-        """ToF ranges: SLAM's one-time display scale (nothing else from the head's sensors
-        reaches SLAM), or the ToF mesh's geometry."""
+        """Head IMU and ToF ranges: the mesh's geometry."""
         worker = self.worker
-        if worker is not None and not self.failure and self.backend == "tofmesh":
-            local = peer.clock.remote_to_local
-            worker.imu(
-                [
-                    (
-                        local(s.time),
-                        s.orientation,
-                        camera_matrix(imu.mount)[:3, :3],
-                        s.angular_velocity,
-                    )
-                    for imu in message.imu
-                    for s in imu.samples
-                    if s.orientation is not None
-                ]
-            )
-        if (
-            worker is None
-            or self.failure
-            or self.backend not in ("slam", "tofmesh")
-            or not message.ranges
-        ):
+        if worker is None or self.failure:
             return
         local = peer.clock.remote_to_local
+        worker.imu(
+            [
+                (
+                    local(s.time),
+                    s.orientation,
+                    camera_matrix(imu.mount)[:3, :3],
+                    s.angular_velocity,
+                )
+                for imu in message.imu
+                for s in imu.samples
+                if s.orientation is not None
+            ]
+        )
+        if not message.ranges:
+            return
         received = clock.now()
         worker.ranges(
             [
@@ -359,38 +268,27 @@ class Pilot:
         retiring = [(c, w) for c, w in self.retiring if c.is_alive() or w.process.is_alive()]
         self.retiring = retiring + [(closer, worker)]
 
-    def _prior(self, camera, metadata):
-        if camera is not None:
-            return camera
-        result = self.extrinsics.copy()
-        if metadata.head_angles is not None:
-            pan, tilt = metadata.head_angles
-            result[:3, :3] = pose(yaw=pan, pitch=tilt)[:3, :3] @ result[:3, :3]
-        return pose(yaw=metadata.body_yaw) @ result
-
-    def _anchor(self, camera, averaged_at=None):
+    def _anchor(self, camera, captured):
         """Only the camera's position anchors the pilot's eye.
 
         The pilot's head is the whole view rotation, in the gravity-aligned world anchored
         where the robot started. The robot turns its head and body to look where the pilot
         looks, but those turns never rotate the view: the pilot is never turned by the robot.
-        With `averaged_at` (a frame's capture time) the eye is the average position over the
-        last EYE_AVERAGE seconds, moved on by half its change from the EYE_AVERAGE before.
+        The eye is the average position over the EYE_AVERAGE seconds before the frame
+        `captured`, moved on by half its change from the EYE_AVERAGE before.
         """
         self.camera_pose = camera
-        eye = camera[:3, 3]
-        if averaged_at is not None:
-            kept = self.eye_positions
-            if kept and averaged_at < kept[-1][0]:
-                kept.clear()  # a new session's clock
-            kept.append((averaged_at, eye.copy()))
-            while averaged_at - kept[0][0] > 2 * EYE_AVERAGE:
-                kept.popleft()
-            last = [p for t, p in kept if averaged_at - t <= EYE_AVERAGE]
-            before = [p for t, p in kept if averaged_at - t > EYE_AVERAGE]
-            eye = sum(last) / len(last)
-            if before:
-                eye = eye + (eye - sum(before) / len(before)) / 2
+        kept = self.eye_positions
+        if kept and captured < kept[-1][0]:
+            kept.clear()  # a new session's clock
+        kept.append((captured, camera[:3, 3].copy()))
+        while captured - kept[0][0] > 2 * EYE_AVERAGE:
+            kept.popleft()
+        last = [p for t, p in kept if captured - t <= EYE_AVERAGE]
+        before = [p for t, p in kept if captured - t > EYE_AVERAGE]
+        eye = sum(last) / len(last)
+        if before:
+            eye = eye + (eye - sum(before) / len(before)) / 2
         self.state = replace(
             self.state,
             robot_camera=pose(eye),
@@ -399,16 +297,9 @@ class Pilot:
 
     async def _session(self, peer):
         self.description = description = peer.description
-        camera = next(
-            (
-                c
-                for c in description.cameras
-                if self.camera_name is None or c.name == self.camera_name
-            ),
-            None,
-        )
-        if camera is None:
-            raise ValueError("Driver has no selected camera")
+        if not description.cameras:
+            raise ValueError("Driver has no camera")
+        camera = description.cameras[0]
         selected = settings.load(self.address, description.name, self.defaults)
         self.settings = settings.Settings.model_validate(selected.model_dump() | self.overrides)
         self.overrides = {}
@@ -416,7 +307,7 @@ class Pilot:
         paired = peer.credential_received.is_set()
         if paired:
             self.credential = peer.credential
-        if self._save(description.name) or (paired and not self.persist):
+        if self._save(description.name):
             if paired and peer.send(Paired(pilot=self.credential.pilot)):
                 self.code = None
         self.telemetry = {}
@@ -428,28 +319,14 @@ class Pilot:
             if action != "resume":
                 safety.append(action)
         self.commands.extend(safety)
-        choice = self.settings.reconstruction
-        self.backend = (
-            ("rgbd" if {"depth", "camera-pose"} <= set(description.capabilities) else "slam")
-            if choice == "auto"
-            else choice
-        )
-        if edition.TOFMESH:
-            # This build carries the ToF mesh only; a flat feed stays possible.
-            self.backend = "video" if choice == "video" else "tofmesh"
-        self.reconstruction_status = (
-            "Flat camera feed" if self.backend == "video" else "Starting " + self.backend
-        )
-        self.tracked_frames = 0
-        self.tracking = self.slam_view = False
+        self.reconstruction_status = "Starting the ToF mesh"
         self.motion_time = -1.0
         self.restart_at = None
         restart_delay = RESTART_FIRST
         worker_started = 0.0
-        self.extrinsics = camera_matrix(camera.extrinsics)
         self.state = replace(
             self.state,
-            flat_video=self.backend != "rgbd",
+            flat_video=True,
             video=None,
             video_fov=2 * math.atan(camera.intrinsics.width / (2 * camera.intrinsics.fx)),
         )
@@ -458,26 +335,9 @@ class Pilot:
             nonlocal worker_started
             worker_started = clock.now()
             with self.worker_lock:
-                if self.backend == "tofmesh":
-                    from ito.tofmesh.worker import TofMesh
+                self.worker = TofMesh(camera.intrinsics, capture_delay=camera.capture_delay)
 
-                    self.worker = TofMesh(camera.intrinsics, capture_delay=camera.capture_delay)
-                    return
-                self.worker = Reconstruction(
-                    camera.intrinsics,
-                    max_splats=min(self.max_splats, self.splat_limit or self.max_splats),
-                    precision=self.settings.precision,
-                    input_resolution=self.settings.input_resolution,
-                    keyframes=self.settings.keyframes,
-                    backend=self.backend,
-                )
-
-        if self.backend != "video":
-            reconstruct()
-        self.audio.start(
-            capture="speaker" in description.capabilities,
-            playback="microphone" in description.capabilities,
-        )
+        reconstruct()
         self.connections += 1
         self._status("CONNECTED", "Resume to begin piloting", peer=peer)
         joined = FrameJoin()
@@ -545,41 +405,8 @@ class Pilot:
                     message = self.worker.status()
                     if message:
                         self.reconstruction_status = message
-                    if self.backend == "slam":
-                        tracked = self.worker.pose()
-                        if tracked:
-                            transform, count, self.tracking, _ = tracked
-                            if count != self.tracked_frames:
-                                if now - self.last_tracking > TRACKING_GAP:
-                                    self.tracking_steady_since = now
-                                self.last_tracking = now
-                            self.tracked_frames = count
-                        live = self.tracking and now - self.last_tracking < TRACKING_LOST
-                        steady = (
-                            live
-                            and now - self.last_tracking < TRACKING_GAP
-                            and now - self.tracking_steady_since >= TRACKING_STEADY
-                        )
-                        if live and tracked:
-                            self._anchor(transform)
-                        elif self.tracking and not live:
-                            self.reconstruction_status = (
-                                "SLAM tracking paused; showing flat camera feed"
-                            )
-                        view = live if self.slam_view else steady
-                        if view != self.slam_view:
-                            diagnostics.event(
-                                "slam_view",
-                                shown=view,
-                                tracking=self.tracking,
-                                tracking_age_ms=(now - self.last_tracking) * 1000,
-                                motion_age_ms=(now - self.motion_time) * 1000,
-                            )
-                        self.slam_view = view
-                        self.state = replace(self.state, flat_video=not self.slam_view)
-                    elif self.backend == "tofmesh":
-                        # The flat feed until the first triangles arrive.
-                        self.state = replace(self.state, flat_video=not self.worker.has_mesh)
+                    # The flat feed until the first triangles arrive.
+                    self.state = replace(self.state, flat_video=not self.worker.has_mesh)
                 if self.failure:
                     self.reconstruction_status = self.failure + "; showing flat camera feed"
                     if self.restart_at is not None:
@@ -590,30 +417,21 @@ class Pilot:
                     with self.worker_lock:
                         failed, self.worker = self.worker, None
                     self._retire(failed)
-                    if self.backend in ("rgbd", "tofmesh") or self.tracked_frames:
-                        if now - worker_started >= RESTART_HEALTHY:
-                            restart_delay = RESTART_FIRST
-                        self.restart_at = now + restart_delay
-                        restart_delay = min(RESTART_LONGEST, restart_delay * 2)
+                    if now - worker_started >= RESTART_HEALTHY:
+                        restart_delay = RESTART_FIRST
+                    self.restart_at = now + restart_delay
+                    restart_delay = min(RESTART_LONGEST, restart_delay * 2)
                 if self.restart_at is not None and now >= self.restart_at:
                     self.restart_at = self.failure = None
-                    self.reconstruction_status = "Restarting " + self.backend
-                    self.tracked_frames = 0
-                    self.tracking = self.slam_view = False
+                    self.reconstruction_status = "Restarting the ToF mesh"
                     reconstruct()
-                    self.state = replace(self.state, flat_video=self.backend != "rgbd")
+                    self.state = replace(self.state, flat_video=True)
                 if now - self.last_frame > 5:
                     raise ConnectionError("No synchronized camera frames for five seconds")
                 for task in tasks:
                     if task.done():
                         task.result()
                         raise ConnectionError("Camera stream ended")
-                if self.budget_change is not None:
-                    value, self.budget_change = self.budget_change, None
-                    self.settings = self.settings.model_copy(update={"max_splats": value})
-                    if self.worker:
-                        self.worker.set_max_splats(value)
-                    self._save(description.name)
                 while pending or self.commands:
                     if pending is None:
                         given = self.commands.popleft()
@@ -663,16 +481,6 @@ class Pilot:
                         age_ms=(now - value.timestamp) * 1000,
                         sequence=sequence,
                     )
-                    if self.audio:
-                        diagnostics.event(
-                            "audio_state",
-                            interval=1,
-                            input=self.audio.input_status,
-                            output=self.audio.output_status,
-                            mic_muted=self.mic_muted,
-                            speaker_muted=self.speaker_muted,
-                            **self.audio.counters,
-                        )
                     matrix = value.head
                     head = Pose(
                         position=tuple(map(float, matrix[:3, 3])),
@@ -740,14 +548,9 @@ class Pilot:
                     "CONNECTING" if not self.connections else "RECONNECTING",
                     "Connecting to " + self.address,
                 )
-                self.audio = Audio(*self.audio_options)
-                self.audio.mic_muted = self.mic_muted
-                self.audio.speaker_muted = self.speaker_muted
                 async with await connect(
                     self.address,
-                    video_tracks=self.cameras,
                     connect_timeout=8,
-                    audio_io=self.audio,
                     code=self.code,
                     credential=self.credential,
                 ) as peer:
@@ -759,8 +562,7 @@ class Pilot:
                 log.warning("Pilot connection: %s", exc)
                 if self.credential is not None:
                     self.credential = None
-                    if self.persist:
-                        settings.forget_credential(self.address)
+                    settings.forget_credential(self.address)
                     if self.code is not None:
                         continue
                 # Retrying the same code cannot succeed and counts against the robot's limit.
@@ -790,8 +592,6 @@ class Pilot:
         that hears nothing more neutralizes within its input timeout.
         """
         self.stop.set()
-        if self.audio:
-            self.audio.close_timeout = 0.3
         if self.loop and self.task:
             with contextlib.suppress(RuntimeError):
                 self.loop.call_soon_threadsafe(self.task.cancel)

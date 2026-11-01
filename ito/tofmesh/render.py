@@ -19,12 +19,7 @@ hatching), and broken where neighbouring guesses jump (an edge). Guesses are dra
 of their own with ordinary depth (so nearer guesses hide farther ones from any eye position),
 and that layer is composited only into pixels where no mesh was drawn: a guess never covers a
 measured surface and gives way as soon as the ToF measures that spot.
-
-Same draw contract as the splat renderer (ito/render/renderer.py), so the desktop and XR windows
-can use either: draw(robot_camera, head, projection, target, viewport=...).
 """
-
-import os
 
 import moderngl
 import numpy as np
@@ -64,7 +59,6 @@ uniform vec4 intrinsics[K];      // fx, fy, cx, cy in image pixels
 uniform vec3 origin[K];
 uniform float boost[K];          // 0: empty slot
 uniform vec2 image_size;
-uniform float projection;        // 0: vertex colours only
 uniform vec3 eye;
 in vec3 v_world;
 in vec3 v_normal;
@@ -86,7 +80,7 @@ void main() {
     vec3 sum = vec3(0.0);
     float total = 0.0;
     for (int k = 0; k < K; ++k) {
-        if (boost[k] <= 0.0 || projection <= 0.0) continue;
+        if (boost[k] <= 0.0) continue;
         vec4 c = camera_from_world[k] * vec4(v_world, 1.0);
         float z = -c.z;
         if (z < 0.05) continue;
@@ -435,12 +429,6 @@ def pinhole_projection(fx, fy, cx, cy, width, height, near=NEAR, far=FAR):
     return p
 
 
-def _guess_setting():
-    """On unless ITO_GUESS_DEPTH=0. (Not an app setting: a settings file with a field the main
-    edition does not know would make main builds drop the user's settings.)"""
-    return os.environ.get("ITO_GUESS_DEPTH", "1").lower() not in {"0", "off", "false", "no"}
-
-
 def _set(program, **values):
     for name, value in values.items():
         if name in program:  # the compiler drops unused uniforms
@@ -448,9 +436,7 @@ def _set(program, **values):
 
 
 class MeshRenderer:
-    def __init__(
-        self, context: moderngl.Context, slots=PROJECTORS, image_size=(640, 360), guess=None
-    ):
+    def __init__(self, context: moderngl.Context, slots=PROJECTORS, image_size=(640, 360)):
         self.context = context
         self.slots = slots
         self.image_size = tuple(image_size)
@@ -476,15 +462,11 @@ class MeshRenderer:
         self.vao = self.shadow_vao = None
         self.capacity = (0, 0)
         self.count = 0  # triangles
-        self.sorts = 0
-        self.draw_count = 0
         self.target = None
-        self.projection_enabled = True
         self.epoch = None  # the worker run whose mesh and projectors are shown
         # Kept views whose distance map is older than the mesh: refreshed one per drawn frame,
         # so a mesh update (~12.7 a second) redraws only the live view's map at once.
         self.shadow_stale = set()
-        self.guess_enabled = _guess_setting() if guess is None else bool(guess)
         self.guess_dirty = False
         self.levels = []
         self.push_program = self.pull_program = self.push_vao = self.pull_vao = None
@@ -493,8 +475,7 @@ class MeshRenderer:
         self.guess_target = None  # (size, framebuffer, colour texture, depth)
         self.eye_depth_program = self.eye_depth_vao = self.fill_program = self.fill_vao = None
         self.eye_depth = None  # the view's own depth map: texture, depth buffer, framebuffer
-        if self.guess_enabled:  # ITO_GUESS_DEPTH=0: none of its GPU resources
-            self._guess_resources()
+        self._guess_resources()
 
     def _guess_resources(self):
         """Push-pull pyramid over the live projector's distance map, the guess grid and the
@@ -813,9 +794,6 @@ class MeshRenderer:
         self.context.depth_func = "<"
 
     # -- drawing -------------------------------------------------------------------------
-    def sort(self, robot_camera, head):
-        """Meshes need no sorting; kept for the windows' splat-renderer contract."""
-
     def _offscreen(self, size):
         if self.target is None or self.target[0] != size:
             if self.target is not None:
@@ -835,7 +813,6 @@ class MeshRenderer:
         *,
         clear=(0.025, 0.035, 0.055, 1.0),
         viewport=None,
-        sort=True,
     ):
         world_from_eye = validate_pose(robot_camera) @ validate_pose(head)
         projection = np.asarray(projection, dtype=np.float64)
@@ -848,7 +825,7 @@ class MeshRenderer:
         if min(viewport[2:]) <= 0:
             raise ValueError("Viewport dimensions must be positive")
         self._shadows()
-        guess = self.guess_enabled and self.projection_enabled and self.projectors[0] is not None
+        guess = self.projectors[0] is not None
         if guess:
             self._guess_pyramid()
         size = tuple(int(v) for v in viewport[2:])
@@ -878,7 +855,6 @@ class MeshRenderer:
             program["view_projection"].write(view_projection.T.astype(np.float32).tobytes())
             program["eye"] = tuple(world_from_eye[:3, 3])
             program["image_size"] = self.image_size
-            program["projection"] = 1.0 if self.projection_enabled else 0.0
             program["camera_from_world"].write(matrices.tobytes())
             program["intrinsics"].write(intrinsics.tobytes())
             program["origin"].write(origins.tobytes())
@@ -888,7 +864,6 @@ class MeshRenderer:
             program["images"] = 0
             program["shadows"] = 1
             self.vao.render(moderngl.TRIANGLES, vertices=self.count * 3)
-            self.draw_count += 1
         if guess:
             # Under the live guess (both at depth 1.0; the live frame's own guess wins).
             self._fill(view_projection, world_from_eye, fbo, size)

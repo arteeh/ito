@@ -2,11 +2,10 @@ import asyncio
 from collections.abc import Sequence
 
 import aiohttp
-from aiortc import MediaStreamTrack, RTCIceServer, RTCSessionDescription
+from aiortc import RTCIceServer, RTCSessionDescription
 from pydantic import Field, ValidationError
 
 from ito.link import pairing
-from ito.link.audio import opus
 from ito.link.peer import Peer
 from ito.protocol import VERSION, Credential, Model, Token
 
@@ -27,33 +26,17 @@ class Challenge(Model):
 async def connect(
     address: str,
     *,
-    video_tracks: int = 1,
-    receive_audio: bool = True,
-    audio_io=None,
-    audio: MediaStreamTrack | None = None,
     ice_servers: Sequence[RTCIceServer] = (),
     connect_timeout: float = 15,
     code: str | None = None,
     credential: Credential | None = None,
 ) -> Peer:
-    if not 0 <= video_tracks <= 16:
-        raise ValueError("video_tracks must be between 0 and 16")
-    if audio is not None and audio.kind != "audio":
-        raise ValueError("pilot outgoing track must be audio")
     if "://" not in address:
         address = "http://" + address
-    peer = Peer("pilot", ice_servers=ice_servers, audio=audio_io)
+    peer = Peer("pilot", ice_servers=ice_servers)
     try:
         async with asyncio.timeout(connect_timeout):
-            for _ in range(video_tracks):
-                peer.pc.addTransceiver("video", direction="recvonly")
-            if audio_io is not None:
-                audio = audio_io.track
-            if audio is not None:
-                peer.pc.addTrack(audio)
-            elif receive_audio:
-                peer.pc.addTransceiver("audio", direction="recvonly")
-            opus(peer.pc)
+            peer.pc.addTransceiver("video", direction="recvonly")
             if not ice_servers:
                 from ito.link.routing import direct_interface
 

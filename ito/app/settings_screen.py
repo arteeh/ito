@@ -3,12 +3,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 from imgui_bundle import imgui
 
-from ito import diagnostics, edition
-from ito.desktop.settings import KEYFRAMES, AppSettings, load, save
-from ito.reconstruction.slam import map_bytes
-
-# The settings screen knows no camera: map sizes are costed for a 16:9 one, as Microduck's.
-COSTED = (1280, 720)
+from ito import diagnostics
+from ito.desktop.settings import AppSettings, load, save
 
 
 class SettingsScreen:
@@ -18,7 +14,6 @@ class SettingsScreen:
         self.placed = layout.placed
         self.settings = load()
         self.error = self.save_error = None
-        self.typed_splats = str(self.settings.max_splats)
         self.saved = self.settings
         self.writes = []
         self.writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ito-settings")
@@ -27,14 +22,9 @@ class SettingsScreen:
         try:
             selected = AppSettings.model_validate(self.settings.model_dump() | values)
         except ValueError as exc:
-            self.error = (
-                "Max splats must be between 1 and 2,147,483,647."
-                if "max_splats" in values
-                else str(exc).splitlines()[0]
-            )
+            self.error = str(exc).splitlines()[0]
             return
         self.settings, self.error = selected, None
-        self.typed_splats = str(selected.max_splats)
         self.writes.append((selected, self.writer.submit(self.persist, selected)))
 
     @staticmethod
@@ -57,105 +47,12 @@ class SettingsScreen:
                 self.save_error = f"Could not save settings: {exc.strerror or exc}"
                 if not self.writes:
                     self.settings = self.saved
-                    self.typed_splats = str(self.saved.max_splats)
 
     def close(self):
         self.writer.shutdown(wait=True)
 
-    def _tofmesh(self):
-        self.theme.heading("ToF mesh")
-        imgui.text_wrapped(
-            "This build maps with the robot's time-of-flight sensor, placed by the robot's own "
-            "pose (odometry and IMU), and paints the mesh with its camera frames. No SLAM, no "
-            "AI model, nothing to tune here."
-        )
-
-    def _reconstruction(self, s, xr_mode):
-        self.theme.heading("MASt3R-SLAM")
-        imgui.text("Precision")
-        precision_widths = self.layout.row(1, 1)
-        for index, value in enumerate(("full", "half")):
-            if index:
-                imgui.same_line()
-            if s.precision == value:
-                imgui.push_style_color(imgui.Col_.button, self.theme.color("selected"))
-            clicked = self.layout.button(value.title(), value, precision_widths[index])
-            if s.precision == value:
-                imgui.pop_style_color()
-            if clicked and s.precision != value:
-                self.change(precision=value)
-        imgui.text_disabled("Half: faster, less VRAM; may lose detail.")
-        imgui.text("Input resolution")
-        steps = (25, 50, 75, 100)
-        index = steps.index(s.input_resolution)
-        minus, value_width, plus = self.layout.row(1, 1.85, 1)
-        if self.layout.button("-##resolution", "resolution minus", minus, disabled=index == 0):
-            self.change(input_resolution=steps[index - 1])
-        imgui.same_line()
-        value = f"{s.input_resolution}%"
-        with self.theme.font("numeric"):
-            self.layout.button(value, "resolution value", value_width, disabled=True)
-        imgui.same_line()
-        if self.layout.button("+##resolution", "resolution plus", plus, disabled=index == 3):
-            self.change(input_resolution=steps[index + 1])
-        imgui.text_disabled(
-            "Lower: faster, less VRAM, blurrier. Keeps the whole frame. Below 100% leaves "
-            "upstream MASt3R-SLAM's 512 pixels, which it is tuned for."
-        )
-        imgui.text("Map size (keyframes)")
-        index = KEYFRAMES.index(s.keyframes)
-        minus, value_width, plus = self.layout.row(1, 1.85, 1)
-        if self.layout.button("-##keyframes", "keyframes minus", minus, disabled=index == 0):
-            self.change(keyframes=KEYFRAMES[index - 1])
-        imgui.same_line()
-        with self.theme.font("numeric"):
-            self.layout.button(str(s.keyframes), "keyframes value", value_width, disabled=True)
-        imgui.same_line()
-        last = len(KEYFRAMES) - 1
-        if self.layout.button("+##keyframes", "keyframes plus", plus, disabled=index == last):
-            self.change(keyframes=KEYFRAMES[index + 1])
-        costs = ", ".join(
-            f"{count}: {map_bytes(count, *COSTED, s.input_resolution) / 1e9:.1f} GB"
-            for count in KEYFRAMES
-        )
-        imgui.text_disabled(f"VRAM at {s.input_resolution}% input (16:9 camera): {costs}.")
-        imgui.text_disabled(
-            "Taken at start, besides MASt3R's weights and retrieval (about 3.0 GB Full, 1.7 GB "
-            "Half). 512 is upstream's. A full map tracks and relocalises on but maps nothing "
-            "new. Applies at the next connection."
-        )
-        self.theme.heading("Scene")
-        imgui.text("Max splats")
-        minus, value_width, plus = self.layout.row(1, 1.85, 1)
-        if self.layout.button("-##splats", "splats minus", minus, disabled=s.max_splats == 1):
-            self.change(max_splats=max(1, ((s.max_splats - 1) // 100_000) * 100_000))
-        imgui.same_line()
-        if xr_mode:
-            with self.theme.font("numeric"):
-                self.layout.button(f"{s.max_splats:,}", "splats value", value_width, disabled=True)
-        else:
-            with self.theme.font("numeric"), self.layout.field(value_width):
-                edited, self.typed_splats = imgui.input_text("##max splats", self.typed_splats)
-            self.placed("splats value")
-            if edited:
-                try:
-                    self.change(max_splats=int(self.typed_splats.replace(",", "")))
-                except ValueError:
-                    self.error = "Max splats must be a positive whole number."
-        imgui.same_line()
-        if self.layout.button(
-            "+##splats", "splats plus", plus, disabled=s.max_splats == (1 << 31) - 1
-        ):
-            self.change(max_splats=min((1 << 31) - 1, (s.max_splats // 100_000 + 1) * 100_000))
-        imgui.text_disabled("Higher: more scene detail, more VRAM and draw time.")
-        imgui.text_disabled("The live VRAM manager may keep fewer splats.")
-
-    def draw(self, *, xr_mode=False):
+    def draw(self):
         s = self.settings
-        if edition.TOFMESH:
-            self._tofmesh()
-        else:
-            self._reconstruction(s, xr_mode)
         self.theme.heading("Diagnostics")
         debug = diagnostics.current()
         imgui.text("Diagnostic logging")

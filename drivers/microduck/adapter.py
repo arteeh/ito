@@ -2,7 +2,6 @@ import asyncio
 import contextlib
 import logging
 import math
-import os
 from collections import deque
 
 from ito import clock
@@ -173,9 +172,6 @@ class MicroduckAdapter(Adapter):
         self._held = None
 
     def _exposure(self):
-        told = os.environ.get("ITO_MICRODUCK_EXPOSURE")
-        if told:
-            return float(told)
         if self.camera.source == "sim":
             return 0.0
         return None
@@ -570,8 +566,8 @@ class MicroduckAdapter(Adapter):
         self._telemetry.update(
             camera_stamped=self.camera.stamped, camera_unstamped=self.camera.unstamped
         )
-        position, orientation, body_yaw = frames.at(self._poses, when)
-        return dict(camera_pose=Pose(position=position, orientation=orientation), body_yaw=body_yaw)
+        position, orientation, _ = frames.at(self._poses, when)
+        return dict(camera_pose=Pose(position=position, orientation=orientation))
 
     def telemetry(self):
         self._check()

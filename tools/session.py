@@ -3,12 +3,11 @@ record videos of it. Run in WSL on the Windows PC:
 
     uv run tools/session.py BUILD NAME [--script FILE] [--sim-prefix DIR] [--viewer]
 
-BUILD is a folder under C:\\Users\\me\\Projects\\ito\\builds (release.ps1 -Branch ...).
-Output goes to C:\\Users\\me\\Projects\\ito\\out\\sessions\\NAME: screen.mp4 (the Ito window),
-camera.mp4 (the robot camera frames Ito received), steps.txt (when each script step
-started, in seconds and as frame numbers of both videos), ito.log, sim.log and the sim's
-own logs. Script steps are described in ito/desktop/input.py (PilotScript). Look at frames
-with tools/frame.py.
+BUILD is a folder under %USERPROFILE%\\Projects\\ito\\builds (tools/build.sh). Output goes to
+%USERPROFILE%\\Projects\\ito\\out\\sessions\\NAME: screen.mp4 (the Ito window), camera.mp4 (the
+robot camera frames Ito received), steps.txt (when each script step started, in seconds and as
+frame numbers of both videos), ito.log, sim.log and the sim's own logs. Script steps are
+described in ito/desktop/input.py (PilotScript).
 """
 
 import argparse
@@ -25,14 +24,18 @@ from pathlib import Path
 import imageio_ffmpeg
 
 HERE = Path(__file__).resolve().parents[1]
-ROOT = Path("/mnt/c/Users/me/Projects/ito")
+
+
+def output(*command):
+    return subprocess.run(command, capture_output=True, text=True).stdout.strip()
+
+
+ROOT = Path(output("wslpath", output("cmd.exe", "/c", "echo %USERPROFILE%"))) / "Projects/ito"
 WSLG = Path("/tmp/.X11-unix/X0")
 
 
 def windows(path: Path) -> str:
-    return subprocess.run(
-        ["wslpath", "-w", str(path)], capture_output=True, text=True
-    ).stdout.strip()
+    return output("wslpath", "-w", str(path))
 
 
 def stop_sim():
@@ -187,7 +190,6 @@ def main():
             f"set ITO_RECORD={windows(rec)}&& set ITO_PILOT_SCRIPT={windows(out / 'script.json')}"
             # The build's own Python rather than ito.exe, whose log never reaches a pipe.
             f"&& runtime\\python.exe -I -X utf8 -m ito.app {ip}:8081 --code {code}"
-            f" --capture-dir {windows(out / 'captures')}"
         )
         with (out / "ito.log").open("w") as log:
             result = subprocess.run(

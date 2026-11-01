@@ -1,33 +1,30 @@
 import ctypes
-import json
 import logging
 import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TextIO
 
 import pygame
 from OpenGL import GL
 
-from ito import clock, diagnostics, edition
-from ito.reconstruction import SplatUpdate, default_budget
-from ito.reconstruction.admission import PUBLICATION_PACKETS
-from ito.render import GaussianRenderer, SceneSource, current_context, perspective, pose
+from ito import clock, diagnostics
+from ito.render import current_context, perspective, pose
 from ito.render.anchor import AnchorGlide
-from ito.render.gpu import GPU, MAX_SLOT_COUNT
+from ito.render.gpu import GPU
 from ito.render.performance import Performance
-from ito.render.scene import FloatArray
+from ito.render.pose import FloatArray
 from ito.render.video import VideoPanel
+from ito.tofmesh.render import MeshRenderer
 
 from .dispatch import DisplayDispatch
 from .input import DesktopInput, PilotInput
 from .overlay import Overlay, PilotStatus
 from .record import Recorder, from_env
-from .settings import load_budget, save_budget
 
 log = logging.getLogger(__name__)
+MESHES_PER_FRAME = 2
 
 
 @dataclass(frozen=True)
@@ -52,7 +49,6 @@ class DesktopWindow:
         fov: float = 70,
         speed: float = 1.5,
         capture_dir: Path = Path("captures"),
-        max_splats: int | None = None,
     ):
         self.context = self.renderer = self.overlay = self.input = self.video_panel = None
         self.gpu = None
@@ -89,27 +85,12 @@ class DesktopWindow:
             pygame.display.set_caption("Ito — Desktop pilot")
             self.screen = self.context.screen
             self.size = size
-            software = any(
-                name in self.context.info["GL_RENDERER"].lower()
-                for name in ("llvmpipe", "softpipe", "software")
-            )
             self.gpu = GPU() if "nvidia" in self.context.info["GL_VENDOR"].lower() else None
-            buffer_limit = self.context.info["GL_MAX_SHADER_STORAGE_BLOCK_SIZE"]
-            self.splat_limit = 16_384 if software else min(MAX_SLOT_COUNT, buffer_limit // 64)
-            if edition.TOFMESH:
-                from ito.tofmesh.render import MeshRenderer
-
-                self.renderer = MeshRenderer(self.context)
-            else:
-                self.renderer = GaussianRenderer(self.context)
+            self.renderer = MeshRenderer(self.context)
             self.video_panel = VideoPanel(self.context)
-            self.max_splats = min(
-                self.splat_limit,
-                max_splats or load_budget(default_budget(self.context.info["GL_RENDERER"])),
-            )
             if self.gpu is not None:
                 self.gpu.start()
-            self.overlay = Overlay(self.context, self.max_splats)
+            self.overlay = Overlay(self.context)
             self.input = DesktopInput(speed)
             if self.input.script is not None:
                 self.input.script.controls = self.overlay.layout
@@ -139,33 +120,22 @@ class DesktopWindow:
 
     def run(
         self,
-        source: SceneSource,
+        source,
         *,
-        state: Callable[[], DesktopState] = DesktopState,
-        on_input: Callable[[PilotInput], None] | None = None,
-        on_sample: Callable[[PilotInput], None] | None = None,
-        max_frames: int = 0,
-        metrics: TextIO | None = None,
-        save_settings: Callable[[int], None] = save_budget,
+        state: Callable[[], DesktopState],
+        on_input: Callable[[PilotInput], None],
+        on_sample: Callable[[PilotInput], None],
     ) -> None:
         dispatch = DisplayDispatch(self)
         self.input.heading = lambda: state().robot_heading
-        dispatch.run(
-            lambda: self._draw(
-                source, state, on_input, max_frames, metrics, save_settings, dispatch
-            ),
-            on_sample,
-        )
+        dispatch.run(lambda: self._draw(source, state, on_input, dispatch), on_sample)
 
-    def _draw(self, source, state, on_input, max_frames, metrics, save_settings, dispatch):
+    def _draw(self, source, state, on_input, dispatch):
         recorder = from_env()
         self.performance = Performance()
         try:
-            self._draw_loop(
-                source, state, on_input, max_frames, metrics, save_settings, dispatch, recorder
-            )
+            self._draw_loop(source, state, on_input, dispatch, recorder)
         finally:
-            self.performance.close(metrics)
             if self.readback is not None:  # the screen grab's pixel buffer (its last grab unread)
                 GL.glDeleteBuffers(1, [self.readback[0]])
                 self.readback = None
@@ -210,57 +180,32 @@ class DesktopWindow:
         GL.glBindBuffer(GL.GL_PIXEL_PACK_BUFFER, 0)
         self.readback = (self.readback[0], length, (now, size))
 
-    def _draw_loop(
-        self, source, state, on_input, max_frames, metrics, save_settings, dispatch, recorder
-    ):
-        live = hasattr(source, "set_max_splats")
-        if live:
-            if source.max_splats > self.splat_limit:
-                raise ValueError(f"This GPU supports at most {self.splat_limit:,} splats")
-            self.overlay.max_splats = source.max_splats
+    def _draw_loop(self, source, state, on_input, dispatch, recorder):
         pacing = pygame.time.Clock()
         revision = None
-        pending = None
         captured_at = None
         frames = 0
-        next_metric = 0.0
         request = None
         due = clock.now()
-        while not max_frames or frames < max_frames:
+        while True:
             now = clock.now()
             events, pilot = dispatch.frame()
             io = self.overlay.begin(events, pygame.display.get_window_size(), self.input.captured)
             dispatch.ui(io, (), events)
-            if on_input is not None:
-                on_input(pilot)
+            on_input(pilot)
             if pilot.quit or self.overlay.leave:
-                self.overlay.draw(PilotStatus(), 0, 0, None, False, request)
+                self.overlay.draw(PilotStatus(), 0, False, request)
                 break
             if pilot.commands:
-                command = pilot.commands[-1].replace("_", "-").upper()
-                request = (
-                    f"{command} requested"
-                    if on_input is not None
-                    else f"{command}: no robot connected"
-                )
+                request = pilot.commands[-1].replace("_", "-").upper() + " requested"
                 log.info("Command: %s", pilot.commands[-1])
             applied = []
-            for _ in range(PUBLICATION_PACKETS):
-                frame = pending if pending is not None else source.poll()
+            for _ in range(MESHES_PER_FRAME):
+                frame = source.poll()
                 if frame is None:
                     break
-                if isinstance(frame, SplatUpdate):
-                    if not self.renderer.apply(frame):
-                        pending = frame
-                        break
-                elif getattr(frame, "kind", None) == "mesh":
-                    self.renderer.upload(frame)
-                    applied.append(frame)
-                elif frame.revision != revision:
-                    self.renderer.upload(frame.gaussians)
-                if isinstance(frame, SplatUpdate):
-                    applied.append(frame)
-                pending = None
+                self.renderer.upload(frame)
+                applied.append(frame)
                 revision, captured_at = frame.revision, frame.captured_at
             current = self.glided(state(), now)
             size = pygame.display.get_window_size()
@@ -270,43 +215,26 @@ class DesktopWindow:
             self.draw_view(current, pilot.head, projection, self.screen, (0, 0, *self.size))
             visible_time = current.video_time if current.flat_video else captured_at
             age = None if visible_time is None else max(0, now - visible_time)
-            budget = self.overlay.draw(
+            self.overlay.draw(
                 current.status,
                 pacing.get_fps(),
-                self.renderer.count,
-                age,
                 self.input.captured,
                 request,
-                live=live,
                 performance=self.performance.last,
                 driving=any(pilot.movement),
             )
             dispatch.ui(io, self.overlay.commands)
             self.overlay.commands.clear()
-            if budget is not None and budget > self.splat_limit:
-                self.overlay.error = f"This GPU supports at most {self.splat_limit:,} splats"
-                budget = None
-            if budget is not None:
-                source.set_max_splats(budget)
-                try:
-                    save_settings(budget)
-                except OSError as exc:
-                    self.overlay.error = f"Could not save setting: {exc}"
             if recorder is not None:
                 self._record(recorder, current)
-            capture = None
             if pilot.screenshot:
                 try:
-                    capture = str(self._capture())
+                    self._capture()
                 except OSError as exc:
                     log.error("Could not save capture: %s", exc)
             self.context.finish()
             pygame.display.flip()
-            if hasattr(source, "display_completed"):
-                source.display_completed(due, 1 / self.fps)
-            statistics = self.performance.worker_statistics | (
-                source.statistics() if hasattr(source, "statistics") else {}
-            )
+            statistics = source.statistics()
             statistics.update(
                 camera_hz=current.status.rates[1],
                 pilot_input_hz=current.status.rates[0],
@@ -335,42 +263,6 @@ class DesktopWindow:
                 capture_age_ms=None if age is None else age * 1000,
                 performance=performance,
             )
-            if metrics is not None and (now >= next_metric or pilot.commands or capture):
-                metrics.write(
-                    json.dumps(
-                        {
-                            "frame": frames,
-                            "time": now,
-                            "fps": pacing.get_fps(),
-                            "frame_ms": (clock.now() - now) * 1000,
-                            "gaussians": self.renderer.count,
-                            "revision": revision,
-                            "head": pilot.head.tolist(),
-                            "movement": pilot.movement,
-                            "look": pilot.look,
-                            "active": pilot.active,
-                            "commands": pilot.commands,
-                            "capture": capture,
-                            "size": self.size,
-                            "renderer": self.context.info["GL_RENDERER"],
-                            "link": current.status.link,
-                            "robot": current.status.robot,
-                            "status": current.status.detail,
-                            "reconstruction": current.status.reconstruction,
-                            "flat_video": current.flat_video,
-                            "video_capture_time": current.video_time,
-                            "e_stop": current.status.e_stop,
-                            "rtt_ms": current.status.latency_ms,
-                            "pilot_input_to_robot_ms": current.status.input_latency_ms,
-                            "capture_to_splat_visible_ms": self.performance.latest_latency,
-                            "performance": performance,
-                            "scene_capture_time": captured_at,
-                        }
-                    )
-                    + "\n"
-                )
-                metrics.flush()
-                next_metric = now + 0.5
             due += 1 / self.fps
             remaining = due - clock.now()
             if remaining > 0:
@@ -387,7 +279,7 @@ class DesktopWindow:
     def glided(self, current, now):
         return replace(current, robot_camera=self.glide(current.robot_camera, now))
 
-    def draw_view(self, current, head, projection, target, viewport, sort=True, center=None):
+    def draw_view(self, current, head, projection, target, viewport, center=None):
         if current.flat_video:
             self.video_panel.draw(
                 current.video,
@@ -400,9 +292,7 @@ class DesktopWindow:
                 fov=current.video_fov,
             )
         else:
-            self.renderer.draw(
-                current.robot_camera, head, projection, target, viewport=viewport, sort=sort
-            )
+            self.renderer.draw(current.robot_camera, head, projection, target, viewport=viewport)
 
     def close(self) -> None:
         for resource in (self.input, self.overlay, self.video_panel, self.renderer, self.gpu):

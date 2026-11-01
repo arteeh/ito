@@ -1,12 +1,10 @@
-"""Build dist/ito (developer-only), from a VS 2022 x64 shell with CUDA 12.4:
+"""Build the Windows release of Ito into DIST\\ito (tools/build.sh runs it on Windows):
 
-    uv run --python 3.12 --extra slam python release/windows.py [--models DIR]
+    uv run --python 3.12 python release/windows.py --dist DIST
 
 A relocatable CPython with the locked dependencies installed, started by release/ito.c's
-ito.exe (runtime\\pythonw.exe -I -m ito.app), plus models\\ from ito.build and
-THIRD_PARTY_NOTICES.txt. No freezer: the release runs exactly what runs from source.
---edition tofmesh (or ITO_RELEASE_EDITION=tofmesh) builds the ToF-mesh-only Ito instead: no
-SLAM extra (no torch/CuPy), no models\\, and ito\\EDITION selecting ito.tofmesh at runtime."""
+ito.exe (runtime\\pythonw.exe -I -m ito.app), plus THIRD_PARTY_NOTICES.txt. No freezer: the
+release runs exactly what runs from source."""
 
 import argparse
 import email.parser
@@ -19,8 +17,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-from ito.reconstruction.mast3r_runtime import BUNDLE_VERSION, abi, verify
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -29,7 +25,7 @@ def run(*command, **options):
     subprocess.run(list(map(str, command)), check=True, **options)
 
 
-def runtime(stage, work, edition="full"):
+def runtime(stage, work):
     managed = Path(subprocess.check_output(["uv", "python", "dir"], text=True).strip())
     base = Path(sys.base_prefix)
     if base.parent.resolve() != managed.resolve() or sys.version_info[:2] != (3, 12):
@@ -42,8 +38,7 @@ def runtime(stage, work, edition="full"):
             shutil.rmtree(path) if path.is_dir() else path.unlink()
     lock = work / "pylock.toml"
     run(
-        "uv", "export", "--frozen", "--no-dev",
-        "--extra", "slam" if edition == "full" else edition, "--no-emit-project",
+        "uv", "export", "--frozen", "--no-dev", "--no-emit-project",
         "--format", "pylock.toml", "--output-file", lock,
         cwd=ROOT,
     )  # fmt: skip
@@ -56,16 +51,32 @@ def runtime(stage, work, edition="full"):
             "uv", "pip", "install", "--python", python, "--target", site,
             "--link-mode", "copy", "--compile-bytecode", *requirement,
         )  # fmt: skip
-    if edition != "full":
-        (site / "ito" / "EDITION").write_text(edition + "\n", encoding="utf-8")
-    unused = [site / "bin", site / "torch/include", *site.rglob("*.lib")]
+    unused = [site / "bin", *site.rglob("*.lib")]
     for path in unused + list(site.glob("xr/**/android*")):
         shutil.rmtree(path) if path.is_dir() else path.unlink(missing_ok=True)
 
 
+def developer_shell():
+    """Take on a Visual Studio x64 developer shell's environment, for cl.exe."""
+    if shutil.which("cl"):
+        return
+    installer = Path(os.environ["ProgramFiles(x86)"], "Microsoft Visual Studio/Installer")
+    found = subprocess.run(
+        [installer / "vswhere.exe", "-latest", "-products", "*", "-property", "installationPath"],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if not found:
+        raise SystemExit("Visual Studio with C++ (cl.exe) is needed for ito.exe")
+    vcvars = Path(found, "VC/Auxiliary/Build/vcvars64.bat")
+    listing = subprocess.run(
+        f'"{vcvars}" >nul && set', shell=True, capture_output=True, text=True, check=True
+    ).stdout
+    os.environ.update(line.split("=", 1) for line in listing.splitlines() if "=" in line)
+
+
 def launcher(stage, work):
-    if not shutil.which("cl"):
-        raise SystemExit("cl.exe not found: run from a VS 2022 x64 developer shell")
+    developer_shell()
     run(
         "cl", "/nologo", "/O2", "/W4", "/WX", "/DUNICODE", ROOT / "release/ito.c",
         f"/Fe{stage / 'ito.exe'}", f"/Fo{work / 'ito.obj'}",
@@ -74,36 +85,12 @@ def launcher(stage, work):
     )  # fmt: skip
 
 
-def models(stage, source):
-    target = stage / "models"
-    if source is None:
-        run(sys.executable, "-m", "ito.build", "--output", target, cwd=ROOT)
-    else:
-        print(f"Copying models from {source}", flush=True)
-        shutil.copytree(source, target, ignore=shutil.ignore_patterns("__pycache__"))
-    try:
-        manifest = verify(target)
-    except RuntimeError as exc:
-        cause = f": {exc.__cause__}" if exc.__cause__ else ""
-        raise SystemExit(
-            f"{target} is not a complete bundle {BUNDLE_VERSION} for {abi()}: {exc}{cause}"
-        ) from exc
-    for name in manifest["native"].values():
-        found = []
-        for kind in ("elf", "ptx"):
-            listing = subprocess.run(
-                ["cuobjdump", f"--list-{kind}", target / name], capture_output=True, text=True
-            ).stdout
-            found += [f"{arch} {kind}" for arch in sorted(set(re.findall(r"sm_\d+", listing)))]
-        print(f"{name} CUDA code: {', '.join(found) or 'none found'}", flush=True)
-
-
 LICENCE_FILE = re.compile(
     r"^(LICEN[CS]E|COPYING|NOTICE|AUTHORS|ATTRIBUTION|CHECKPOINTS_NOTICE|L?GPL)", re.I
 )
 
 
-def notices(site, models, runtime, output):
+def notices(site, runtime, output):
     sections = []
     for info in sorted(site.glob("*.dist-info"), key=lambda p: p.name.lower()):
         meta = email.parser.Parser().parsestr(
@@ -144,15 +131,10 @@ def notices(site, models, runtime, output):
         if not files:
             lines.append("(The package ships no licence file; see its metadata above.)")
         sections.append("\n".join(lines))
-    for root, label in ((runtime, "Python runtime"), (models, "models")):
-        for path in sorted(root.rglob("*")) if root.is_dir() else ():
-            if (
-                path.is_file()
-                and LICENCE_FILE.match(path.name)
-                and "site-packages" not in path.parts
-            ):
-                relative = path.relative_to(root).as_posix()
-                sections.append(f"{label}: {relative}\n\n{_read(path)}")
+    for path in sorted(runtime.rglob("*")):
+        if path.is_file() and LICENCE_FILE.match(path.name) and "site-packages" not in path.parts:
+            relative = path.relative_to(runtime).as_posix()
+            sections.append(f"Python runtime: {relative}\n\n{_read(path)}")
     output.write_text(
         "Third-party software in this Ito release, with the licence texts it ships with.\n\n"
         + ("\n\n" + "=" * 78 + "\n\n").join(sections)
@@ -189,52 +171,22 @@ def _read(path):
     return path.read_text(encoding="utf-8", errors="replace").strip()
 
 
-def check(stage, edition="full"):
+def check(stage):
     env = {k: v for k, v in os.environ.items() if not k.startswith(("PYTHON", "VIRTUAL_ENV"))}
-    env.pop("ITO_EDITION", None)
-    if edition == "tofmesh":
-        run(
-            stage / "runtime/python.exe", "-I", "-c",
-            "import sys, pathlib, importlib.util, mujoco, aiortc, xr, imgui_bundle, moderngl\n"
-            "import ito.app.__main__, ito.tofmesh.worker, ito.tofmesh.render\n"
-            "from ito import edition\n"
-            "root = pathlib.Path(sys.argv[1])\n"
-            "assert edition.TOFMESH, edition.NAME\n"
-            "assert not (root / 'models').exists()\n"
-            "for name in ('torch', 'cupy', 'faiss'):\n"
-            "    assert importlib.util.find_spec(name) is None, name\n"
-            "for module in (mujoco, aiortc, xr, imgui_bundle, ito):\n"
-            "    assert pathlib.Path(module.__file__).is_relative_to(root), module.__file__\n",
-            stage, env=env, cwd=stage,
-        )  # fmt: skip
-        return
     run(
         stage / "runtime/python.exe", "-I", "-c",
-        "import sys, pathlib, torch, cupy, mujoco, aiortc, xr, imgui_bundle, ito.app.__main__\n"
-        "from ito.reconstruction.mast3r_runtime import MODELS, check_bundle\n"
+        "import sys, pathlib, aiortc, xr, imgui_bundle, moderngl\n"
+        "import ito.app.__main__, ito.tofmesh.worker, ito.tofmesh.render\n"
         "root = pathlib.Path(sys.argv[1])\n"
-        "assert MODELS == root / 'models', MODELS\n"
-        "# The default SLAM path, whole: the bundle's files, its native extensions, and the\n"
-        "# imports of MASt3R-SLAM, MASt3R's retrieval, asmk and faiss.\n"
-        "check_bundle()\n"
-        "import faiss\n"
-        "for module in (torch, cupy, mujoco, aiortc, xr, imgui_bundle, ito, faiss):\n"
-        "    assert pathlib.Path(module.__file__).is_relative_to(root), module.__file__\n"
-        "assert torch.version.cuda, 'torch without CUDA'\n",
+        "for module in (aiortc, xr, imgui_bundle, ito):\n"
+        "    assert pathlib.Path(module.__file__).is_relative_to(root), module.__file__\n",
         stage, env=env, cwd=stage,
     )  # fmt: skip
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--models", type=Path, help="copy a built ito.build bundle")
     parser.add_argument("--dist", type=Path, default=ROOT / "dist", help="output directory")
-    parser.add_argument(
-        "--edition",
-        choices=("full", "tofmesh"),
-        default=os.environ.get("ITO_RELEASE_EDITION", "full"),
-        help="full: MASt3R-SLAM and models; tofmesh: the ToF mesh only, no models",
-    )
     args = parser.parse_args()
     if sys.platform != "win32":
         raise SystemExit("The Windows release is built on Windows")
@@ -245,17 +197,12 @@ def main():
     with tempfile.TemporaryDirectory(prefix="ito-release-", dir=args.dist) as work:
         work = Path(work)
         launcher(stage, work)
-        runtime(stage, work, args.edition)
-    if args.edition == "full":
-        models(stage, args.models)
+        runtime(stage, work)
     count = notices(
-        stage / "runtime/Lib/site-packages",
-        stage / "models",
-        stage / "runtime",
-        stage / "THIRD_PARTY_NOTICES.txt",
+        stage / "runtime/Lib/site-packages", stage / "runtime", stage / "THIRD_PARTY_NOTICES.txt"
     )
     print(f"THIRD_PARTY_NOTICES.txt: {count} components", flush=True)
-    check(stage, args.edition)
+    check(stage)
     size = sum(p.stat().st_size for p in stage.rglob("*") if p.is_file())
     print(f"Release ready: {stage} ({size / 1e9:.2f} GB)")
 

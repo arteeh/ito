@@ -3,8 +3,9 @@
 import math
 
 import numpy as np
+from numpy.typing import NDArray
 
-from .scene import FloatArray
+FloatArray = NDArray[np.float32]
 
 
 def pose(position=(0.0, 0.0, 0.0), yaw: float = 0, pitch: float = 0) -> FloatArray:

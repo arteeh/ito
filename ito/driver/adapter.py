@@ -52,6 +52,3 @@ class Adapter(ABC):
 
     def telemetry(self) -> dict[str, float | bool | str]:
         return {}
-
-    def incoming_audio(self, track: MediaStreamTrack) -> None:
-        track.stop()

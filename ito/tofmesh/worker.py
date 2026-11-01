@@ -1,4 +1,4 @@
-"""The ToF mesh in its own process, with the calls the pilot makes on a reconstruction worker.
+"""The ToF mesh in its own process, with the calls the pilot makes on it.
 
 The pilot thread only downsamples camera frames and queues messages; fusion (NumPy, CPU) runs in
 the worker so it never holds the render loop or the link. Queues are bounded and nothing here
@@ -100,10 +100,7 @@ def _merge(old, new, frame_type):
 class TofMesh:
     """Pilot-side handle: submit(), motion(), ranges(), poll(), status(), statistics(), close()."""
 
-    def __init__(self, intrinsics, *, capture_delay=0.0, voxel=0.04, capacity=6000, keyframes=None):
-        from .fusion import PROJECTORS
-
-        keyframes = PROJECTORS if keyframes is None else keyframes
+    def __init__(self, intrinsics, *, capture_delay=0.0, voxel=0.04, capacity=6000):
         context = mp.get_context("spawn")
         self.intrinsics = intrinsics
         self.capture_delay = float(capture_delay)
@@ -113,9 +110,7 @@ class TofMesh:
         self.integrated = context.Value("Q", 0, lock=False)
         # A camera whose frames carry their own capture time (capture_delay 0) needs no measured
         # delay; the estimate is the fallback for one that only guesses (latency.FrameDelay).
-        options = dict(
-            voxel=voxel, capacity=capacity, keyframes=keyframes, frame_delay=self.capture_delay > 0
-        )
+        options = dict(voxel=voxel, capacity=capacity, frame_delay=self.capture_delay > 0)
         self.process = context.Process(
             target=_run,
             args=(self.inputs, self.outputs, self.notes, options, self.integrated),
@@ -128,7 +123,6 @@ class TofMesh:
         self.stats = {}
         self.error = None
         self.has_mesh = False
-        self._max_splats = 1
         self._closed = False
         self.backlog = deque()
         self.dropped = 0
@@ -166,10 +160,9 @@ class TofMesh:
         except ValueError:  # the queue was closed under us (the pilot retiring this worker)
             return False
 
-    def submit(self, rgb, depth=None, camera=None, captured_at=None):
+    def submit(self, rgb, camera, captured_at):
         """A camera frame (h, w, 3) uint8 at the described pinhole; `camera` is the driver's
         pose for it (used only when the motion stream does not cover the frame)."""
-        captured_at = clock.now() if captured_at is None else captured_at
         if captured_at - self.last_frame < 1 / FRAME_RATE:
             return False
         self.last_frame = captured_at
@@ -273,19 +266,6 @@ class TofMesh:
             "tofmesh_volume_mb": s.get("volume_mb"),
             "tofmesh_ingress_dropped": self.dropped,
         }
-
-    def pose(self):
-        return None
-
-    def display_completed(self, began, period):
-        pass
-
-    @property
-    def max_splats(self):
-        return self._max_splats
-
-    def set_max_splats(self, value):
-        self._max_splats = value
 
     def close(self):
         if self._closed:

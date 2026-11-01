@@ -14,64 +14,19 @@ dependencies = [
     "pydantic>=2.11,<3",
     "moderngl>=5.12,<6",
     "numpy>=2,<3",
-    "plyfile>=1.1,<2",
+    "pillow>=12.3.0",
     "pygame-ce>=2.5,<3",
-    "mujoco>=3.3,<4",
     "imgui-bundle>=1.92,<2",
     "pyopengl>=3.1.10,<4",
     "pyopenxr>=1.1.6302,<2",
-    "sounddevice>=0.5,<1",
 ]
 
 [project.scripts]
 ito = "ito.app.__main__:main"
-ito-driver = "ito.driver.cli:main"
 ito-driver-microduck = "drivers.microduck.cli:main"
-ito-driver-mujoco = "drivers.mujoco.cli:main"
-ito-desktop = "ito.desktop.__main__:main"
 
 [project.optional-dependencies]
 microduck = ["opencv-python-headless==4.11.0.86"]
-# The ToF-mesh-only release (release/windows.py --edition tofmesh): what the app needs beyond
-# the base that the slam extra otherwise brings along (PIL for the screen recorder).
-tofmesh = ["pillow>=12.3.0"]
-
-cuda = [
-    "cupy-cuda12x[ctk]>=14,<15",
-]
-
-slam = [
-    "torch==2.5.1; python_version < '3.13'",
-    "torchvision==0.20.1; python_version < '3.13'",
-    "cupy-cuda12x==13.6.0",
-    # CuPy compiles with torch's NVRTC; these CUDA headers spare pilots the CUDA Toolkit.
-    "nvidia-cuda-runtime-cu12==12.4.127",
-    "einops==0.8.1",
-    "huggingface-hub==0.30.2",
-    "safetensors==0.5.3",
-    "opencv-python-headless==4.11.0.86",
-    "scipy==1.15.3",
-    "pyyaml==6.0.2",
-    "platformdirs==4.3.8",
-    "filelock==3.18.0",
-    "ninja==1.11.1.4",
-    "psutil==7.1.3",
-    "setuptools==75.8.0",
-    # MASt3R-SLAM's retrieval (loop closure, relocalisation) runs asmk, which indexes with faiss.
-    "faiss-cpu==1.13.2",
-]
-
-[tool.uv]
-conflicts = [[{ extra = "cuda" }, { extra = "slam" }]]
-
-[tool.uv.sources]
-torch = [{ index = "pytorch-cu124", extra = "slam" }]
-torchvision = [{ index = "pytorch-cu124", extra = "slam" }]
-
-[[tool.uv.index]]
-name = "pytorch-cu124"
-url = "https://download.pytorch.org/whl/cu124"
-explicit = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["ito", "drivers"]
@@ -79,8 +34,6 @@ packages = ["ito", "drivers"]
 [dependency-groups]
 dev = [
     "imageio-ffmpeg>=0.6",
-    "pillow>=12.3.0",
-    "psutil>=7,<8",
     "ruff>=0.13",
 ]
 

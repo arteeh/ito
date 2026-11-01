@@ -1,8 +1,8 @@
 import argparse
 import asyncio
-import json
 import logging
 
+from drivers.microduck.adapter import MicroduckAdapter
 from ito.driver.cli import driver_arguments, pairing_command, serve
 
 
@@ -26,20 +26,20 @@ def main():
     parser.set_defaults(port=8081)
     args = parser.parse_args()
     args.prog = parser.prog
-    args.audio_source, args.audio_sink = None, "none"
-    args.adapter = "drivers.microduck.adapter:MicroduckAdapter"
-    args.adapter_args = json.dumps(
-        {
-            "robot": args.robot,
-            "input_timeout": args.input_timeout,
-            "head_imu": args.head_imu,
-            "tof": not args.no_tof,
-        }
-    )
     logging.basicConfig(level=logging.INFO)
     try:
         if not pairing_command(args):
-            asyncio.run(serve(args))
+            asyncio.run(
+                serve(
+                    lambda: MicroduckAdapter(
+                        robot=args.robot,
+                        input_timeout=args.input_timeout,
+                        head_imu=args.head_imu,
+                        tof=not args.no_tof,
+                    ),
+                    args,
+                )
+            )
     except KeyboardInterrupt:
         pass
     except (ValueError, KeyError, ImportError, AttributeError, OSError, RuntimeError) as exc:

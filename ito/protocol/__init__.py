@@ -1,7 +1,5 @@
 """Wire v4: metres, xyzw rotations, and local monotonic seconds for timestamps."""
 
-import base64
-import zlib
 from typing import Annotated, Literal, Self
 
 from pydantic import (
@@ -150,38 +148,6 @@ class RobotDescription(Message):
         return self
 
 
-class Depth(Model):
-    """Little-endian uint16 millimetres; zero means unknown. Bounded zlib on the wire."""
-
-    width: int = Field(ge=1, le=2048)
-    height: int = Field(ge=1, le=2048)
-    encoding: Literal["zlib-u16-mm"] = "zlib-u16-mm"
-    data: str = Field(max_length=1_400_000)
-
-    def to_bytes(self) -> bytes:
-        try:
-            compressed = base64.b64decode(self.data, validate=True)
-            decoder = zlib.decompressobj()
-            expected = self.width * self.height * 2
-            raw = decoder.decompress(compressed, expected + 1)
-            if len(raw) != expected or not decoder.eof or decoder.unused_data:
-                raise ValueError("depth dimensions or compressed length mismatch")
-            return raw
-        except (zlib.error, ValueError) as exc:
-            raise ValueError("invalid depth payload") from exc
-
-    @model_validator(mode="after")
-    def valid_payload(self) -> Self:
-        self.to_bytes()
-        return self
-
-    @classmethod
-    def from_bytes(cls, width: int, height: int, raw: bytes) -> Self:
-        return cls(
-            width=width, height=height, data=base64.b64encode(zlib.compress(raw)).decode("ascii")
-        )
-
-
 class FrameMetadata(Message):
     type: Literal["frame"] = "frame"
     camera: Name
@@ -193,11 +159,6 @@ class FrameMetadata(Message):
     )
     camera_pose: Pose | None = Field(
         default=None, description="Camera-to-world pose; world anchored at robot startup"
-    )
-    depth: Depth | None = None
-    body_yaw: Number = Field(default=0, description="Startup-relative body yaw at exposure")
-    head_angles: tuple[Number, Number] | None = Field(
-        default=None, description="Measured pan and tilt in radians from this exposure"
     )
 
 

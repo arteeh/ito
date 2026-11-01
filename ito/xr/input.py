@@ -162,7 +162,6 @@ class Actions:
         self.triggers = {}
         self.panel_held = False
         self.panel_pinned = False
-        self.haptic_pulses = 0
         self.haptic_pending = False
 
     def path(self, name):
@@ -322,5 +321,4 @@ class Actions:
         except xr.SessionNotFocused:
             return
         self.haptic_pending = False
-        self.haptic_pulses += 1
         log.info("OpenXR safety haptic pulse")

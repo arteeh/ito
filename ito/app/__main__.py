@@ -3,22 +3,18 @@ import logging
 import math
 import os
 import sys
-from contextlib import nullcontext
-from pathlib import Path
 
 import moderngl
 import pygame
 
 from ito import diagnostics
 from ito.desktop import DesktopWindow
-from ito.desktop.settings import AppSettings, load, save, settings_path
-from ito.link.audio import Audio, arguments
+from ito.desktop.settings import load, settings_path
 from ito.link.pairing import DIGITS, normalize
 
 from . import connect, settings
 from .pilot import Pilot, ShutdownStuck
 from .settings import Settings
-from .sim import SimulatedRobot
 
 log = logging.getLogger(__name__)
 
@@ -49,22 +45,14 @@ def configure_logging():
     sys.excepthook = crashed
 
 
-def main(argv=None, *, on_frame=None):
+def main(argv=None):
     parser = argparse.ArgumentParser(prog="ito", description="Pilot one Ito robot")
     parser.add_argument(
         "address", nargs="?", help="driver host:port or HTTP(S) URL (omit to choose on screen)"
     )
-    parser.add_argument("--sim", action="store_true", help="pilot the bundled simulated robot")
     parser.add_argument("--code", help="the robot's pairing code (needed once per robot)")
     parser.add_argument("--mode", choices=("desktop", "xr"), default="desktop")
     parser.add_argument("--reference-space", choices=("seated", "standing"), default="seated")
-    parser.add_argument(
-        "--reconstruction",
-        choices=("auto", "rgbd", "slam", "video"),
-        help="persist reconstruction backend (default: automatic)",
-    )
-    parser.add_argument("--camera", help="camera name (defaults to the first camera)")
-    parser.add_argument("--cameras", type=int, default=1, help="number of driver video tracks")
     parser.add_argument("--size", type=int, nargs=2, default=(1280, 720))
     parser.add_argument("--fps", type=int, default=90)
     parser.add_argument("--fov", type=float, help="persist vertical field of view, 30–120 degrees")
@@ -72,14 +60,7 @@ def main(argv=None, *, on_frame=None):
     parser.add_argument("--invert-y", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--move-x", help="persist robot axis mapped to A/D or left stick X")
     parser.add_argument("--move-y", help="persist robot axis mapped to W/S or left stick Y")
-    parser.add_argument("--max-splats", type=int, help="persist the live scene budget")
-    parser.add_argument("--capture-dir", type=Path, default=Path("captures"))
-    parser.add_argument("--metrics", type=Path, help="write display and latency metrics as JSONL")
-    parser.add_argument("--frames", type=int, default=0, help="exit after N display frames")
-    arguments(parser)
     args = parser.parse_args(argv)
-    if args.sim and args.address:
-        parser.error("--sim replaces the robot address")
     code = args.code
     if code is not None and (code := normalize(code)) is None:
         parser.error(f"a pairing code is {DIGITS} digits")
@@ -90,7 +71,7 @@ def main(argv=None, *, on_frame=None):
         for key in Settings.model_fields
         if getattr(args, key, None) is not None
     }
-    choosing = args.address is None and not args.sim
+    choosing = args.address is None
     credential = settings.credential(args.address) if args.address else None
     choice = connect.Choice(args.address, args.mode == "xr", code, credential)
     window = window_mode = error = pairing = failure = None
@@ -104,69 +85,52 @@ def main(argv=None, *, on_frame=None):
 
             window_type = XRWindow
             options["reference_space"] = args.reference_space
-        return window_type(
-            args.size,
-            fps=args.fps,
-            capture_dir=args.capture_dir,
-            max_splats=load().max_splats,
-            **options,
-        )
+        return window_type(args.size, fps=args.fps, **options)
 
     try:
-        Audio(args.audio_source, args.audio_sink)
         Settings.model_validate(Settings().model_dump() | overrides)
-        if args.max_splats is not None:
-            selected = AppSettings.model_validate(
-                load().model_dump() | {"max_splats": args.max_splats}
-            )
-            save(selected)
-        if args.frames < 0 or not 1 <= args.cameras <= 16:
-            raise ValueError("frames must be nonnegative and cameras between 1 and 16")
-        if args.metrics:
-            args.metrics.parent.mkdir(parents=True, exist_ok=True)
-        with args.metrics.open("w") if args.metrics else nullcontext() as metrics:
-            while True:
-                if choosing:
-                    menu_mode = "xr" if choice.xr else "desktop"
-                    if window_mode != menu_mode:
-                        if window:
-                            window.close()
-                        window = window_mode = None
-                        try:
-                            window, window_mode = open_window(menu_mode), menu_mode
-                        except RuntimeError as exc:
-                            if menu_mode == "desktop":
-                                raise
-                            error = str(exc)
-                            choice = connect.Choice(None)
-                            continue
-                    choice = connect.choose(window, xr=choice.xr, error=error, pairing=pairing)
-                    if choice is None:
-                        return 0
-                    if choice.menu:
-                        continue
-                    error = pairing = None
-                mode = "xr" if choice.xr else "desktop"
-                if mode != window_mode:
+        while True:
+            if choosing:
+                menu_mode = "xr" if choice.xr else "desktop"
+                if window_mode != menu_mode:
                     if window:
                         window.close()
-                        window = window_mode = None
+                    window = window_mode = None
                     try:
-                        window, window_mode = open_window(mode), mode
+                        window, window_mode = open_window(menu_mode), menu_mode
                     except RuntimeError as exc:
-                        if not choosing or mode == "desktop":
+                        if menu_mode == "desktop":
                             raise
-                        log.error("%s", exc)
                         error = str(exc)
+                        choice = connect.Choice(None)
                         continue
-                window.overlay.can_leave = choosing
-                window.overlay.leave = False
-                refusal = pilot_window(window, args, overrides, metrics, choice, on_frame)
-                if refusal:
-                    choosing, pairing, error = True, choice.address, refusal
-                    continue
-                if not window.overlay.leave:
+                choice = connect.choose(window, xr=choice.xr, error=error, pairing=pairing)
+                if choice is None:
                     return 0
+                if choice.menu:
+                    continue
+                error = pairing = None
+            mode = "xr" if choice.xr else "desktop"
+            if mode != window_mode:
+                if window:
+                    window.close()
+                    window = window_mode = None
+                try:
+                    window, window_mode = open_window(mode), mode
+                except RuntimeError as exc:
+                    if not choosing or mode == "desktop":
+                        raise
+                    log.error("%s", exc)
+                    error = str(exc)
+                    continue
+            window.overlay.can_leave = choosing
+            window.overlay.leave = False
+            refusal = pilot_window(window, args, overrides, choice)
+            if refusal:
+                choosing, pairing, error = True, choice.address, refusal
+                continue
+            if not window.overlay.leave:
+                return 0
     except (OSError, ValueError, RuntimeError, pygame.error, moderngl.Error) as exc:
         log.error("%s", exc)
         failure = str(exc)
@@ -190,24 +154,14 @@ def main(argv=None, *, on_frame=None):
                 os._exit(1)
 
 
-def pilot_window(window, args, overrides, metrics, choice, on_frame):
-    with (
-        SimulatedRobot() if choice.address is None else nullcontext() as sim,
-        Pilot(
-            choice.address or sim.address,
-            defaults=Settings(**load().model_dump()),
-            splat_limit=window.splat_limit,
-            overrides=overrides,
-            camera=args.camera,
-            cameras=args.cameras,
-            audio_source=args.audio_source,
-            audio_sink=args.audio_sink,
-            persist=sim is None,
-            code=sim.code if sim else choice.code,
-            credential=None if sim else choice.credential,
-        ) as pilot,
-    ):
-        window.overlay.simulation = sim
+def pilot_window(window, args, overrides, choice):
+    with Pilot(
+        choice.address,
+        defaults=Settings(**load().model_dump()),
+        overrides=overrides,
+        code=choice.code,
+        credential=choice.credential,
+    ) as pilot:
         window.input.translate = False
         revision = -1
 
@@ -219,24 +173,10 @@ def pilot_window(window, args, overrides, metrics, choice, on_frame):
                 window.fov = math.radians(selected.fov)
                 window.input.sensitivity = selected.sensitivity
                 window.input.invert_y = selected.invert_y
-                window.overlay.max_splats = selected.max_splats
             if pilot.refusal:
                 window.overlay.leave = True
-            if sim and (failure := sim.failure()):
-                window.overlay.error = failure
-            if on_frame:
-                on_frame(pilot, window, value)
 
-        window.run(
-            pilot,
-            state=lambda: pilot.state,
-            on_input=input_frame,
-            on_sample=pilot.input,
-            max_frames=args.frames,
-            metrics=metrics,
-            save_settings=lambda _: None,
-        )
-    window.overlay.simulation = None
+        window.run(pilot, state=lambda: pilot.state, on_input=input_frame, on_sample=pilot.input)
     return pilot.refusal
 
 

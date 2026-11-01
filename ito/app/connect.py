@@ -76,7 +76,7 @@ class Menu:
             elif not self.settings.writes:
                 choice, self.pending_choice = self.pending_choice, None
         elif page == "settings":
-            if self.settings.draw(xr_mode=xr_mode):
+            if self.settings.draw():
                 self.page = "main"
         elif self.pairing:
             imgui.text(f"Pairing code for {self.pairing}")
@@ -124,8 +124,6 @@ class Menu:
                     ):
                         choice = Choice(entry["address"], self.xr, credential=entry["credential"])
             imgui.separator()
-            if self.layout.button("Try simulated robot", "simulated"):
-                choice = Choice(None, self.xr)
             if self.layout.button("Settings", "settings"):
                 self.page = "settings"
             if xr_mode or self.headset:

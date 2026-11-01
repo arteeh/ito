@@ -1,6 +1,6 @@
 import numpy as np
 
-from .scene import FloatArray
+from .pose import FloatArray
 
 LONGEST_INTERVAL = 0.6
 LARGEST_STEP = 1.0  # Metres; a bigger move is a relocalization, not motion.

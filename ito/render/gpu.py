@@ -1,8 +1,6 @@
 import ctypes as ct
 import threading
 
-MAX_SLOT_COUNT = (1 << 31) - 1  # ImGui's signed count; slot IDs on the wire are uint32.
-
 
 class _Memory(ct.Structure):
     _fields_ = [(name, ct.c_ulonglong) for name in ("total", "free", "used")]

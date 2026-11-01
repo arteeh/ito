@@ -22,7 +22,6 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from . import surface
-from . import zones as zones_module
 from .geometry import PoseTrack, angle_between, quaternion, rotation, slerp
 from .latency import FrameDelay
 from .volume import Volume
@@ -492,7 +491,7 @@ class Fusion:
 
     def _guide(self, zones, world_from_sensor, when):
         """Edges of this ToF frame along the camera frame nearest in time (zones.guide)."""
-        if not zones_module.GUIDE or not self.posed:
+        if not self.posed:
             return 0.0
         exposed, image, camera, intrinsics = min(self.posed, key=lambda f: abs(f[0] - when))
         if abs(exposed - when) > GUIDE_MATCH:

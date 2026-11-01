@@ -1,8 +1,6 @@
 import bisect
 import math
 
-import numpy as np
-
 from ito import clock, diagnostics
 from ito.protocol import Pose
 from ito.render import pose
@@ -55,18 +53,11 @@ def between(m0, m1, k0, k1, key):
         )
     elif near.camera_pose is not None:
         pose = near.camera_pose
-    head = None
-    if m0.head_angles is not None and m1.head_angles is not None:
-        head = _lerp(m0.head_angles, m1.head_angles, f)
-    yaw = m0.body_yaw + math.remainder(m1.body_yaw - m0.body_yaw, math.tau) * f
     return near.model_copy(
         update=dict(
             capture_time=m0.capture_time + (m1.capture_time - m0.capture_time) * f,
             video_pts=key,
             camera_pose=pose,
-            head_angles=head,
-            body_yaw=math.remainder(yaw, math.tau),
-            depth=None,
         )
     )
 
@@ -96,7 +87,7 @@ class FrameJoin:
 
     def described(self, metadata):
         if metadata.video_pts is None:
-            raise ValueError("Camera metadata needs video_pts to match RGB and depth")
+            raise ValueError("Camera metadata needs video_pts to match its video frame")
         key = metadata.video_pts
         now = clock.now()
         if key not in self.metadata:
@@ -133,11 +124,9 @@ class FrameJoin:
         if near is None:
             return "dropped", frame, None, None
         metadata = self.metadata[near][1]
-        update = dict(
-            capture_time=metadata.capture_time + (key - near) / TICKS, video_pts=key, depth=None
-        )
+        update = dict(capture_time=metadata.capture_time + (key - near) / TICKS, video_pts=key)
         if abs(near - key) > NEAREST:
-            update.update(camera_pose=None, head_angles=None)
+            update.update(camera_pose=None)
             return "bare", frame, metadata.model_copy(update=update), before
         return "nearest", frame, metadata.model_copy(update=update), before
 
@@ -168,17 +157,9 @@ class FrameJoin:
         out.append((frame, metadata))
 
     @staticmethod
-    def arrays(pair, clock):
+    def arrays(pair):
         frame, metadata = pair
-        depth = metadata.depth
         return (
             frame.to_ndarray(format="rgb24"),
-            np.frombuffer(depth.to_bytes(), dtype="<u2")
-            .reshape(depth.height, depth.width)
-            .astype(np.float32)
-            * np.float32(0.001)
-            if depth is not None
-            else None,
             camera_matrix(metadata.camera_pose) if metadata.camera_pose is not None else None,
-            clock.remote_to_local(metadata.capture_time),
         )

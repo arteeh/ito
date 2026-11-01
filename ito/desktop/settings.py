@@ -2,21 +2,12 @@ import logging
 import os
 import tempfile
 from pathlib import Path
-from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
-
-# MASt3R-SLAM's map size: keyframe slots, all allocated at start. 512 is upstream's; 128 (3.1 GB at
-# 100 % input) leaves room for MASt3R and the scene on a 12-16 GB card.
-KEYFRAMES = (64, 128, 192, 256, 384, 512)
+from pydantic import BaseModel, ConfigDict
 
 
 class AppSettings(BaseModel):
-    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
-    precision: Literal["full", "half"] = "full"
-    input_resolution: Literal[25, 50, 75, 100] = 100
-    keyframes: Literal[KEYFRAMES] = 128
-    max_splats: int = Field(default=1_000_000, ge=1, le=(1 << 31) - 1)
+    model_config = ConfigDict(strict=True, frozen=True, extra="ignore")
     diagnostic_logging: bool = False
 
 
@@ -46,11 +37,3 @@ def save(settings):
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
-
-
-def load_budget(default=None):
-    return load().max_splats
-
-
-def save_budget(value):
-    save(AppSettings.model_validate(load().model_dump() | {"max_splats": value}))

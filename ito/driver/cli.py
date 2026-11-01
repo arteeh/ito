@@ -1,15 +1,12 @@
 import argparse
 import asyncio
-import importlib
-import json
-import logging
 import signal
+from collections.abc import Callable
 from pathlib import Path
 
 from aiortc import RTCIceServer
 
 from ito.driver import Adapter, Driver, pairing
-from ito.link.audio import arguments
 from ito.link.pairing import display
 
 
@@ -47,23 +44,14 @@ def pairing_command(args) -> bool:
     return args.rotate_code or args.show_code
 
 
-async def serve(args) -> None:
-    module, factory_name = args.adapter.rsplit(":", 1)
-    factory = getattr(importlib.import_module(module), factory_name)
-    options = json.loads(args.adapter_args)
-    if not isinstance(options, dict):
-        raise ValueError("--adapter-args must be a JSON object")
-    adapter = factory(**options)
-    if not isinstance(adapter, Adapter):
-        raise ValueError("adapter factory must return an ito.driver.Adapter")
+async def serve(make_adapter: Callable[[], Adapter], args) -> None:
+    adapter = make_adapter()
     ice_servers = [
         RTCIceServer(urls=url, username=args.turn_username, credential=args.turn_credential)
         for url in args.ice_server
     ]
     driver = Driver(
         adapter,
-        audio_source=args.audio_source,
-        audio_sink=args.audio_sink,
         input_timeout=args.input_timeout,
         command_rate=args.command_rate,
         ice_servers=ice_servers,
@@ -91,23 +79,3 @@ async def serve(args) -> None:
             raise RuntimeError("the safety watchdog stopped; the robot is held neutral")
     finally:
         await driver.close()
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Serve one robot through an Ito adapter")
-    parser.add_argument("adapter", nargs="?", help="Python module:factory returning an Adapter")
-    parser.add_argument("--adapter-args", default="{}", help="JSON object passed to the factory")
-    driver_arguments(parser)
-    arguments(parser)
-    args = parser.parse_args()
-    args.prog = parser.prog
-    if not (args.adapter or args.show_code or args.rotate_code):
-        parser.error("the adapter argument is required")
-    logging.basicConfig(level=logging.INFO)
-    try:
-        if not pairing_command(args):
-            asyncio.run(serve(args))
-    except KeyboardInterrupt:
-        pass
-    except (ValueError, ImportError, AttributeError, OSError, RuntimeError) as exc:
-        parser.exit(1, f"ito-driver: {exc}\n")

@@ -17,23 +17,15 @@ class PilotStatus:
     e_stop: bool = False  # Reported by the driver, never inferred from a button press.
     robot_state: str = ""
     detail: str = ""
-    input_latency_ms: float | None = None
     rates: tuple[float | None, float | None, float | None] = (None, None, None)
-    motion_hz: float | None = None
     reconstruction: str = ""
-    audio: str = ""
-    robot_audio: str = ""
-    mic_muted: bool = False
-    speaker_muted: bool = False
-    robot_microphone: bool = False
-    robot_speaker: bool = False
     armed: bool = False
     link_lagging: bool = False
     focus_hold: bool = False
 
 
 class Overlay:
-    def __init__(self, context: moderngl.Context, max_splats: int):
+    def __init__(self, context: moderngl.Context):
         self.context = context
         self.imgui = imgui.create_context()
         imgui.get_io().set_ini_filename("")
@@ -42,12 +34,10 @@ class Overlay:
         self.backend.key_map.update(
             {getattr(pygame, f"K_{key}"): getattr(imgui.Key, key) for key in "acvxyz"}
         )
-        self.max_splats = max_splats
         self.error = None
         self.commands = []
         self._leave = False
         self.can_leave = self.leave = False
-        self.simulation = None
         self.captured = False
         self.layout = {}  # Control centres, for scripted clicks (ITO_PILOT_SCRIPT).
         self.prompt_status = None
@@ -112,58 +102,47 @@ class Overlay:
         self,
         status: PilotStatus,
         fps: float,
-        count: int,
-        age: float | None,
         captured: bool,
         request: str | None,
         *,
-        live=False,
         performance: dict | None = None,
         target: moderngl.Framebuffer | None = None,
         xr_mode=False,
         driving=False,
         panel_shown=True,
-    ) -> int | None:
+    ) -> None:
         if target is not None:
             target.use()
         if not self._leave:
             self.theme.show("hud", "session")
         _, alpha, leaving = self.theme.showing()
         hud_alpha = self.theme.hud.show(panel_shown, self.theme.t)
-        selected = None
         with self.theme.faded(alpha, leaving):
             if hud_alpha > 0:
                 with self.theme.faded(hud_alpha, not panel_shown):
-                    selected = self._draw_hud(
+                    self._draw_hud(
                         status,
                         fps,
-                        count,
-                        age,
                         captured,
                         request,
-                        live=live,
                         performance=performance,
                         xr_mode=xr_mode,
                         driving=driving,
                     )
             self._stopped_prompt(status, driving, xr_mode)
         self.render()
-        return selected
 
     def _draw_hud(
         self,
         status: PilotStatus,
         fps: float,
-        count: int,
-        age: float | None,
         captured: bool,
         request: str | None,
         *,
-        live=False,
         performance: dict | None = None,
         xr_mode: bool = False,
         driving: bool = False,
-    ) -> int | None:
+    ) -> None:
         safety = (
             "E-STOP LATCHED"
             if status.e_stop
@@ -207,42 +186,20 @@ class Overlay:
         imgui.text_colored(
             self.theme.color("error") if status.e_stop else self.theme.color("safe"), safety
         )
-        if not live:
-            scene_age = "file" if age is None else f"{age:.1f} s old"
+        values = performance or {}
+        for label, key, unit in (
+            ("Meshes", "scene_hz", "/s"),
+            ("Capture to visible", "capture_to_visible_ms", "ms"),
+            ("GPU busy", "gpu_busy_pct", "%"),
+        ):
+            value = values.get(key)
+            text = "--" if value is None else f"{value:.1f}"
             with self.theme.font("numeric"):
-                imgui.text(f"{count:,} splats | scene {scene_age}")
-        if live:
-            values = performance or {}
-            for label, key, unit in (
-                ("Reconstruction", "scene_hz", "frames/s"),
-                ("Capture to visible", "capture_to_visible_ms", "ms"),
-                ("GPU busy", "gpu_busy_pct", "%"),
-            ):
-                value = values.get(key)
-                text = "--" if value is None else f"{value:.1f}"
-                with self.theme.font("numeric"):
-                    imgui.text(f"{label}: {text} {unit}")
-            used, limit = values.get("slot_count"), values.get("splat_limit")
-            splats = "--" if used is None or limit is None else f"{used:,} / {limit:,}"
-            vram = values.get("vram")
-            memory = "--" if vram is None else f"{vram[0] / 2**30:.1f} / {vram[1] / 2**30:.1f} GiB"
-            with self.theme.font("numeric"):
-                imgui.text(f"Splats: {splats} | VRAM {memory}")
-            if values.get("slam_precision"):
-                scale = values.get("slam_display_scale")
-                imgui.text(
-                    f"MASt3R: {values['slam_precision']}, "
-                    f"{values.get('slam_keyframes', '--')} keyframes, "
-                    + (f"{scale:.3f} m per map unit (ToF)" if scale else "unscaled")
-                )
-            if values.get("reconstruction_oom"):
-                imgui.text_colored(
-                    self.theme.color("error"), "Out of GPU memory: reconstruction is degraded"
-                )
-            if values.get("network_nonfinite_points"):
-                imgui.text_colored(
-                    self.theme.color("warning"), "fp16 overflow: invalid points discarded"
-                )
+                imgui.text(f"{label}: {text} {unit}")
+        vram = values.get("vram")
+        memory = "--" if vram is None else f"{vram[0] / 2**30:.1f} / {vram[1] / 2**30:.1f} GiB"
+        with self.theme.font("numeric"):
+            imgui.text(f"VRAM {memory}")
         if xr_mode:
             imgui.text("Aim + trigger to select | stick to drive")
             imgui.text("B e-stop | X stop | A resume | Y recenter")
@@ -250,7 +207,6 @@ class Overlay:
             imgui.text("WASD move | PgUp/PgDn rise/fall | Home recenter")
             imgui.text("Tab release mouse" if captured else "Click scene / Tab for mouse-look")
             imgui.text("Space stop | E e-stop | R resume | F12 capture | Esc release mouse")
-        selected = None
         controls = [("Stop", "stop"), ("E-stop", "e_stop"), ("Resume", "resume")]
         if xr_mode:
             controls.append(("Recenter", "recenter"))
@@ -265,23 +221,11 @@ class Overlay:
             if imgui.button("Disconnect"):
                 self.leave = True
             self._placed("disconnect")
-        if status.link == "CONNECTED":
-            self._audio(status)
-        if self.simulation:
-            changed, visible = imgui.checkbox("Show simulation", self.simulation.visible)
-            self._placed("show_simulation")
-            if changed:
-                try:
-                    self.simulation.show(visible)
-                except OSError:
-                    self.error = "Could not launch simulation viewer"
-            if self.simulation.viewer_error:
-                imgui.text_colored(self.theme.color("error"), self.simulation.viewer_error)
         if request:
             imgui.text(request)
         if status.detail:
             imgui.text(status.detail)
-        if status.reconstruction and "tracking |" not in status.reconstruction:
+        if status.reconstruction:
             imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + 550)
             imgui.text_wrapped(status.reconstruction)
             imgui.pop_text_wrap_pos()
@@ -290,7 +234,6 @@ class Overlay:
         link = "cut" if status.link != "CONNECTED" else "slack" if status.link_lagging else "taut"
         self.theme.window("Ito", "hud", "over", link=link)
         imgui.end()
-        return selected
 
     def _stopped_prompt(self, status, driving, xr_mode):
         fault = status.detail.startswith("fault")
@@ -349,34 +292,6 @@ class Overlay:
         imgui.end()
         imgui.pop_style_var()
         imgui.pop_style_color(2)
-
-    def _audio(self, status):
-        missing = [
-            name
-            for name, present in (
-                ("microphone", status.robot_microphone),
-                ("speaker", status.robot_speaker),
-            )
-            if not present
-        ]
-        if missing:
-            imgui.text_disabled("Robot has no " + " or ".join(missing))
-        if len(missing) == 2:
-            return
-        imgui.text(status.audio)
-        controls = []
-        if status.robot_speaker:
-            controls.append(("Mute microphone", status.mic_muted, "mute_mic"))
-        if status.robot_microphone:
-            controls.append(("Mute speakers", status.speaker_muted, "mute_speaker"))
-        for index, (label, muted, command) in enumerate(controls):
-            if index:
-                imgui.same_line()
-            if imgui.checkbox(label, muted)[0]:
-                self.commands.append(command)
-            self._placed(command)
-        if status.robot_audio:
-            imgui.text("Robot " + status.robot_audio)
 
     def _placed(self, name):
         low, high = imgui.get_item_rect_min(), imgui.get_item_rect_max()

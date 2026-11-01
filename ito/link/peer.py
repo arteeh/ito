@@ -1,7 +1,7 @@
 """One peer; each message kind rides its own data channel ("lane").
 
 aiortc sends all channels through one association-wide FIFO, so a lane alone does not keep a
-large message (frame metadata with depth, ~1 MB) from delaying a small one: frames wait until
+large message from delaying a small one: frames wait until
 earlier ones are acknowledged, and clock pings wait for nothing unsent."""
 
 import asyncio
@@ -106,9 +106,7 @@ class Peer:
         on_track: Callable[[MediaStreamTrack], None] | None = None,
         description: RobotDescription | None = None,
         credential: Credential | None = None,
-        audio=None,
     ):
-        self.audio = audio
         self.role = role
         self.pc = RTCPeerConnection(RTCConfiguration(iceServers=list(ice_servers)))
         self.on_message = on_message
@@ -148,9 +146,7 @@ class Peer:
             else:
                 latest = LatestTrack(track)
                 self._media.append(latest)
-                if track.kind == "audio" and self.audio:
-                    self.audio.receive(latest)
-                elif self.on_track:
+                if self.on_track:
                     try:
                         self.on_track(latest)
                     except Exception:
@@ -313,12 +309,6 @@ class Peer:
                     cameras = {c.name: c for c in self.description.cameras}
                     if message.camera not in cameras:
                         raise ProtocolError("unknown camera")
-                    camera = cameras[message.camera]
-                    if message.depth and (
-                        message.depth.width != camera.intrinsics.width
-                        or message.depth.height != camera.intrinsics.height
-                    ):
-                        raise ProtocolError("depth does not match camera")
                     previous = self.frames.get(message.camera)
                     if previous and message.sequence <= previous.sequence:
                         self.dropped_messages += 1
@@ -431,12 +421,7 @@ class Peer:
                     diagnostics.event("webrtc_teardown_abandoned", at=where)
                     closing.cancel()
         finally:
-            try:
-                if self.audio:
-                    with diagnostics.stage("audio"):
-                        await self.audio.close()
-            finally:
-                self.closed.set()
+            self.closed.set()
 
     async def __aenter__(self):
         return self

@@ -13,7 +13,7 @@ from pygame._sdl2 import controller
 from ito import clock, diagnostics
 from ito.protocol import Pose
 from ito.render import pose
-from ito.render.scene import FloatArray
+from ito.render.pose import FloatArray
 
 log = logging.getLogger(__name__)
 

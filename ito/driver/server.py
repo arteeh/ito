@@ -12,9 +12,7 @@ from aiortc.sdp import SessionDescription
 from ito import clock
 from ito.driver.adapter import Adapter
 from ito.driver.pairing import Pairing, PairingRefused, default_path
-from ito.driver.timing import PoseTiming
 from ito.link import Peer
-from ito.link.audio import Audio, opus
 from ito.link.pairing import proof, token
 from ito.link.signaling import parse_offer
 from ito.protocol import (
@@ -40,8 +38,6 @@ class Driver:
         self,
         adapter: Adapter,
         *,
-        audio_source: str | None = None,
-        audio_sink: str = "device",
         input_timeout: float = 0.25,
         command_rate: float = 90,
         ice_servers: Sequence[RTCIceServer] = (),
@@ -51,11 +47,6 @@ class Driver:
             raise ValueError("input_timeout must be between 0.02 and 5 seconds")
         if not math.isfinite(command_rate) or not 1 <= command_rate <= 240:
             raise ValueError("command_rate must be between 1 and 240 Hz")
-        if audio_source is not None:
-            Audio(audio_source, audio_sink)
-        if (audio_source, audio_sink) == ("none", "none"):
-            audio_source = None
-        self.audio_source, self.audio_sink = audio_source, audio_sink
         self.adapter = adapter
         adapter.frame_sink = self.publish_frame
         adapter.motion_sink = self.publish_motion
@@ -86,7 +77,6 @@ class Driver:
         self._last_apply = 0.0
         self._input_latency_ms: float | None = None
         self._applied = Rate()
-        self._timing = PoseTiming.from_environment()
         self._arrived = asyncio.Event()
         self._connected_at = 0.0
         self._negotiating = False
@@ -136,12 +126,7 @@ class Driver:
                 or not -0.1 <= now - capture <= self.input_timeout
             ):
                 self.peer.rejected_messages += 1
-                if self._timing:
-                    self._timing.rejected_pose()
                 return
-            if self._timing:
-                pending = bool(self._latest) and self._latest.sequence != self._applied_sequence
-                self._timing.received_pose(message.sequence, capture, now, pending)
             self._capture = capture
             self._received = now
             if not message.deadman:
@@ -191,7 +176,6 @@ class Driver:
                     else None,
                     rejected_messages=self.peer.rejected_messages,
                     telemetry=self.adapter.telemetry()
-                    | ({"audio": self.peer.audio.status} if self.peer.audio else {})
                     | (
                         {"pilot_input_latency_ms": self._input_latency_ms}
                         if self._input_latency_ms is not None
@@ -221,11 +205,6 @@ class Driver:
         )
         if camera is None:
             raise ValueError("unknown camera")
-        if metadata.depth and (
-            metadata.depth.width != camera.intrinsics.width
-            or metadata.depth.height != camera.intrinsics.height
-        ):
-            raise ValueError("depth dimensions do not match camera")
         return self.peer.send(metadata) if self.peer else False
 
     def publish_motion(self, motion: Motion) -> bool:
@@ -258,8 +237,6 @@ class Driver:
                         self.adapter.apply(self._latest)
                         self._input_latency_ms = max(0, (clock.now() - self._capture) * 1000)
                         self._applied.tick()
-                        if self._timing:
-                            self._timing.applied_pose(clock.now())
                         self._applied_sequence = self._latest.sequence
                         self._last_apply = now
                         self.state, self.reason = "active", "pilot input"
@@ -325,28 +302,15 @@ class Driver:
             "driver",
             description=description,
             credential=Credential(pilot=token(), secret=token()) if grant.code else None,
-            audio=Audio(self.audio_source, self.audio_sink) if self.audio_source else None,
             ice_servers=self.ice_servers,
             on_message=lambda message: self._message(peer, message),
             on_disconnect=lambda: self._disconnect(peer),
-            on_track=lambda track: audio_received(track),
+            on_track=lambda track: track.stop(),
         )
         self.peer = peer
         self._pairing_code = grant.code
         self._connected_at = clock.now()
         self._negotiating = True
-
-        def audio_received(track):
-            if track.kind == "audio":
-                try:
-                    self.adapter.incoming_audio(track)
-                except Exception:
-                    track.stop()
-                    self._fault = True
-                    self._neutral("adapter audio failed")
-                    log.exception("adapter audio failed")
-            else:
-                track.stop()
 
         tracks = []
         try:
@@ -355,39 +319,19 @@ class Driver:
                 if len(remote_media) > 18:
                     raise ValueError("too many media tracks")
                 tracks = list(self.adapter.media_tracks())
-                if any(track.kind == "audio" for track in tracks):
-                    peer.audio = None
                 await peer.pc.setRemoteDescription(RTCSessionDescription(offer.sdp, "offer"))
-                if peer.audio:
-                    await peer.audio.start()
-                    if peer.audio.source != "none" and any(
-                        m.kind == "audio" and m.direction in {"recvonly", "sendrecv"}
-                        for m in remote_media
-                    ):
-                        tracks.append(peer.audio.track)
-                    audio = {"microphone": peer.audio.source, "speaker": peer.audio.sink}
-                    capabilities = description.capabilities + tuple(
-                        name
-                        for name, choice in audio.items()
-                        if choice != "none" and name not in description.capabilities
-                    )
-                    peer.description = description.model_copy(update={"capabilities": capabilities})
-                video = [track for track in tracks if track.kind == "video"]
-                if len(video) != len(description.cameras) or {track.id for track in video} != {
+                if len(tracks) != len(description.cameras) or {track.id for track in tracks} != {
                     c.track_id for c in description.cameras
                 }:
                     raise ValueError("camera descriptions do not match media tracks")
-                for kind in ("video", "audio"):
-                    offered = sum(
-                        media.kind == kind and media.direction in {"recvonly", "sendrecv"}
-                        for media in remote_media
-                    )
-                    outgoing = sum(track.kind == kind for track in tracks)
-                    if outgoing > offered:
-                        raise ValueError(f"pilot must offer {outgoing} receiving {kind} tracks")
+                offered = sum(
+                    media.kind == "video" and media.direction in {"recvonly", "sendrecv"}
+                    for media in remote_media
+                )
+                if len(tracks) > offered:
+                    raise ValueError(f"pilot must offer {len(tracks)} receiving video tracks")
                 for track in tracks:
                     peer.pc.addTrack(track)
-                opus(peer.pc)
                 await peer.pc.setLocalDescription(await peer.pc.createAnswer())
             sdp = peer.pc.localDescription.sdp
             return web.json_response(
