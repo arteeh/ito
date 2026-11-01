@@ -10,7 +10,7 @@ from dataclasses import replace
 
 from ito import clock, diagnostics
 from ito.desktop import DesktopState, PilotStatus
-from ito.desktop.settings import current as app_settings
+from ito.desktop.settings import load as app_settings
 from ito.link import PairingError, connect
 from ito.protocol import Command, FrameMetadata, Motion, Paired, PilotState, Pose, Sensors, Status
 from ito.rates import CounterRate, Rate
@@ -343,7 +343,7 @@ class Pilot:
             with self.worker_lock:
                 self.worker = TofMesh(
                     camera.intrinsics,
-                    app_settings().mesh_memory,
+                    self.settings.mesh_memory,
                     capture_delay=camera.capture_delay,
                 )
 
@@ -412,9 +412,6 @@ class Pilot:
                 if not peer.connected or now - last_status > 2:
                     raise ConnectionError("Driver status lost; input disarmed")
                 if self.worker and not self.failure:
-                    memory = app_settings().mesh_memory
-                    if memory != self.worker.memory:
-                        self.worker.remember(memory)
                     message = self.worker.status()
                     if message:
                         self.reconstruction_status = message

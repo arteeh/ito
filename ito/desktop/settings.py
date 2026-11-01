@@ -13,33 +13,22 @@ class AppSettings(BaseModel):
     mesh_memory: int = Field(default=10, ge=2, le=40)
 
 
-_current = None
-
-
 def settings_path():
     root = os.environ.get("APPDATA") if os.name == "nt" else os.environ.get("XDG_CONFIG_HOME")
     return (Path(root) if root else Path.home() / ".config") / "ito" / "settings.json"
 
 
 def load():
-    global _current
     try:
-        _current = AppSettings.model_validate_json(settings_path().read_text())
+        return AppSettings.model_validate_json(settings_path().read_text())
     except FileNotFoundError:
-        _current = AppSettings()
+        return AppSettings()
     except (OSError, ValueError) as exc:
         logging.getLogger(__name__).warning("Cannot load app settings: %s; using defaults", exc)
-        _current = AppSettings()
-    return _current
-
-
-def current():
-    """The settings last loaded or saved: a change on the settings screen applies at once."""
-    return _current or load()
+        return AppSettings()
 
 
 def save(settings):
-    global _current
     path = settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, filename = tempfile.mkstemp(dir=path.parent, prefix=".settings-")
@@ -50,4 +39,3 @@ def save(settings):
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
-    _current = settings
