@@ -22,7 +22,11 @@ WINDOW = 3.0  # seconds of frame pairs an estimate uses
 EVERY = 1.0  # seconds between estimates
 MOVED = 1.0  # thumbnail pixels a pair must be predicted to move to count
 CLIP = 5.0  # thumbnail pixels: a worse match counts no more than this
-PAIRS = 20  # moving pairs an estimate needs
+PAIRS = 30  # moving pairs an estimate needs
+# A steady turn says nothing about the delay (every delay predicts the same image shift): the
+# costs come out nearly flat. The estimate moves only to a delay that matches clearly better
+# than the current one, by this fraction of the median cost.
+BETTER = 0.05
 PEAK = 0.08  # phase-correlation peak below which a pair is no match at all
 # Extra delays tried, seconds on top of the driver's capture_delay.
 CANDIDATES = np.round(np.arange(-0.09, 0.2101, 0.005), 3)
@@ -156,11 +160,13 @@ class FrameDelay:
         miss = np.linalg.norm(predictions[:, use] - measured[use][None], axis=2)
         costs = np.minimum(miss, CLIP).mean(axis=1)
         best = int(np.argmin(costs))
+        self.cost = float(costs[best])
+        if costs[current] - costs[best] < BETTER * float(np.median(costs)):
+            return
         offset = 0.0
         if 0 < best < len(costs) - 1:  # the minimum between grid points (parabola)
             minus, centre, plus = costs[best - 1 : best + 2]
             curve = minus - 2 * centre + plus
             offset = 0.5 * (minus - plus) / curve if curve > 0 else 0.0
         self.extra = float(CANDIDATES[best] + offset * (CANDIDATES[1] - CANDIDATES[0]))
-        self.cost = float(costs[best])
         self.measured += 1
