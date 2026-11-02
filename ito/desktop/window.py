@@ -324,10 +324,11 @@ class DesktopWindow:
     def straighten(self, source, current):
         """The newest camera frame to RGB on the GPU, and on to the ToF mesh's colour (once the
         GPU has it: camera.collect())."""
-        self.camera.update(
-            current.video, current.video_time, current.video_intrinsics, current.video_lens,
-            source.camera_frame,
-        )  # fmt: skip
+        if current.video is not None:
+            self.camera.update(
+                current.video, current.video_time, current.video_intrinsics, current.video_lens,
+                source.camera_frame,
+            )  # fmt: skip
 
     def glided(self, current, now):
         return replace(current, robot_camera=self.glide(current.robot_camera, now))

@@ -6,7 +6,7 @@ Most teleoperation software treats the pilot experience as secondary. It is usua
 
 ## Use
 
-Run `ito.exe` from a Windows build and connect to a robot by its address. Ito shows the robot's surroundings as a mesh: its ToF ranges, placed by the robot's own pose and painted with its camera frames. `--mode xr` uses the active OpenXR runtime.
+Run `ito.exe` from a Windows build (it needs a GPU with Vulkan 1.3) and connect to a robot by its address. Ito shows the robot's surroundings as a mesh: its ToF ranges, placed by the robot's own pose and painted with its camera frames. `--mode xr` uses the active OpenXR runtime.
 
 Press **R** to pilot. WASD moves where you look; click or Tab for mouse-look. Space stops, **E e-stops**, Home recenters, F12 saves a screenshot, Escape releases the mouse. Gamepad: left stick moves, right stick looks, A resumes, B e-stops, X stops. In VR, aim at the panel and pull the trigger; A resumes, B e-stops, X stops, Y recenters.
 
@@ -24,6 +24,7 @@ Connect Ito to `localhost:8081` with the pairing code it prints. Closing the vie
 
 ```sh
 tools/build.sh [REF]                              # Windows build, into ~\Projects\ito\builds
+python tools/shaders.py                           # GLSL in ito/shaders to SPIR-V (builds do it)
 uv run --extra sim tools/session.py BUILD NAME    # a scripted, recorded session against the sim
 ```
 

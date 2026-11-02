@@ -98,7 +98,7 @@ class Device:
     info)) so the runtime does, on the GPU that drives the headset (XR_KHR_vulkan_enable2)."""
 
     def __init__(self, window, *, xr=None):
-        self.instance = self.device = self.surface = None
+        self.instance = self.device = self.surface = self.dummy_array = None
         self.frames = []
         self.frame = None
         self.index = 0
@@ -176,14 +176,13 @@ class Device:
             )
             self.pool = pool[0]
             self.frames = [Frame(self) for _ in range(FRAMES)]
-            self.dummy = Image(self, (1, 1), vk.VK_FORMAT_R8G8B8A8_UNORM, sampled=True, layers=1)
+            # Bound where an image array has nothing to hold yet (the atlas before its first layer).
             self.dummy_array = Image(
                 self, (1, 1), vk.VK_FORMAT_R8G8B8A8_UNORM, sampled=True, layers=1, array=True
             )
             with self.once() as frame:
-                for image in (self.dummy, self.dummy_array):
-                    frame.clear(image, (0, 0, 0, 0))
-                    frame.transition(image, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+                frame.clear(self.dummy_array, (0, 0, 0, 0))
+                frame.transition(self.dummy_array, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
         except BaseException:
             self.close()
             raise
@@ -455,10 +454,9 @@ class Device:
         for frame in self.frames:
             frame.close()
         self.frames = []
-        for name in ("dummy", "dummy_array"):
-            if getattr(self, name, None) is not None:
-                getattr(self, name).close()
-                setattr(self, name, None)
+        if self.dummy_array is not None:
+            self.dummy_array.close()
+            self.dummy_array = None
         if self.device is not None:
             for sampler in self.samplers.values():
                 lib.vkDestroySampler(self.device, sampler, ffi.NULL)
@@ -565,10 +563,6 @@ class Buffer:
         )
         lib.vkBindBufferMemory(device.device, self.buffer, self.memory, 0)
         return self
-
-    def write(self, data, offset=0):
-        data = memoryview(np.ascontiguousarray(data)).cast("B")
-        self.mapped[offset : offset + len(data)] = data
 
     def close(self):
         if self.buffer is not None:
@@ -789,7 +783,6 @@ class Frame:
         self.done = []  # run once the frame's GPU work is complete (readbacks)
         self.reading = []  # readback buffers in use; free again then
         self.readbacks = []  # free readback buffers
-        self.keep = []
         self.pipeline = None
 
     def wait(self):
@@ -812,7 +805,6 @@ class Frame:
         self.wait()
         lib.vkResetFences(self.device.device, 1, ffi.new("VkFence*", self.fence))
         self.uniforms.used = self.staging.used = 0
-        self.keep = []
         self.pipeline = None
         lib.vkResetCommandBuffer(self.cmd, 0)
         check(
@@ -907,9 +899,9 @@ class Frame:
             region = ffi.new("VkBufferCopy*", {"srcOffset": at, "dstOffset": offset, "size": size})
             lib.vkCmdCopyBuffer(self.cmd, source.buffer, buffer.buffer, 1, region)
 
-    def upload_image(self, image, data, rect, layer=0, row=0):
-        """`data` into image's (x, y, width, height) at `layer`; rows of `row` texels (0: the
-        rectangle's width)."""
+    def upload_image(self, image, data, rect, layer=0):
+        """`data` (rows of the rectangle's width) into image's (x, y, width, height) at
+        `layer`."""
         source, at, _ = self.stage(data)
         self.transition(image, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
         x, y, w, h = rect
@@ -917,7 +909,6 @@ class Frame:
             "VkBufferImageCopy*",
             {
                 "bufferOffset": at,
-                "bufferRowLength": row,
                 "imageSubresource": {
                     "aspectMask": COLOUR,
                     "mipLevel": 0,
@@ -944,10 +935,10 @@ class Frame:
         )
         lib.vkCmdCopyBufferToImage(self.cmd, buffer.buffer, image.image, image.layout, 1, region)
 
-    def read(self, image, callback, *, rect=None, layer=0):
-        """Copy image (its rect at layer) to host memory; callback(pixels, (w, h)) runs once the
-        frame is done (pixels: a uint8 array of RGBA texels, rows top first as stored)."""
-        x, y, w, h = rect or (0, 0, *image.size)
+    def read(self, image, callback):
+        """Copy image to host memory; callback(pixels, (w, h)) runs once the frame is done
+        (pixels: a uint8 array of RGBA texels, rows top first as stored)."""
+        w, h = image.size
         size = w * h * 4
         target = next((b for b in self.readbacks if b.size >= size), None)
         if target is None:
@@ -958,13 +949,7 @@ class Frame:
         region = ffi.new(
             "VkBufferImageCopy*",
             {
-                "imageSubresource": {
-                    "aspectMask": COLOUR,
-                    "mipLevel": 0,
-                    "baseArrayLayer": layer,
-                    "layerCount": 1,
-                },
-                "imageOffset": {"x": x, "y": y, "z": 0},
+                "imageSubresource": {"aspectMask": COLOUR, "layerCount": 1},
                 "imageExtent": {"width": w, "height": h, "depth": 1},
             },
         )
@@ -1241,7 +1226,7 @@ class Frame:
                 self.cmd, pipeline.layout, pipeline.stages, 0, len(push), ffi.from_buffer(push)
             )
 
-    def vertices(self, *buffers, index=None, offsets=None):
+    def vertices(self, *buffers, index=None):
         """Bind vertex buffers (Buffer, or (Buffer, offset)) and an index buffer (uint32, or
         (Buffer, offset, uint16?))."""
         handles, starts = [], []
@@ -1339,7 +1324,7 @@ class Pipeline:
     bytes. constants: {constant_id: value} (common.glsl). vertex: [(location, binding, format)],
     one buffer per binding, formats VERTEX_FORMATS ("4u8" normalized bytes); strides: {binding:
     (stride, {location: offset})} where a buffer interleaves. colours: attachment formats;
-    depth: a compare ("<", "<=") to test (and write unless depth_write is False) DEPTH_FORMAT,
+    depth: a compare ("<", "<=") to test and write DEPTH_FORMAT,
     None for no depth attachment."""
 
     def __init__(
@@ -1354,8 +1339,6 @@ class Pipeline:
         strides=None,
         colours=(),
         depth=None,
-        depth_write=True,
-        depth_attachment=None,
         blend=None,
         topology=vk.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
     ):
@@ -1480,8 +1463,6 @@ class Pipeline:
                     strides or {},
                     colours,
                     depth,
-                    depth_write,
-                    depth_attachment,
                     blend,
                     topology,
                     shaders,
@@ -1500,8 +1481,6 @@ class Pipeline:
         strides,
         colours,
         depth,
-        depth_write,
-        depth_attachment,
         blend,
         topology,
         shaders,
@@ -1573,7 +1552,7 @@ class Pipeline:
             {
                 "sType": vk.VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
                 "depthTestEnable": depth is not None,
-                "depthWriteEnable": depth is not None and depth_write,
+                "depthWriteEnable": depth is not None,
                 "depthCompareOp": COMPARE.get(depth, vk.VK_COMPARE_OP_ALWAYS),
             },
         )
@@ -1612,14 +1591,15 @@ class Pipeline:
             },
         )
         formats = ffi.new("VkFormat[]", list(colours) or 1)
-        has_depth = depth is not None or depth_attachment
         rendering = ffi.new(
             "VkPipelineRenderingCreateInfo*",
             {
                 "sType": vk.VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
                 "colorAttachmentCount": len(colours),
                 "pColorAttachmentFormats": formats,
-                "depthAttachmentFormat": DEPTH_FORMAT if has_depth else vk.VK_FORMAT_UNDEFINED,
+                "depthAttachmentFormat": DEPTH_FORMAT
+                if depth is not None
+                else vk.VK_FORMAT_UNDEFINED,
             },
         )
         info = ffi.new(
@@ -1887,7 +1867,7 @@ class Presenter:
         self.device = device
         self.pipelines = {}
 
-    def __call__(self, frame, source, target, *, upright, srgb=False, clear=None):
+    def __call__(self, frame, source, target, *, upright, srgb=False):
         pipeline = self.pipelines.get(target.format)
         if pipeline is None:
             pipeline = self.pipelines[target.format] = Pipeline(
@@ -1898,7 +1878,7 @@ class Presenter:
                 colours=(target.format,),
             )
         frame.sampled(source)
-        with frame.render([target], clear=clear):
+        with frame.render([target]):
             frame.use(pipeline, {0: (source, self.device.sampler())}, pack("ii", upright, srgb))
             frame.draw(3)
 
