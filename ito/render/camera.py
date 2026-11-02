@@ -1,64 +1,24 @@
 """The robot camera's frames, straightened on the GPU.
 
 Frames arrive as Ito decodes them, Y'CbCr in memory (NV12 from a GPU decoder, planar from the
-CPU's), and through the robot's lens when its camera describes one (protocol.Lens). One shader
-pass turns each into RGB at the camera's described pinhole: the flat camera view's texture,
-and the ToF mesh's colour frame, strided as the worker takes it (worker.frame_size)."""
+CPU's), and through the robot's lens when its camera describes one (protocol.Lens). One compute
+pass (straighten.comp) turns each into RGB at the camera's described pinhole: the flat camera
+view's texture, and the ToF mesh's colour frame, strided as the worker takes it
+(worker.frame_size). Each frame is straightened in a submission of its own, ahead of the frame
+being drawn, so its colour frame is read back as soon as the GPU has it (collect()) without
+waiting for the rest of the frame."""
 
-import moderngl
 import numpy as np
+import vulkan as vk
 
 from ito.tofmesh.worker import frame_size
+
+from .vk import FRAMES, Frame, Image, Pipeline, mat, pack
 
 # Luma weights (Kr, Kb) of ITU-R BT.601 and BT.709. FFmpeg's AVColorSpace 1 is BT.709; every
 # other value, unspecified included, is converted as BT.601, as FFmpeg's own conversion does.
 BT601, BT709 = (0.299, 0.114), (0.2126, 0.0722)
 AVCOL_SPC_BT709, AVCOL_RANGE_JPEG = 1, 2
-
-STRAIGHTEN = """#version 430
-uniform sampler2D luma;
-uniform sampler2D chroma;  // CbCr (NV12), or Cb with chroma_v Cr (planar)
-uniform sampler2D chroma_v;
-uniform bool planar;
-uniform vec2 size;          // the frame, pixels
-uniform vec2 luma_scale;    // frame width / texture width (a decoder's padded lines)
-uniform vec2 chroma_scale;
-uniform vec4 pinhole;       // fx fy cx cy that the frame is straightened to
-uniform vec4 lens;          // fx fy cx cy of the lens the frame came through
-uniform float k[12];        // OpenCV's k1 k2 p1 p2 k3 k4 k5 k6 s1 s2 s3 s4
-uniform bool distorted;
-uniform vec2 stride;        // output pixel i is straightened pixel i * stride.x + stride.y
-uniform mat3 to_rgb;
-uniform vec3 offset;
-out vec4 color;
-void main() {
-    // Pixel centres are whole numbers in OpenCV's camera model, and output row 0 is the
-    // frame's top row: rows are read back top first.
-    vec2 p = (gl_FragCoord.xy - 0.5) * stride.x + stride.y;
-    vec2 source = p;
-    if (distorted) {
-        vec2 xy = (p - pinhole.zw) / pinhole.xy;
-        float r2 = dot(xy, xy), r4 = r2 * r2, r6 = r4 * r2;
-        float radial = (1 + k[0] * r2 + k[1] * r4 + k[4] * r6)
-                     / (1 + k[5] * r2 + k[6] * r4 + k[7] * r6);
-        vec2 d = xy * radial + vec2(
-            2 * k[2] * xy.x * xy.y + k[3] * (r2 + 2 * xy.x * xy.x) + k[8] * r2 + k[9] * r4,
-            k[2] * (r2 + 2 * xy.y * xy.y) + 2 * k[3] * xy.x * xy.y + k[10] * r2 + k[11] * r4);
-        source = d * lens.xy + lens.zw;
-    }
-    vec2 uv = (source + 0.5) / size;
-    vec2 c = planar
-        ? vec2(texture(chroma, uv * chroma_scale).r, texture(chroma_v, uv * chroma_scale).r)
-        : texture(chroma, uv * chroma_scale).rg;
-    vec3 ycc = vec3(texture(luma, uv * luma_scale).r, c);
-    color = vec4(clamp(to_rgb * (ycc - offset), 0.0, 1.0), 1);
-}
-"""
-
-FULLSCREEN = """#version 430
-const vec2 corners[4] = vec2[4](vec2(-1, -1), vec2(1, -1), vec2(-1, 1), vec2(1, 1));
-void main() { gl_Position = vec4(corners[gl_VertexID], 0, 1); }
-"""
 
 
 def ycc_to_rgb(colorspace, full):
@@ -77,25 +37,33 @@ def ycc_to_rgb(colorspace, full):
     return matrix * (255 / 219, 255 / 224, 255 / 224), (16 / 255, 128 / 255, 128 / 255)
 
 
+RGBA = vk.VK_FORMAT_R8G8B8A8_UNORM
+PLANES = {1: vk.VK_FORMAT_R8_UNORM, 2: vk.VK_FORMAT_R8G8_UNORM}
+
+
 class CameraFeed:
-    def __init__(self, context):
-        self.context = context
-        self.program = context.program(vertex_shader=FULLSCREEN, fragment_shader=STRAIGHTEN)
-        self.vao = context.vertex_array(self.program, [])
+    def __init__(self, device):
+        self.device = device
+        self.pipeline = Pipeline(
+            device,
+            ("straighten.comp",),
+            {0: "uniform", 1: "sampler", 2: "sampler", 3: "sampler", 4: "image"},
+        )
+        self.frames = [Frame(device) for _ in range(FRAMES)]
+        self.count = 0
+        self.pending = None
         self.planes = []
         self.layout = None
         self.texture = None  # the latest frame, straightened, full size
-        self.framebuffer = None
         self.colour = None  # the same, strided to the ToF mesh's colour size
-        self.colour_texture = None
         self.sizes = None
         self.stamp = None
 
-    def update(self, frame, stamp, intrinsics, lens):
-        """Straighten `frame` (an av.VideoFrame) if it is new; returns it as the ToF mesh's
-        colour frame, (h, w, 3) uint8 at worker.frame_size, or None when nothing is new."""
+    def update(self, frame, stamp, intrinsics, lens, deliver):
+        """Straighten `frame` (an av.VideoFrame) if it is new; deliver(image, stamp) gets it as
+        the ToF mesh's colour frame, (h, w, 3) uint8 at worker.frame_size, at collect()."""
         if frame is None or intrinsics is None or stamp == self.stamp:
-            return None
+            return
         self.stamp = stamp
         if (frame.width, frame.height) != (intrinsics.width, intrinsics.height):
             raise RuntimeError(
@@ -105,17 +73,43 @@ class CameraFeed:
         name = frame.format.name
         if name not in {"nv12", "yuv420p", "yuvj420p"}:
             frame, name = frame.reformat(format="nv12"), "nv12"
-        self._upload(frame, name)
+        commands = self.frames[self.count % FRAMES]
+        self.count += 1
+        commands.begin()
+        self._upload(commands, frame, name)
         (width, height), step = frame_size(intrinsics.width, intrinsics.height)
         self._targets((intrinsics.width, intrinsics.height), (width, height))
-        self._uniforms(frame, name, intrinsics, lens)
-        self.context.enable_only(moderngl.NOTHING)
-        self._draw(self.framebuffer, (1.0, 0.0))
-        self._draw(self.colour, (float(step), float(step // 2)))
-        pixels = self.colour.read(components=3, alignment=1)
-        return np.frombuffer(pixels, np.uint8).reshape(height, width, 3)
+        block = self._uniforms(frame, name, intrinsics, lens)
+        commands.sampled(*self.planes)
+        for target, stride in (
+            (self.texture, (1.0, 0.0)),
+            (self.colour, (float(step), float(step // 2))),
+        ):
+            commands.transition(target, vk.VK_IMAGE_LAYOUT_GENERAL)
+            uniforms = block + pack("2f", *stride) + pack("2i8x", *self.flags)
+            resources = {0: commands.uniform(uniforms), 4: target}
+            sampler = self.device.sampler()
+            for binding, plane in zip((1, 2, 3), self.planes + self.planes[1:2], strict=False):
+                resources[binding] = (plane, sampler)
+            commands.use(self.pipeline, resources)
+            commands.dispatch(target.size)
 
-    def _upload(self, frame, name):
+        def read(pixels, size):
+            image = np.ascontiguousarray(pixels.reshape(size[1], size[0], 4)[..., :3])
+            deliver(image, stamp)
+
+        commands.read(self.colour, read)
+        commands.sampled(self.texture)
+        commands.submit((), ())
+        self.pending = commands
+
+    def collect(self):
+        """Wait for the frame update() submitted, and hand its colour frame on."""
+        if self.pending is not None:
+            pending, self.pending = self.pending, None
+            pending.wait()
+
+    def _upload(self, commands, frame, name):
         rows = (frame.height + 1) // 2
         if name == "nv12":
             layout = (
@@ -128,67 +122,51 @@ class CameraFeed:
                 for i, plane in enumerate(frame.planes)
             )
         if layout != self.layout:
-            for texture in self.planes:
-                texture.release()
-            self.planes = []
-            for width, height, components in layout:
-                texture = self.context.texture((width, height), components, alignment=1)
-                texture.filter = (moderngl.LINEAR, moderngl.LINEAR)
-                texture.repeat_x = texture.repeat_y = False
-                self.planes.append(texture)
+            self.device.defer(*self.planes)
+            self.planes = [
+                Image(self.device, (width, height), PLANES[components], sampled=True)
+                for width, height, components in layout
+            ]
             self.layout = layout
-        for texture, plane in zip(self.planes, frame.planes, strict=True):
-            texture.write(plane, alignment=1)
+        for image, plane in zip(self.planes, frame.planes, strict=True):
+            commands.upload_image(image, memoryview(plane), (0, 0, *image.size))
 
     def _targets(self, full, colour):
         if self.sizes == (full, colour):
             return
-        self._release_targets()
-        self.texture = self.context.texture(full, 3, alignment=1)
-        self.texture.filter = (moderngl.LINEAR, moderngl.LINEAR)
-        self.framebuffer = self.context.framebuffer([self.texture])
-        self.colour_texture = self.context.texture(colour, 3, alignment=1)
-        self.colour = self.context.framebuffer([self.colour_texture])
+        self.device.defer(*(i for i in (self.texture, self.colour) if i is not None))
+        self.texture = Image(self.device, full, RGBA, sampled=True, storage=True)
+        self.colour = Image(self.device, colour, RGBA, storage=True)
         self.sizes = (full, colour)
 
     def _uniforms(self, frame, name, intrinsics, lens):
-        program = self.program
+        """straighten.comp's block up to its stride (the rest per pass)."""
         planar = len(self.planes) == 3
-        program["planar"] = planar
-        program["luma"], program["chroma"] = 0, 1
-        program["chroma_v"] = 2 if planar else 1
-        program["size"] = (frame.width, frame.height)
-        program["luma_scale"] = (frame.width / self.layout[0][0], 1.0)
-        program["chroma_scale"] = ((frame.width + 1) // 2 / self.layout[1][0], 1.0)
-        program["pinhole"] = (intrinsics.fx, intrinsics.fy, intrinsics.cx, intrinsics.cy)
-        program["distorted"] = lens is not None
+        k = np.zeros(12, "f4")
         if lens is not None:
-            program["lens"] = (lens.fx, lens.fy, lens.cx, lens.cy)
-            k = np.zeros(12, "f4")
             k[: len(lens.distortion)] = lens.distortion
-            program["k"].write(k.tobytes())
         full = name == "yuvj420p" or int(frame.color_range) == AVCOL_RANGE_JPEG
         matrix, offset = ycc_to_rgb(int(frame.colorspace), full)
-        program["to_rgb"].write(np.asarray(matrix, "f4").T.copy().tobytes())
-        program["offset"] = offset
-
-    def _draw(self, framebuffer, stride):
-        framebuffer.use()
-        self.context.viewport = (0, 0, *framebuffer.size)
-        for unit, texture in enumerate(self.planes):
-            texture.use(unit)
-        self.program["stride"] = stride
-        self.vao.render(moderngl.TRIANGLE_STRIP, vertices=4)
-
-    def _release_targets(self):
-        for resource in (self.framebuffer, self.texture, self.colour, self.colour_texture):
-            if resource is not None:
-                resource.release()
-        self.framebuffer = self.texture = self.colour = self.colour_texture = None
+        to_rgb = np.eye(4)
+        to_rgb[:3, :3] = matrix
+        self.flags = (int(planar), int(lens is not None))
+        return pack(
+            "16f4f4f4f12f2f2f2f",
+            mat(to_rgb),
+            (*offset, 0.0),
+            (intrinsics.fx, intrinsics.fy, intrinsics.cx, intrinsics.cy),
+            (lens.fx, lens.fy, lens.cx, lens.cy) if lens is not None else (1.0, 1.0, 0.0, 0.0),
+            k,
+            (frame.width, frame.height),
+            (frame.width / self.layout[0][0], 1.0),
+            ((frame.width + 1) // 2 / self.layout[1][0], 1.0),
+        )
 
     def close(self):
-        self._release_targets()
-        for texture in self.planes:
-            texture.release()
-        self.vao.release()
-        self.program.release()
+        self.collect()
+        for commands in self.frames:
+            commands.close()
+        for image in (*self.planes, self.texture, self.colour):
+            if image is not None:
+                image.close()
+        self.pipeline.close()

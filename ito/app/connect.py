@@ -151,11 +151,7 @@ def choose(window, *, xr=False, error=None, pairing=None):
             size = pygame.display.get_window_size()
             window.overlay.begin(events, size, False)
             choice = menu.draw(size)
-            window.context.screen.use()
-            window.context.viewport = (0, 0, *size)
-            window.context.clear(*menu.theme.color("clear"))
-            window.overlay.render()
-            pygame.display.flip()
+            window.show_menu(menu.theme.color("clear"))
             if choice:
                 layout.clear()
                 return choice

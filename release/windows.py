@@ -42,6 +42,7 @@ def runtime(stage, work):
         "--format", "pylock.toml", "--output-file", lock,
         cwd=ROOT,
     )  # fmt: skip
+    run(sys.executable, ROOT / "tools/shaders.py")
     run("uv", "build", "--wheel", "--out-dir", work, cwd=ROOT)
     (wheel,) = work.glob("ito-*.whl")
     python = target / "python.exe"
@@ -175,7 +176,7 @@ def check(stage):
     env = {k: v for k, v in os.environ.items() if not k.startswith(("PYTHON", "VIRTUAL_ENV"))}
     run(
         stage / "runtime/python.exe", "-I", "-c",
-        "import sys, pathlib, aiortc, xr, imgui_bundle, moderngl\n"
+        "import sys, pathlib, aiortc, xr, imgui_bundle, vulkan\n"
         "import ito.app.__main__, ito.tofmesh.worker, ito.tofmesh.render\n"
         "root = pathlib.Path(sys.argv[1])\n"
         "for module in (aiortc, xr, imgui_bundle, ito):\n"

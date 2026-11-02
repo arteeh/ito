@@ -1,12 +1,12 @@
 import math
 from dataclasses import dataclass
 
-import moderngl
 import pygame
 from imgui_bundle import imgui
-from imgui_bundle.python_backends.pygame_backend import PygameRenderer
 
 from ito.ui import FADE, Theme
+
+from .ui import PygameInput, UiRenderer
 
 
 @dataclass(frozen=True)
@@ -33,12 +33,13 @@ class PilotStatus:
 
 
 class Overlay:
-    def __init__(self, context: moderngl.Context):
-        self.context = context
+    def __init__(self, device):
+        self.device = device
         self.imgui = imgui.create_context()
         imgui.get_io().set_ini_filename("")
         self.theme = Theme()
-        self.backend = PygameRenderer()
+        self.backend = PygameInput()
+        self.renderer = UiRenderer(device)
         self.backend.key_map.update(
             {getattr(pygame, f"K_{key}"): getattr(imgui.Key, key) for key in "acvxyz"}
         )
@@ -114,13 +115,12 @@ class Overlay:
         request: str | None,
         *,
         performance: dict | None = None,
-        target: moderngl.Framebuffer | None = None,
+        target,
         xr_mode=False,
         driving=False,
         panel_shown=True,
     ) -> None:
-        if target is not None:
-            target.use()
+        """The HUD and the stopped prompt, drawn over target (a display image)."""
         if not self._leave:
             self.theme.show("hud", "session")
         _, alpha, leaving = self.theme.showing()
@@ -138,7 +138,7 @@ class Overlay:
                         driving=driving,
                     )
             self._stopped_prompt(status, driving, xr_mode)
-        self.render()
+        self.render(target)
 
     def _draw_hud(
         self,
@@ -302,10 +302,18 @@ class Overlay:
         low, high = imgui.get_item_rect_min(), imgui.get_item_rect_max()
         self.layout[name] = ((low.x + high.x) / 2, (low.y + high.y) / 2)
 
-    def render(self):
+    def render(self, target=None):
+        """End ImGui's frame and draw it over target (a display image) in the frame being
+        recorded; without a target it is only ended."""
         imgui.render()
-        self.backend.render(imgui.get_draw_data())
+        if target is not None:
+            self.renderer.render(self.device.frame, target)
+
+    def use(self, device):
+        """Draw with this device from now on (the GPU the headset's runtime chose)."""
+        self.renderer.close(again=True)
+        self.device, self.renderer = device, UiRenderer(device)
 
     def close(self):
-        self.backend.shutdown()
+        self.renderer.close()
         imgui.destroy_context(self.imgui)

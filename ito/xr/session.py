@@ -2,17 +2,17 @@ import ctypes as ct
 import logging
 import math
 import os
+import sys
 import threading
 import time
 from contextlib import ExitStack, contextmanager
 
-import moderngl
+import vulkan as vk
 import xr
-from OpenGL import GL
-from xr.utils.gl import OpenGLGraphics
 
 from ito import clock
 from ito.app import settings
+from ito.render.vk import API_VERSION, Image, address
 
 from . import runtimes
 
@@ -23,9 +23,32 @@ HUD_PANEL_PIXELS = (1024, 640)
 ROUND_PAUSE = 2.0
 
 
-class SDLContext:
-    def make_current(self):
-        pass
+# Swapchain formats, best first: sRGB ones (the runtime shows what is stored, the camera's own
+# sRGB values; vk.Presenter decodes into them), then UNORM (taken as linear light: the decoded
+# values are stored).
+FORMATS = (
+    vk.VK_FORMAT_R8G8B8A8_SRGB,
+    vk.VK_FORMAT_B8G8R8A8_SRGB,
+    vk.VK_FORMAT_R8G8B8A8_UNORM,
+    vk.VK_FORMAT_B8G8R8A8_UNORM,
+)
+EXTENSION = "XR_KHR_vulkan_enable2"
+
+
+def _address(handle):
+    return ct.cast(handle, ct.c_void_p).value
+
+
+def _pointer(structure, field, at):
+    """A ctypes pointer of the type pyopenxr declares for structure.field, at address `at`."""
+    return ct.cast(ct.c_void_p(at), dict(structure._fields_)[field])
+
+
+def _vulkan_loader():
+    name = "vulkan-1" if sys.platform == "win32" else "libvulkan.so.1"
+    library = ct.WinDLL(name) if sys.platform == "win32" else ct.CDLL(name)
+    kind = dict(xr.VulkanInstanceCreateInfoKHR._fields_)["pfn_get_instance_proc_addr"]
+    return ct.cast(library.vkGetInstanceProcAddr, kind)
 
 
 class Swapchain:
@@ -35,7 +58,8 @@ class Swapchain:
             owner.session,
             xr.SwapchainCreateInfo(
                 usage_flags=xr.SwapchainUsageFlags.COLOR_ATTACHMENT_BIT
-                | xr.SwapchainUsageFlags.SAMPLED_BIT,
+                | xr.SwapchainUsageFlags.SAMPLED_BIT
+                | xr.SwapchainUsageFlags.TRANSFER_SRC_BIT,
                 format=owner.format,
                 sample_count=1,
                 width=size[0],
@@ -46,30 +70,90 @@ class Swapchain:
             ),
         )
         owner.resources.callback(xr.destroy_swapchain, self.handle)
-        self.images = xr.enumerate_swapchain_images(self.handle, xr.SwapchainImageOpenGLKHR)
-        self.targets = []
+        self.images = [
+            Image(owner.device, size, owner.format, handle=_address(image.image), transfer=False)
+            for image in xr.enumerate_swapchain_images(self.handle, xr.SwapchainImageVulkan2KHR)
+        ]
         for image in self.images:
-            texture = owner.context.external_texture(image.image, size, 4, 0, "f1")
-            owner.resources.callback(texture.release)
-            target = owner.context.framebuffer(color_attachments=[texture])
-            self.targets.append(target)
-            owner.resources.callback(target.release)
+            owner.resources.callback(image.close)
         self.sub_image = xr.SwapchainSubImage(
             swapchain=self.handle,
             image_rect=xr.Rect2Di(extent=xr.Extent2Di(*size)),
         )
 
-    @contextmanager
     def acquire(self):
+        """The image to draw into; release() it once the frame drawing it is submitted, in
+        the colour attachment layout (OpenXR's hand-over)."""
         index = xr.acquire_swapchain_image(self.handle)
         xr.wait_swapchain_image(
             self.handle, xr.SwapchainImageWaitInfo(timeout=xr.INFINITE_DURATION)
         )
-        try:
-            yield self.targets[index]
-        finally:
-            GL.glFlush()
-            xr.release_swapchain_image(self.handle)
+        image = self.images[index]
+        image.layout = vk.VK_IMAGE_LAYOUT_UNDEFINED
+        return image
+
+    def hand_over(self, frame, image):
+        frame.transition(image, vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
+
+    def release(self):
+        xr.release_swapchain_image(self.handle)
+
+
+INFO = "vulkan_create_info"
+
+
+class VulkanBinding:
+    """For vk.Device: the instance and device made by the runtime (XR_KHR_vulkan_enable2)."""
+
+    def __init__(self, instance, system):
+        self.instance, self.system = instance, system
+        self.loader = _vulkan_loader()
+
+    def create_instance(self, info):
+        handle, result = xr.create_vulkan_instance_khr(
+            self.instance,
+            xr.VulkanInstanceCreateInfoKHR(
+                system_id=self.system,
+                pfn_get_instance_proc_addr=self.loader,
+                vulkan_create_info=_pointer(xr.VulkanInstanceCreateInfoKHR, INFO, info),
+            ),
+        )
+        if result.value:
+            raise RuntimeError(
+                f"The OpenXR runtime could not create a Vulkan instance: {result.value}"
+            )
+        return _address(handle)
+
+    def physical_device(self, instance):
+        return _address(
+            xr.get_vulkan_graphics_device2_khr(
+                self.instance,
+                xr.VulkanGraphicsDeviceGetInfoKHR(
+                    system_id=self.system,
+                    vulkan_instance=_pointer(
+                        xr.VulkanGraphicsDeviceGetInfoKHR, "vulkan_instance", instance
+                    ),
+                ),
+            )
+        )
+
+    def create_device(self, physical, info):
+        handle, result = xr.create_vulkan_device_khr(
+            self.instance,
+            xr.VulkanDeviceCreateInfoKHR(
+                system_id=self.system,
+                pfn_get_instance_proc_addr=self.loader,
+                vulkan_physical_device=_pointer(
+                    xr.VulkanDeviceCreateInfoKHR, "vulkan_physical_device", physical
+                ),
+                vulkan_create_info=_pointer(xr.VulkanDeviceCreateInfoKHR, INFO, info),
+            ),
+        )
+        if result.value:
+            raise RuntimeError(
+                f"The OpenXR runtime could not create a Vulkan device: {result.value}"
+            )
+        return _address(handle)
 
 
 def runtime_name(instance):
@@ -81,8 +165,11 @@ def runtime_name(instance):
 
 
 class Session:
-    def __init__(self, context: moderngl.Context, reference, waiting=None):
-        self.context = context
+    """An OpenXR session, in two steps: Session() finds a headset (waiting() shows that it is
+    waiting), binding() gives vk.Device what it needs to create the Vulkan device the runtime
+    wants, and start(device) begins the session with it."""
+
+    def __init__(self, reference, waiting=None):
         self.reference_mode = reference
         self.resources = ExitStack()
         self.running = self.exiting = False
@@ -92,27 +179,51 @@ class Session:
         self.frame_space = None
         self.retired_space = None
         self.clock = None
+        self.device = None
         try:
             self.instance, self.system = self._headset(waiting)
             self.resources.callback(xr.destroy_instance, self.instance)
-            self.graphics = OpenGLGraphics(self.instance, self.system, SDLContext())
-            requirements = self.graphics.graphics_requirements
-            version = xr.Version(context.version_code // 100, context.version_code % 100 // 10, 0)
-            if (
-                not requirements.min_api_version_supported
-                <= version
-                <= requirements.max_api_version_supported
-            ):
-                raise RuntimeError("Current OpenGL version is outside the OpenXR runtime's range")
+            requirements = xr.GraphicsRequirementsVulkan2KHR()
+            get = ct.cast(
+                xr.get_instance_proc_addr(self.instance, "xrGetVulkanGraphicsRequirements2KHR"),
+                xr.PFN_xrGetVulkanGraphicsRequirements2KHR,
+            )
+            result = xr.check_result(get(self.instance, self.system, ct.byref(requirements)))
+            if result.is_exception():
+                raise result
+            version = xr.Version(
+                vk.VK_VERSION_MAJOR(API_VERSION), vk.VK_VERSION_MINOR(API_VERSION), 0
+            )
+            if requirements.min_api_version_supported > version:
+                raise RuntimeError("The OpenXR runtime needs a newer Vulkan than Ito's 1.3")
+        except BaseException:
+            self.close()
+            raise
+
+    def binding(self):
+        return VulkanBinding(self.instance, self.system)
+
+    def start(self, device):
+        self.device = device
+        try:
+            binding = xr.GraphicsBindingVulkan2KHR(
+                instance=_pointer(
+                    xr.GraphicsBindingVulkan2KHR, "instance", address(device.instance)
+                ),
+                physical_device=_pointer(
+                    xr.GraphicsBindingVulkan2KHR, "physical_device", address(device.physical)
+                ),
+                device=_pointer(xr.GraphicsBindingVulkan2KHR, "device", address(device.device)),
+                queue_family_index=device.family,
+                queue_index=0,
+            )
             self.session = xr.create_session(
                 self.instance,
-                xr.SessionCreateInfo(
-                    next=self.graphics.graphics_binding.pointer,
-                    system_id=self.system,
-                ),
+                xr.SessionCreateInfo(next=binding, system_id=self.system),
             )
             self.resources.callback(xr.destroy_session, self.session)
             log.info("OpenXR session created")
+            reference = self.reference_mode
             reference_type = (
                 xr.ReferenceSpaceType.STAGE
                 if reference == "standing"
@@ -137,9 +248,7 @@ class Session:
                 else modes[0]
             )
             formats = xr.enumerate_swapchain_formats(self.session)
-            self.format = next(
-                (f for f in (GL.GL_SRGB8_ALPHA8, GL.GL_RGBA8, GL.GL_RGBA16F) if f in formats), None
-            )
+            self.format = next((f for f in FORMATS if f in formats), None)
             if self.format is None:
                 raise RuntimeError("OpenXR runtime has no supported RGBA swapchain format")
             views = xr.enumerate_view_configuration_views(
@@ -201,19 +310,19 @@ class Session:
             available = {
                 p.extension_name.decode() for p in xr.enumerate_instance_extension_properties()
             }
-            extensions = ["XR_KHR_opengl_enable"]
+            extensions = [EXTENSION]
             if "XR_HTCX_vive_tracker_interaction" in available:
                 extensions.append("XR_HTCX_vive_tracker_interaction")
-            opengl = "XR_KHR_opengl_enable" in available
+            vulkan = EXTENSION in available
             instance = xr.create_instance(
                 xr.InstanceCreateInfo(
                     application_info=xr.ApplicationInfo(application_name="Ito"),
-                    enabled_extension_names=extensions if opengl else [],
+                    enabled_extension_names=extensions if vulkan else [],
                 )
             )
             name = runtime_name(instance)
-            if not opengl:
-                problems[candidate.name] = "no OpenGL support"
+            if not vulkan:
+                problems[candidate.name] = "no Vulkan support"
                 xr.destroy_instance(instance)
                 return None
             system = xr.get_system(

@@ -1,23 +1,23 @@
-import ctypes
 import logging
 import math
+import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import pygame
-from OpenGL import GL
 
 from ito import clock, diagnostics
-from ito.render import current_context, perspective, pose
+from ito.render import perspective, pose
 from ito.render.anchor import AnchorGlide
 from ito.render.camera import CameraFeed
 from ito.render.gpu import GPU
 from ito.render.performance import Performance
 from ito.render.pose import FloatArray
 from ito.render.video import VideoPanel
-from ito.tofmesh.render import MeshRenderer
+from ito.render.vk import Device, Image, Presenter, Swapchain, native_window
+from ito.tofmesh.render import COLOUR, MeshRenderer
 
 from .dispatch import DisplayDispatch
 from .input import DesktopInput, PilotInput
@@ -44,6 +44,9 @@ class DesktopState:
     robot_heading: float = 0.0
 
 
+NVIDIA = 0x10DE
+
+
 class DesktopWindow:
     def __init__(
         self,
@@ -54,10 +57,9 @@ class DesktopWindow:
         speed: float = 1.5,
         capture_dir: Path = Path("captures"),
     ):
-        self.context = self.renderer = self.overlay = self.input = self.video_panel = None
-        self.camera = None
+        self.device = self.swapchain = self.present = self.scene = None
+        self.renderer = self.overlay = self.input = self.video_panel = self.camera = None
         self.gpu = None
-        self.readback = None  # (pixel buffer, its size, pending (time, size) or None)
         if (
             min(size) < 64
             or fps < 1
@@ -69,60 +71,116 @@ class DesktopWindow:
         self.fps, self.fov, self.capture_dir = fps, math.radians(fov), capture_dir
         self.capture_number = 0
         self.glide = AnchorGlide()
+        # Vulkan presents to the window: SDL must not put a renderer of its own on it.
+        os.environ["SDL_FRAMEBUFFER_ACCELERATION"] = "0"
         pygame.display.init()
         try:
-            pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MAJOR_VERSION, 4)
-            pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MINOR_VERSION, 3)
-            pygame.display.gl_set_attribute(
-                pygame.GL_CONTEXT_PROFILE_MASK, pygame.GL_CONTEXT_PROFILE_CORE
-            )
-            pygame.display.gl_set_attribute(pygame.GL_DOUBLEBUFFER, 1)
-            try:
-                pygame.display.set_mode(
-                    size, pygame.OPENGL | pygame.DOUBLEBUF | pygame.RESIZABLE, vsync=0
-                )
-                self.context = current_context()
-            except (pygame.error, OSError, ValueError) as exc:
-                raise RuntimeError(
-                    "Ito needs an OpenGL 4.3 display and driver; Mesa llvmpipe "
-                    f"under xvfb-run is supported. {exc}"
-                ) from exc
+            pygame.display.set_mode(size, pygame.RESIZABLE)
             pygame.display.set_caption("Ito — Desktop pilot")
-            self.screen = self.context.screen
             self.size = size
-            self.gpu = GPU() if "nvidia" in self.context.info["GL_VENDOR"].lower() else None
-            self.renderer = MeshRenderer(self.context)
-            self.video_panel = VideoPanel(self.context)
-            self.camera = CameraFeed(self.context)
-            if self.gpu is not None:
+            try:
+                device = Device(native_window())
+            except (RuntimeError, OSError) as exc:
+                raise RuntimeError(f"Ito needs a GPU and driver with Vulkan 1.3. {exc}") from exc
+            self._open(device)
+            if device.properties.vendorID == NVIDIA:
+                self.gpu = GPU()
                 self.gpu.start()
-            self.overlay = Overlay(self.context)
             self.input = DesktopInput(speed)
             if self.input.script is not None:
                 self.input.script.controls = self.overlay.layout
-            log.info(
-                "OpenGL %s | %s", self.context.info["GL_VERSION"], self.context.info["GL_RENDERER"]
-            )
         except Exception:
             self.close()
             raise
 
-    def _capture(self) -> Path:
+    def _open(self, device):
+        """Everything that draws, on this device."""
+        self.device = device
+        self.swapchain = Swapchain(device)
+        self.present = Presenter(device)
+        self.renderer = MeshRenderer(device)
+        self.video_panel = VideoPanel(device, COLOUR)
+        self.camera = CameraFeed(device)
+        if self.overlay is None:
+            self.overlay = Overlay(device)
+        else:
+            self.overlay.use(device)
+
+    def _close_device(self):
+        if self.device is not None:
+            self.device.idle()
+        for resource in (
+            self.video_panel,
+            self.camera,
+            self.renderer,
+            self.scene,
+            self.present,
+            self.swapchain,
+        ):
+            if resource is not None:
+                resource.close()
+        self.video_panel = self.camera = self.renderer = self.scene = None
+        self.present = self.swapchain = None
+
+    def reopen(self, device):
+        """Draw on another device from now on (the one a headset's runtime made)."""
+        self._close_device()
+        old, self.device = self.device, None
+        old.close()
+        self._open(device)
+
+    def _view_image(self, size):
+        """The offscreen image the desktop's view is drawn into, at the window's size."""
+        if self.scene is None or self.scene.size != tuple(size):
+            if self.scene is not None:
+                self.device.defer(self.scene)
+            self.scene = Image(self.device, size, COLOUR, sampled=True, attachment=True)
+        return self.scene
+
+    def show(self, image):
+        """Present image (acquired from the swapchain, drawn in the frame being recorded) and
+        submit the frame; None (a minimised window): submit only."""
+        if image is not None:
+            self.swapchain.finish(self.device.frame)
+            self.device.submit(self.swapchain.wait(), self.swapchain.signal())
+            self.swapchain.present()
+        else:
+            self.device.submit()
+
+    def show_menu(self, clear):
+        """A frame of only ImGui (its frame ended here) over `clear`: the menus."""
+        frame = self.device.begin()
+        self.device.collect()
+        image = self.swapchain.acquire(pygame.display.get_window_size())
+        if image is not None:
+            with frame.render([image], clear=clear):
+                pass
+        self.overlay.render(image)
+        self.show(image)
+
+    def _capture(self, frame, image):
         self.capture_dir.mkdir(parents=True, exist_ok=True)
         while True:
             self.capture_number += 1
             path = self.capture_dir / f"capture-{self.capture_number:03d}.png"
             if not path.exists():
                 break
-        # SDL owns the default framebuffer; select its back buffer explicitly.
-        GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, 0)
-        GL.glReadBuffer(GL.GL_BACK)
-        GL.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1)
-        pixels = GL.glReadPixels(0, 0, *self.size, GL.GL_RGB, GL.GL_UNSIGNED_BYTE)
-        image = pygame.image.frombytes(pixels, self.size, "RGB")
-        pygame.image.save(pygame.transform.flip(image, False, True), path)
-        log.info("Capture: %s", path)
+
+        def save(pixels, size):
+            try:
+                rgb = self._rgb(pixels, size).tobytes()
+                pygame.image.save(pygame.image.frombytes(rgb, size, "RGB"), path)
+                log.info("Capture: %s", path)
+            except (OSError, pygame.error) as exc:
+                log.error("Could not save capture: %s", exc)
+
+        frame.read(image, save)
         return path
+
+    def _rgb(self, pixels, size):
+        """A display image's texels as read back: RGB rows, top first (a view of them)."""
+        texels = pixels.reshape(size[1], size[0], 4)
+        return texels[..., 2::-1] if self.swapchain.bgr else texels[..., :3]
 
     def run(
         self,
@@ -142,49 +200,20 @@ class DesktopWindow:
         try:
             self._draw_loop(source, state, on_input, dispatch, recorder)
         finally:
-            if self.readback is not None:  # the screen grab's pixel buffer (its last grab unread)
-                GL.glDeleteBuffers(1, [self.readback[0]])
-                self.readback = None
+            self.device.idle()
+            for frame in self.device.frames:
+                frame.wait()  # the last screen grabs reach the recorder
             if recorder is not None:
                 recorder.close()
 
-    def _record(self, recorder: Recorder, current):
-        """The screen grab reads into a pixel buffer and is collected a frame later (the frame
-        loop's finish has completed it by then): a direct glReadPixels waited for the GPU in the
-        frame loop, 4-26 ms, and recorded sessions missed 2-3 times as many 90 Hz frames as the
-        same session unrecorded."""
+    def _record(self, recorder: Recorder, current, frame, image):
+        """The screen grab is copied out in the frame and collected when the frame is done (a
+        frame or two later): the frame loop never waits for it."""
         recorder.camera(current.video, current.video_time)
-        if self.readback is not None and self.readback[2] is not None:
-            buffer, length, (taken, size) = self.readback
-            GL.glBindBuffer(GL.GL_PIXEL_PACK_BUFFER, buffer)
-            address = GL.glMapBufferRange(GL.GL_PIXEL_PACK_BUFFER, 0, length, GL.GL_MAP_READ_BIT)
-            pixels = None
-            if address:  # a failed mapping returns null: that grab is skipped
-                pixels = ctypes.string_at(address, length)
-                GL.glUnmapBuffer(GL.GL_PIXEL_PACK_BUFFER)
-            GL.glBindBuffer(GL.GL_PIXEL_PACK_BUFFER, 0)
-            self.readback = (buffer, length, None)
-            if pixels is not None:
-                recorder.screen(taken, pixels, size)
         now = clock.now()
-        if not recorder.due(now):
-            return
-        size = tuple(self.size)
-        length = size[0] * size[1] * 3
-        if self.readback is None or self.readback[1] != length:
-            if self.readback is not None:
-                GL.glDeleteBuffers(1, [self.readback[0]])
-            buffer = GL.glGenBuffers(1)
-            GL.glBindBuffer(GL.GL_PIXEL_PACK_BUFFER, buffer)
-            GL.glBufferData(GL.GL_PIXEL_PACK_BUFFER, length, None, GL.GL_STREAM_READ)
-            self.readback = (buffer, length, None)
-        GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, 0)
-        GL.glReadBuffer(GL.GL_BACK)
-        GL.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1)
-        GL.glBindBuffer(GL.GL_PIXEL_PACK_BUFFER, self.readback[0])
-        GL.glReadPixels(0, 0, *size, GL.GL_RGB, GL.GL_UNSIGNED_BYTE, ctypes.c_void_p(0))
-        GL.glBindBuffer(GL.GL_PIXEL_PACK_BUFFER, 0)
-        self.readback = (self.readback[0], length, (now, size))
+        if recorder.due(now):
+            recorder.taken(now)
+            frame.read(image, lambda pixels, size: recorder.screen(now, self._rgb(pixels, size)))
 
     def _draw_loop(self, source, state, on_input, dispatch, recorder):
         pacing = pygame.time.Clock()
@@ -200,11 +229,13 @@ class DesktopWindow:
             dispatch.ui(io, (), events)
             on_input(pilot)
             if pilot.quit or self.overlay.leave:
-                self.overlay.draw(PilotStatus(), 0, False, request)
+                self.overlay.render()
                 break
             if pilot.commands:
                 request = pilot.commands[-1].replace("_", "-").upper() + " requested"
                 log.info("Command: %s", pilot.commands[-1])
+            gpu = self.device.begin()
+            self.device.collect()
             applied = []
             for _ in range(MESHES_PER_FRAME):
                 frame = source.poll()
@@ -220,7 +251,11 @@ class DesktopWindow:
                 self.size = size
             projection = perspective(self.fov, self.size[0] / self.size[1])
             self.prepare_view(current, pilot.head, projection)
-            self.draw_view(current, pilot.head, projection, self.screen, (0, 0, *self.size))
+            scene = self._view_image(self.size)
+            self.draw_view(current, pilot.head, projection, scene)
+            image = self.swapchain.acquire(self.size)
+            if image is not None:
+                self.present(gpu, scene, image, upright=True, srgb=self.swapchain.srgb)
             visible_time = current.video_time if current.flat_video else captured_at
             age = None if visible_time is None else max(0, now - visible_time)
             self.overlay.draw(
@@ -228,20 +263,22 @@ class DesktopWindow:
                 pacing.get_fps(),
                 self.input.captured,
                 request,
+                target=image,
                 performance=self.performance.last,
                 driving=any(pilot.movement),
             )
             dispatch.ui(io, self.overlay.commands)
             self.overlay.commands.clear()
-            if recorder is not None:
-                self._record(recorder, current)
-            if pilot.screenshot:
-                try:
-                    self._capture()
-                except OSError as exc:
-                    log.error("Could not save capture: %s", exc)
-            self.context.finish()
-            pygame.display.flip()
+            if image is not None:
+                if recorder is not None:
+                    self._record(recorder, current, gpu, image)
+                if pilot.screenshot:
+                    try:
+                        self._capture(gpu, image)
+                    except OSError as exc:
+                        log.error("Could not save capture: %s", exc)
+            self.show(image)
+            self.camera.collect()
             statistics = source.statistics()
             statistics.update(
                 camera_hz=current.status.rates[1],
@@ -285,12 +322,12 @@ class DesktopWindow:
             pacing.tick(0)
 
     def straighten(self, source, current):
-        """The newest camera frame to RGB on the GPU, and on to the ToF mesh's colour."""
-        image = self.camera.update(
-            current.video, current.video_time, current.video_intrinsics, current.video_lens
-        )
-        if image is not None:
-            source.camera_frame(image, current.video_time)
+        """The newest camera frame to RGB on the GPU, and on to the ToF mesh's colour (once the
+        GPU has it: camera.collect())."""
+        self.camera.update(
+            current.video, current.video_time, current.video_intrinsics, current.video_lens,
+            source.camera_frame,
+        )  # fmt: skip
 
     def glided(self, current, now):
         return replace(current, robot_camera=self.glide(current.robot_camera, now))
@@ -304,7 +341,8 @@ class DesktopWindow:
         else:
             self.renderer.prepare(current.robot_camera, head, projection)
 
-    def draw_view(self, current, head, projection, target, viewport, center=None):
+    def draw_view(self, current, head, projection, target, center=None):
+        """One view into target (an offscreen image of format COLOUR, OpenGL's row order)."""
         if current.flat_video:
             self.video_panel.draw(
                 self.camera.texture,
@@ -312,27 +350,21 @@ class DesktopWindow:
                 head,
                 projection,
                 target,
-                viewport,
                 center=center,
                 fov=current.video_fov,
             )
         else:
-            self.renderer.draw(current.robot_camera, head, projection, target, viewport=viewport)
+            self.renderer.draw(current.robot_camera, head, projection, target)
 
     def close(self) -> None:
-        for resource in (
-            self.input,
-            self.overlay,
-            self.video_panel,
-            self.camera,
-            self.renderer,
-            self.gpu,
-        ):
-            if resource is not None:
-                resource.close()
-        if self.context is not None:
-            self.context.release()
-        pygame.quit()
+        try:
+            self._close_device()
+            for resource in (self.input, self.overlay, self.gpu, self.device):
+                if resource is not None:
+                    resource.close()
+            self.device = None
+        finally:
+            pygame.quit()
 
     def __enter__(self):
         return self

@@ -4,9 +4,9 @@ import time
 
 import numpy as np
 import pygame
+import vulkan as vk
 import xr
 from imgui_bundle import imgui
-from OpenGL import GL
 from xr.utils import GraphicsAPI, Matrix4x4f
 
 from ito import clock, diagnostics
@@ -16,6 +16,8 @@ from ito.desktop.window import MESHES_PER_FRAME, DesktopState
 from ito.render import pose
 from ito.render.performance import Performance
 from ito.render.pose import quaternion
+from ito.render.vk import Device, Image, VulkanError, native_window
+from ito.tofmesh.render import COLOUR
 
 from .dispatch import XRDispatch
 from .input import VALID, Actions, matrix
@@ -96,11 +98,20 @@ def covering(views, middle):
 class XRWindow(DesktopWindow):
     def __init__(self, *args, reference_space="seated", **kwargs):
         self.xr = None
+        self.eye_images = [None, None]
+        self.panel_image = None
         super().__init__(*args, **kwargs)
         try:
-            self.xr = Session(self.context, reference_space, waiting=self._waiting)
+            self.xr = Session(reference_space, waiting=self._waiting)
             if self.overlay.theme.name == "waiting":
                 self._finish_waiting()
+            # The runtime makes the Vulkan device, on the GPU that drives the headset.
+            try:
+                device = Device(native_window(), xr=self.xr.binding())
+            except VulkanError as exc:
+                raise RuntimeError(f"The headset's GPU has no usable Vulkan 1.3: {exc}") from exc
+            self.reopen(device)
+            self.xr.start(device)
             self.actions = Actions(self.xr)
             self.input.translate = False
             self.centered = False
@@ -160,11 +171,7 @@ class XRWindow(DesktopWindow):
                 with theme.font("numeric"):
                     imgui.text_disabled(f"{waited:.0f} of {HEADSET_WAIT:.0f} s")
                 cancel = self.waiting_layout.button("Cancel", "cancel")
-        self.context.screen.use()
-        self.context.viewport = (0, 0, *size)
-        self.context.clear(*theme.color("clear"))
-        self.overlay.render()
-        pygame.display.flip()
+        self.show_menu(theme.color("clear"))
         return cancel
 
     def _finish_waiting(self):
@@ -199,16 +206,32 @@ class XRWindow(DesktopWindow):
             else (-10000, -10000, False)
         )
 
-    def _capture_target(self, target, name):
+    def _capture_target(self, frame, target, name):
+        """Save what target (a headset's image) holds once the frame is drawn, as stored."""
         self.capture_dir.mkdir(parents=True, exist_ok=True)
-        # ModernGL readback holds the GIL; wait for the GPU through ctypes first
-        # so a slow stereo capture cannot starve tracking and the link sender.
-        GL.glFinish()
-        pixels = target.read(components=3, alignment=1)
-        image = pygame.image.frombytes(pixels, target.size, "RGB")
         path = self.capture_dir / f"capture-{self.capture_number:03d}-{name}.png"
-        pygame.image.save(pygame.transform.flip(image, False, True), path)
+        bgr = target.format in (vk.VK_FORMAT_B8G8R8A8_SRGB, vk.VK_FORMAT_B8G8R8A8_UNORM)
+
+        def save(pixels, size):
+            texels = pixels.reshape(size[1], size[0], 4)
+            rgb = np.ascontiguousarray(texels[..., 2::-1] if bgr else texels[..., :3])
+            try:
+                pygame.image.save(pygame.image.frombytes(rgb.tobytes(), size, "RGB"), path)
+                log.info("Capture: %s", path)
+            except (OSError, pygame.error) as exc:
+                log.error("Could not save capture: %s", exc)
+
+        frame.read(target, save)
         return str(path)
+
+    def _offscreen(self, image, size):
+        """An offscreen image of size (the view or panel drawn before it goes to the headset),
+        kept while its size does."""
+        if image is None or image.size != tuple(size):
+            if image is not None:
+                self.device.defer(image)
+            image = Image(self.device, size, COLOUR, sampled=True, attachment=True)
+        return image
 
     def choose(self, menu):
         from .session import Swapchain
@@ -227,12 +250,12 @@ class XRWindow(DesktopWindow):
         self.overlay.leave = False
         choice = None
 
-        def draw(size):
+        def draw(size, target):
             nonlocal choice
             selected = menu.draw(size, xr_mode=True)
             if selected is not None:
                 choice = selected
-            self.overlay.render()
+            self.overlay.render(target)
             if choice:
                 self.overlay.leave = True
 
@@ -287,6 +310,8 @@ class XRWindow(DesktopWindow):
                 if commands:
                     request = f"{commands[-1].replace('_', '-').upper()} requested"
                     log.info("Command: %s", commands[-1])
+                gpu = self.device.begin()
+                self.device.collect()
                 current = self.glided(state(), now)
                 self.straighten(source, current)
                 applied = []
@@ -298,6 +323,8 @@ class XRWindow(DesktopWindow):
                     applied.append(update)
                     revision, captured_at = update.revision, update.captured_at
                 rendered = False
+                acquired = []
+                window = None
                 if frame.should_render:
                     view_state, views = xr.locate_views(
                         self.xr.session,
@@ -332,18 +359,16 @@ class XRWindow(DesktopWindow):
                             zip(views, self.xr.eyes, projections, strict=True)
                         ):
                             eye = matrix(view.pose)
-                            with swapchain.acquire() as target:
-                                GL.glEnable(GL.GL_FRAMEBUFFER_SRGB)
-                                self.draw_view(
-                                    current,
-                                    eye,
-                                    projection,
-                                    target,
-                                    viewport=(0, 0, *swapchain.size),
-                                    center=middle,
-                                )
-                                if value.screenshot:
-                                    self._capture_target(target, "left" if index == 0 else "right")
+                            image = self.eye_images[index] = self._offscreen(
+                                self.eye_images[index], swapchain.size
+                            )
+                            self.draw_view(current, eye, projection, image, center=middle)
+                            target = swapchain.acquire()
+                            acquired.append(swapchain)
+                            self.present(gpu, image, target, upright=True, srgb=True)
+                            if value.screenshot:
+                                self._capture_target(gpu, target, "left" if index == 0 else "right")
+                            swapchain.hand_over(gpu, target)
                             projection_views.append(
                                 xr.CompositionLayerProjectionView(
                                     pose=view.pose, fov=view.fov, sub_image=swapchain.sub_image
@@ -398,41 +423,35 @@ class XRWindow(DesktopWindow):
                         imgui.get_foreground_draw_list().add_circle_filled(
                             (pointer[0], pointer[1]), 4, 0xFFFFFFFF
                         )
-                    with self.xr.panel.acquire() as target:
-                        target.use()
-                        self.context.viewport = (0, 0, *self.xr.panel.size)
-                        target.clear(0, 0, 0, 0)
-                        if menu:
-                            menu(self.xr.panel.size)
-                        else:
-                            self.overlay.draw(
-                                current.status,
-                                1 / max(dt, 1e-6),
-                                False,
-                                request,
-                                target=target,
-                                xr_mode=True,
-                                performance=self.performance.last,
-                                driving=any(value.movement),
-                                panel_shown=self.panel_visible,
-                            )
-                        dispatch.ui(io, self.overlay.commands)
-                        self.overlay.commands.clear()
-                        if value.screenshot:
-                            self._capture_target(target, "panel")
-                        GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, target.glo)
-                        GL.glBindFramebuffer(GL.GL_DRAW_FRAMEBUFFER, 0)
-                        GL.glBlitFramebuffer(
-                            0,
-                            0,
-                            *self.xr.panel.size,
-                            0,
-                            0,
-                            *pygame.display.get_window_size(),
-                            GL.GL_COLOR_BUFFER_BIT,
-                            GL.GL_LINEAR,
+                    panel = self.panel_image = self._offscreen(self.panel_image, self.xr.panel.size)
+                    with gpu.render([panel], clear=(0, 0, 0, 0)):
+                        pass
+                    if menu:
+                        menu(self.xr.panel.size, panel)
+                    else:
+                        self.overlay.draw(
+                            current.status,
+                            1 / max(dt, 1e-6),
+                            False,
+                            request,
+                            target=panel,
+                            xr_mode=True,
+                            performance=self.performance.last,
+                            driving=any(value.movement),
+                            panel_shown=self.panel_visible,
                         )
-                        pygame.display.flip()
+                    dispatch.ui(io, self.overlay.commands)
+                    self.overlay.commands.clear()
+                    target = self.xr.panel.acquire()
+                    acquired.append(self.xr.panel)
+                    self.present(gpu, panel, target, upright=False, srgb=True)
+                    if value.screenshot:
+                        self._capture_target(gpu, target, "panel")
+                    self.xr.panel.hand_over(gpu, target)
+                    # The pilot's controls on the desktop window too.
+                    window = self.swapchain.acquire(pygame.display.get_window_size())
+                    if window is not None:
+                        self.present(gpu, panel, window, upright=False, srgb=self.swapchain.srgb)
                     if (
                         menu
                         or self.panel_visible
@@ -451,9 +470,12 @@ class XRWindow(DesktopWindow):
                                 size=xr.Extent2Df(*self.panel_size),
                             )
                         )
+                self.show(window)
+                for swapchain in acquired:
+                    swapchain.release()
+                self.camera.collect()
                 performance = self.performance.last
                 if rendered:
-                    self.context.finish()
                     period = frame.predicted_display_period / 1e9
                     statistics = source.statistics()
                     statistics.update(
@@ -494,7 +516,12 @@ class XRWindow(DesktopWindow):
     def close(self):
         try:
             if self.xr is not None:
-                GL.glFinish()
+                if self.device is not None:
+                    self.device.idle()
+                for image in (*self.eye_images, self.panel_image):
+                    if image is not None:
+                        image.close()
+                self.eye_images, self.panel_image = [None, None], None
                 self.xr.close()
         finally:
             self.xr = None

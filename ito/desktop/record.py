@@ -78,10 +78,12 @@ class Recorder:
     def due(self, now: float) -> bool:
         return now >= self.next_screen
 
-    def screen(self, now: float, pixels: bytes, size) -> None:
-        """pixels: bottom-up RGB from glReadPixels, size (width, height)."""
+    def taken(self, now: float) -> None:
+        """A screen grab was taken at `now` (it arrives at screen() once the GPU has it)."""
         self.next_screen = max(self.next_screen + self.period, now)
-        rgb = np.frombuffer(pixels, np.uint8).reshape(size[1], size[0], 3)[::-1]
+
+    def screen(self, now: float, rgb: np.ndarray) -> None:
+        """rgb: (height, width, 3), rows top first."""
         self._put(("screen", rgb, now))
 
     def camera(self, video, video_time) -> None:

@@ -1,0 +1,22 @@
+#version 460
+// The viewer's depth map with its holes filled: inverse depth there or from the nearest mipmap
+// level that has some; 0: none.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0) uniform sampler2D filled;  // inverse depth and weight, mipmapped
+layout(set = 0, binding = 1, r32f) uniform writeonly image2D result;
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = textureSize(filled, 0);
+    if (any(greaterThanEqual(p, size))) return;
+    vec2 st = (vec2(p) + 0.5) / vec2(size);
+    int levels = textureQueryLevels(filled);
+    float inverse = 0.0;
+    for (int l = 0; l < levels; ++l) {
+        vec2 m = textureLod(filled, st, float(l)).rg;  // weighted means of 1 / depth
+        if (m.y > 0.02) {
+            inverse = m.x / m.y;
+            break;
+        }
+    }
+    imageStore(result, p, vec4(inverse));
+}

@@ -4,7 +4,6 @@ import math
 import os
 import sys
 
-import moderngl
 import pygame
 
 from ito import diagnostics
@@ -131,7 +130,7 @@ def main(argv=None):
                 continue
             if not window.overlay.leave:
                 return 0
-    except (OSError, ValueError, RuntimeError, pygame.error, moderngl.Error) as exc:
+    except (OSError, ValueError, RuntimeError, pygame.error) as exc:
         log.error("%s", exc)
         failure = str(exc)
         stuck = isinstance(exc, ShutdownStuck)

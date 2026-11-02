@@ -12,12 +12,11 @@ dependencies = [
     "aiortc>=1.14,<2",
     "aiohttp>=3.12,<4",
     "pydantic>=2.11,<3",
-    "moderngl>=5.12,<6",
     "numpy>=2,<3",
     "pillow>=12.3.0",
     "pygame-ce>=2.5,<3",
     "imgui-bundle>=1.92,<2",
-    "pyopengl>=3.1.10,<4",
+    "vulkan>=1.3.275.1,<2",
     "pyopenxr>=1.1.6302,<2",
 ]
 
@@ -31,6 +30,8 @@ sim = ["mujoco==3.10.0", "onnxruntime==1.24.4", "opencv-python-headless==4.11.0.
 
 [tool.hatch.build.targets.wheel]
 packages = ["ito", "drivers"]
+# SPIR-V compiled from ito/shaders by tools/shaders.py (not in git).
+artifacts = ["ito/shaders/*.spv"]
 
 [dependency-groups]
 dev = [
