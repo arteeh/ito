@@ -135,6 +135,25 @@ def decoded(frame):
     )
 
 
+def _wait(fence, value):
+    """Until `fence` reaches `value` (at most five seconds)."""
+    event = ct.windll.kernel32.CreateEventW(None, 0, 0, None)
+    try:
+        _call(fence, 9, ct.c_uint64(value), ct.c_void_p(event))  # SetEventOnCompletion
+        ct.windll.kernel32.WaitForSingleObject(ct.c_void_p(event), 5000)
+    finally:
+        ct.windll.kernel32.CloseHandle(ct.c_void_p(event))
+
+
+def download(frame):
+    """A frame the D3D12 decoder left on the GPU, in memory (NV12). One thread: PyAV's threaded
+    NV12-to-NV12 scale leaves rows of zeros (green stripes). The download drops the frame's
+    time base, which frames.FrameJoin needs to find its metadata."""
+    out = frame.reformat(format="nv12", threads=1)
+    out.pts, out.time_base = frame.pts, frame.time_base
+    return out
+
+
 class Unavailable(RuntimeError):
     pass
 
@@ -407,11 +426,7 @@ class SharedFrames:
 
     def close(self):
         if self.fence is not None and self.value:
-            # Whatever was copied last is done before its buffer goes.
-            event = ct.windll.kernel32.CreateEventW(None, 0, 0, None)
-            _call(self.fence, 9, ct.c_uint64(self.value), ct.c_void_p(event))
-            ct.windll.kernel32.WaitForSingleObject(ct.c_void_p(event), 5000)
-            ct.windll.kernel32.CloseHandle(ct.c_void_p(event))
+            _wait(self.fence, self.value)  # whatever was copied last is done before its buffer goes
         self._release_buffer()
         if self.semaphore is not None:
             lib.vkDestroySemaphore(self.device.device, self.semaphore, ffi.NULL)
