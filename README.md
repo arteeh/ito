@@ -29,3 +29,22 @@ uv run --extra sim tools/session.py BUILD NAME    # a scripted, recorded session
 ```
 
 No automated tests and no docs besides this README: test by running Ito and watching it.
+
+### Neural-depth proof of concept (exp/da-recon)
+
+Settings → **Mono depth estimation** selects **Guessed depth** (default) or **Depth Anything 3
+Metric**. DA3Metric-Large is bundled, Apache-2.0, and needs NVIDIA CUDA. There are no runtime
+model downloads. A missing model or worker error warns and returns to guessed depth.
+
+The model and dense triangulation run in a lower-priority process, at their own rate. Real ToF
+zone centres check scale; they are not spread into a made-up dense prompt. Rectified focal length
+sets metric depth. The latest camera still textures the scene. Dense live triangles retain model
+detail; normal-distance TSDF keyframes retain the room after looking away. Depth discontinuities
+cut triangle connections, not whole neighbourhoods of pixels. Neural predictions cannot carve
+measured ToF surfaces.
+
+**Inside** weights model depth against measured ToF support; 0% still fills unmeasured holes.
+**Outside** controls neural persistence weight beyond the ToF footprint (0% disables it there).
+Neither setting limits prediction to the nearest/farthest ToF reading. This is not a validated
+robot depth sensor: monocular scale, object boundaries and unseen/disoccluded surfaces can be
+wrong. The experiment has not been tested with a real robot or a real headset.

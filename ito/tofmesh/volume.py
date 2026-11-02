@@ -68,6 +68,7 @@ class Volume:
         n = self.capacity + 1  # the last row stays empty: a missing neighbour reads it
         self.sdf = np.zeros((n, BLOCK, BLOCK, BLOCK), np.float32)
         self.weight = np.zeros((n, BLOCK, BLOCK, BLOCK), np.float32)
+        self.measured = np.zeros((n, BLOCK, BLOCK, BLOCK), bool)
         self.colour = np.zeros((n, BLOCK, BLOCK, BLOCK, 3), np.float32)
         self.colour_weight = np.zeros((n, BLOCK, BLOCK, BLOCK), np.float32)
         self.keys = np.zeros((n, 3), np.int64)
@@ -89,7 +90,10 @@ class Volume:
 
     @property
     def nbytes(self):
-        return sum(a.nbytes for a in (self.sdf, self.weight, self.colour, self.colour_weight))
+        return sum(
+            a.nbytes
+            for a in (self.sdf, self.weight, self.colour, self.colour_weight, self.measured)
+        )
 
     def _key(self, points):
         return np.floor(points / self.block_size).astype(np.int64)
@@ -115,6 +119,7 @@ class Volume:
             self.keys[slot] = key
             self.sdf[slot] = 0
             self.weight[slot] = 0
+            self.measured[slot] = False
             self.colour[slot] = 0
             self.colour_weight[slot] = 0
             self.fresh.add(slot)
@@ -200,16 +205,20 @@ class Volume:
             [rays * (r + d)[:, None] for d in (-self.truncation, 0.0, self.truncation)]
         )
         rotate, origin = world_from_sensor[:3, :3].T, world_from_sensor[:3, 3]
+        if scale is not None:
+            band = zones.band(self.truncation, self.max_range)
         slots = self.allocate(band @ rotate + origin, now, position)
         if not len(slots):
             return 0
         # Blocks already mapped in front of the surface, along the same rays: free space seen
         # through them erases what is no longer there (a moved object, a wall doubled by drift).
-        step = self.block_size / 2
-        reach = r - self.truncation
-        t = np.arange(step, max(float(reach.max()), step), step)
-        along = (rays[:, None, :] * t[None, :, None])[t[None, :] < reach[:, None]]
-        front = self.existing(along @ rotate + origin) if carve else np.zeros(0, np.int64)
+        front = np.zeros(0, np.int64)
+        if carve:
+            step = self.block_size / 2
+            reach = r - self.truncation
+            t = np.arange(step, max(float(reach.max()), step), step)
+            along = (rays[:, None, :] * t[None, :, None])[t[None, :] < reach[:, None]]
+            front = self.existing(along @ rotate + origin)
         front = front[~np.isin(front, slots)]
         if len(front):
             # Only blocks holding a surface can change; empty space needs no more carving.
@@ -221,7 +230,7 @@ class Volume:
         points = self.centres(slots).reshape(-1, 3)
         local = points @ sensor_from_world[:3, :3].T + sensor_from_world[:3, 3]
         measured, distance, interpolated, free = zones.lookup(local)
-        sdf = measured - distance
+        sdf = measured - distance if scale is None else zones.signed_distance(local)
         ok = np.isfinite(sdf) & (sdf > -self.truncation) & (distance > 0.03)
         ok &= measured <= self.max_range
         # Free space is carved only as far as the ray is known to be free: a zone's one range
@@ -236,7 +245,13 @@ class Volume:
         # zone's footprint grows with distance: trust them less.
         trust = np.clip(1.3 - measured / 4.0, 0.3, 1.0)
         if scale is not None:
-            trust = trust * scale(local)
+            supported = self.measured[slots].reshape(-1)
+            trust = trust * scale(local, supported)
+            # Predictions may refine near a measurement by the requested share, but may not
+            # move it through the whole truncation band or flip its signed side.
+            old = self.sdf[slots].reshape(-1)
+            agree = (np.signbit(sdf) == np.signbit(old)) | (np.abs(old) < self.voxel / 2)
+            ok &= ~supported | (agree & (np.abs(sdf - old) <= self.voxel))
         w = trust
         # Behind the surface, confidence falls off: the far side is unseen. Free space far in
         # front only erodes slowly, so one stray ray does not erase a surface.
@@ -250,6 +265,11 @@ class Volume:
         shape = (len(slots), BLOCK, BLOCK, BLOCK)
         w, s = w.reshape(shape), s.reshape(shape)
         old_w = self.weight[slots] * keep.reshape(shape)
+        if scale is None:
+            # Independent sensor readings replace unanchored predictions, rather than being
+            # outvoted by a long history of correlated model outputs.
+            old_w = np.where(self.measured[slots], old_w, np.minimum(old_w, 0.25))
+            self.measured[slots] |= w > 0
         total = old_w + w
         with np.errstate(invalid="ignore", divide="ignore"):
             fused = np.where(total > 0, (self.sdf[slots] * old_w + s * w) / total, 0)

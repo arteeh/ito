@@ -6,7 +6,7 @@ ever blocks the link loop: a busy worker drops camera frames (colour only, harml
 ToF and IMU batches (geometry, small) wait in a short backlog, and only a worker stalled for
 seconds loses some of them (counted in the statistics and the status line).
 
-With Prompt Depth Anything chosen, its model runs in a third process (pda.py), started here and
+With Depth Anything 3 chosen, its model runs in a third process (pda.py), started here and
 fed by the worker: one camera frame and prompt at a time, the next once its depth map is in.
 """
 
@@ -48,7 +48,7 @@ def _run(inputs, outputs, notes, options, integrated, depth):
         fusion = Fusion(**options)
         outbox = None
         next_note = 0.0
-        waiting = False  # a frame is with Prompt Depth Anything (depth: its two queues)
+        waiting = False  # a frame is with Depth Anything 3 (depth: its two queues)
         maps = 0  # depth maps fused up to the last note
         while True:
             try:
@@ -107,7 +107,7 @@ def _run(inputs, outputs, notes, options, integrated, depth):
 
 
 def _depth(fusion, queues, waiting):
-    """Take Prompt Depth Anything's answer if one is in and send it the next frame: (waiting,
+    """Take Depth Anything 3's answer if one is in and send it the next frame: (waiting,
     queues), queues None once it failed."""
     requests, results = queues
     try:
@@ -155,7 +155,7 @@ class TofMesh:
     def __init__(
         self, intrinsics, memory, *, capture_delay=0.0, voxel=0.04, capacity=6000, depth=None
     ):
-        """depth: Prompt Depth Anything's settings, dict(model, inside, outside), or None for
+        """depth: Depth Anything 3's settings, dict(model, inside, outside), or None for
         the renderer's guessed depth (also what a missing model or a failure falls back to)."""
         context = mp.get_context("spawn")
         self.intrinsics = intrinsics
@@ -184,6 +184,8 @@ class TofMesh:
                 options["depth"] = dict(inside=depth["inside"], outside=depth["outside"])
                 # The depth maps fill the whole camera view, not the ToF's ~45 degrees of it.
                 options["capacity"] = 2 * capacity
+                options["max_range"] = 12.0
+                options["voxel"] = 0.04
         self.process = context.Process(
             target=_run,
             args=(self.inputs, self.outputs, self.notes, options, self.integrated, queues),
@@ -281,7 +283,7 @@ class TofMesh:
         if self.pda is not None and not self.pda.is_alive() and not self._closed:
             self.pda = None
             if not self.depth_error:
-                self._put(("depth_failed", "Prompt Depth Anything stopped"), keep=True)
+                self._put(("depth_failed", "Depth Anything 3 stopped"), keep=True)
         try:
             frame = self.outputs.get_nowait()
         except queue.Empty:
@@ -327,7 +329,7 @@ class TofMesh:
         if self.depth_error:
             text += f"; {self.depth_error}, using guessed depth"
         elif self.pda is not None:
-            text += f"; Prompt Depth Anything {s.get('pda_rate', 0)} maps/s"
+            text += f"; Depth Anything 3 {s.get('pda_rate', 0)} maps/s"
         return text
 
     def statistics(self):

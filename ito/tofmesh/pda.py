@@ -1,10 +1,8 @@
-"""Prompt Depth Anything (PromptDA, CVPR 2025) in its own process: a camera frame and a coarse
-metric depth prompt (the ToF's ranges, seen from the camera) in, a metric depth map out.
+"""Dense monocular metric depth in a separate below-normal-priority process.
 
-It runs at whatever rate it manages, one request at a time (the mesh worker sends the next when
-the last answer is in), at below-normal process priority, so it never holds the mesh worker, the
-link or the windows: a slow PDA only updates the mesh less often. The models are bundled in the
-release's models folder (release/windows.py), never downloaded: a missing one is an error.
+DA3Metric-Large replaces PromptDA: a sparse, narrow ToF sensor is not a dense LiDAR
+prompt. Only real zone centres validate metric scale; no ToF min/max bounds or invented
+prompt pixels. One outstanding frame, at the model's own rate, never a queue of stale maps.
 """
 
 import ctypes
@@ -15,31 +13,26 @@ from pathlib import Path
 
 import numpy as np
 
-MODELS = {
-    "large": "prompt-depth-anything-vitl-hf",
-    "small": "prompt-depth-anything-vits-hf",
-}
-INPUT = (364, 644)  # the frame as the model sees it (height, width; multiples of 14)
-OUTPUT = (90, 160)  # the depth map sent back (height, width)
-PROMPT = (36, 64)  # the depth prompt (height, width)
+MODEL = "DA3METRIC-LARGE"
+INPUT = (364, 644)
 MEAN, STD = (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
+NEAREST = 0.05
+EDGE = 1.2
 
 
 def folder(model):
-    """Where a model lives: the release's models folder, beside its runtime."""
-    return Path(sys.prefix).parent / "models" / MODELS[model]
+    return Path(sys.prefix).parent / "models" / MODEL
 
 
 def missing(model):
     path = folder(model) / "model.safetensors"
-    return None if path.is_file() else f"Prompt Depth Anything model not found: {path}"
+    return None if path.is_file() else f"Depth Anything 3 model not found: {path}"
 
 
 def _lower_priority():
     if sys.platform == "win32":
-        below_normal = 0x4000
         kernel = ctypes.windll.kernel32
-        kernel.SetPriorityClass(kernel.GetCurrentProcess(), below_normal)
+        kernel.SetPriorityClass(kernel.GetCurrentProcess(), 0x4000)
     else:
         import os
 
@@ -47,132 +40,178 @@ def _lower_priority():
 
 
 def run(requests, results, model):
-    """The process: requests (key, image (h, w, 3) uint8, prompt PROMPT metres) -> results
-    ("depth", key, OUTPUT map in metres along -Z, ms); ("ready", device) once loaded, ("error",
-    text) on failure (the process then ends)."""
     try:
         _lower_priority()
         import torch
-        from transformers import PromptDepthAnythingForDepthEstimation
+
+        from . import dense
+        from .da3 import MetricDepth
 
         if not torch.cuda.is_available():
-            raise RuntimeError("Prompt Depth Anything needs an NVIDIA GPU with CUDA")
+            raise RuntimeError("Depth Anything 3 needs an NVIDIA GPU with CUDA")
         torch.set_num_threads(2)
-        net = PromptDepthAnythingForDepthEstimation.from_pretrained(
-            folder(model), local_files_only=True, dtype=torch.float16
-        )
-        net = net.to("cuda").eval()
+        net = MetricDepth(folder(model)).to("cuda").eval()
         mean = torch.tensor(MEAN, device="cuda").view(1, 3, 1, 1)
         std = torch.tensor(STD, device="cuda").view(1, 3, 1, 1)
         resize = torch.nn.functional.interpolate
+        stream = torch.cuda.Stream(priority=0)  # CUDA's least-urgent priority, not high priority
+        scale = None
         results.put(("ready", torch.cuda.get_device_name()))
         while True:
             item = requests.get()
             if item is None:
                 return
-            key, image, prompt = item
+            key, image, support, intrinsics, camera, zones, sensor, shares = item
             started = time.perf_counter()
-            with torch.inference_mode():
+            with torch.inference_mode(), torch.cuda.stream(stream):
+                h, w = image.shape[:2]
                 x = torch.from_numpy(image).to("cuda").permute(2, 0, 1)[None].float() / 255
                 x = resize(x, INPUT, mode="bilinear", antialias=True, align_corners=False)
-                x = ((x - mean) / std).half()
-                p = torch.from_numpy(prompt).to("cuda")[None, None].half()
-                depth = net(pixel_values=x, prompt_depth=p).predicted_depth
-                depth = resize(depth[:, None].float(), OUTPUT, mode="area")[0, 0]
+                output = net((x - mean) / std)
+                # DA3Metric's training focal is 300 pixels. Use the *resized* rectified K,
+                # not the original fisheye lens or the output depth map's focal length.
+                focal = (intrinsics[0] * INPUT[1] / w + intrinsics[1] * INPUT[0] / h) / 2
+                depth = resize(
+                    output[:, None].float(), (h, w), mode="bilinear", align_corners=False
+                )[0, 0] * (focal / 300.0)
                 depth = depth.cpu().numpy()
-            results.put(("depth", key, depth, (time.perf_counter() - started) * 1000))
-    except Exception as exc:  # reported to the mesh worker, which goes back to guessed depth
+            # A coherent robust scalar correction is legitimate; copying sparse ranges into
+            # unobserved pixels is not. Never clamp the rest of the room to the ToF's range.
+            candidate = metric_scale(depth, support)
+            if candidate is not None:
+                scale = candidate if scale is None else 0.9 * scale + 0.1 * candidate
+            depth *= 1.0 if scale is None else scale
+            depth[~np.isfinite(depth) | (depth <= NEAREST)] = np.nan
+            inference_ms = (time.perf_counter() - started) * 1000
+            size = (w, h)
+            depth = anchor(depth, zones, sensor, intrinsics, size, shares["inside"])
+            mapped = DepthMap(depth, intrinsics, size, zones.fov, sensor[:3, :3], **shares)
+            direct = dense.mesh(mapped, camera, image)
+            results.put(("depth", key, mapped, direct, inference_ms))
+    except Exception as exc:
         try:
-            results.put(("error", f"Prompt Depth Anything failed: {exc}"), timeout=1)
+            results.put(("error", f"Depth Anything 3 failed: {exc}"), timeout=1)
         except queue.Full:
             pass
 
 
-# -- the mesh worker's side -------------------------------------------------------------------
-FINE = 4  # prompt: points per ToF zone along each axis
-# A depth map pixel whose 3x3 neighbourhood spans a larger depth ratio than this is on an edge,
-# which the model draws as a slope between the near and the far surface (a "curtain"): left out.
-EDGE = 1.2
-NEAREST = 0.05  # metres: nothing nearer is believed (prompt or map)
+def metric_scale(depth, support):
+    """Median scale only with >=8 agreeing real ToF centres, away from depth edges."""
+    if len(support) < 8:
+        return None
+    h, w = depth.shape
+    u, v = np.rint(support[:, :2]).astype(int).T
+    ok = (u >= 1) & (u < w - 1) & (v >= 1) & (v < h - 1)
+    u, v, z = u[ok], v[ok], support[ok, 2]
+    patch = np.stack([depth[v + dy, u + dx] for dy in (-1, 0, 1) for dx in (-1, 0, 1)])
+    good = np.isfinite(patch).all(0) & (patch.min(0) > NEAREST)
+    good &= patch.max(0) <= 1.1 * patch.min(0)
+    ratio = z[good] / np.median(patch[:, good], axis=0)
+    if len(ratio) < 8:
+        return None
+    med = np.median(ratio)
+    agreeing = ratio[np.abs(np.log(ratio / med)) < 0.15]
+    if len(agreeing) < max(8, len(ratio) * 0.6) or not 0.5 < med < 2.0:
+        return None
+    return float(np.median(agreeing))
 
 
 def prompt(zones, world_from_sensor, camera, intrinsics, size):
-    """The depth prompt (PROMPT cells, metres along the camera's -Z) of a camera frame of `size`
-    (w, h) at the pinhole `intrinsics` (fx, fy, cx, cy) seen from `camera` (4x4 world from
-    camera): the ToF frame's surface (zones.Zones, seen from world_from_sensor), nearest first
-    per cell, the cells it does not reach filled from the nearest ones it does. None where the
-    ToF sees too little of the frame or only one distance (the model scales its answer between
-    the prompt's nearest and farthest, so they must differ)."""
-    g = FINE
-    across = (np.arange(zones.cols * g) + 0.5) / g * zones.step[0] - zones.fov[0] / 2
-    up = zones.fov[1] / 2 - (np.arange(zones.rows * g) + 0.5) / g * zones.step[1]
-    a, u = np.meshgrid(across, up)
-    rays = zones.direction(a.ravel(), u.ravel())
-    ranges = zones.lookup(rays)[0]
-    ok = np.isfinite(ranges)
-    to_camera = np.linalg.inv(camera) @ world_from_sensor
-    p = (rays[ok] * ranges[ok, None]) @ to_camera[:3, :3].T + to_camera[:3, 3]
-    z = -p[:, 2]
-    p, z = p[z > NEAREST], z[z > NEAREST]
+    """Only the sensor's actual valid zone centres: projected camera (u, v, z metres)."""
+    rays = zones.direction(*zones.centres())[zones.valid]
+    points = rays * zones.ranges[zones.valid, None]
+    transform = np.linalg.inv(camera) @ world_from_sensor
+    points = points @ transform[:3, :3].T + transform[:3, 3]
+    z = -points[:, 2]
+    points, z = points[z > NEAREST], z[z > NEAREST]
     fx, fy, cx, cy = intrinsics
-    (w, h), (ph, pw) = size, PROMPT
-    col = np.floor((cx + fx * p[:, 0] / z + 0.5) * pw / w).astype(np.int64)
-    row = np.floor((cy - fy * p[:, 1] / z + 0.5) * ph / h).astype(np.int64)
-    seen = (col >= 0) & (col < pw) & (row >= 0) & (row < ph)
-    depth = np.full((ph, pw), np.inf)
-    np.minimum.at(depth, (row[seen], col[seen]), z[seen])
-    known = np.isfinite(depth)
-    if known.sum() < 8 or np.ptp(depth[known]) < 0.05:
-        return None
-    while not known.all():  # each hole cell: the mean of its measured (or filled) neighbours
-        padded = np.pad(np.where(known, depth, 0.0), 1)
-        counted = np.pad(known.astype(np.float64), 1)
-        total = sum(padded[1 + dy : 1 + dy + ph, 1 + dx : 1 + dx + pw]
-                    for dy in (-1, 0, 1) for dx in (-1, 0, 1))  # fmt: skip
-        count = sum(counted[1 + dy : 1 + dy + ph, 1 + dx : 1 + dx + pw]
-                    for dy in (-1, 0, 1) for dx in (-1, 0, 1))  # fmt: skip
-        grow = ~known & (count > 0)
-        depth[grow] = total[grow] / count[grow]
-        known |= grow
-    return depth.astype(np.float32)
+    u, v = cx + fx * points[:, 0] / z, cy - fy * points[:, 1] / z
+    ok = (u >= 0) & (u < size[0]) & (v >= 0) & (v < size[1])
+    return np.stack([u[ok], v[ok], z[ok]], -1).astype(np.float32)
+
+
+def anchor(depth, zones, sensor_from_camera, intrinsics, size, share):
+    """Within real ToF support, blend the model with the measured surface.
+
+    Solve ray/sphere intersection using the actual translated ToF mount. No ToF reading
+    means no correction. This never stretches the ToF image over the camera's field of view.
+    """
+    h, w = depth.shape
+    fx, fy, cx, cy = intrinsics
+    u, v = np.meshgrid(np.arange(w, dtype=np.float32), np.arange(h, dtype=np.float32))
+    rays = np.stack([(u - cx) / fx, -(v - cy) / fy, -np.ones_like(u)], -1)
+    a = rays.reshape(-1, 3) @ sensor_from_camera[:3, :3].astype(np.float32).T
+    b = sensor_from_camera[:3, 3].astype(np.float32)
+    points = a * depth.reshape(-1, 1) + b
+    measured, _, _, _ = zones.lookup(points)
+    aa = np.sum(a * a, axis=1)
+    ab = a @ b
+    disc = ab * ab - aa * (b @ b - measured * measured)
+    z = (-ab + np.sqrt(np.maximum(disc, 0))) / aa
+    ok = np.isfinite(measured) & (disc > 0) & (z > NEAREST)
+    out = depth.copy().ravel()
+    out[ok] = (z[ok] + share * out[ok]) / (1 + share)
+    return out.reshape(h, w)
 
 
 class DepthMap:
-    """A PDA depth map as a range source for Volume.integrate, in place of a ToF frame's
-    zones.Zones: the camera is its sensor (sensor frame = camera frame, looking down -Z).
-    `inside` and `outside` are how much a pixel counts, as a share of a ToF reading, within
-    the ToF's field of view (zones.Zones `fov`, seen through `camera_to_sensor`, 3x3) and
-    beyond it."""
+    """Dense depth with edge-aware one-sided surface normals. Never erase edge pixels.
+
+    Inside=0 protects measured geometry, but still fills unmeasured holes. The volume passes
+    its measured-support mask to weights(), rather than confusing an angular footprint with
+    actual knowledge. Outside=0 really disables neural geometry outside the ToF footprint.
+    """
 
     def __init__(self, depth, intrinsics, size, fov, camera_to_sensor, inside, outside):
         h, w = depth.shape
         fx, fy, cx, cy = intrinsics
         sx, sy = w / size[0], h / size[1]
         self.k = (fx * sx, fy * sy, (cx + 0.5) * sx - 0.5, (cy + 0.5) * sy - 0.5)
-        padded = np.pad(depth, 1, mode="edge")
-        around = np.stack([padded[1 + dy : 1 + dy + h, 1 + dx : 1 + dx + w]
-                           for dy in (-1, 0, 1) for dx in (-1, 0, 1)])  # fmt: skip
-        with np.errstate(divide="ignore", invalid="ignore"):
-            flat = around.max(0) <= EDGE * around.min(0)
-        self.depth = np.where(flat & (depth > NEAREST), depth, np.nan)
+        self.depth = np.where(depth > NEAREST, depth, np.nan)
         self.count = int(np.isfinite(self.depth).sum())
-        # Per pixel: inside the ToF's field of view or not, from its ray in the sensor's axes.
-        rays = self._rays(*np.meshgrid(np.arange(w), np.arange(h)))
-        rays = rays @ np.asarray(camera_to_sensor).T
-        across = np.arctan2(rays[..., 0], -rays[..., 2])
-        up = np.arcsin(np.clip(rays[..., 1] / np.linalg.norm(rays, axis=-1), -1, 1))
-        seen = (rays[..., 2] < 0) & (np.abs(across) <= fov[0] / 2) & (np.abs(up) <= fov[1] / 2)
-        self.weight = np.where(seen, inside, outside).astype(np.float64)
+        rays = self._rays(
+            *np.meshgrid(np.arange(w, dtype=np.float32), np.arange(h, dtype=np.float32))
+        )
+        self.xyz = rays * self.depth[..., None]
+        tangents = []
+        for axis in (1, 0):
+            before, after = np.roll(self.xyz, 1, axis), np.roll(self.xyz, -1, axis)
+            db, da = (
+                np.abs(before[..., 2] - self.xyz[..., 2]),
+                np.abs(after[..., 2] - self.xyz[..., 2]),
+            )
+            edge = [slice(None), slice(None)]
+            edge[axis] = 0
+            db[tuple(edge)] = np.inf
+            edge[axis] = -1
+            da[tuple(edge)] = np.inf
+            tangents.append(np.where((db < da)[..., None], self.xyz - before, after - self.xyz))
+        normals = np.cross(tangents[1], tangents[0])
+        norm = np.linalg.norm(normals, axis=-1, keepdims=True)
+        normals = normals / np.maximum(norm, 1e-9)
+        # Consistent sign: normals face the camera (towards positive signed distance).
+        normals *= np.where(np.sum(normals * rays, -1, keepdims=True) > 0, -1, 1)
+        self.normals = normals
+        sensor_rays = rays @ np.asarray(camera_to_sensor).T
+        across = np.arctan2(sensor_rays[..., 0], -sensor_rays[..., 2])
+        up = np.arcsin(np.clip(sensor_rays[..., 1] / np.linalg.norm(sensor_rays, axis=-1), -1, 1))
+        seen = (
+            (sensor_rays[..., 2] < 0) & (np.abs(across) <= fov[0] / 2) & (np.abs(up) <= fov[1] / 2)
+        )
+        self.inside = seen
+        self.share, self.outside = inside, outside
 
     def _rays(self, u, v):
         fx, fy, cx, cy = self.k
-        return np.stack([(u - cx) / fx, -(v - cy) / fy, -np.ones_like(u, np.float64)], -1)
+        return np.stack([(u - cx) / fx, -(v - cy) / fy, -np.ones_like(u, np.float32)], -1)
 
     def samples(self, per_zone=3):
-        """Points on the map's surface (every second pixel), camera frame (N, 3)."""
-        d = self.depth[::2, ::2]
-        v, u = np.nonzero(np.isfinite(d))
-        return self._rays(u * 2, v * 2) * d[v, u][:, None]
+        return self.xyz[np.isfinite(self.depth)]
+
+    def band(self, truncation, max_range):
+        ok = np.isfinite(self.depth) & (np.linalg.norm(self.xyz, axis=-1) <= max_range)
+        p, n = self.xyz[ok], self.normals[ok]
+        return np.concatenate([p + t * n for t in (-truncation, 0.0, truncation)])
 
     def _pixels(self, points):
         fx, fy, cx, cy = self.k
@@ -185,14 +224,18 @@ class DepthMap:
         return np.where(ok, v, 0).astype(np.intp), np.where(ok, u, 0).astype(np.intp), ok, z
 
     def lookup(self, points):
-        """As zones.Zones.lookup: range along each point's ray, its distance, whether the range
-        may carve (True where the map has one), and how far the ray is free (the range)."""
         v, u, ok, z = self._pixels(points)
         distance = np.linalg.norm(points, axis=1)
         with np.errstate(divide="ignore", invalid="ignore"):
             out = np.where(ok, self.depth[v, u] * distance / z, np.nan)
-        return out, distance, np.isfinite(out), out
+        return out, distance, np.zeros(len(points), bool), np.full(len(points), np.nan)
 
-    def weights(self, points):
+    def signed_distance(self, points):
         v, u, ok, _ = self._pixels(points)
-        return np.where(ok, self.weight[v, u], 0.0)
+        delta = points - self.xyz[v, u]
+        return np.where(ok, np.sum(delta * self.normals[v, u], axis=-1), np.nan)
+
+    def weights(self, points, measured):
+        v, u, ok, _ = self._pixels(points)
+        weight = np.where(self.inside[v, u], np.where(measured, self.share, 0.25), self.outside)
+        return np.where(ok, weight, 0.0)

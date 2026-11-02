@@ -91,21 +91,14 @@ class SettingsScreen:
         imgui.text_disabled("Fewer: the mesh follows the latest view. More: smoother, steadier.")
         self.theme.heading("Mono depth estimation")
         imgui.text_disabled("Depth where the ToF does not reach, from the camera image.")
-        for value, label in (("guessed", "Guessed depth"), ("pda", "Prompt Depth Anything")):
+        for value, label in (("guessed", "Guessed depth"), ("pda", "Depth Anything 3 Metric")):
             if self.choice(label, f"mono {value}", s.mono_depth == value):
                 self.change(mono_depth=value)
         if s.mono_depth == "pda":
-            imgui.text("Model")
-            left, right = self.layout.row(1, 1)
-            if self.choice("Large", "pda large", s.pda_model == "large", left):
-                self.change(pda_model="large")
-            imgui.same_line()
-            if self.choice("Small", "pda small", s.pda_model == "small", right):
-                self.change(pda_model="small")
-            imgui.text_disabled("Large: finer, steadier depth. Small: faster.")
+            imgui.text_disabled("DA3Metric-Large (bundled). No runtime downloads.")
             self.share("Inside the ToF's view", "pda_inside", s.pda_inside)
             self.share("Outside the ToF's view", "pda_outside", s.pda_outside)
-            imgui.text_disabled("How much its depth counts, as a share of a ToF reading.")
+            imgui.text_disabled("Inside: measured surfaces only. Unmeasured holes still fill.")
         self.theme.heading("Diagnostics")
         debug = diagnostics.current()
         imgui.text("Diagnostic logging")

@@ -3,7 +3,7 @@
     uv run --python 3.12 python release/windows.py --dist DIST [--cache DIR]
 
 A relocatable CPython with the locked dependencies installed (the pda extra too), started by
-release/ito.c's ito.exe (runtime\\pythonw.exe -I -m ito.app), Prompt Depth Anything's models in
+release/ito.c's ito.exe (runtime\\pythonw.exe -I -m ito.app), Depth Anything 3 Metric's models in
 models\\ (downloaded at pinned revisions, checked, kept in --cache), plus THIRD_PARTY_NOTICES.txt.
 No freezer: the release runs exactly what runs from source."""
 
@@ -21,18 +21,13 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-# Prompt Depth Anything (ito/tofmesh/pda.py, Apache-2.0): folder -> (Hugging Face revision,
+# Depth Anything 3 Metric (ito/tofmesh/pda.py, Apache-2.0): folder -> (Hugging Face revision,
 # {file: sha256}). The folder is the model's name under huggingface.co/depth-anything.
 MODELS = {
-    "prompt-depth-anything-vitl-hf": ("abfaa0958bbe7382633e90ffb6373cfee61239ed", {
-        "README.md": "6c57baeb946d68c2fa0cf1ff053dee695b257da194ba2cae17c80e312ff148b2",
-        "config.json": "b63450bf142e9170988051293a29b89c4bc6950123e5c37df7ba12c8d4c825ec",
-        "model.safetensors": "310a5a399691a1f56d1bc994a7463d626aef33d99d0949b954858434d0de3160",
-    }),
-    "prompt-depth-anything-vits-hf": ("6f3768a5383d95a904ec00d2a7ca3bd186f8797e", {
-        "README.md": "747b00fd961d4052ca056cb42af0bcc531f487834fe0513f74ffc447df78f9f4",
-        "config.json": "2aef1ceef354f6149f1cf6c3a50abb00ad94ba3118fc88d65923b82643a34261",
-        "model.safetensors": "b8dcec4ab96b47771addbfec2b7b410d801f472366b52fb5f20e2599e8d8c015",
+    "DA3METRIC-LARGE": ("4010e39f3634a45bc60553321fb49fb760bd594e", {
+        "README.md": "4fdd25492cf6401d1459483fd829f6abb399bda8218e1a3ef5ad4a66e9aa5a2a",
+        "config.json": "a336f3e76fe375aaae17a9aed9130c9f2aa061535d317ec57dcb2f1f02e1dd53",
+        "model.safetensors": "bbea5b0b3ee389849cffa7ddae89de064a90abd2b055fc5aa99aac68db324776",
     }),
 }  # fmt: skip
 
@@ -80,7 +75,7 @@ def _digest(path):
 
 
 def models(stage, cache):
-    """Prompt Depth Anything's models into stage\\models, from the cache or downloaded into it."""
+    """Depth Anything 3 Metric's models into stage\\models, from the cache or downloaded into it."""
     for name, (revision, files) in MODELS.items():
         for file, sha256 in files.items():
             cached = cache / name / revision / file
@@ -136,11 +131,13 @@ LICENCE_FILE = re.compile(
 
 def notices(site, runtime, output):
     sections = [
-        f"Prompt Depth Anything model {name} (models\\{name}), Apache-2.0, "
+        f"Depth Anything 3 Metric model {name} (models\\{name}), Apache-2.0, "
         f"https://huggingface.co/depth-anything/{name}\n\n"
         + _read(runtime.parent / "models" / name / "README.md")
         for name in MODELS
     ]
+    vendor = site / "ito/_vendor/da3"
+    sections.append(_read(vendor / "NOTICE") + "\n\n" + _read(vendor / "LICENSE"))
     for info in sorted(site.glob("*.dist-info"), key=lambda p: p.name.lower()):
         meta = email.parser.Parser().parsestr(
             (info / "METADATA").read_text(encoding="utf-8", errors="replace"), headersonly=True
@@ -225,9 +222,9 @@ def check(stage):
     run(
         stage / "runtime/python.exe", "-I", "-c",
         "import sys, pathlib, aiortc, xr, imgui_bundle, vulkan\n"
-        "import ito.app.__main__, ito.tofmesh.worker, ito.tofmesh.render, torch, transformers\n"
+        "import ito.app.__main__, ito.tofmesh.worker, ito.tofmesh.render, torch, ito.tofmesh.da3\n"
         "from ito.tofmesh import pda\n"
-        "assert not any(map(pda.missing, pda.MODELS)), [pda.missing(m) for m in pda.MODELS]\n"
+        "assert pda.missing('large') is None, pda.missing('large')\n"
         "root = pathlib.Path(sys.argv[1])\n"
         "for module in (aiortc, xr, imgui_bundle, ito):\n"
         "    assert pathlib.Path(module.__file__).is_relative_to(root), module.__file__\n",

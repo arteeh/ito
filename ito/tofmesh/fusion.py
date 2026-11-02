@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from . import pda, surface
+from . import dense, pda, surface
 from . import volume as volume_module
 from .geometry import PoseTrack, angle_between, quaternion, rotation, slerp
 from .latency import FrameDelay
@@ -231,6 +231,11 @@ class Fusion:
         # Prompt Depth Anything: its weights inside and outside the ToF's view (None: off), the
         # newest fused ToF frame (its prompt), the frame last sent, and the frames it works on.
         self.depth = depth
+        self.direct = None
+        self.depth_time = None
+        self.direct_map = None
+        self.depth_keyframe = None
+        self.depth_remesh = False
         self.guess = depth is None
         self.guess_changed = False
         self.tof = None
@@ -483,7 +488,12 @@ class Fusion:
             self.volume.dirty or self.volume.evicted or self.recolour
             or (colours and self.volume.painted)
         )  # fmt: skip
-        if now - self.last_mesh >= MESH_INTERVAL and changed:
+        if (
+            now - self.last_mesh >= MESH_INTERVAL
+            and changed
+            and (self.direct is None or self.depth_remesh)
+        ):
+            self.depth_remesh = False
             self.last_mesh = now
             if colours:
                 self.last_recolour = now
@@ -498,6 +508,11 @@ class Fusion:
                 )
                 news.cleared, self.cleared = sorted(self.cleared), set()
                 news.timing, self.meshed_timing = self.meshed_timing, None
+                if self.direct is not None:
+                    # The visible neural geometry belongs to its exposure, not the newest
+                    # ToF packet. Do not report fresher ToF latency for an older depth map.
+                    news.captured_at = self.depth_time
+                    news.timing = None
                 self.mesh_changed = False
             news.projectors, self.pending_projectors = self.pending_projectors, []
         return news
@@ -517,20 +532,33 @@ class Fusion:
         if prompt is None:
             return None
         sensor_from_camera = np.linalg.inv(world_from_sensor) @ camera
-        self.depth_frames = {exposed: (camera, intrinsics, size, zones.fov, sensor_from_camera)}
-        return exposed, image, prompt
+        self.depth_frames = {exposed: (camera, intrinsics, size, zones, sensor_from_camera, image)}
+        return exposed, image, prompt, intrinsics, camera, zones, sensor_from_camera, self.depth
 
-    def depth_map(self, key, depth, ms):
-        """A Prompt Depth Anything answer for the frame sent as `key`: into the volume."""
+    def depth_map(self, key, mapped, direct, ms):
+        """A dense mesh prepared off the sensor thread; keep the view in the room volume."""
         frame = self.depth_frames.pop(key, None)
         if frame is None or self.depth is None:
             return
-        camera, intrinsics, size, fov, sensor_from_camera = frame
+        camera = frame[0]
         started = time.perf_counter()
-        mapped = pda.DepthMap(
-            depth, intrinsics, size, fov, sensor_from_camera[:3, :3], **self.depth
+        self.direct = direct
+        self.depth_time = key
+        self.direct_map = mapped, camera
+        self.mesh_changed = self.depth_remesh = True
+        # The live mesh keeps *every* model pixel. Persist a spatially new view (or a refresh),
+        # not repeated correlated model predictions at ToF sensor frequency.
+        previous = self.depth_keyframe
+        moved = previous is None or (
+            np.linalg.norm(camera[:3, 3] - previous[1][:3, 3]) > 0.10
+            or angle_between(camera[:3, :3], previous[1][:3, :3]) > np.radians(8)
         )
-        self.volume.integrate(mapped, camera, key, camera[:3, 3], scale=mapped.weights)
+        due = previous is None or key - previous[0] >= 2.0
+        if due or (moved and key - previous[0] >= 0.5):
+            self.volume.integrate(
+                mapped, camera, key, camera[:3, 3], scale=mapped.weights, carve=False
+            )
+            self.depth_keyframe = key, camera.copy()
         self.stats["pda_maps"] += 1
         self.stats["pda_ms"] = ms
         self.stats["pda_fuse_ms"] = (time.perf_counter() - started) * 1000
@@ -538,6 +566,7 @@ class Fusion:
     def depth_failed(self, text):
         """Prompt Depth Anything stopped: guessed depth again."""
         self.depth = None
+        self.direct = self.direct_map = None
         self.depth_frames = {}
         self.guess = self.guess_changed = True
         self.stats["pda_error"] = text
@@ -677,7 +706,17 @@ class Fusion:
         self.stats["evictions"] = self.volume.evictions
 
     def combined(self):
-        parts = list(self.meshes.values())
+        persistent = self._combine(list(self.meshes.values()))
+        if self.direct is not None:
+            persistent = dense.uncovered(persistent, *self.direct_map)
+            result = self._combine([persistent, self.direct])
+        else:
+            result = persistent
+        self.stats["vertices"], self.stats["triangles"] = len(result[0]), len(result[3])
+        return result
+
+    @staticmethod
+    def _combine(parts):
         if not parts:
             empty = np.zeros((0, 3), np.float32)
             return (
@@ -691,6 +730,4 @@ class Fusion:
         colours = np.concatenate([p[2] for p in parts])
         triangles = np.concatenate([p[3] + o for p, o in zip(parts, offsets, strict=True)])
         blocks = np.concatenate([p[4] for p in parts])
-        self.stats["vertices"] = len(positions)
-        self.stats["triangles"] = len(triangles)
         return positions, normals, colours, triangles, blocks
