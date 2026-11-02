@@ -21,9 +21,10 @@ BLOCK = 8
 # ToF frames at full trust. A new frame then counts for 1 / (memory + 1) of the surface, so the
 # mesh follows a changed scene or pose estimate (a moved chair, an edge seen again from a
 # corrected pose) within about that many frames; more frames average away more range noise.
-# Colour saturates at COLOUR_SHARE of it: the camera paints every PAINT_INTERVAL (0.15 s, the
-# ToF ~15 Hz) with weights of about one half, so colour forgets in about the same time.
-COLOUR_SHARE = 0.3
+# Colour saturates at COLOUR_WEIGHT whatever the memory: the camera paints every PAINT_INTERVAL
+# (0.15 s) with weights of about one half, so colour forgets in about a second and follows the
+# latest camera frames, also when depth averages over many seconds (memory up to 240).
+COLOUR_WEIGHT = 3.0
 # Free space seen through a voxel (well in front of the measured surface, along a ray whose range
 # is interpolated) also forgets this fraction of its weight per frame at full range trust: a
 # saturated surface that is gone (a moved object, a wall doubled by drift) fades in a few seconds,
@@ -372,7 +373,7 @@ class Volume:
         flat_colour[index] = (flat_colour[index] * old[:, None] + rgb * wc[:, None]) / total[
             :, None
         ]
-        flat_weight[index] = np.minimum(total, COLOUR_SHARE * self.memory)
+        flat_weight[index] = np.minimum(total, COLOUR_WEIGHT)
         self.painted.update(np.unique(target).tolist())
         return int(len(index))
 

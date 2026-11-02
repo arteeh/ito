@@ -10,7 +10,7 @@ class AppSettings(BaseModel):
     model_config = ConfigDict(strict=True, frozen=True, extra="ignore")
     diagnostic_logging: bool = False
     # ToF frames the mesh averages (tofmesh.volume): fewer follow the latest view.
-    mesh_memory: int = Field(default=10, ge=2, le=40)
+    mesh_memory: int = Field(default=10, ge=2, le=240)
 
 
 def settings_path():
