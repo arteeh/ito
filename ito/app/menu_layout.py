@@ -54,7 +54,7 @@ class MenuLayout:
     def button(self, label, name, width=None, *, disabled=False):
         imgui.begin_disabled(disabled)
         selected = imgui.button(
-            label, (self.row(1)[0] if width is None else width, 40 * self.scale)
+            f"{label}##{name}", (self.row(1)[0] if width is None else width, 40 * self.scale)
         )
         self.placed(name)
         imgui.end_disabled()
