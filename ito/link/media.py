@@ -71,6 +71,14 @@ class Passthrough:
         return [_packet(encoded_frame)] if encoded_frame.data else []
 
 
+def _download(frame):
+    """A GPU frame in memory, NV12. Downloading it drops its timestamp, which frames.FrameJoin
+    needs to find its metadata."""
+    out = frame.reformat(format="nv12")
+    out.pts, out.time_base = frame.pts, frame.time_base
+    return out
+
+
 class VideoDecoder:
     """H.264 on the GPU's video decoder, whatever its vendor (Direct3D 12 or 11 video on Windows,
     VA-API or Vulkan on Linux), into frames a shader turns into RGB. Direct3D 12's stay in the
@@ -114,7 +122,7 @@ class VideoDecoder:
             log.warning("H.264 decode (%s) failed, frame skipped: %s", self.kind, exc)
             return []
         if not VideoDecoder.share:
-            frames = [f.reformat(format="nv12") if f.format.name == "d3d12" else f for f in frames]
+            frames = [_download(f) if f.format.name == "d3d12" else f for f in frames]
         if frames and not self.reported:
             self.reported = True
             log.info(
