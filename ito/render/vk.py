@@ -294,6 +294,7 @@ class Device:
             {
                 "sType": vk.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
                 "timelineSemaphore": 1,
+                "separateDepthStencilLayouts": 1,  # DEPTH_ATTACHMENT_OPTIMAL (Frame.render)
             },
         )
         features13 = ffi.new(
@@ -544,24 +545,51 @@ class Buffer:
         )
         self.buffer = buffer[0]
         requirements = ffi.new("VkMemoryRequirements*")
-        lib.vkGetBufferMemoryRequirements(device.device, self.buffer, requirements)
-        dedicated = ffi.new(
-            "VkMemoryDedicatedAllocateInfo*",
-            {"sType": vk.VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO, "buffer": self.buffer},
-        )
-        imported = ffi.new(
-            "VkImportMemoryWin32HandleInfoKHR*",
-            {
-                "sType": vk.VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR,
-                "pNext": dedicated,
-                "handleType": kind,
-                "handle": ffi.cast("HANDLE", handle),
-            },
-        )
-        self.memory = device.allocate(
-            requirements[0], vk.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, chain=imported
-        )
-        lib.vkBindBufferMemory(device.device, self.buffer, self.memory, 0)
+        self.memory = None
+        try:
+            lib.vkGetBufferMemoryRequirements(device.device, self.buffer, requirements)
+            # Only the memory types the handle itself allows (the spec's
+            # VUID-VkMemoryAllocateInfo-memoryTypeIndex-00645), device-local where one is.
+            allowed = ffi.new(
+                "VkMemoryWin32HandlePropertiesKHR*",
+                {"sType": vk.VK_STRUCTURE_TYPE_MEMORY_WIN32_HANDLE_PROPERTIES_KHR},
+            )
+            check(
+                device.device_function("vkGetMemoryWin32HandlePropertiesKHR")(
+                    device.device, kind, ffi.cast("HANDLE", handle), allowed
+                ),
+                "vkGetMemoryWin32HandlePropertiesKHR",
+            )
+            requirements.memoryTypeBits &= allowed.memoryTypeBits
+            dedicated = ffi.new(
+                "VkMemoryDedicatedAllocateInfo*",
+                {
+                    "sType": vk.VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+                    "buffer": self.buffer,
+                },
+            )
+            imported = ffi.new(
+                "VkImportMemoryWin32HandleInfoKHR*",
+                {
+                    "sType": vk.VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR,
+                    "pNext": dedicated,
+                    "handleType": kind,
+                    "handle": ffi.cast("HANDLE", handle),
+                },
+            )
+            self.memory = device.allocate(
+                requirements[0], vk.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, chain=imported
+            )
+            check(
+                lib.vkBindBufferMemory(device.device, self.buffer, self.memory, 0),
+                "vkBindBufferMemory",
+            )
+        except BaseException:
+            lib.vkDestroyBuffer(device.device, self.buffer, ffi.NULL)
+            if self.memory is not None:
+                lib.vkFreeMemory(device.device, self.memory, ffi.NULL)
+            self.buffer = None
+            raise
         return self
 
     def close(self):
@@ -592,14 +620,11 @@ class Image:
         levels=1,
         array=False,
         handle=None,
-        plane=0,
     ):
-        """handle: an image made elsewhere (only the views are this one's); plane: its view
-        sees that plane (VK_IMAGE_ASPECT_PLANE_n_BIT) of a multi-planar image, as `format`."""
+        """handle: an image made elsewhere (only the views are this one's)."""
         self.device, self.size, self.format = device, tuple(int(v) for v in size), format
         self.layers, self.levels = layers, levels
         self.aspect = DEPTH if format == DEPTH_FORMAT else COLOUR
-        self.view_aspect = plane or self.aspect
         self.layout = vk.VK_IMAGE_LAYOUT_UNDEFINED
         self.memory = None
         self.owned = handle is None
@@ -667,7 +692,7 @@ class Image:
                         "viewType": kind,
                         "format": self.format,
                         "subresourceRange": {
-                            "aspectMask": self.view_aspect,
+                            "aspectMask": self.aspect,
                             "baseMipLevel": level,
                             "levelCount": count,
                             "baseArrayLayer": 0,
@@ -954,21 +979,26 @@ class Frame:
             },
         )
         lib.vkCmdCopyImageToBuffer(self.cmd, image.image, image.layout, target.buffer, 1, region)
-
+        # The copy made visible to the CPU's reads once the fence says the frame is done.
+        self.barrier(
+            (vk.VK_PIPELINE_STAGE_2_COPY_BIT, vk.VK_ACCESS_2_TRANSFER_WRITE_BIT),
+            (vk.VK_PIPELINE_STAGE_2_HOST_BIT, vk.VK_ACCESS_2_HOST_READ_BIT),
+        )
         self.reading.append(target)
         self.done.append(lambda: callback(target.mapped[:size].copy(), (w, h)))
 
     # -- synchronisation -----------------------------------------------------------------
-    def barrier(self):
-        """Everything recorded (and submitted) before, done and visible to everything after."""
+    def barrier(self, before=(ALL, MEMORY), after=(ALL, MEMORY)):
+        """Everything recorded (and submitted) before, done and visible to everything after
+        (or only the (stages, accesses) given)."""
         barrier = ffi.new(
             "VkMemoryBarrier2*",
             {
                 "sType": vk.VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-                "srcStageMask": ALL,
-                "srcAccessMask": MEMORY,
-                "dstStageMask": ALL,
-                "dstAccessMask": MEMORY,
+                "srcStageMask": before[0],
+                "srcAccessMask": before[1],
+                "dstStageMask": after[0],
+                "dstAccessMask": after[1],
             },
         )
         info = ffi.new(
@@ -1660,6 +1690,7 @@ class Swapchain:
         self.device = device
         self.swapchain = None
         self.images, self.ready = [], []
+        self.retired = []  # the semaphores of the images before the last rebuild
         self.size = None
         self.current = None
         self.stale = False
@@ -1772,13 +1803,41 @@ class Swapchain:
     def _release(self):
         for image in self.images:
             image.close()
-        for item in self.ready:
+        # vkDeviceWaitIdle does not cover the presentation engine's wait on an image's last
+        # semaphore: those go a rebuild later, long after.
+        for item in self.retired:
             lib.vkDestroySemaphore(self.device.device, item, ffi.NULL)
-        self.images, self.ready = [], []
+        self.images, self.ready, self.retired = [], [], self.ready
+
+    def _abandon(self):
+        """The image acquired last was never presented (its frame failed): an empty submission
+        waits for its semaphore, so the semaphore can be signalled again, and the swapchain is
+        rebuilt, which takes the image back."""
+        wait = ffi.new(
+            "VkSemaphoreSubmitInfo*",
+            {
+                "sType": vk.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                "semaphore": self.acquired[(self.slot - 1) % FRAMES],
+                "stageMask": ALL,
+            },
+        )
+        info = ffi.new(
+            "VkSubmitInfo2*",
+            {
+                "sType": vk.VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+                "waitSemaphoreInfoCount": 1,
+                "pWaitSemaphoreInfos": wait,
+            },
+        )
+        check(lib.vkQueueSubmit2(self.device.queue, 1, info, ffi.NULL), "vkQueueSubmit2")
+        self.current = None
+        self.stale = True
 
     def acquire(self, size):
         """The image to draw this frame into, the window at `size`; None while the window has
         no area (minimised)."""
+        if self.current is not None:
+            self._abandon()
         size = tuple(size)
         if min(size) <= 0:
             return None
@@ -1824,9 +1883,10 @@ class Swapchain:
         frame.transition(self.images[self.current], vk.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)
 
     def present(self):
-        wait = ffi.new("VkSemaphore*", self.ready[self.current])
+        current, self.current = self.current, None
+        wait = ffi.new("VkSemaphore*", self.ready[current])
         swapchain = ffi.new("VkSwapchainKHR*", self.swapchain)
-        index = ffi.new("uint32_t*", self.current)
+        index = ffi.new("uint32_t*", current)
         result = self.queue_present(
             self.device.queue,
             ffi.new(
@@ -1845,16 +1905,15 @@ class Swapchain:
             self.stale = True
         elif result != vk.VK_SUCCESS:
             check(result, "vkQueuePresentKHR")
-        self.current = None
 
     def close(self):
         if self.device.device is None:
             return
         lib.vkDeviceWaitIdle(self.device.device)
         self._release()
-        for item in self.acquired:
+        for item in self.retired + self.acquired:
             lib.vkDestroySemaphore(self.device.device, item, ffi.NULL)
-        self.acquired = []
+        self.retired, self.acquired = [], []
         if self.swapchain is not None:
             self.destroy(self.device.device, self.swapchain, ffi.NULL)
             self.swapchain = None

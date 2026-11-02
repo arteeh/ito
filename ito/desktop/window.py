@@ -103,8 +103,6 @@ class DesktopWindow:
         self.camera = CameraFeed(device)
         if self.overlay is None:
             self.overlay = Overlay(device)
-        else:
-            self.overlay.use(device)
 
     def _close_device(self):
         if self.device is not None:
@@ -125,6 +123,7 @@ class DesktopWindow:
     def reopen(self, device):
         """Draw on another device from now on (the one a headset's runtime made)."""
         self._close_device()
+        self.overlay.use(device)  # its textures freed on the old device, still there
         old, self.device = self.device, None
         old.close()
         self._open(device)

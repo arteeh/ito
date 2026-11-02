@@ -20,8 +20,9 @@ import vulkan as vk
 from .vk import Buffer, Image, check, ffi, lib
 
 HRESULT = ct.c_long
-# FFmpeg's AVD3D12VAFrame (hwcontext_d3d12va.h): the texture, its subresource index, and the
-# sync context: fence, event, value the decoder signals when the frame is decoded.
+# FFmpeg's AVD3D12VAFrame (libavutil/hwcontext_d3d12va.h of FFmpeg 8.1, the one PyAV 17.1.0
+# bundles; pyproject.toml pins it): the texture, its subresource index, and the sync context:
+# fence, event, value the decoder signals when the frame is decoded.
 TEXTURE, SUBRESOURCE, FENCE, VALUE = 0, 8, 16, 32
 NV12 = 103  # DXGI_FORMAT_NV12
 PLANES = (vk.VK_FORMAT_R8_UNORM, 1), (vk.VK_FORMAT_R8G8_UNORM, 2)  # format, bytes per texel
@@ -144,7 +145,7 @@ class SharedFrames:
 
     def __init__(self, device, texture):
         """device: Ito's vk.Device; texture: a decoded frame's (decoded()), whose D3D12 device
-        does the copies."""
+        does the copies, and whose size the shared buffer is made for."""
         self.device = device
         self.d3d12 = self.queue = self.allocator = self.list = self.fence = None
         self.resource = self.buffer = None
@@ -163,8 +164,8 @@ class SharedFrames:
         try:
             self._check_adapter()
             self._check_import()
-            desc = QueueDesc(Type=COPY)
-            self.queue = _new(d3d12_device, 8, ct.byref(desc), ct.byref(IID_QUEUE))
+            queue = QueueDesc(Type=COPY)
+            self.queue = _new(d3d12_device, 8, ct.byref(queue), ct.byref(IID_QUEUE))
             self.allocator = _new(d3d12_device, 9, ct.c_int(COPY), ct.byref(IID_ALLOCATOR))
             self.list = _new(
                 d3d12_device, 12, ct.c_uint(0), ct.c_int(COPY), ct.c_void_p(self.allocator),
@@ -175,6 +176,7 @@ class SharedFrames:
                 d3d12_device, 36, ct.c_uint64(0), ct.c_int(1), ct.byref(IID_FENCE)
             )  # D3D12_FENCE_FLAG_SHARED
             self.semaphore = self._import_fence()
+            self._shared_buffer(desc)
         except BaseException:
             self.close()
             raise
@@ -226,6 +228,13 @@ class SharedFrames:
         return handle.value
 
     def _import_fence(self):
+        handle = self._shared_handle(self.fence)
+        try:
+            return self._import_semaphore(handle)
+        finally:
+            ct.windll.kernel32.CloseHandle(ct.c_void_p(handle))
+
+    def _import_semaphore(self, handle):
         kind = ffi.new(
             "VkSemaphoreTypeCreateInfo*",
             {
@@ -246,7 +255,6 @@ class SharedFrames:
             ),
             "vkCreateSemaphore",
         )
-        handle = self._shared_handle(self.fence)
         try:
             check(
                 self.device.device_function("vkImportSemaphoreWin32HandleKHR")(
@@ -266,8 +274,6 @@ class SharedFrames:
         except BaseException:
             lib.vkDestroySemaphore(self.device.device, semaphore[0], ffi.NULL)
             raise
-        finally:
-            ct.windll.kernel32.CloseHandle(ct.c_void_p(handle))
         return semaphore[0]
 
     def _shared_buffer(self, desc):
@@ -318,21 +324,20 @@ class SharedFrames:
             )
         finally:
             ct.windll.kernel32.CloseHandle(ct.c_void_p(shared))
-        self.planes = [
-            Image(self.device, (f.Width, f.Height), format, sampled=True)
-            for f, (format, _) in zip(self.footprints, PLANES, strict=True)
-        ]
+        for f, (format, _) in zip(self.footprints, PLANES, strict=True):
+            self.planes.append(Image(self.device, (f.Width, f.Height), format, sampled=True))
         self.size = (desc.Width, desc.Height)
 
     def _release_buffer(self):
-        if self.buffer is None:
-            return
-        self.device.idle()
+        """The shared buffer and planes, whatever of them was made."""
+        if self.buffer is not None or self.planes:
+            self.device.idle()
         for plane in self.planes:
             plane.close()
-        self.buffer.close()
+        if self.buffer is not None:
+            self.buffer.close()
         _release(self.resource)
-        self.planes, self.buffer, self.resource = [], None, None
+        self.planes, self.buffer, self.resource, self.size = [], None, None, None
 
     def copy(self, decoded):
         """Copy a decoded frame's planes ((texture, subresource, fence, value): decoded()) into
@@ -365,8 +370,8 @@ class SharedFrames:
         _call(self.list, 9)  # Close
         lists = (ct.c_void_p * 1)(self.list)
         _call(self.queue, 10, ct.c_uint(1), ct.byref(lists), restype=None)  # ExecuteCommandLists
+        _call(self.queue, 14, ct.c_void_p(self.fence), ct.c_uint64(self.value + 1))  # Signal
         self.value += 1
-        _call(self.queue, 14, ct.c_void_p(self.fence), ct.c_uint64(self.value))  # Signal
         return self.value
 
     def acquire(self, frame):
@@ -401,7 +406,7 @@ class SharedFrames:
             )
 
     def close(self):
-        if self.queue is not None:
+        if self.fence is not None and self.value:
             # Whatever was copied last is done before its buffer goes.
             event = ct.windll.kernel32.CreateEventW(None, 0, 0, None)
             _call(self.fence, 9, ct.c_uint64(self.value), ct.c_void_p(event))

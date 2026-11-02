@@ -9,18 +9,20 @@ being drawn, so its colour frame is read back as soon as the GPU has it (collect
 waiting for the rest of the frame.
 
 A frame the D3D12 decoder left on the GPU is copied there into textures Vulkan shares
-(d3d12.SharedFrames); one that cannot be, or a decoder's frame in any other GPU's memory, is
-downloaded and uploaded again (av.VideoFrame.reformat)."""
+(d3d12.SharedFrames). Where that cannot be set up, the decoder is told to download its frames
+as any other decoder does (media.VideoDecoder.share), and those that reach here before it does
+are downloaded here (av.VideoFrame.reformat)."""
 
 import logging
 
 import numpy as np
 import vulkan as vk
 
+from ito.link import media
 from ito.tofmesh.worker import frame_size
 
 from . import d3d12
-from .vk import ALL, FRAMES, Frame, Image, Pipeline, mat, pack
+from .vk import ALL, FRAMES, Frame, Image, Pipeline, VulkanError, mat, pack
 
 log = logging.getLogger(__name__)
 
@@ -61,7 +63,8 @@ class CameraFeed:
         self.frames = [Frame(device) for _ in range(FRAMES)]
         self.count = 0
         self.pending = None
-        self.planes = []
+        self.planes = []  # the planes the frame being straightened is sampled from
+        self.uploaded = []  # the planes frames from memory are uploaded into, laid out so:
         self.layout = None
         self.texture = None  # the latest frame, straightened, full size
         self.colour = None  # the same, strided to the ToF mesh's colour size
@@ -83,24 +86,26 @@ class CameraFeed:
             )
         name = frame.format.name
         on_gpu = d3d12.decoded(frame) if self.shared is not False else None
-        if on_gpu is not None and self.shared is None:
+        wait = ()
+        if on_gpu is not None:
             try:
-                self.shared = d3d12.SharedFrames(self.device, on_gpu[0])
-            except (d3d12.Unavailable, OSError) as exc:
+                if self.shared is None:
+                    self.shared = d3d12.SharedFrames(self.device, on_gpu[0])
+                wait = [(self.shared.semaphore, ALL, self.shared.copy(on_gpu))]
+            except (d3d12.Unavailable, OSError, VulkanError) as exc:
                 log.warning("Camera frames go through memory: %s", exc)
-                self.shared = False
-        if not self.shared:
-            on_gpu = None
+                if self.shared:
+                    self.shared.close()
+                self.shared, on_gpu = False, None
+                media.VideoDecoder.share = False
         if on_gpu is None and name not in {"nv12", "yuv420p", "yuvj420p"}:
             frame, name = frame.reformat(format="nv12"), "nv12"
         commands = self.frames[self.count % FRAMES]
         self.count += 1
         commands.begin()
-        wait = ()
         if on_gpu is not None:
             name = "nv12"
-            wait = [(self.shared.semaphore, ALL, self.shared.copy(on_gpu))]
-            self.planes, self.layout = self.shared.planes, None
+            self.planes = self.shared.planes
             self.shared.acquire(commands)
         else:
             self._upload(commands, frame, name)
@@ -150,15 +155,15 @@ class CameraFeed:
                 for i, plane in enumerate(frame.planes)
             )
         if layout != self.layout:
-            if self.layout is not None:
-                self.device.defer(*self.planes)
-            self.planes = [
+            self.device.defer(*self.uploaded)
+            self.uploaded = [
                 Image(self.device, (width, height), PLANES[components], sampled=True)
                 for width, height, components in layout
             ]
             self.layout = layout
-        for image, plane in zip(self.planes, frame.planes, strict=True):
+        for image, plane in zip(self.uploaded, frame.planes, strict=True):
             commands.upload_image(image, memoryview(plane), (0, 0, *image.size))
+        self.planes = self.uploaded
 
     def _targets(self, full, colour):
         if self.sizes == (full, colour):
@@ -198,10 +203,7 @@ class CameraFeed:
             commands.close()
         if self.shared:
             self.shared.close()
-        elif self.layout is not None:
-            for image in self.planes:
-                image.close()
-        for image in (self.texture, self.colour):
+        for image in (*self.uploaded, self.texture, self.colour):
             if image is not None:
                 image.close()
         self.pipeline.close()

@@ -1,6 +1,7 @@
 import logging
 import math
 import time
+from contextlib import ExitStack
 
 import numpy as np
 import pygame
@@ -300,7 +301,9 @@ class XRWindow(DesktopWindow):
                     break
                 time.sleep(0.01)
                 continue
-            with self.xr.frame() as (frame, layers, space):
+            # The images acquired (held) are released before the frame ends, also when drawing
+            # it fails: the next acquire would fail otherwise.
+            with self.xr.frame() as (frame, layers, space), ExitStack() as held:
                 now = clock.now()
                 dt = now - previous
                 previous = now
@@ -324,7 +327,6 @@ class XRWindow(DesktopWindow):
                     applied.append(update)
                     revision, captured_at = update.revision, update.captured_at
                 rendered = False
-                acquired = []
                 window = None
                 if frame.should_render:
                     view_state, views = xr.locate_views(
@@ -365,7 +367,7 @@ class XRWindow(DesktopWindow):
                             )
                             self.draw_view(current, eye, projection, image, center=middle)
                             target = swapchain.acquire()
-                            acquired.append(swapchain)
+                            held.callback(swapchain.release)
                             self.present(gpu, image, target, upright=True, srgb=True)
                             if value.screenshot:
                                 self._capture_target(gpu, target, "left" if index == 0 else "right")
@@ -444,7 +446,7 @@ class XRWindow(DesktopWindow):
                     dispatch.ui(io, self.overlay.commands)
                     self.overlay.commands.clear()
                     target = self.xr.panel.acquire()
-                    acquired.append(self.xr.panel)
+                    held.callback(self.xr.panel.release)
                     self.present(gpu, panel, target, upright=False, srgb=True)
                     if value.screenshot:
                         self._capture_target(gpu, target, "panel")
@@ -472,8 +474,7 @@ class XRWindow(DesktopWindow):
                             )
                         )
                 self.show(window)
-                for swapchain in acquired:
-                    swapchain.release()
+                held.close()
                 self.camera.collect()
                 performance = self.performance.last
                 if rendered:

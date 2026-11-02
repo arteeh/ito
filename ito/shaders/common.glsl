@@ -1,5 +1,5 @@
 // Shared by Ito's shaders. The constants are specialization constants: Python owns their values
-// (ito/render/vk.py SPECIALIZATION), every pipeline gets them all.
+// (ito/tofmesh/render.py CONSTANTS), every pipeline gets them all.
 
 layout(constant_id = 0) const int K = 1;            // projector slots (fusion.PROJECTORS)
 layout(constant_id = 1) const int TILE = 64;        // atlas tile side, texels

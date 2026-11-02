@@ -358,6 +358,9 @@ class MeshRenderer:
             self.capacity = cap
         if n:
             frame = self.device.frame
+            # After the copies of a mesh uploaded before it in this frame (a display frame takes
+            # up to two: window.MESHES_PER_FRAME).
+            frame.barrier()
             for buffer, data, kind in zip(
                 self.buffers,
                 (positions, normals, colours, blocks, triangles),

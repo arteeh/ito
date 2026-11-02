@@ -73,10 +73,14 @@ class Passthrough:
 
 class VideoDecoder:
     """H.264 on the GPU's video decoder, whatever its vendor (Direct3D 12 or 11 video on Windows,
-    VA-API or Vulkan on Linux). Its frames stay in the GPU's memory (render/camera.py takes
-    Direct3D 12's straight to Vulkan, and has any other kind downloaded, NV12) for a shader to
-    turn into RGB. The CPU decodes only when no GPU decoder opens, or one cannot take a
-    stream."""
+    VA-API or Vulkan on Linux), into frames a shader turns into RGB. Direct3D 12's stay in the
+    GPU's memory, for render/camera.py to take straight to Vulkan; every other decoder's are
+    downloaded here, on the decoder's thread (NV12). The CPU decodes only when no GPU decoder
+    opens, or one cannot take a stream."""
+
+    # False once render/camera.py finds Direct3D 12's frames cannot be shared with Vulkan: they
+    # are downloaded here then too.
+    share = True
 
     def __init__(self):
         from av.codec.hwaccel import HWAccel
@@ -87,7 +91,9 @@ class VideoDecoder:
                 codec = av.CodecContext.create(
                     "h264",
                     "r",
-                    hwaccel=HWAccel(kind, allow_software_fallback=True, is_hw_owned=True),
+                    hwaccel=HWAccel(
+                        kind, allow_software_fallback=True, is_hw_owned=kind == "d3d12va"
+                    ),
                 )
             except (av.FFmpegError, ValueError, NotImplementedError):
                 continue
@@ -107,6 +113,8 @@ class VideoDecoder:
         except av.FFmpegError as exc:
             log.warning("H.264 decode (%s) failed, frame skipped: %s", self.kind, exc)
             return []
+        if not VideoDecoder.share:
+            frames = [f.reformat(format="nv12") if f.format.name == "d3d12" else f for f in frames]
         if frames and not self.reported:
             self.reported = True
             log.info(
