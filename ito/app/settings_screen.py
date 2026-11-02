@@ -7,6 +7,7 @@ from ito import diagnostics
 from ito.desktop.settings import AppSettings, load, save
 
 MEMORY_STEPS = (2, 3, 5, 7, 10, 14, 20, 28, 40)  # Fewer / More on the settings screen
+SHARE_STEPS = (0, 10, 25, 50, 75, 100)  # Less / More for Prompt Depth Anything's weights (%)
 
 
 class SettingsScreen:
@@ -53,6 +54,28 @@ class SettingsScreen:
     def close(self):
         self.writer.shutdown(wait=True)
 
+    def choice(self, label, name, chosen, width=None):
+        """A button of a set of which one is chosen (shown pressed)."""
+        if chosen:
+            imgui.push_style_color(
+                imgui.Col_.button, imgui.get_style_color_vec4(imgui.Col_.button_active)
+            )
+        pressed = self.layout.button(label, name, width)
+        if chosen:
+            imgui.pop_style_color()
+        return pressed and not chosen
+
+    def share(self, label, key, value):
+        imgui.text(f"{label}: {value} %")
+        less = [m for m in SHARE_STEPS if m < value]
+        more = [m for m in SHARE_STEPS if m > value]
+        left, right = self.layout.row(1, 1)
+        if self.layout.button("Less", f"{key} less", left, disabled=not less):
+            self.change(**{key: less[-1]})
+        imgui.same_line()
+        if self.layout.button("More", f"{key} more", right, disabled=not more):
+            self.change(**{key: more[0]})
+
     def draw(self):
         s = self.settings
         self.theme.heading("Mesh")
@@ -66,6 +89,23 @@ class SettingsScreen:
         if self.layout.button("More", "memory more", right, disabled=not more):
             self.change(mesh_memory=more[0])
         imgui.text_disabled("Fewer: the mesh follows the latest view. More: smoother, steadier.")
+        self.theme.heading("Mono depth estimation")
+        imgui.text_disabled("Depth where the ToF does not reach, from the camera image.")
+        for value, label in (("guessed", "Guessed depth"), ("pda", "Prompt Depth Anything")):
+            if self.choice(label, f"mono {value}", s.mono_depth == value):
+                self.change(mono_depth=value)
+        if s.mono_depth == "pda":
+            imgui.text("Model")
+            left, right = self.layout.row(1, 1)
+            if self.choice("Large", "pda large", s.pda_model == "large", left):
+                self.change(pda_model="large")
+            imgui.same_line()
+            if self.choice("Small", "pda small", s.pda_model == "small", right):
+                self.change(pda_model="small")
+            imgui.text_disabled("Large: finer, steadier depth. Small: faster.")
+            self.share("Inside the ToF's view", "pda_inside", s.pda_inside)
+            self.share("Outside the ToF's view", "pda_outside", s.pda_outside)
+            imgui.text_disabled("How much its depth counts, as a share of a ToF reading.")
         self.theme.heading("Diagnostics")
         debug = diagnostics.current()
         imgui.text("Diagnostic logging")

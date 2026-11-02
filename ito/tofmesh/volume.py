@@ -176,11 +176,12 @@ class Volume:
         origin = self.keys[slots] * self.block_size
         return origin[:, None, :] + self.local[None, :, :]
 
-    def integrate(self, zones, world_from_sensor, now, position, carve=True):
+    def integrate(self, zones, world_from_sensor, now, position, carve=True, scale=None):
         """Fuse one ToF frame (zones.Zones) seen from world_from_sensor (4x4). carve=False for
         targets behind a zone's nearest one: only the band around their surface is fused, since
         the ray before them is free in only part of the zone's footprint, and which part the
-        sensor does not say."""
+        sensor does not say. `scale` (sensor-frame points -> weights) weighs a source trusted
+        less than a ToF reading (a pda.DepthMap in place of the zones)."""
         if not zones.count:
             return 0
         samples = zones.samples(3)
@@ -234,6 +235,8 @@ class Volume:
         # Farther ranges are noisier (sim and datasheet: ~3 mm near, ~2 cm at 4 m), and the
         # zone's footprint grows with distance: trust them less.
         trust = np.clip(1.3 - measured / 4.0, 0.3, 1.0)
+        if scale is not None:
+            trust = trust * scale(local)
         w = trust
         # Behind the surface, confidence falls off: the far side is unseen. Free space far in
         # front only erodes slowly, so one stray ray does not erase a surface.

@@ -5,6 +5,9 @@ the worker so it never holds the render loop or the link. Queues are bounded and
 ever blocks the link loop: a busy worker drops camera frames (colour only, harmless); motion,
 ToF and IMU batches (geometry, small) wait in a short backlog, and only a worker stalled for
 seconds loses some of them (counted in the statistics and the status line).
+
+With Prompt Depth Anything chosen, its model runs in a third process (pda.py), started here and
+fed by the worker: one camera frame and prompt at a time, the next once its depth map is in.
 """
 
 import logging
@@ -16,6 +19,8 @@ from collections import deque
 import numpy as np
 
 from ito import clock, diagnostics
+
+from . import pda
 
 log = logging.getLogger(__name__)
 
@@ -36,13 +41,15 @@ def frame_size(width, height):
     return (len(range(step // 2, width, step)), len(range(step // 2, height, step))), step
 
 
-def _run(inputs, outputs, notes, options, integrated):
+def _run(inputs, outputs, notes, options, integrated, depth):
     from .fusion import Fusion, MeshFrame
 
     try:
         fusion = Fusion(**options)
         outbox = None
         next_note = 0.0
+        waiting = False  # a frame is with Prompt Depth Anything (depth: its two queues)
+        maps = 0  # depth maps fused up to the last note
         while True:
             try:
                 item = inputs.get(timeout=0.01)
@@ -60,10 +67,15 @@ def _run(inputs, outputs, notes, options, integrated):
                     fusion.imu(item[1])
                 elif kind == "frame":
                     fusion.frame(*item[1:])
+                elif kind == "depth_failed":
+                    fusion.depth_failed(item[1])
+                    depth = None
                 try:
                     item = inputs.get_nowait()
                 except queue.Empty:
                     item = None
+            if depth is not None:
+                waiting, depth = _depth(fusion, depth, waiting)
             before = fusion.stats["tof_frames"]
             news = fusion.step(clock.now())
             integrated.value += fusion.stats["tof_frames"] - before
@@ -82,6 +94,7 @@ def _run(inputs, outputs, notes, options, integrated):
                 next_note = now + 1.0
                 stats = dict(fusion.stats, volume_mb=fusion.volume.nbytes / 2**20)
                 stats["capacity"] = fusion.volume.capacity
+                stats["pda_rate"], maps = fusion.stats["pda_maps"] - maps, fusion.stats["pda_maps"]
                 try:
                     notes.put_nowait(("stats", stats))
                 except queue.Full:
@@ -91,6 +104,32 @@ def _run(inputs, outputs, notes, options, integrated):
             notes.put(("error", f"ToF mesh failed: {exc}", traceback.format_exc()), timeout=1)
         except queue.Full:
             pass
+
+
+def _depth(fusion, queues, waiting):
+    """Take Prompt Depth Anything's answer if one is in and send it the next frame: (waiting,
+    queues), queues None once it failed."""
+    requests, results = queues
+    try:
+        answer = results.get_nowait()
+    except queue.Empty:
+        answer = None
+    if answer is not None:
+        if answer[0] == "depth":
+            fusion.depth_map(*answer[1:])
+            waiting = False
+        elif answer[0] == "error":
+            fusion.depth_failed(answer[1])
+            return False, None
+    if not waiting:
+        request = fusion.depth_request()
+        if request is not None:
+            try:
+                requests.put_nowait(request)
+                waiting = True
+            except queue.Full:
+                pass
+    return waiting, queues
 
 
 def _merge(old, new, frame_type):
@@ -103,6 +142,7 @@ def _merge(old, new, frame_type):
     merged.blocks = source.blocks
     merged.cleared = sorted(set(old.cleared) | set(new.cleared))
     merged.timing = source.timing
+    merged.guess = new.guess
     slots = {p.slot: p for p in old.projectors}
     slots.update({p.slot: p for p in new.projectors})
     merged.projectors = list(slots.values())
@@ -112,7 +152,11 @@ def _merge(old, new, frame_type):
 class TofMesh:
     """Pilot-side handle: submit(), motion(), ranges(), poll(), status(), statistics(), close()."""
 
-    def __init__(self, intrinsics, memory, *, capture_delay=0.0, voxel=0.04, capacity=6000):
+    def __init__(
+        self, intrinsics, memory, *, capture_delay=0.0, voxel=0.04, capacity=6000, depth=None
+    ):
+        """depth: Prompt Depth Anything's settings, dict(model, inside, outside), or None for
+        the renderer's guessed depth (also what a missing model or a failure falls back to)."""
         context = mp.get_context("spawn")
         self.intrinsics = intrinsics
         self.capture_delay = float(capture_delay)
@@ -125,9 +169,24 @@ class TofMesh:
         options = dict(
             memory=memory, voxel=voxel, capacity=capacity, frame_delay=self.capture_delay > 0
         )
+        self.depth_error = None
+        self.pda = queues = None
+        if depth is not None:
+            self.depth_error = pda.missing(depth["model"])
+            if self.depth_error:
+                log.error("%s; using guessed depth", self.depth_error)
+            else:
+                queues = (context.Queue(maxsize=1), context.Queue(maxsize=4))
+                self.pda = context.Process(
+                    target=pda.run, args=(*queues, depth["model"]), name="ito-pda", daemon=True
+                )
+                self.pda.start()
+                options["depth"] = dict(inside=depth["inside"], outside=depth["outside"])
+                # The depth maps fill the whole camera view, not the ToF's ~45 degrees of it.
+                options["capacity"] = 2 * capacity
         self.process = context.Process(
             target=_run,
-            args=(self.inputs, self.outputs, self.notes, options, self.integrated),
+            args=(self.inputs, self.outputs, self.notes, options, self.integrated, queues),
             name="ito-tofmesh",
             daemon=True,
         )
@@ -208,6 +267,9 @@ class TofMesh:
                 return
             if note[0] == "stats":
                 self.stats = note[1]
+                if self.stats.get("pda_error") and not self.depth_error:
+                    self.depth_error = self.stats["pda_error"]
+                    log.error("%s; using guessed depth", self.depth_error)
             elif note[0] == "error":
                 self.error = note[1]
                 raise RuntimeError(f"{note[1]}\n{note[2]}")
@@ -216,6 +278,10 @@ class TofMesh:
         self._notes()
         if not self.process.is_alive() and not self._closed:
             raise RuntimeError("ToF mesh worker stopped")
+        if self.pda is not None and not self.pda.is_alive() and not self._closed:
+            self.pda = None
+            if not self.depth_error:
+                self._put(("depth_failed", "Prompt Depth Anything stopped"), keep=True)
         try:
             frame = self.outputs.get_nowait()
         except queue.Empty:
@@ -258,6 +324,10 @@ class TofMesh:
         text = f"ToF mesh: {s['triangles']:,} triangles, {s['blocks']:,}/{s['capacity']:,} blocks"
         if self.dropped:
             text += f"; worker busy, {self.dropped:,} sensor batches lost"
+        if self.depth_error:
+            text += f"; {self.depth_error}, using guessed depth"
+        elif self.pda is not None:
+            text += f"; Prompt Depth Anything {s.get('pda_rate', 0)} maps/s"
         return text
 
     def statistics(self):
@@ -276,6 +346,9 @@ class TofMesh:
             "tofmesh_tilt_ahead": s.get("tilt_ahead"),
             "tofmesh_volume_mb": s.get("volume_mb"),
             "tofmesh_ingress_dropped": self.dropped,
+            "pda_maps": s.get("pda_maps"),
+            "pda_ms": s.get("pda_ms"),
+            "pda_fuse_ms": s.get("pda_fuse_ms"),
         }
 
     def close(self):
@@ -286,10 +359,14 @@ class TofMesh:
             self.inputs.put(("stop",), timeout=STOP_WAIT)
         except (queue.Full, ValueError):
             pass
+        if self.pda is not None:
+            self.pda.terminate()  # nothing to save in it
         self.process.join(EXIT_WAIT)
         if self.process.is_alive():
             self.process.terminate()
             self.process.join(KILL_WAIT)
+        if self.pda is not None:
+            self.pda.join(KILL_WAIT)
         for q in (self.inputs, self.outputs, self.notes):
             q.cancel_join_thread()
             q.close()

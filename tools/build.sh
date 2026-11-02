@@ -19,4 +19,4 @@ cd "$snap"
 UV_CACHE_DIR=$(wslpath -w "$win/uv-cache") UV_PROJECT_ENVIRONMENT=$(wslpath -w "$win/venv") \
 WSLENV=UV_CACHE_DIR:UV_PROJECT_ENVIRONMENT \
     cmd.exe /c uv run -q --python 3.12 --no-dev python release\\windows.py \
-    --dist "$(wslpath -w "$win/builds/$name")"
+    --dist "$(wslpath -w "$win/builds/$name")" --cache "$(wslpath -w "$win/models")"

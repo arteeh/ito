@@ -356,10 +356,17 @@ class Pilot:
             nonlocal worker_started
             worker_started = clock.now()
             with self.worker_lock:
+                s = self.settings
+                depth = None
+                if s.mono_depth == "pda":
+                    depth = dict(
+                        model=s.pda_model, inside=s.pda_inside / 100, outside=s.pda_outside / 100
+                    )
                 self.worker = TofMesh(
                     camera.intrinsics,
-                    self.settings.mesh_memory,
+                    s.mesh_memory,
                     capture_delay=camera.capture_delay,
+                    depth=depth,
                 )
 
         reconstruct()

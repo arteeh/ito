@@ -1,13 +1,15 @@
 """Build the Windows release of Ito into DIST\\ito (tools/build.sh runs it on Windows):
 
-    uv run --python 3.12 python release/windows.py --dist DIST
+    uv run --python 3.12 python release/windows.py --dist DIST [--cache DIR]
 
-A relocatable CPython with the locked dependencies installed, started by release/ito.c's
-ito.exe (runtime\\pythonw.exe -I -m ito.app), plus THIRD_PARTY_NOTICES.txt. No freezer: the
-release runs exactly what runs from source."""
+A relocatable CPython with the locked dependencies installed (the pda extra too), started by
+release/ito.c's ito.exe (runtime\\pythonw.exe -I -m ito.app), Prompt Depth Anything's models in
+models\\ (downloaded at pinned revisions, checked, kept in --cache), plus THIRD_PARTY_NOTICES.txt.
+No freezer: the release runs exactly what runs from source."""
 
 import argparse
 import email.parser
+import hashlib
 import json
 import os
 import re
@@ -15,9 +17,24 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+# Prompt Depth Anything (ito/tofmesh/pda.py, Apache-2.0): folder -> (Hugging Face revision,
+# {file: sha256}). The folder is the model's name under huggingface.co/depth-anything.
+MODELS = {
+    "prompt-depth-anything-vitl-hf": ("abfaa0958bbe7382633e90ffb6373cfee61239ed", {
+        "README.md": "6c57baeb946d68c2fa0cf1ff053dee695b257da194ba2cae17c80e312ff148b2",
+        "config.json": "b63450bf142e9170988051293a29b89c4bc6950123e5c37df7ba12c8d4c825ec",
+        "model.safetensors": "310a5a399691a1f56d1bc994a7463d626aef33d99d0949b954858434d0de3160",
+    }),
+    "prompt-depth-anything-vits-hf": ("6f3768a5383d95a904ec00d2a7ca3bd186f8797e", {
+        "README.md": "747b00fd961d4052ca056cb42af0bcc531f487834fe0513f74ffc447df78f9f4",
+        "config.json": "2aef1ceef354f6149f1cf6c3a50abb00ad94ba3118fc88d65923b82643a34261",
+        "model.safetensors": "b8dcec4ab96b47771addbfec2b7b410d801f472366b52fb5f20e2599e8d8c015",
+    }),
+}  # fmt: skip
 
 
 def run(*command, **options):
@@ -38,7 +55,7 @@ def runtime(stage, work):
             shutil.rmtree(path) if path.is_dir() else path.unlink()
     lock = work / "pylock.toml"
     run(
-        "uv", "export", "--frozen", "--no-dev", "--no-emit-project",
+        "uv", "export", "--frozen", "--no-dev", "--no-emit-project", "--extra", "pda",
         "--format", "pylock.toml", "--output-file", lock,
         cwd=ROOT,
     )  # fmt: skip
@@ -55,6 +72,32 @@ def runtime(stage, work):
     unused = [site / "bin", *site.rglob("*.lib")]
     for path in unused + list(site.glob("xr/**/android*")):
         shutil.rmtree(path) if path.is_dir() else path.unlink(missing_ok=True)
+
+
+def _digest(path):
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def models(stage, cache):
+    """Prompt Depth Anything's models into stage\\models, from the cache or downloaded into it."""
+    for name, (revision, files) in MODELS.items():
+        for file, sha256 in files.items():
+            cached = cache / name / revision / file
+            if not cached.is_file() or _digest(cached) != sha256:
+                cached.parent.mkdir(parents=True, exist_ok=True)
+                url = f"https://huggingface.co/depth-anything/{name}/resolve/{revision}/{file}"
+                print(f"Downloading {url}", flush=True)
+                partial = cached.with_suffix(".part")
+                with urllib.request.urlopen(url) as response, partial.open("wb") as out:
+                    shutil.copyfileobj(response, out, 1 << 20)
+                if _digest(partial) != sha256:
+                    partial.unlink()
+                    raise SystemExit(f"{url} does not match its sha256")
+                partial.replace(cached)
+            target = stage / "models" / name / file
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(cached, target)
 
 
 def developer_shell():
@@ -92,7 +135,12 @@ LICENCE_FILE = re.compile(
 
 
 def notices(site, runtime, output):
-    sections = []
+    sections = [
+        f"Prompt Depth Anything model {name} (models\\{name}), Apache-2.0, "
+        f"https://huggingface.co/depth-anything/{name}\n\n"
+        + _read(runtime.parent / "models" / name / "README.md")
+        for name in MODELS
+    ]
     for info in sorted(site.glob("*.dist-info"), key=lambda p: p.name.lower()):
         meta = email.parser.Parser().parsestr(
             (info / "METADATA").read_text(encoding="utf-8", errors="replace"), headersonly=True
@@ -177,7 +225,9 @@ def check(stage):
     run(
         stage / "runtime/python.exe", "-I", "-c",
         "import sys, pathlib, aiortc, xr, imgui_bundle, vulkan\n"
-        "import ito.app.__main__, ito.tofmesh.worker, ito.tofmesh.render\n"
+        "import ito.app.__main__, ito.tofmesh.worker, ito.tofmesh.render, torch, transformers\n"
+        "from ito.tofmesh import pda\n"
+        "assert not any(map(pda.missing, pda.MODELS)), [pda.missing(m) for m in pda.MODELS]\n"
         "root = pathlib.Path(sys.argv[1])\n"
         "for module in (aiortc, xr, imgui_bundle, ito):\n"
         "    assert pathlib.Path(module.__file__).is_relative_to(root), module.__file__\n",
@@ -188,6 +238,9 @@ def check(stage):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--dist", type=Path, default=ROOT / "dist", help="output directory")
+    parser.add_argument(
+        "--cache", type=Path, default=ROOT / "models", help="downloaded models, kept for reuse"
+    )
     args = parser.parse_args()
     if sys.platform != "win32":
         raise SystemExit("The Windows release is built on Windows")
@@ -199,6 +252,7 @@ def main():
         work = Path(work)
         launcher(stage, work)
         runtime(stage, work)
+    models(stage, args.cache)
     count = notices(
         stage / "runtime/Lib/site-packages", stage / "runtime", stage / "THIRD_PARTY_NOTICES.txt"
     )

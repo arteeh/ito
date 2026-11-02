@@ -24,7 +24,9 @@ those ranges, in the frame's own colours like any measured surface (user, 1 Nov:
 hatching), and broken where neighbouring guesses jump (an edge). Guesses are drawn into a layer
 of their own with ordinary depth (so nearer guesses hide farther ones from any eye position),
 and that layer is composited only into pixels where no mesh was drawn: a guess never covers a
-measured surface and gives way as soon as the ToF measures that spot.
+measured surface and gives way as soon as the ToF measures that spot. With Prompt Depth
+Anything chosen in the settings, its depth maps fill the mesh instead and nothing is guessed
+(MeshFrame.guess).
 
 Texture memory: the kept views are few (PROJECTORS) and the oldest is replaced, so a slow 360
 degree turn outlived them and everything seen more than about half a turn ago fell back to the
@@ -209,6 +211,7 @@ class MeshRenderer:
         # so a mesh update (~12.7 a second) redraws only the live view's map at once.
         self.shadow_stale = set()
         self.guess_dirty = False
+        self.guess = True  # the session's choice (MeshFrame.guess)
         self.levels = _pyramid(device, SHADOW_SIZE)
         gw, gh = GUESS_GRID
         u, v = np.meshgrid(np.linspace(0, 1, gw + 1), np.linspace(0, 1, gh + 1))
@@ -254,6 +257,7 @@ class MeshRenderer:
             self.shadow_dirty.clear()
             self.shadow_stale.clear()
             self._clear_atlas()
+        self.guess = frame.guess
         if self.atlas is not None:
             for slot in getattr(frame, "cleared", ()):
                 self._clear_tiles(slot)
@@ -567,7 +571,8 @@ class MeshRenderer:
             and self.projectors[0] is not None
         ):  # fmt: skip
             self._bake(frame)
-        if self.projectors[0] is not None:
+        guess = self.guess and self.projectors[0] is not None
+        if guess:
             self._guess_pyramid(frame)
         block = bytearray()
         for k, entry in enumerate(self.projectors):
@@ -577,7 +582,7 @@ class MeshRenderer:
             block += pack("16f4f4f", mat(entry[0]), entry[1], (*entry[2], 2.0 if k == 0 else 1.0))
         self._projectors = frame.uniform(bytes(block))
         self.fill_clip = projection @ _view(self.viewer)
-        if self.projectors[0] is not None:
+        if guess:
             self._fill_depth(frame, projection, self.fill_clip)
 
     def draw(self, robot_camera, head, projection, target, *, clear=CLEAR):
@@ -593,7 +598,7 @@ class MeshRenderer:
             if self.depth is not None:
                 self.device.defer(self.depth)
             self.depth = Image(self.device, size, DEPTH_FORMAT, attachment=True)
-        guess = self.projectors[0] is not None
+        guess = self.guess and self.projectors[0] is not None
         view_projection = projection @ _view(world_from_eye)
         sampler = self.device.sampler()
         frame.sampled(self.images, self.shadows)

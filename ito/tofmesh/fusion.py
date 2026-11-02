@@ -10,6 +10,9 @@
                             and the delay measured from the frames, latency.FrameDelay)
                                                         -> Volume.paint (voxel colours)
                                                         -> projector frames for the renderer
+  newest posed frame     -> with the newest ToF frame as its prompt, to Prompt Depth Anything
+  (when chosen)             (pda.py, its own process) -> its depth map -> Volume.integrate,
+                            weighted as the settings say; the renderer's guessed depth is off
   dirty blocks           -> surface.extract            -> one mesh, published a few times a second
 
 Nothing here sees the simulator's ground truth: every pose comes from the driver's stream.
@@ -21,7 +24,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from . import surface
+from . import pda, surface
 from . import volume as volume_module
 from .geometry import PoseTrack, angle_between, quaternion, rotation, slerp
 from .latency import FrameDelay
@@ -55,6 +58,9 @@ KEY_REFRESH = 3.0
 # takes the newest one, projected with the poses of both moments, so only things that moved in
 # between land off their edge.
 GUIDE_MATCH = 0.2
+# A camera frame is sent to Prompt Depth Anything with the ToF frame nearest it as its prompt,
+# if one is this near.
+PROMPT_MATCH = 0.2
 
 
 @dataclass
@@ -87,6 +93,8 @@ class MeshFrame:
     epoch: float = 0.0
     # Where the time went for the ToF frame of `captured_at` (diagnostics): see Fusion.step.
     timing: dict | None = None
+    # Whether the renderer guesses depth where the mesh has none (off with Prompt Depth Anything).
+    guess: bool = True
 
     @property
     def observations(self):
@@ -184,6 +192,7 @@ class Fusion:
         max_range=4.0,
         head_imu=True,
         frame_delay=True,
+        depth=None,
     ):
         self.volume = Volume(memory, voxel=voxel, capacity=capacity, max_range=max_range)
         self.poses = PoseTrack()
@@ -219,12 +228,20 @@ class Fusion:
         self.meshed_timing = None  # ... and once meshed, until published
         self.camera = None
         self.mesh_changed = False
+        # Prompt Depth Anything: its weights inside and outside the ToF's view (None: off), the
+        # newest fused ToF frame (its prompt), the frame last sent, and the frames it works on.
+        self.depth = depth
+        self.guess = depth is None
+        self.guess_changed = False
+        self.tof = None
+        self.depth_sent = -1e9
+        self.depth_frames = {}
         self.stats = dict(
             tof_frames=0, tof_dropped=0, tilted=0, tilt_held=0, untilted=0, tof_voxels=0,
             tilt_ahead=0, painted=0, frames=0, frames_dropped=0, frame_delay_extra_ms=0.0,
             guided=0, unguided=0, guide_ms=0.0,
             vertices=0, triangles=0, blocks=0, evictions=0, fuse_ms=0.0, paint_ms=0.0,
-            mesh_ms=0.0,
+            mesh_ms=0.0, pda_maps=0, pda_ms=0.0, pda_fuse_ms=0.0, pda_error=None,
         )  # fmt: skip
 
     def motion(self, samples):
@@ -441,6 +458,7 @@ class Fusion:
                     farther, world_from_sensor, grid["time"], camera[:3, 3], carve=False
                 )
             ended = time.perf_counter()
+            self.tof = (zones, world_from_sensor, grid["time"])
             self.stats["tof_frames"] += 1
             self.stats["tof_voxels"] = fused
             self.stats["fuse_ms"] = (ended - started) * 1000
@@ -470,9 +488,10 @@ class Fusion:
             if colours:
                 self.last_recolour = now
             self._remesh(colours)
-        if self.mesh_changed or self.pending_projectors:
+        if self.mesh_changed or self.pending_projectors or self.guess_changed:
             self.revision += 1
             news = MeshFrame(self.revision, self.captured_at, camera=self.camera, epoch=self.epoch)
+            news.guess, self.guess_changed = self.guess, False
             if self.mesh_changed:
                 news.positions, news.normals, news.colours, news.triangles, news.blocks = (
                     self.combined()
@@ -482,6 +501,46 @@ class Fusion:
                 self.mesh_changed = False
             news.projectors, self.pending_projectors = self.pending_projectors, []
         return news
+
+    def depth_request(self):
+        """The newest posed camera frame not yet sent to Prompt Depth Anything, with its prompt
+        from the ToF frame nearest it: (key, image, prompt), or None."""
+        if self.depth is None or self.tof is None or not self.posed:
+            return None
+        exposed, image, camera, intrinsics = self.posed[-1]
+        zones, world_from_sensor, when = self.tof
+        if exposed <= self.depth_sent or abs(exposed - when) > PROMPT_MATCH:
+            return None
+        self.depth_sent = exposed
+        size = (image.shape[1], image.shape[0])
+        prompt = pda.prompt(zones, world_from_sensor, camera, intrinsics, size)
+        if prompt is None:
+            return None
+        sensor_from_camera = np.linalg.inv(world_from_sensor) @ camera
+        self.depth_frames = {exposed: (camera, intrinsics, size, zones.fov, sensor_from_camera)}
+        return exposed, image, prompt
+
+    def depth_map(self, key, depth, ms):
+        """A Prompt Depth Anything answer for the frame sent as `key`: into the volume."""
+        frame = self.depth_frames.pop(key, None)
+        if frame is None or self.depth is None:
+            return
+        camera, intrinsics, size, fov, sensor_from_camera = frame
+        started = time.perf_counter()
+        mapped = pda.DepthMap(
+            depth, intrinsics, size, fov, sensor_from_camera[:3, :3], **self.depth
+        )
+        self.volume.integrate(mapped, camera, key, camera[:3, 3], scale=mapped.weights)
+        self.stats["pda_maps"] += 1
+        self.stats["pda_ms"] = ms
+        self.stats["pda_fuse_ms"] = (time.perf_counter() - started) * 1000
+
+    def depth_failed(self, text):
+        """Prompt Depth Anything stopped: guessed depth again."""
+        self.depth = None
+        self.depth_frames = {}
+        self.guess = self.guess_changed = True
+        self.stats["pda_error"] = text
 
     def _measure_frame_delay(self, now):
         """The frames' delay against the orientation track the frames are posed with: the head

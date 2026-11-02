@@ -2,6 +2,7 @@ import logging
 import os
 import tempfile
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -11,6 +12,13 @@ class AppSettings(BaseModel):
     diagnostic_logging: bool = False
     # ToF frames the mesh averages (tofmesh.volume): fewer follow the latest view.
     mesh_memory: int = Field(default=10, ge=2, le=40)
+    # Mono depth estimation where the ToF does not reach: the renderer's guess (tofmesh.render),
+    # or Prompt Depth Anything's depth maps fused into the mesh (tofmesh.pda) with this model,
+    # counting these percentages of a ToF reading inside and outside the ToF's view.
+    mono_depth: Literal["guessed", "pda"] = "guessed"
+    pda_model: Literal["large", "small"] = "large"
+    pda_inside: int = Field(default=25, ge=0, le=100)
+    pda_outside: int = Field(default=100, ge=0, le=100)
 
 
 def settings_path():
