@@ -6,14 +6,23 @@ pass (straighten.comp) turns each into RGB at the camera's described pinhole: th
 view's texture, and the ToF mesh's colour frame, strided as the worker takes it
 (worker.frame_size). Each frame is straightened in a submission of its own, ahead of the frame
 being drawn, so its colour frame is read back as soon as the GPU has it (collect()) without
-waiting for the rest of the frame."""
+waiting for the rest of the frame.
+
+A frame the D3D12 decoder left on the GPU is copied there into textures Vulkan shares
+(d3d12.SharedFrames); one that cannot be, or a decoder's frame in any other GPU's memory, is
+downloaded and uploaded again (av.VideoFrame.reformat)."""
+
+import logging
 
 import numpy as np
 import vulkan as vk
 
 from ito.tofmesh.worker import frame_size
 
-from .vk import FRAMES, Frame, Image, Pipeline, mat, pack
+from . import d3d12
+from .vk import ALL, FRAMES, Frame, Image, Pipeline, mat, pack
+
+log = logging.getLogger(__name__)
 
 # Luma weights (Kr, Kb) of ITU-R BT.601 and BT.709. FFmpeg's AVColorSpace 1 is BT.709; every
 # other value, unspecified included, is converted as BT.601, as FFmpeg's own conversion does.
@@ -58,6 +67,8 @@ class CameraFeed:
         self.colour = None  # the same, strided to the ToF mesh's colour size
         self.sizes = None
         self.stamp = None
+        self.shared = None  # d3d12.SharedFrames; False where it is unavailable
+        self.held = None  # the frame being straightened, its decoder texture in use until done
 
     def update(self, frame, stamp, intrinsics, lens, deliver):
         """Straighten `frame` (an av.VideoFrame) if it is new; deliver(image, stamp) gets it as
@@ -71,12 +82,28 @@ class CameraFeed:
                 f"{intrinsics.width}x{intrinsics.height}"
             )
         name = frame.format.name
-        if name not in {"nv12", "yuv420p", "yuvj420p"}:
+        on_gpu = d3d12.decoded(frame) if self.shared is not False else None
+        if on_gpu is not None and self.shared is None:
+            try:
+                self.shared = d3d12.SharedFrames(self.device, on_gpu[0])
+            except (d3d12.Unavailable, OSError) as exc:
+                log.warning("Camera frames go through memory: %s", exc)
+                self.shared = False
+        if not self.shared:
+            on_gpu = None
+        if on_gpu is None and name not in {"nv12", "yuv420p", "yuvj420p"}:
             frame, name = frame.reformat(format="nv12"), "nv12"
         commands = self.frames[self.count % FRAMES]
         self.count += 1
         commands.begin()
-        self._upload(commands, frame, name)
+        wait = ()
+        if on_gpu is not None:
+            name = "nv12"
+            wait = [(self.shared.semaphore, ALL, self.shared.copy(on_gpu))]
+            self.planes, self.layout = self.shared.planes, None
+            self.shared.acquire(commands)
+        else:
+            self._upload(commands, frame, name)
         (width, height), step = frame_size(intrinsics.width, intrinsics.height)
         self._targets((intrinsics.width, intrinsics.height), (width, height))
         block = self._uniforms(frame, name, intrinsics, lens)
@@ -100,14 +127,15 @@ class CameraFeed:
 
         commands.read(self.colour, read)
         commands.sampled(self.texture)
-        commands.submit((), ())
-        self.pending = commands
+        commands.submit(wait, ())
+        self.pending, self.held = commands, frame
 
     def collect(self):
         """Wait for the frame update() submitted, and hand its colour frame on."""
         if self.pending is not None:
             pending, self.pending = self.pending, None
             pending.wait()
+            self.held = None
 
     def _upload(self, commands, frame, name):
         rows = (frame.height + 1) // 2
@@ -122,7 +150,8 @@ class CameraFeed:
                 for i, plane in enumerate(frame.planes)
             )
         if layout != self.layout:
-            self.device.defer(*self.planes)
+            if self.layout is not None:
+                self.device.defer(*self.planes)
             self.planes = [
                 Image(self.device, (width, height), PLANES[components], sampled=True)
                 for width, height, components in layout
@@ -142,6 +171,7 @@ class CameraFeed:
     def _uniforms(self, frame, name, intrinsics, lens):
         """straighten.comp's block up to its stride (the rest per pass)."""
         planar = len(self.planes) == 3
+        (luma_w, luma_h), (chroma_w, chroma_h) = (p.size for p in self.planes[:2])
         k = np.zeros(12, "f4")
         if lens is not None:
             k[: len(lens.distortion)] = lens.distortion
@@ -158,15 +188,20 @@ class CameraFeed:
             (lens.fx, lens.fy, lens.cx, lens.cy) if lens is not None else (1.0, 1.0, 0.0, 0.0),
             k,
             (frame.width, frame.height),
-            (frame.width / self.layout[0][0], 1.0),
-            ((frame.width + 1) // 2 / self.layout[1][0], 1.0),
+            (frame.width / luma_w, frame.height / luma_h),
+            ((frame.width + 1) // 2 / chroma_w, (frame.height + 1) // 2 / chroma_h),
         )
 
     def close(self):
         self.collect()
         for commands in self.frames:
             commands.close()
-        for image in (*self.planes, self.texture, self.colour):
+        if self.shared:
+            self.shared.close()
+        elif self.layout is not None:
+            for image in self.planes:
+                image.close()
+        for image in (self.texture, self.colour):
             if image is not None:
                 image.close()
         self.pipeline.close()

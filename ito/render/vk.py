@@ -28,6 +28,12 @@ SHADERS = Path(__file__).resolve().parents[1] / "shaders"
 FRAMES = 2
 API_VERSION = vk.VK_MAKE_VERSION(1, 3, 0)
 DEVICE_EXTENSIONS = ("VK_KHR_swapchain", "VK_KHR_push_descriptor")
+# Enabled where the GPU has them: decoded camera frames shared from Direct3D 12 (d3d12.py).
+INTEROP_EXTENSIONS = (
+    ("VK_KHR_external_memory_win32", "VK_KHR_external_semaphore_win32")
+    if sys.platform == "win32"
+    else ()
+)
 RING = 1 << 20  # each frame's first uniform and staging ring; grows when a frame needs more
 ALL = vk.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT
 MEMORY = vk.VK_ACCESS_2_MEMORY_READ_BIT | vk.VK_ACCESS_2_MEMORY_WRITE_BIT
@@ -266,7 +272,14 @@ class Device:
         return min(ranked)[2]
 
     def _device(self, xr):
-        names = [ffi.new("char[]", e.encode()) for e in DEVICE_EXTENSIONS]
+        count = ffi.new("uint32_t*")
+        lib.vkEnumerateDeviceExtensionProperties(self.physical, ffi.NULL, count, ffi.NULL)
+        available = ffi.new("VkExtensionProperties[]", count[0])
+        lib.vkEnumerateDeviceExtensionProperties(self.physical, ffi.NULL, count, available)
+        available = {ffi.string(e.extensionName).decode() for e in available}
+        self.interop = bool(INTEROP_EXTENSIONS) and set(INTEROP_EXTENSIONS) <= available
+        extensions = DEVICE_EXTENSIONS + (INTEROP_EXTENSIONS if self.interop else ())
+        names = [ffi.new("char[]", e.encode()) for e in extensions]
         priority = ffi.new("float*", 1.0)
         queue = ffi.new(
             "VkDeviceQueueCreateInfo*",
@@ -277,10 +290,18 @@ class Device:
                 "pQueuePriorities": priority,
             },
         )
+        features12 = ffi.new(
+            "VkPhysicalDeviceVulkan12Features*",
+            {
+                "sType": vk.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+                "timelineSemaphore": 1,
+            },
+        )
         features13 = ffi.new(
             "VkPhysicalDeviceVulkan13Features*",
             {
                 "sType": vk.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+                "pNext": features12,
                 "synchronization2": 1,
                 "dynamicRendering": 1,
             },
@@ -319,8 +340,9 @@ class Device:
             )
 
     # -- memory --------------------------------------------------------------------------
-    def allocate(self, requirements, *options):
-        """Memory for requirements, of the first kind in options (property flags) the GPU has."""
+    def allocate(self, requirements, *options, chain=ffi.NULL):
+        """Memory for requirements, of the first kind in options (property flags) the GPU has;
+        chain: the allocation's pNext (an import)."""
         found = (
             index
             for flags in options
@@ -339,6 +361,7 @@ class Device:
                     "VkMemoryAllocateInfo*",
                     {
                         "sType": vk.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                        "pNext": chain,
                         "allocationSize": requirements.size,
                         "memoryTypeIndex": index,
                     },
@@ -390,8 +413,8 @@ class Device:
         return frame
 
     def submit(self, wait=(), signal=()):
-        """Submit the frame being recorded: after the semaphores `wait` (with the stages that
-        wait), it signals `signal`."""
+        """Submit the frame being recorded: after the semaphores `wait` ((semaphore, the stages
+        that wait) or, timeline semaphores, (semaphore, stages, value)), it signals `signal`."""
         frame, self.frame = self.frame, None
         frame.submit(wait, signal)
         return frame
@@ -493,6 +516,56 @@ class Buffer:
             )
             self.mapped = np.frombuffer(ffi.buffer(pointer[0], self.size), np.uint8)
 
+    @classmethod
+    def imported(cls, device, size, usage, handle):
+        """A buffer in memory Direct3D 12 shares (handle: an NT handle to a D3D12 resource)."""
+        kind = vk.VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE_BIT
+        self = cls.__new__(cls)
+        self.device, self.size, self.mapped = device, size, None
+        external = ffi.new(
+            "VkExternalMemoryBufferCreateInfo*",
+            {"sType": vk.VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO, "handleTypes": kind},
+        )
+        buffer = ffi.new("VkBuffer*")
+        check(
+            lib.vkCreateBuffer(
+                device.device,
+                ffi.new(
+                    "VkBufferCreateInfo*",
+                    {
+                        "sType": vk.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                        "pNext": external,
+                        "size": size,
+                        "usage": usage,
+                    },
+                ),
+                ffi.NULL,
+                buffer,
+            ),
+            "vkCreateBuffer",
+        )
+        self.buffer = buffer[0]
+        requirements = ffi.new("VkMemoryRequirements*")
+        lib.vkGetBufferMemoryRequirements(device.device, self.buffer, requirements)
+        dedicated = ffi.new(
+            "VkMemoryDedicatedAllocateInfo*",
+            {"sType": vk.VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO, "buffer": self.buffer},
+        )
+        imported = ffi.new(
+            "VkImportMemoryWin32HandleInfoKHR*",
+            {
+                "sType": vk.VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR,
+                "pNext": dedicated,
+                "handleType": kind,
+                "handle": ffi.cast("HANDLE", handle),
+            },
+        )
+        self.memory = device.allocate(
+            requirements[0], vk.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, chain=imported
+        )
+        lib.vkBindBufferMemory(device.device, self.buffer, self.memory, 0)
+        return self
+
     def write(self, data, offset=0):
         data = memoryview(np.ascontiguousarray(data)).cast("B")
         self.mapped[offset : offset + len(data)] = data
@@ -525,10 +598,14 @@ class Image:
         levels=1,
         array=False,
         handle=None,
+        plane=0,
     ):
+        """handle: an image made elsewhere (only the views are this one's); plane: its view
+        sees that plane (VK_IMAGE_ASPECT_PLANE_n_BIT) of a multi-planar image, as `format`."""
         self.device, self.size, self.format = device, tuple(int(v) for v in size), format
         self.layers, self.levels = layers, levels
         self.aspect = DEPTH if format == DEPTH_FORMAT else COLOUR
+        self.view_aspect = plane or self.aspect
         self.layout = vk.VK_IMAGE_LAYOUT_UNDEFINED
         self.memory = None
         self.owned = handle is None
@@ -596,7 +673,7 @@ class Image:
                         "viewType": kind,
                         "format": self.format,
                         "subresourceRange": {
-                            "aspectMask": self.aspect,
+                            "aspectMask": self.view_aspect,
                             "baseMipLevel": level,
                             "levelCount": count,
                             "baseArrayLayer": 0,
@@ -710,7 +787,8 @@ class Frame:
         )
         self.pending = False  # submitted, its fence not waited for yet
         self.done = []  # run once the frame's GPU work is complete (readbacks)
-        self.temporary = []  # closed then
+        self.reading = []  # readback buffers in use; free again then
+        self.readbacks = []  # free readback buffers
         self.keep = []
         self.pipeline = None
 
@@ -718,7 +796,7 @@ class Frame:
         """Wait for the frame's GPU work, then run what waited for it (a frame recorded but
         never submitted drops it)."""
         done, self.done = self.done, []
-        temporary, self.temporary = self.temporary, []
+        reading, self.reading = self.reading, []
         try:
             if self.pending:
                 lib.vkWaitForFences(
@@ -728,8 +806,7 @@ class Frame:
                 for callback in done:
                     callback()
         finally:
-            for resource in temporary:
-                resource.close()
+            self.readbacks += reading
 
     def begin(self):
         self.wait()
@@ -763,8 +840,10 @@ class Frame:
                     "sType": vk.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
                     "semaphore": s,
                     "stageMask": stage,
+                    "value": value,
                 }
-                for s, stage in wait
+                for s, stage, *value in wait
+                for value in (value[0] if value else 0,)
             ]
             or 1,
         )
@@ -805,6 +884,8 @@ class Frame:
         self.wait()
         self.uniforms.close()
         self.staging.close()
+        for buffer in self.readbacks:
+            buffer.close()
         lib.vkDestroyFence(self.device.device, self.fence, ffi.NULL)
         lib.vkFreeCommandBuffers(
             self.device.device, self.device.pool, 1, ffi.new("VkCommandBuffer*", self.cmd)
@@ -849,12 +930,30 @@ class Frame:
         )
         lib.vkCmdCopyBufferToImage(self.cmd, source.buffer, image.image, image.layout, 1, region)
 
+    def copy_buffer_to_image(self, buffer, image, *, offset=0, row=0):
+        """All of image from buffer at offset, rows of `row` texels (0: the image's width)."""
+        self.transition(image, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+        region = ffi.new(
+            "VkBufferImageCopy*",
+            {
+                "bufferOffset": offset,
+                "bufferRowLength": row,
+                "imageSubresource": {"aspectMask": COLOUR, "layerCount": 1},
+                "imageExtent": {"width": image.size[0], "height": image.size[1], "depth": 1},
+            },
+        )
+        lib.vkCmdCopyBufferToImage(self.cmd, buffer.buffer, image.image, image.layout, 1, region)
+
     def read(self, image, callback, *, rect=None, layer=0):
         """Copy image (its rect at layer) to host memory; callback(pixels, (w, h)) runs once the
         frame is done (pixels: a uint8 array of RGBA texels, rows top first as stored)."""
         x, y, w, h = rect or (0, 0, *image.size)
         size = w * h * 4
-        target = Buffer(self.device, size, vk.VK_BUFFER_USAGE_TRANSFER_DST_BIT, read=True)
+        target = next((b for b in self.readbacks if b.size >= size), None)
+        if target is None:
+            target = Buffer(self.device, size, vk.VK_BUFFER_USAGE_TRANSFER_DST_BIT, read=True)
+        else:
+            self.readbacks.remove(target)
         self.transition(image, vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
         region = ffi.new(
             "VkBufferImageCopy*",
@@ -871,7 +970,7 @@ class Frame:
         )
         lib.vkCmdCopyImageToBuffer(self.cmd, image.image, image.layout, target.buffer, 1, region)
 
-        self.temporary.append(target)
+        self.reading.append(target)
         self.done.append(lambda: callback(target.mapped[:size].copy(), (w, h)))
 
     # -- synchronisation -----------------------------------------------------------------
