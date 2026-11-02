@@ -283,6 +283,10 @@ class XRWindow(DesktopWindow):
             dispatch.run(lambda: self._run(source, state, on_input, dispatch, menu), on_sample)
         except xr.XrException as exc:
             raise RuntimeError(f"OpenXR session failed: {type(exc).__name__}: {exc}") from exc
+        finally:
+            # The menu and the next session show none of this one's mesh (the menu's own run
+            # has none).
+            self.renderer.clear()
 
     def _run(self, source, state, on_input, dispatch, menu=None):
         revision = captured_at = None
