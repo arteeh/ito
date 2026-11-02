@@ -80,7 +80,8 @@ class PanelFollow:
 
 
 def covering(views, middle):
-    """A projection from middle (between the eyes) whose field holds every eye's."""
+    """A projection from middle (between the eyes) whose field holds every eye's. Projections
+    are OpenGL's (GraphicsAPI.OPENGL), as all of Ito's matrices: shaders/common.glsl."""
     to_middle = middle[:3, :3].T
     xs, ys = [], []
     for view in views:
