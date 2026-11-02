@@ -51,6 +51,12 @@ def _run(inputs, outputs, notes, options, integrated):
             while item is not None:
                 kind = item[0]
                 if kind == "stop":
+                    # The pilot reads nothing more: what is still queued for it is dropped.
+                    # Otherwise the process would not exit until the queues' feeder threads
+                    # had written it all to pipes nobody reads, and close() would wait out
+                    # EXIT_WAIT and terminate it (3 s with the app frozen).
+                    outputs.cancel_join_thread()
+                    notes.cancel_join_thread()
                     return
                 if kind == "motion":
                     fusion.motion(item[1])
