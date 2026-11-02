@@ -41,9 +41,9 @@ from ito.protocol import (
 
 CONTROL_BUFFER = 2_000_000
 FRAME_IN_FLIGHT = 16
-# aiortc's teardown normally takes ~20 ms. On Windows it has hung for good after a long
-# session (#27), awaiting a transport that never answers; closing is then abandoned so the
-# pilot app can still exit within its own budget.
+# aiortc's teardown normally takes ~20 ms. On Windows it has hung for good (#27), awaiting a
+# transport that never answers (the proactor loop's, pilot.Pilot.start); should one ever hang,
+# closing is abandoned so the pilot app can still exit within its own budget.
 TEARDOWN_WAIT = 0.5
 log = logging.getLogger(__name__)
 

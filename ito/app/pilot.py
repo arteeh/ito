@@ -604,9 +604,15 @@ class Pilot:
     def start(self):
         media.receive_h264(media.VideoDecoder)
 
+        # Windows' default (proactor) loop never finishes closing a UDP socket that has a send
+        # in flight (CPython gh-156920, still in 3.12): ICE's sockets carry the link's traffic,
+        # so leaving a session often waited out peer.TEARDOWN_WAIT (#27). The selector loop
+        # closes them at once.
+        factory = asyncio.SelectorEventLoop if sys.platform == "win32" else None
+
         def run():
             with contextlib.suppress(asyncio.CancelledError), clock.fine_timers():
-                asyncio.run(self._run())
+                asyncio.run(self._run(), loop_factory=factory)
 
         self.thread = threading.Thread(target=run, name="ito-link", daemon=True)
         self.thread.start()
