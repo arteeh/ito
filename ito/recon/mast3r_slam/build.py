@@ -478,6 +478,15 @@ def main():
         fixed = fixed.replace("torch::linalg::linalg_norm(", "at::linalg_norm(")
         if fixed != original:
             path.write_text(fixed, encoding="utf-8")
+    curope = slam / "thirdparty/mast3r/dust3r/croco/models/curope/kernels.cu"
+    curope.write_text(
+        re.sub(
+            r"(AT_DISPATCH_\w+\(\s*\w+)\.type\(\)",
+            r"\1.scalar_type()",
+            curope.read_text(encoding="utf-8"),
+        ),
+        encoding="utf-8",
+    )
     # MSVC gives CPU templates and NVCC's host launch stubs identical symbols.
     # The linker can select a CPU implementation that then dereferences CUDA memory.
     cpu = cache / "lie/lietorch/src/lietorch_cpu.cpp"
