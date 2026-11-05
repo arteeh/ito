@@ -14,6 +14,8 @@ Units: metres, world axes as the robot's odometry (+Y up). Signed distance is po
 of a surface (towards the sensor), negative behind it.
 """
 
+from contextlib import nullcontext
+
 import numpy as np
 
 BLOCK = 8
@@ -74,6 +76,9 @@ class Volume:
         self.colour_weight = np.zeros((n, BLOCK, BLOCK, BLOCK), np.float32)
         self.keys = np.zeros((n, 3), np.int64)
         self.touched = np.zeros(n, np.float64)
+        # Bumped whenever a block's distances, weights or measured flags are written: integrate()
+        # off the caller's thread fuses what it read, and redoes blocks written meanwhile.
+        self.version = np.zeros(n, np.int64)
         self.slots = {}
         self.free = list(range(self.capacity - 1, -1, -1))
         self.dirty = set()  # geometry changed
@@ -103,7 +108,10 @@ class Volume:
         """Slots of the blocks containing these world points, allocating missing ones."""
         if not len(points):
             return np.zeros(0, np.int64)
-        keys = _unique_keys(self._key(points))
+        return self.allocate_keys(_unique_keys(self._key(points)), now, position)
+
+    def allocate_keys(self, keys, now, position):
+        """Slots of these (unique) block keys, allocating missing ones."""
         out = []
         missing = []
         for key in map(tuple, keys.tolist()):
@@ -123,6 +131,7 @@ class Volume:
             self.measured[slot] = False
             self.colour[slot] = 0
             self.colour_weight[slot] = 0
+            self.version[slot] += 1
             self.fresh.add(slot)
             out.append(slot)
         slots = np.array(out, np.int64)
@@ -182,53 +191,67 @@ class Volume:
         origin = self.keys[slots] * self.block_size
         return origin[:, None, :] + self.local[None, :, :]
 
-    def integrate(self, zones, world_from_sensor, now, position, carve=True, scale=None):
+    def integrate(self, zones, world_from_sensor, now, position, carve=True, scale=None, lock=None):
         """Fuse one ToF frame (zones.Zones) seen from world_from_sensor (4x4). carve=False for
         targets behind a zone's nearest one: only the band around their surface is fused, since
         the ray before them is free in only part of the zone's footprint, and which part the
         sensor does not say. `scale` (sensor-frame points -> weights) weighs a source trusted
-        less than a ToF reading (a depth.DepthMap in place of the zones)."""
+        less than a ToF reading (a depth.DepthMap in place of the zones).
+
+        `lock`, for a caller on a thread of its own (fusion's depth keyframes): taken only to
+        allocate blocks and to write the fused values back. The arithmetic between runs on what
+        the blocks held when allocated; blocks written meanwhile are fused again, under the lock,
+        from their new values, and blocks the pool gave to others are left alone."""
         if not zones.count:
             return 0
-        samples = zones.samples(3)
-        if not len(samples):
-            return 0
-        rays = samples / np.linalg.norm(samples, axis=1, keepdims=True)
-        # Blocks around the surface as interpolated along each sample's ray (a zone's one range
-        # misses a floor seen at a shallow angle by tens of centimetres across its footprint).
-        measured = zones.lookup(samples)[0]
-        r = np.where(np.isfinite(measured), measured, np.linalg.norm(samples, axis=1))
-        keep = r <= self.max_range
-        rays, r = rays[keep], r[keep]
-        if not len(r):
-            return 0
-        band = np.concatenate(
-            [rays * (r + d)[:, None] for d in (-self.truncation, 0.0, self.truncation)]
-        )
         rotate, origin = world_from_sensor[:3, :3].T, world_from_sensor[:3, 3]
         if scale is not None:
             band = zones.band(self.truncation, self.max_range)
-        slots = self.allocate(band @ rotate + origin, now, position)
-        if not len(slots):
-            return 0
-        # Blocks already mapped in front of the surface, along the same rays: free space seen
-        # through them erases what is no longer there (a moved object, a wall doubled by drift).
-        front = np.zeros(0, np.int64)
-        if carve:
-            step = self.block_size / 2
-            reach = r - self.truncation
-            t = np.arange(step, max(float(reach.max()), step), step)
-            along = (rays[:, None, :] * t[None, :, None])[t[None, :] < reach[:, None]]
-            front = self.existing(along @ rotate + origin)
-        front = front[~np.isin(front, slots)]
-        if len(front):
-            # Only blocks holding a surface can change; empty space needs no more carving.
-            surface = ((self.sdf[front] < 0) & (self.weight[front] > 0)).reshape(len(front), -1)
-            front = front[surface.any(axis=1)]
-        banded = len(slots)
-        slots = np.concatenate([slots, front]) if len(front) else slots
+            rays = r = None
+        else:
+            samples = zones.samples(3)
+            if not len(samples):
+                return 0
+            rays = samples / np.linalg.norm(samples, axis=1, keepdims=True)
+            # Blocks around the surface as interpolated along each sample's ray (a zone's one
+            # range misses a floor seen at a shallow angle by tens of centimetres across its
+            # footprint).
+            measured = zones.lookup(samples)[0]
+            r = np.where(np.isfinite(measured), measured, np.linalg.norm(samples, axis=1))
+            keep = r <= self.max_range
+            rays, r = rays[keep], r[keep]
+            if not len(r):
+                return 0
+            band = np.concatenate(
+                [rays * (r + d)[:, None] for d in (-self.truncation, 0.0, self.truncation)]
+            )
+        keys = _unique_keys(self._key(band @ rotate + origin)) if len(band) else band
+        with lock or nullcontext():
+            slots = self.allocate_keys(keys, now, position) if len(keys) else keys
+            if not len(slots):
+                return 0
+            # Blocks already mapped in front of the surface, along the same rays: free space
+            # seen through them erases what is no longer there (a moved object, a wall doubled
+            # by drift).
+            front = np.zeros(0, np.int64)
+            if carve:
+                step = self.block_size / 2
+                reach = r - self.truncation
+                t = np.arange(step, max(float(reach.max()), step), step)
+                along = (rays[:, None, :] * t[None, :, None])[t[None, :] < reach[:, None]]
+                front = self.existing(along @ rotate + origin)
+            front = front[~np.isin(front, slots)]
+            if len(front):
+                # Only blocks holding a surface can change; empty space needs no more carving.
+                surface = ((self.sdf[front] < 0) & (self.weight[front] > 0)).reshape(len(front), -1)
+                front = front[surface.any(axis=1)]
+            through = np.zeros(len(slots) + len(front), bool)
+            through[len(slots) :] = True
+            slots = np.concatenate([slots, front]) if len(front) else slots
+            keys = self.keys[slots].copy()
+            version = self.version[slots].copy()
         sensor_from_world = np.linalg.inv(world_from_sensor)
-        points = self.centres(slots).reshape(-1, 3)
+        points = ((keys * self.block_size)[:, None, :] + self.local[None, :, :]).reshape(-1, 3)
         local = points @ sensor_from_world[:3, :3].T + sensor_from_world[:3, 3]
         measured, distance, interpolated, free = zones.lookup(local)
         sdf = measured - distance if scale is None else zones.signed_distance(local)
@@ -245,49 +268,81 @@ class Volume:
         # Farther ranges are noisier (sim and datasheet: ~3 mm near, ~2 cm at 4 m), and the
         # zone's footprint grows with distance: trust them less.
         trust = np.clip(1.3 - measured / 4.0, 0.3, 1.0)
+        per_slot = (len(slots), BLOCK**3)
+        sdf, ok, trust = sdf.reshape(per_slot), ok.reshape(per_slot), trust.reshape(per_slot)
         if scale is not None:
-            supported = self.measured[slots].reshape(-1)
-            trust = trust * scale(local, supported)
+            trust = trust * scale(local, self.measured[slots].reshape(-1)).reshape(per_slot)
+        fused = self._fused(slots, through, sdf, ok, trust, scale is not None)
+        if lock is None:
+            return self._write(slots, *fused)
+        with lock:
+            # Blocks written since they were read are fused again from what they hold now (a
+            # ToF frame's values, its measured flags); those given to other blocks not at all.
+            mine = (self.keys[slots] == keys).all(axis=1)
+            again = mine & (self.version[slots] != version)
+            kept = mine & ~again
+            count = self._write(slots[kept], *(part[kept] for part in fused))
+            if again.any():
+                redo = self._fused(
+                    slots[again], through[again], sdf[again], ok[again], trust[again], True
+                )
+                count += self._write(slots[again], *redo)
+        return count
+
+    def _fused(self, slots, through, sdf, ok, trust, predicted):
+        """What fusing these signed distances (per slot, its 512 voxels) makes of the slots'
+        current values: (distances, weights, re-mesh, newly measured, fused voxels).
+        `through`: blocks only seen through (carved), `predicted`: a depth model's, not ToF."""
+        shape = (len(slots), BLOCK, BLOCK, BLOCK)
+        if predicted:
             # Predictions may refine near a measurement by the requested share, but may not
             # move it through the whole truncation band or flip its signed side.
-            old = self.sdf[slots].reshape(-1)
+            old = self.sdf[slots].reshape(len(slots), -1)
             agree = (np.signbit(sdf) == np.signbit(old)) | (np.abs(old) < self.voxel / 2)
-            ok &= ~supported | (agree & (np.abs(sdf - old) <= self.voxel))
-        w = trust
+            supported = self.measured[slots].reshape(len(slots), -1)
+            ok = ok & (~supported | (agree & (np.abs(sdf - old) <= self.voxel)))
         # Behind the surface, confidence falls off: the far side is unseen. Free space far in
         # front only erodes slowly, so one stray ray does not erase a surface.
         # (Not to zero: a floor seen at a shallow angle has its underside voxels far "behind"
         # along the ray though barely below it, and they must count for the surface to close.)
-        w = np.where(sdf < 0, w * (1 + 0.7 * sdf / self.truncation), w)
+        w = np.where(sdf < 0, trust * (1 + 0.7 * sdf / self.truncation), trust)
         w = np.where(sdf > self.truncation, w * 0.3, w)
         keep = np.where(ok & (sdf > self.truncation), 1 - CARVE * trust, 1).astype(np.float32)
-        w = np.where(ok, w, 0).astype(np.float32)
+        w = np.where(ok, w, 0).astype(np.float32).reshape(shape)
         s = np.clip(np.nan_to_num(sdf), -self.truncation, self.truncation).astype(np.float32)
-        shape = (len(slots), BLOCK, BLOCK, BLOCK)
-        w, s = w.reshape(shape), s.reshape(shape)
+        s = s.reshape(shape)
         old_w = self.weight[slots] * keep.reshape(shape)
-        if scale is None:
+        newly = None
+        if not predicted:
             # Independent sensor readings replace unanchored predictions, rather than being
             # outvoted by a long history of correlated model outputs.
             old_w = np.where(self.measured[slots], old_w, np.minimum(old_w, 0.25))
-            self.measured[slots] |= w > 0
+            newly = w > 0
         total = old_w + w
+        old_sdf = self.sdf[slots]
         with np.errstate(invalid="ignore", divide="ignore"):
-            fused = np.where(total > 0, (self.sdf[slots] * old_w + s * w) / total, 0)
+            fused = np.where(total > 0, (old_sdf * old_w + s * w) / total, 0)
         weight = np.minimum(total, self.memory)
         touched = w.reshape(len(slots), -1).any(axis=1)
         # Blocks only seen through re-mesh when their surface can have changed: a voxel changed
         # side or crossed the weight a mesh needs (surface.extract's min_weight).
-        old_sdf, old_weight = self.sdf[slots[banded:]], self.weight[slots[banded:]]
-        flipped = ((old_sdf < 0) != (fused[banded:] < 0)) | (
-            (old_weight >= MESH_WEIGHT) != (weight[banded:] >= MESH_WEIGHT)
-        )
-        if len(slots) > banded:
-            touched[banded:] &= flipped.reshape(len(slots) - banded, -1).any(axis=1)
+        if through.any():
+            old_weight = self.weight[slots[through]]
+            flipped = ((old_sdf[through] < 0) != (fused[through] < 0)) | (
+                (old_weight >= MESH_WEIGHT) != (weight[through] >= MESH_WEIGHT)
+            )
+            touched[through] &= flipped.reshape(int(through.sum()), -1).any(axis=1)
+        if newly is None:
+            newly = np.zeros(shape, bool)
+        return fused, weight, touched, newly, ok.reshape(len(slots), -1).sum(axis=1)
+
+    def _write(self, slots, fused, weight, touched, newly, counts):
         self.sdf[slots] = fused
         self.weight[slots] = weight
+        self.measured[slots] |= newly
+        self.version[slots] += 1
         self.dirty.update(slots[touched].tolist())
-        return int(ok.sum())
+        return int(counts.sum())
 
     def visible(self, camera_from_world, intrinsics, size, distance):
         """Slots whose block may be seen by this camera within `distance`."""

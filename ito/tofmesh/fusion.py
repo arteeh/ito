@@ -19,6 +19,7 @@
 Nothing here sees the simulator's ground truth: every pose comes from the driver's stream.
 """
 
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -185,6 +186,23 @@ def turned(camera, turn):
     return out
 
 
+class _Traced:
+    """A lock whose waits and holds the trace times (fusion.keyframe_wait, keyframe_locked)."""
+
+    def __init__(self, lock):
+        self.lock = lock
+
+    def __enter__(self):
+        started = clock.now_ns()
+        self.lock.acquire()
+        self.held = clock.now_ns()
+        trace.add("fusion.keyframe_wait", started, self.held)
+
+    def __exit__(self, *_):
+        self.lock.release()
+        trace.add("fusion.keyframe_locked", self.held, clock.now_ns())
+
+
 class Fusion:
     def __init__(
         self,
@@ -238,6 +256,12 @@ class Fusion:
         self.depth_time = None
         self.direct_map = None
         self.depth_keyframe = None
+        # A kept depth map is fused into the volume (~100 ms of arithmetic) on a thread of its
+        # own, so the ToF frames and re-meshes go on meanwhile; the volume is theirs to share
+        # (lock: step() holds it, the keyframe only while it allocates blocks and writes back).
+        self.lock = threading.Lock()
+        self.keyframing = None
+        self.keyframe_error = None
         self.depth_remesh = False
         self.guess = depth is None
         self.guess_changed = False
@@ -418,6 +442,12 @@ class Fusion:
 
     def step(self, now):
         """Fuse whatever the pose stream now covers; returns a MeshFrame when there is news."""
+        if self.keyframe_error is not None:
+            raise self.keyframe_error
+        with self.lock:
+            return self._step(now)
+
+    def _step(self, now):
         latest = self.poses.latest
         # Frames first, so a ToF frame below finds the camera frames posed up to its time.
         self._measure_frame_delay(now)
@@ -553,7 +583,6 @@ class Fusion:
         if frame is None or self.depth is None:
             return
         camera = frame[0]
-        started = time.perf_counter()
         self.direct = direct
         self.depth_time = key
         self.direct_map = mapped, camera
@@ -566,14 +595,27 @@ class Fusion:
             or angle_between(camera[:3, :3], previous[1][:3, :3]) > np.radians(8)
         )
         due = previous is None or key - previous[0] >= 2.0
-        if due or (moved and key - previous[0] >= 0.5):
-            with trace.span("fusion.depth_keyframe", trace.key(key)):
-                self.volume.integrate(
-                    mapped, camera, key, camera[:3, 3], scale=mapped.weights, carve=False
-                )
+        busy = self.keyframing is not None and self.keyframing.is_alive()
+        if not busy and (due or (moved and key - previous[0] >= 0.5)):
             self.depth_keyframe = key, camera.copy()
+            self.keyframing = threading.Thread(
+                target=self._keyframe, args=(mapped, camera, key), name="ito-depth-keyframe",
+                daemon=True,
+            )  # fmt: skip
+            self.keyframing.start()
         self.stats["depth_maps"] += 1
         self.stats["depth_ms"] = ms
+
+    def _keyframe(self, mapped, camera, key):
+        started = time.perf_counter()
+        try:
+            with trace.span("fusion.depth_keyframe", trace.key(key)):
+                self.volume.integrate(
+                    mapped, camera, key, camera[:3, 3], scale=mapped.weights, carve=False,
+                    lock=_Traced(self.lock),
+                )  # fmt: skip
+        except Exception as exc:  # the worker's failure, at its next step
+            self.keyframe_error = exc
         self.stats["depth_fuse_ms"] = (time.perf_counter() - started) * 1000
 
     def depth_skipped(self, key, ms):
