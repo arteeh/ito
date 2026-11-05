@@ -177,50 +177,58 @@ class DepthMap:
     Inside=0 protects measured geometry, but still fills unmeasured holes. The volume passes
     its measured-support mask to weights(), rather than confusing an angular footprint with
     actual knowledge. Outside=0 really disables neural geometry outside the ToF footprint.
+
+    Made in the depth process, on the GPU (a few ms; NumPy took ~35 there): its arrays are
+    NumPy's once made, its tensors (`gpu`) stay for dense.mesh and are not sent on.
     """
 
     def __init__(self, depth, intrinsics, size, fov, camera_to_sensor, inside, outside):
+        import torch
+
         h, w = depth.shape
         fx, fy, cx, cy = intrinsics
         sx, sy = w / size[0], h / size[1]
         self.k = (fx * sx, fy * sy, (cx + 0.5) * sx - 0.5, (cy + 0.5) * sy - 0.5)
-        self.depth = np.where(depth > NEAREST, depth, np.nan)
-        self.count = int(np.isfinite(self.depth).sum())
-        rays = self._rays(
-            *np.meshgrid(np.arange(w, dtype=np.float32), np.arange(h, dtype=np.float32))
+        d = torch.from_numpy(np.ascontiguousarray(depth, np.float32)).cuda()
+        d = torch.where(d > NEAREST, d, torch.nan)
+        v, u = torch.meshgrid(
+            torch.arange(h, dtype=torch.float32, device=d.device),
+            torch.arange(w, dtype=torch.float32, device=d.device),
+            indexing="ij",
         )
-        self.xyz = rays * self.depth[..., None]
+        fx, fy, cx, cy = self.k
+        rays = torch.stack([(u - cx) / fx, -(v - cy) / fy, -torch.ones_like(u)], -1)
+        xyz = rays * d[..., None]
         tangents = []
         for axis in (1, 0):
-            before, after = np.roll(self.xyz, 1, axis), np.roll(self.xyz, -1, axis)
-            db, da = (
-                np.abs(before[..., 2] - self.xyz[..., 2]),
-                np.abs(after[..., 2] - self.xyz[..., 2]),
-            )
+            before, after = torch.roll(xyz, 1, axis), torch.roll(xyz, -1, axis)
+            db = (before[..., 2] - xyz[..., 2]).abs()
+            da = (after[..., 2] - xyz[..., 2]).abs()
             edge = [slice(None), slice(None)]
             edge[axis] = 0
-            db[tuple(edge)] = np.inf
+            db[tuple(edge)] = torch.inf
             edge[axis] = -1
-            da[tuple(edge)] = np.inf
-            tangents.append(np.where((db < da)[..., None], self.xyz - before, after - self.xyz))
-        normals = np.cross(tangents[1], tangents[0])
-        norm = np.linalg.norm(normals, axis=-1, keepdims=True)
-        normals = normals / np.maximum(norm, 1e-9)
+            da[tuple(edge)] = torch.inf
+            tangents.append(torch.where((db < da)[..., None], xyz - before, after - xyz))
+        normals = torch.linalg.cross(tangents[1], tangents[0], dim=-1)
+        norm = torch.linalg.norm(normals, dim=-1, keepdim=True)
+        normals = normals / torch.clamp_min(norm, 1e-9)
         # Consistent sign: normals face the camera (towards positive signed distance).
-        normals *= np.where(np.sum(normals * rays, -1, keepdims=True) > 0, -1, 1)
-        self.normals = normals
-        sensor_rays = rays @ np.asarray(camera_to_sensor).T
-        across = np.arctan2(sensor_rays[..., 0], -sensor_rays[..., 2])
-        up = np.arcsin(np.clip(sensor_rays[..., 1] / np.linalg.norm(sensor_rays, axis=-1), -1, 1))
-        seen = (
-            (sensor_rays[..., 2] < 0) & (np.abs(across) <= fov[0] / 2) & (np.abs(up) <= fov[1] / 2)
+        normals = normals * torch.where((normals * rays).sum(-1, keepdim=True) > 0, -1.0, 1.0)
+        to_sensor = torch.as_tensor(np.asarray(camera_to_sensor), dtype=torch.float64)
+        sensor_rays = rays.double() @ to_sensor.to(d.device).T
+        across = torch.atan2(sensor_rays[..., 0], -sensor_rays[..., 2])
+        up = torch.asin(
+            torch.clamp(sensor_rays[..., 1] / torch.linalg.norm(sensor_rays, dim=-1), -1, 1)
         )
-        self.inside = seen
+        seen = (sensor_rays[..., 2] < 0) & (across.abs() <= fov[0] / 2) & (up.abs() <= fov[1] / 2)
+        self.gpu = d, xyz, normals, seen
+        self.depth, self.xyz, self.normals, self.inside = (t.cpu().numpy() for t in self.gpu)
+        self.count = int(np.isfinite(self.depth).sum())
         self.share, self.outside = inside, outside
 
-    def _rays(self, u, v):
-        fx, fy, cx, cy = self.k
-        return np.stack([(u - cx) / fx, -(v - cy) / fy, -np.ones_like(u, np.float32)], -1)
+    def __getstate__(self):
+        return {k: v for k, v in self.__dict__.items() if k != "gpu"}
 
     def samples(self, per_zone=3):
         return self.xyz[np.isfinite(self.depth)]

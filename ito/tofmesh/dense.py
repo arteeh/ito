@@ -8,29 +8,40 @@ import numpy as np
 
 
 def mesh(mapped, camera, image):
-    camera = camera.astype(np.float32)
-    h, w = mapped.depth.shape
-    local = mapped.xyz.reshape(-1, 3)
-    world = (local @ camera[:3, :3].T + camera[:3, 3]).astype(np.float32)
-    normals = (mapped.normals.reshape(-1, 3) @ camera[:3, :3].T).astype(np.float32)
-    a = (np.arange(h - 1)[:, None] * w + np.arange(w - 1)).ravel()
-    triangles = np.concatenate(
-        (np.stack((a, a + w, a + 1), -1), np.stack((a + 1, a + w, a + w + 1), -1))
+    """On the GPU, from the map's tensors (depth.DepthMap.gpu, in the depth process): a few ms,
+    where NumPy took ~75 there."""
+    import torch
+
+    depth, xyz, normals, inside = mapped.gpu
+    h, w = depth.shape
+    camera = torch.as_tensor(camera.astype(np.float32)).to(depth.device)
+    world = xyz.reshape(-1, 3) @ camera[:3, :3].T + camera[:3, 3]
+    normals = normals.reshape(-1, 3) @ camera[:3, :3].T
+    a = (
+        torch.arange(h - 1, device=depth.device)[:, None] * w
+        + torch.arange(w - 1, device=depth.device)
+    ).reshape(-1)
+    triangles = torch.cat(
+        (torch.stack((a, a + w, a + 1), -1), torch.stack((a + 1, a + w, a + w + 1), -1))
     )
-    d = mapped.depth.ravel()[triangles]
-    valid = np.isfinite(d).all(1) & (d.min(1) > 0.05) & (d.max(1) < 12.0)
+    d = depth.reshape(-1)[triangles]
+    low, high = d.min(1).values, d.max(1).values
+    valid = torch.isfinite(d).all(1) & (low > 0.05) & (high < 12.0)
     # Camera pixels can connect along a sloping plane; an abrupt 20% jump is an occlusion.
-    valid &= d.max(1) <= 1.2 * d.min(1)
-    weights = np.where(mapped.inside, 1.0, mapped.outside).ravel()
+    valid &= high <= 1.2 * low
+    weights = torch.where(inside, 1.0, mapped.outside).reshape(-1)
     valid &= (weights[triangles] > 0).all(1)
     # Only cells with both triangles intact occlude the retained surface below them.
     safe = valid[: len(a)] & valid[len(a) :]
-    mapped.covered = np.zeros((h, w), bool)
-    mapped.covered[:-1, :-1] = safe.reshape(h - 1, w - 1)
+    covered = torch.zeros((h, w), dtype=torch.bool, device=depth.device)
+    covered[:-1, :-1] = safe.reshape(h - 1, w - 1)
+    mapped.covered = covered.cpu().numpy()
+    world, normals = world.cpu().numpy(), normals.cpu().numpy()
+    triangles = triangles[valid].to(torch.int32).cpu().numpy().view(np.uint32)
     colours = np.column_stack((image.reshape(-1, 3), np.full(h * w, 255, np.uint8)))
     blocks = np.zeros((len(world), 4), np.float32)
     blocks[:, 3] = -1e6  # no atlas: newest camera projector, captured RGB if occluded later
-    return world, normals, colours, triangles[valid].astype(np.uint32), blocks
+    return world, normals, colours, triangles, blocks
 
 
 def uncovered(part, mapped, camera):
