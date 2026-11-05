@@ -77,10 +77,10 @@ class CameraFeed:
         self.held = None  # the frame being straightened, its decoder texture in use until done
 
     def update(self, frame, stamp, intrinsics, lens, deliver):
-        """Straighten `frame` (an av.VideoFrame) if it is new; deliver(image, stamp) gets it as
-        the ToF mesh's colour frame, (h, w, 3) uint8 at worker.frame_size, at collect()."""
+        """Straighten `frame` (an av.VideoFrame) if it is new (True); deliver(image, stamp) gets
+        it as the ToF mesh's colour frame, (h, w, 3) uint8 at worker.frame_size, at collect()."""
         if frame is None or intrinsics is None or stamp == self.stamp:
-            return
+            return False
         self.stamp = stamp
         if (frame.width, frame.height) != (intrinsics.width, intrinsics.height):
             raise RuntimeError(
@@ -147,6 +147,7 @@ class CameraFeed:
         with trace.span("camera.submit_gpu"):
             commands.submit(wait, ())
         self.pending, self.held = commands, frame
+        return True
 
     def collect(self):
         """Wait for the frame update() submitted, and hand its colour frame on."""

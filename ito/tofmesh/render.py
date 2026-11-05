@@ -5,7 +5,9 @@ the map's memory). On top, a handful of camera frames act as slide projectors: e
 looks itself up in each projector that sees it unoccluded (a distance map per projector,
 rendered from the mesh) and takes the frames' colours, weighted towards the projector looking at
 it most nearly along the eye's ray, so detail comes at camera resolution where a frame saw it.
-Slot 0 is the live frame; the others are kept views (fusion.py chooses them).
+Slot 0 is the live frame: every camera frame, copied on the GPU from the straightened frame as
+it arrives, at the pose it was captured with (live()), so colour follows the camera at its own
+rate whatever the mesh's. The others are kept views (fusion.py chooses them).
 
 One scene per displayed frame, however many views draw it (a headset's two eyes): prepare() runs
 once per frame (distance maps, atlas bake, guess pyramid, the fill's depth map) and every view
@@ -72,6 +74,9 @@ DRAW_FACING = 0.25
 # A texel takes a new view's colour when that view's weight is at least this share of the best
 # weight a view of it ever had.
 BAKE_KEEP = 0.85
+# The live frame is baked into the atlas at most this often (camera time): each bake draws the
+# whole mesh into the atlas, and consecutive frames of a 30 Hz camera add little to it.
+BAKE_INTERVAL = 1 / 15
 
 # Guessed depth: one vertex per GUESS_GRID pixels of the shadow-map resolution, ranges capped at
 # GUESS_FAR (beyond the ToF's 4 m nothing is known), a break where neighbouring guesses differ
@@ -195,12 +200,12 @@ class MeshRenderer:
         )  # fmt: skip
         self.atlas = None  # the texture atlas, layers added as the volume's slots fill
         self.bake_due = False  # a new live frame to bake
+        self.baked = None  # capture time of the live frame last due to bake
         self.images = Image(device, self.image_size, COLOUR, sampled=True, layers=slots, array=True)
         w, h = SHADOW_SIZE
         self.shadows = Image(device, (w * slots, h), RANGE, sampled=True, attachment=True)
         self.shadow_depth = Image(device, (w * slots, h), DEPTH_FORMAT, attachment=True)
         self.projectors = [None] * slots  # (camera_from_world, intrinsics, origin)
-        self.live_time = None  # exposure of the image in slot 0
         self.shadow_dirty = set()
         self.buffers = None  # positions, normals, colours, blocks, triangles
         self.capacity = (0, 0)
@@ -269,9 +274,7 @@ class MeshRenderer:
             self.shadow_stale.update(
                 k for k, p in enumerate(self.projectors) if k and p is not None
             )
-        # The live frame first: a kept view is usually that same frame (fusion.py keeps the
-        # frame it is projecting live), and is then copied on the GPU from slot 0.
-        for p in sorted(frame.projectors, key=lambda p: p.slot):
+        for p in frame.projectors:
             self._projector(p)
         if getattr(frame, "acknowledge", None) is not None:
             frame.acknowledge()  # its arrays are copied out
@@ -285,7 +288,7 @@ class MeshRenderer:
         self.epoch = None
         self.count = 0
         self.projectors = [None] * self.slots
-        self.live_time = None
+        self.baked = None
         self.bake_due = False
         self.shadow_dirty.clear()
         self.shadow_stale.clear()
@@ -381,19 +384,43 @@ class MeshRenderer:
                 frame.upload(buffer, np.ascontiguousarray(data, kind))
         self.count = t
 
+    def live(self, image, world_from_camera, intrinsics, captured):
+        """The camera frame captured at `captured` as the live projector: `image` (the camera
+        feed's colour frame, COLOUR, worker.frame_size) copied into slot 0 on the GPU, seen from
+        world_from_camera with intrinsics (fx, fy, cx, cy)."""
+        frame = self.device.frame
+        if image.size != self.image_size:
+            self._resize(image.size)
+        frame.copy_image(image, self.images)
+        self._place(0, world_from_camera, intrinsics)
+        if self.baked is None or not 0 <= captured - self.baked < BAKE_INTERVAL:
+            self.baked = captured
+            self.bake_due = True
+
+    def _resize(self, size):
+        """Projector images of this size (the camera's colour frame's): the views kept at the
+        old size are forgotten."""
+        self.device.defer(self.images)
+        self.image_size = tuple(size)
+        self.images = Image(
+            self.device, self.image_size, COLOUR, sampled=True, layers=self.slots, array=True
+        )
+        self.device.frame.clear(self.images, (0, 0, 0, 0))
+        self.projectors = [None] * self.slots
+
+    def _place(self, slot, world_from_camera, intrinsics):
+        world_from_camera = np.asarray(world_from_camera, np.float64)
+        self.projectors[slot] = (
+            np.linalg.inv(world_from_camera),
+            tuple(intrinsics),
+            world_from_camera[:3, 3].copy(),
+        )
+        self.shadow_dirty.add(slot)
+
     def _projector(self, p):
         fx, fy, cx, cy, w, h = p.intrinsics
         frame = self.device.frame
-        if p.image is not None and p.slot and self.live_time == p.time:
-            # The image slot 0 holds already: a GPU copy, no second upload.
-            frame.copy_image(self.images, self.images, size=self.image_size, layers=(0, p.slot))
-            sx, sy = self.image_size[0] / w, self.image_size[1] / h
-            fx, fy = fx * sx, fy * sy
-            cx, cy = (cx + 0.5) * sx - 0.5, (cy + 0.5) * sy - 0.5
-        elif p.image is not None:
-            if p.slot == 0:
-                self.live_time = p.time
-                self.bake_due = True
+        if p.image is not None:
             image = p.image
             if (w, h) != self.image_size:
                 # Rescale intrinsics to the slot size; nearest resampling is enough here.
@@ -411,13 +438,7 @@ class MeshRenderer:
             sx, sy = self.image_size[0] / w, self.image_size[1] / h
             fx, fy = fx * sx, fy * sy
             cx, cy = (cx + 0.5) * sx - 0.5, (cy + 0.5) * sy - 0.5
-        world_from_camera = np.asarray(p.world_from_camera, np.float64)
-        self.projectors[p.slot] = (
-            np.linalg.inv(world_from_camera),
-            (fx, fy, cx, cy),
-            world_from_camera[:3, 3].copy(),
-        )
-        self.shadow_dirty.add(p.slot)
+        self._place(p.slot, p.world_from_camera, (fx, fy, cx, cy))
 
     def _shadows(self, frame):
         self.shadow_stale -= self.shadow_dirty

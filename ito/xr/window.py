@@ -321,10 +321,10 @@ class XRWindow(DesktopWindow):
                 gpu = self.device.begin()
                 self.device.collect()
                 current = self.glided(state(), now)
+                self.use_scene(source)
                 with trace.span("frame.straighten", trace.key(current.video_time)):
                     self.straighten(source, current)
                 applied = []
-                self.use_scene(source)
                 for _ in range(MESHES_PER_FRAME):
                     with trace.span("frame.poll"):
                         update = source.poll()

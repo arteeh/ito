@@ -108,6 +108,7 @@ class DesktopWindow:
         self.renderer = self.renderers["mesh"]
         self.video_panel = VideoPanel(device, COLOUR)
         self.camera = CameraFeed(device)
+        self.live = None  # capture time of the newest frame, until its pose is known
         if self.overlay is None:
             self.overlay = Overlay(device)
 
@@ -362,13 +363,19 @@ class DesktopWindow:
             pacing.tick(0)
 
     def straighten(self, source, current):
-        """The newest camera frame to RGB on the GPU, and on to the ToF mesh's colour (once the
-        GPU has it: camera.collect())."""
-        if current.video is not None:
-            self.camera.update(
-                current.video, current.video_time, current.video_intrinsics, current.video_lens,
-                source.camera_frame,
-            )  # fmt: skip
+        """The newest camera frame to RGB on the GPU, on to the ToF mesh's colour (once the GPU
+        has it: camera.collect()) and into the mesh's live projector as soon as the pose it was
+        captured at is known (usually at once; a newer frame takes the place of one waiting)."""
+        if current.video is not None and self.camera.update(
+            current.video, current.video_time, current.video_intrinsics, current.video_lens,
+            source.camera_frame,
+        ):  # fmt: skip
+            self.live = current.video_time
+        if self.live is not None:
+            posed = source.live_camera(self.live)
+            if posed is not None:
+                self.renderer.live(self.camera.colour, *posed, self.live)
+                self.live = None
 
     def glided(self, current, now):
         return replace(current, robot_camera=self.glide(current.robot_camera, now))

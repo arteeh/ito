@@ -18,6 +18,7 @@ from pathlib import Path
 CHAIN = (
     "camera.joined",
     "frame.straighten",
+    "camera.live",
     "camera.submit",
     "worker.frame",
     "fusion.posed",

@@ -239,6 +239,22 @@ class Pilot:
             with contextlib.suppress(RuntimeError):
                 loop.call_soon_threadsafe(self._colour, image, captured)
 
+    def live_camera(self, captured):
+        """For the window, as it straightens the frame captured at `captured` on the GPU: the
+        pose and pinhole the ToF mesh shows it live with (TofMesh.live), or None (no such
+        method, no pose)."""
+        if not self.worker_lock.acquire(False):
+            return None
+        try:
+            worker = self.worker
+            if worker is None or self.failure or not hasattr(worker, "live"):
+                return None
+            cameras = tuple(self.frame_cameras)  # the link thread adds to it
+            camera = next((c for t, c in reversed(cameras) if t == captured), None)
+            return worker.live(captured, camera)
+        finally:
+            self.worker_lock.release()
+
     def _colour(self, image, captured):
         camera = next((c for t, c in reversed(self.frame_cameras) if t == captured), None)
         if self.worker is None or self.failure:

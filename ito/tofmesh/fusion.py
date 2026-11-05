@@ -9,7 +9,7 @@
   camera frame           -> pose at its exposure (arrival minus the driver's capture_delay
                             and the delay measured from the frames, latency.FrameDelay)
                                                         -> Volume.paint (voxel colours)
-                                                        -> projector frames for the renderer
+                                                        -> kept views for the renderer
   newest posed frame     -> with the newest ToF frame, to the chosen depth model (ito.recon;
   (with a depth model)      depth.py, its own process) -> its depth map, live as a dense mesh
                             and -> Volume.integrate as keyframes, weighted as the settings
@@ -21,7 +21,7 @@ Nothing here sees the simulator's ground truth: every pose comes from the driver
 
 import threading
 import time
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -48,8 +48,8 @@ RECOLOUR_INTERVAL = 1.5
 # ... spread over the re-meshes that follow, this many blocks each, so a repaint of most of the
 # view (the floor) does not stall the next ToF frame behind one long re-mesh.
 RECOLOUR_BATCH = 48
-LIVE_INTERVAL = 1 / 20
-# Projector slots: 0 the live frame, the rest kept views (the renderer's texture array).
+# Projector slots: 0 the live frame, the rest kept views (the renderer's texture array). The
+# pilot shows every camera frame live itself (render.MeshRenderer.live); the worker keeps views.
 PROJECTORS = 12
 # A frame becomes a kept projector when it looks this differently from every kept one.
 KEY_ANGLE = np.radians(14)
@@ -207,19 +207,12 @@ class _Traced:
         trace.add("fusion.keyframe_locked", self.held, clock.now_ns())
 
 
-class Fusion:
-    def __init__(
-        self,
-        memory,
-        voxel=0.04,
-        capacity=6000,
-        keyframes=PROJECTORS,
-        max_range=4.0,
-        head_imu=True,
-        frame_delay=True,
-        depth=None,
-    ):
-        self.volume = Volume(memory, voxel=voxel, capacity=capacity, max_range=max_range)
+class CameraTrack:
+    """The camera's pose at any recent time: position from the driver's pose stream, orientation
+    from the head IMU (pose()). The worker's fusion poses its ToF and camera frames with one; the
+    pilot's renderer its live camera frame (worker.TofMesh.live), from the same samples."""
+
+    def __init__(self, head_imu=True, stats=None):
         self.poses = PoseTrack()
         self.head_imu = head_imu
         # (time, xyzw): the camera's orientation in the head IMU's world (+Y up, any heading)
@@ -228,58 +221,7 @@ class Fusion:
         self.unheaded = deque(maxlen=500)  # pose-stream samples (time, 3x3) not yet compared
         self.headings = deque(maxlen=500)  # (time, radians): pose-stream minus IMU heading
         self.last_turn = None  # (time, 3x3): the latest correction made
-        self.grids = []
-        self.frames = []
-        # The frames' real delay, measured, for a camera that does not stamp its frames (None for
-        # one that does: their capture_time is then the capture).
-        self.frame_delay = FrameDelay() if frame_delay else None
-        self.frame_intrinsics = None
-        self.posed = deque(maxlen=6)  # recent posed frames: (exposed, image, camera, intrinsics)
-        self.meshes = {}
-        self.keyframes = keyframes  # projector slots: 0 live, 1.. kept views
-        self.kept = {}  # slot -> (world_from_camera, time)
-        self.next_kept = 1
-        self.pending_projectors = []
-        self.last_paint = -1e9
-        self.last_live = -1e9
-        self.last_mesh = -1e9
-        self.last_recolour = -1e9
-        self.recolour = set()  # repainted blocks still to re-mesh
-        self.cleared = set()  # slots of new blocks, until a mesh is published
-        self.revision = 0
-        self.epoch = time.time()
-        self.captured_at = None
-        self.timing = None  # the newest fused ToF frame's stage times, until it is meshed
-        self.meshed_timing = None  # ... and once meshed, until published
-        self.camera = None
-        self.mesh_changed = False
-        # The depth model: its weights inside and outside the ToF's view (None: off), the newest
-        # fused ToF frame (what it goes with), the frame last sent, and the frames it works on.
-        self.depth = depth
-        self.direct = None
-        self.depth_time = None
-        self.direct_map = None
-        self.depth_keyframe = None
-        # A kept depth map is fused into the volume (~100 ms of arithmetic) on a thread of its
-        # own, so the ToF frames and re-meshes go on meanwhile; the volume is theirs to share
-        # (lock: step() holds it, the keyframe only while it allocates blocks and writes back).
-        self.lock = threading.Lock()
-        self.keyframing = None
-        self.keyframe_error = None
-        self.depth_lease = None
-        self.depth_remesh = False
-        self.guess = depth is None
-        self.guess_changed = False
-        self.tof = None
-        self.depth_sent = -1e9
-        self.depth_frames = {}
-        self.stats = dict(
-            tof_frames=0, tof_dropped=0, tilted=0, tilt_held=0, untilted=0, tof_voxels=0,
-            tilt_ahead=0, painted=0, frames=0, frames_dropped=0, frame_delay_extra_ms=0.0,
-            guided=0, unguided=0, guide_ms=0.0,
-            vertices=0, triangles=0, blocks=0, evictions=0, fuse_ms=0.0, paint_ms=0.0,
-            mesh_ms=0.0, depth_maps=0, depth_skipped=0, depth_ms=0.0, depth_fuse_ms=0.0,
-        )  # fmt: skip
+        self.stats = Counter() if stats is None else stats  # how pose() oriented them
 
     def motion(self, samples):
         for when, world_from_camera in samples:
@@ -429,6 +371,80 @@ class Fusion:
             return tilt(camera, up / np.linalg.norm(up))
         return camera[:3, :3].T @ about_up(heading) @ imu
 
+
+class Fusion:
+    def __init__(
+        self,
+        memory,
+        voxel=0.04,
+        capacity=6000,
+        keyframes=PROJECTORS,
+        max_range=4.0,
+        head_imu=True,
+        frame_delay=True,
+        depth=None,
+    ):
+        self.volume = Volume(memory, voxel=voxel, capacity=capacity, max_range=max_range)
+        self.grids = []
+        self.frames = []
+        # The frames' real delay, measured, for a camera that does not stamp its frames (None for
+        # one that does: their capture_time is then the capture).
+        self.frame_delay = FrameDelay() if frame_delay else None
+        self.frame_intrinsics = None
+        self.posed = deque(maxlen=6)  # recent posed frames: (exposed, image, camera, intrinsics)
+        self.meshes = {}
+        self.keyframes = keyframes  # projector slots: 0 live, 1.. kept views
+        self.kept = {}  # slot -> (world_from_camera, time)
+        self.next_kept = 1
+        self.pending_projectors = []
+        self.last_paint = -1e9
+        self.last_mesh = -1e9
+        self.last_recolour = -1e9
+        self.recolour = set()  # repainted blocks still to re-mesh
+        self.cleared = set()  # slots of new blocks, until a mesh is published
+        self.revision = 0
+        self.epoch = time.time()
+        self.captured_at = None
+        self.timing = None  # the newest fused ToF frame's stage times, until it is meshed
+        self.meshed_timing = None  # ... and once meshed, until published
+        self.camera = None
+        self.mesh_changed = False
+        # The depth model: its weights inside and outside the ToF's view (None: off), the newest
+        # fused ToF frame (what it goes with), the frame last sent, and the frames it works on.
+        self.depth = depth
+        self.direct = None
+        self.depth_time = None
+        self.direct_map = None
+        self.depth_keyframe = None
+        # A kept depth map is fused into the volume (~100 ms of arithmetic) on a thread of its
+        # own, so the ToF frames and re-meshes go on meanwhile; the volume is theirs to share
+        # (lock: step() holds it, the keyframe only while it allocates blocks and writes back).
+        self.lock = threading.Lock()
+        self.keyframing = None
+        self.keyframe_error = None
+        self.depth_lease = None
+        self.depth_remesh = False
+        self.guess = depth is None
+        self.guess_changed = False
+        self.tof = None
+        self.depth_sent = -1e9
+        self.depth_frames = {}
+        self.stats = dict(
+            tof_frames=0, tof_dropped=0, tilted=0, tilt_held=0, untilted=0, tof_voxels=0,
+            tilt_ahead=0, painted=0, frames=0, frames_dropped=0, frame_delay_extra_ms=0.0,
+            guided=0, unguided=0, guide_ms=0.0,
+            vertices=0, triangles=0, blocks=0, evictions=0, fuse_ms=0.0, paint_ms=0.0,
+            mesh_ms=0.0, depth_maps=0, depth_skipped=0, depth_ms=0.0, depth_fuse_ms=0.0,
+        )  # fmt: skip
+        self.track = CameraTrack(head_imu, self.stats)
+
+    def motion(self, samples):
+        self.track.motion(samples)
+
+    def imu(self, samples):
+        """Head IMU samples (CameraTrack.imu)."""
+        self.track.imu(samples)
+
     def ranges(self, grids):
         self.grids.extend(grids)
         del self.grids[:-32]
@@ -453,7 +469,7 @@ class Fusion:
             return self._step(now)
 
     def _step(self, now):
-        latest = self.poses.latest
+        latest = self.track.poses.latest
         # Frames first, so a ToF frame below finds the camera frames posed up to its time.
         self._measure_frame_delay(now)
         extra = 0.0 if self.frame_delay is None else self.frame_delay.extra
@@ -461,10 +477,10 @@ class Fusion:
         for image, stamped, intrinsics, fallback in frames:
             exposed = stamped - extra
             # Wait for the pose stream to pass the exposure rather than hold its end pose.
-            if not self.covered(exposed) and now - exposed <= POSE_WAIT:
+            if not self.track.covered(exposed) and now - exposed <= POSE_WAIT:
                 self.frames.append((image, stamped, intrinsics, fallback))
                 continue
-            camera = self.pose(exposed, slack=0.05)
+            camera = self.track.pose(exposed, slack=0.05)
             if camera is None:
                 camera = fallback
             if camera is None:
@@ -492,7 +508,9 @@ class Fusion:
             if (latest is None or grid["time"] > latest) and now - grid["time"] <= POSE_WAIT:
                 waiting.append(grid)
                 continue
-            camera = None if latest is None or grid["time"] > latest else self.pose(grid["time"])
+            camera = (
+                None if latest is None or grid["time"] > latest else self.track.pose(grid["time"])
+            )
             if camera is None:
                 self.stats["tof_dropped"] += 1
                 continue
@@ -656,12 +674,13 @@ class Fusion:
             or not self.frame_delay.due(now)
         ):
             return
-        if self.head_imu and self.orientations:
-            times = [t for t, _ in self.orientations]
-            quaternions = [q for _, q in self.orientations]
+        track = self.track
+        if track.head_imu and track.orientations:
+            times = [t for t, _ in track.orientations]
+            quaternions = [q for _, q in track.orientations]
         else:
-            times = [t for t, _, _ in self.poses.samples]
-            quaternions = [q for _, _, q in self.poses.samples]
+            times = [t for t, _, _ in track.poses.samples]
+            quaternions = [q for _, _, q in track.poses.samples]
         if len(times) >= 2:
             track = np.array(times), np.array(quaternions)
             self.frame_delay.estimate(now, *track, self.frame_intrinsics)
@@ -698,10 +717,6 @@ class Fusion:
         fx, fy, cx, cy = intrinsics
         h, w = image.shape[:2]
         k = (fx, fy, cx, cy, w, h)
-        if exposed - self.last_live >= LIVE_INTERVAL:
-            self.last_live = exposed
-            self.pending_projectors = [p for p in self.pending_projectors if p.slot != 0]
-            self.pending_projectors.append(Projector(0, image, camera, k, exposed))
         if self.keyframes <= 1:
             return
         similar = [

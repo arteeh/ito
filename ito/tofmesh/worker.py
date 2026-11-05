@@ -26,6 +26,7 @@ from ito import clock, diagnostics, trace
 
 from . import depth as depth_module
 from . import shared
+from .fusion import POSE_WAIT, CameraTrack
 
 log = logging.getLogger(__name__)
 
@@ -288,6 +289,10 @@ class TofMesh:
             self.process.start()
         self.backlog = deque()
         self.dropped = 0
+        # The live camera frame's pose, from the samples the worker gets (live()); the link
+        # thread feeds it, the windows read it.
+        self.track = CameraTrack()
+        self.track_lock = threading.Lock()
         self.timings = []  # this second's mesh stage times, for the diagnostic log
         self.timings_since = clock.now()
         # Meshes are read (unpickled: ~10 ms for a depth model's half million triangles) on a
@@ -352,12 +357,35 @@ class TofMesh:
         fallback = None if camera is None else np.asarray(camera, np.float64)
         return self._put(("frame", image, captured_at - self.capture_delay, intrinsics, fallback))
 
+    def live(self, captured_at, fallback=None):
+        """The live projector for the camera frame captured at `captured_at`: (world_from_camera,
+        (fx, fy, cx, cy) at frame_size), or None while the pose stream has not passed its
+        exposure (it waits up to POSE_WAIT) or without any pose. It waits for the pose stream
+        only, as the worker's ToF frames do: the head IMU's batches trail it (by 10 ms typically,
+        40 ms often, in the sim), and waiting for them too showed ~11 frames a second of 30;
+        pose() bridges that gap with the IMU's newest correction."""
+        exposed = captured_at - self.capture_delay
+        exposed -= self.stats.get("frame_delay_extra_ms", 0.0) / 1000
+        with self.track_lock:
+            latest = self.track.poses.latest
+            if (latest is None or exposed > latest) and clock.now() - exposed <= POSE_WAIT:
+                return None
+            camera = self.track.pose(exposed, slack=0.05)
+        if camera is None:
+            camera = fallback
+        if camera is None:
+            return None
+        now = clock.now_ns()
+        trace.add("camera.live", now, now, trace.key(captured_at))
+        return camera, self.frame_intrinsics
+
     def motion(self, samples):
         """Driver motion samples: [(pilot-clock time, 4x4 world_from_camera, ...), ...]."""
         if samples:
-            self._put(
-                ("motion", [(s[0], np.asarray(s[1], np.float64)) for s in samples]), keep=True
-            )
+            samples = [(s[0], np.asarray(s[1], np.float64)) for s in samples]
+            with self.track_lock:
+                self.track.motion(samples)
+            self._put(("motion", samples), keep=True)
 
     def ranges(self, grids):
         if grids:
@@ -366,6 +394,8 @@ class TofMesh:
     def imu(self, samples):
         """Head IMU: [(pilot-clock time, xyzw sensor-to-world, 3x3 sensor-to-camera, gyro), ...]."""
         if samples:
+            with self.track_lock:
+                self.track.imu(samples)
             self._put(("imu", samples), keep=True)
 
     # -- outputs ------------------------------------------------------------------------
