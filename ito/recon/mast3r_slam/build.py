@@ -18,7 +18,7 @@ import urllib.request
 from pathlib import Path
 
 from ito import clock
-from ito.recon.mast3r_slam.runtime import BUNDLE_VERSION, MODEL_FILES, MODELS, abi
+from ito.recon.mast3r_slam.runtime import BUNDLE_VERSION, MODEL_FILES, MODELS, abi, verify
 
 BUILD_COMMAND = "runtime\\python.exe -I -m ito.recon.mast3r_slam.build (release/windows.py)"
 
@@ -274,6 +274,15 @@ def adapt(path, replacements):
     path.write_text(code, encoding="utf-8")
 
 
+def build_torch():
+    """The Torch the kernels are built for (none: no Torch, nothing compiled)."""
+    try:
+        import torch
+    except ImportError:
+        return ""
+    return str(torch.__version__)
+
+
 def compile_extensions(cache, work):
     try:
         import torch
@@ -423,6 +432,15 @@ def main():
     cache.mkdir(parents=True, exist_ok=True)
     work.mkdir(parents=True, exist_ok=True)
     manifest = cache / "manifest.json"
+    # A bundle this very build script made for this Torch is kept as it is: extracting and
+    # adapting the sources again would have every CUDA kernel compiled again (~30 min).
+    key = hashlib.sha256(Path(__file__).read_bytes() + build_torch().encode()).hexdigest()
+    try:
+        if json.loads(manifest.read_text(encoding="utf-8"))["key"] == key and verify(cache):
+            report(f"SLAM bundle up to date: {cache}")
+            return
+    except (OSError, ValueError, KeyError, RuntimeError):
+        pass
     manifest.unlink(missing_ok=True)
     slam = source(
         cache,
@@ -450,10 +468,14 @@ def main():
     )
     adapt(slam / "mast3r_slam/global_opt.py", FACTOR_GRAPH)
     adapt(slam / "mast3r_slam/tracker.py", TRACKER)
-    # Windows' `long` is 32 bits; the kernels index with it.
+    # Windows' `long` is 32 bits; the kernels index with it. Torch 2.11's C++ API: its dispatch
+    # macros take a tensor's scalar type (no longer its deprecated type()), and the norm the
+    # Gauss-Newton solves stop on is ATen's (torch::linalg is no longer in torch/extension.h).
     for path in (slam / "mast3r_slam/backend/src").glob("*.cu"):
         original = path.read_text(encoding="utf-8")
         fixed = re.sub(r"\blong\b", "int64_t", original)
+        fixed = re.sub(r"(AT_DISPATCH_\w+\(\s*\w+)\.type\(\)", r"\1.scalar_type()", fixed)
+        fixed = fixed.replace("torch::linalg::linalg_norm(", "at::linalg_norm(")
         if fixed != original:
             path.write_text(fixed, encoding="utf-8")
     # MSVC gives CPU templates and NVCC's host launch stubs identical symbols.
@@ -498,7 +520,8 @@ def main():
         f"{RETRIEVAL_NAME}_*. Unmodified. CC BY-NC-SA 4.0, as above.\n"
         f"slam/: MASt3R-SLAM revision {SLAM_REV}. Ito source adaptations: FactorGraph keeps "
         "its edges and solve inputs in buffers allocated once (global_opt.py), the frame "
-        "tracker re-raises CUDA out-of-memory errors (tracker.py), fixed-width CUDA indices, "
+        "tracker re-raises CUDA out-of-memory errors (tracker.py), fixed-width CUDA indices, Torch "
+        "2.11's dispatch and norm calls in the CUDA kernels, "
         "distinct lietorch CPU kernel symbols, current-stream CUDA launches. Ito feeds it frames "
         "of upstream's 512-pixel long side, or, at an Input resolution below 100 %, 448, 368 or "
         "256 (not upstream's).\n",
@@ -518,6 +541,7 @@ def main():
                 version=BUNDLE_VERSION,
                 abi=abi(),
                 torch=torch_version,
+                key=key,
                 native=native,
                 revisions=dict(slam=SLAM_REV, lie=LIE_REV, eigen=EIGEN_REV, model=MODEL_REV),
                 files=files,

@@ -1,11 +1,11 @@
 """MapAnything on the GPU, behind the Model the depth process (ito.tofmesh.depth) runs: a camera
-frame and its pinhole intrinsics in, a metric depth map out (upstream's inference, its masks of
-ambiguous pixels and depth edges applied: those pixels have no depth)."""
+frame and its pinhole intrinsics in, a metric depth map out (upstream's inference, its mask of
+ambiguous pixels applied: those pixels have no depth)."""
 
 import json
 
 import torch
-from safetensors.torch import load_file
+from safetensors.torch import load_model
 
 from ito._vendor.mapanything.models.mapanything.model import MapAnything
 from ito.recon import models
@@ -29,7 +29,8 @@ class Model:
         # the checkpoint holds them all.
         config["encoder_config"]["torch_hub_pretrained"] = False
         net = MapAnything(**config)
-        net.load_state_dict(load_file(str(folder / "model.safetensors")), strict=True)
+        # load_model: the checkpoint stores tensors the model shares between heads once.
+        load_model(net, str(folder / "model.safetensors"), strict=True)
         self.net = net.to("cuda").eval()
         self.mean = torch.tensor(MEAN, device="cuda").view(1, 3, 1, 1)
         self.std = torch.tensor(STD, device="cuda").view(1, 3, 1, 1)
@@ -48,7 +49,10 @@ class Model:
             device="cuda",
         )
         view = dict(img=(x - self.mean) / self.std, data_norm_type=["dinov2"], intrinsics=k[None])
-        (out,) = self.net.infer([view], memory_efficient_inference=False)
+        # Its mask of ambiguous pixels applies; its edge mask does not: the dense mesh cuts its
+        # triangles at depth jumps itself (tofmesh.dense), as with every model, and the edge
+        # mask also punched holes in flat floor (sim, 5 Nov).
+        (out,) = self.net.infer([view], memory_efficient_inference=False, mask_edges=False)
         depth = out["depth_z"][..., 0][None].float()  # (1, 1, height, WIDTH), 0 where masked
         # To the frame's size: interpolated only between pixels that all have a depth.
         known = (depth > 0).float()
