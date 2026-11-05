@@ -942,7 +942,7 @@ class Frame:
 
     def fill(self, buffer, value=0):
         """All of buffer set to the 32-bit `value`."""
-        lib.vkCmdFillBuffer(self.cmd, buffer.buffer, 0, vk.VK_WHOLE_SIZE, value)
+        lib.vkCmdFillBuffer(self.cmd, buffer.buffer, 0, buffer.size // 4 * 4, value)
 
     def copy(self, source, target, size):
         """The first `size` bytes of source into target."""
