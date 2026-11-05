@@ -58,6 +58,12 @@ def runtime(stage, work):
             "uv", "pip", "install", "--python", python, "--target", site,
             "--link-mode", "copy", "--compile-bytecode", *requirement,
         )  # fmt: skip
+
+
+def prune(stage):
+    """What the release does not run: console scripts, Android's OpenXR loaders and import
+    libraries (MASt3R-SLAM's kernels link against Torch's, so they go once those are built)."""
+    site = stage / "runtime/Lib/site-packages"
     unused = [site / "bin", *site.rglob("*.lib")]
     for path in unused + list(site.glob("xr/**/android*")):
         shutil.rmtree(path) if path.is_dir() else path.unlink(missing_ok=True)
@@ -302,6 +308,7 @@ def main():
         runtime(stage, work)
     models(stage, args.cache)
     slam(stage, args.cache)
+    prune(stage)
     count = notices(
         stage / "runtime/Lib/site-packages", stage / "runtime", stage / "THIRD_PARTY_NOTICES.txt"
     )
