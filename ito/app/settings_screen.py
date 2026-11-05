@@ -6,7 +6,8 @@ from imgui_bundle import imgui
 from ito import diagnostics
 from ito.desktop.settings import AppSettings, load, save
 
-MEMORY_STEPS = (2, 3, 5, 7, 10, 14, 20, 28, 40)  # Fewer / More on the settings screen
+# Fewer / More on the settings screen
+MEMORY_STEPS = (2, 3, 5, 7, 10, 15, 30, 45, 60, 75, 90, 105, 120, 240)
 SHARE_STEPS = (0, 10, 25, 50, 75, 100)  # Less / More for Prompt Depth Anything's weights (%)
 
 

@@ -204,6 +204,7 @@ class DesktopWindow:
                 frame.wait()  # the last screen grabs reach the recorder
             if recorder is not None:
                 recorder.close()
+            self.renderer.clear()  # the next session or a menu shows none of this one's mesh
 
     def _record(self, recorder: Recorder, current, frame, image):
         """The screen grab is copied out in the frame and collected when the frame is done (a

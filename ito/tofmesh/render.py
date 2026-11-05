@@ -250,13 +250,8 @@ class MeshRenderer:
         if frame.epoch != self.epoch:
             # A new worker (restart, reconnect): its map starts empty in its own odometry frame,
             # so nothing of the old one may stay, mesh or projected views.
+            self.clear()
             self.epoch = frame.epoch
-            self.count = 0
-            self.projectors = [None] * self.slots
-            self.live_time = None
-            self.shadow_dirty.clear()
-            self.shadow_stale.clear()
-            self._clear_atlas()
         self.guess = frame.guess
         if self.atlas is not None:
             for slot in getattr(frame, "cleared", ()):
@@ -281,6 +276,20 @@ class MeshRenderer:
         return True
 
     apply = upload
+
+    def clear(self):
+        """Forget the mesh and its projected views: the session that made them ended (a menu or
+        the next session shows none of it), or a new worker's map begins."""
+        self.epoch = None
+        self.count = 0
+        self.projectors = [None] * self.slots
+        self.live_time = None
+        self.bake_due = False
+        self.shadow_dirty.clear()
+        self.shadow_stale.clear()
+        if self.atlas is not None:
+            self.device.defer(self.atlas)
+            self.atlas = None
 
     # -- texture atlas -------------------------------------------------------------------
     def _atlas_for(self, slot):
@@ -318,10 +327,6 @@ class MeshRenderer:
                 return
             y, x = divmod(within, side)
             frame.upload_image(self.atlas, zeros, (x * TILE, y * TILE, TILE, TILE), layer)
-
-    def _clear_atlas(self):
-        if self.atlas is not None:
-            self.device.frame.clear(self.atlas, (0, 0, 0, 0))
 
     def _bake(self, frame):
         """The live frame into the atlas, wherever it sees the mesh better than the atlas's view."""
