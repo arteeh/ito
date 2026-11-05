@@ -278,7 +278,6 @@ class XRWindow(DesktopWindow):
         menu=None,
     ):
         self.performance = Performance()
-        self.use_scene(source)
         try:
             dispatch = XRDispatch(self, state)
             dispatch.run(lambda: self._run(source, state, on_input, dispatch, menu), on_sample)
@@ -324,6 +323,7 @@ class XRWindow(DesktopWindow):
                 current = self.glided(state(), now)
                 self.straighten(source, current)
                 applied = []
+                self.use_scene(source)
                 for _ in range(MESHES_PER_FRAME):
                     update = source.poll()
                     if update is None:

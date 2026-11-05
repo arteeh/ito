@@ -198,14 +198,17 @@ class DesktopWindow:
         dispatch.run(lambda: self._draw(source, state, on_input, dispatch), on_sample)
 
     def use_scene(self, source):
-        """Draw the session's scene with its renderer (ito.recon.Method.scene)."""
+        """Draw the session's scene with its renderer (ito.recon.Method.scene), the renderer it
+        replaces left empty. Each frame, before its updates: a session sets its scene as it
+        connects, after the window began drawing."""
         kind = getattr(source, "scene", "mesh")
         if kind not in self.renderers:
             self.renderers[kind] = recon.renderer(kind, self.device)
-        self.renderer = self.renderers[kind]
+        if self.renderers[kind] is not self.renderer:
+            self.renderer.clear()
+            self.renderer = self.renderers[kind]
 
     def _draw(self, source, state, on_input, dispatch):
-        self.use_scene(source)
         recorder = from_env()
         self.performance = Performance()
         try:
@@ -249,6 +252,7 @@ class DesktopWindow:
             gpu = self.device.begin()
             self.device.collect()
             applied = []
+            self.use_scene(source)
             for _ in range(MESHES_PER_FRAME):
                 frame = source.poll()
                 if frame is None:
