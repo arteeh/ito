@@ -105,7 +105,7 @@ class CameraFeed:
                 media.VideoDecoder.share = False
         if name == "d3d12" and on_gpu is None:
             frame, name = d3d12.download(frame), "nv12"
-        elif name not in {"nv12", "yuv420p", "yuvj420p"}:
+        elif on_gpu is None and name not in {"nv12", "yuv420p", "yuvj420p"}:
             frame, name = frame.reformat(format="nv12"), "nv12"
         commands = self.frames[self.count % FRAMES]
         self.count += 1
