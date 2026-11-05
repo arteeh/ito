@@ -71,9 +71,14 @@ class Mailbox:
             return pickle.loads(data)
 
 
-def run(mailbox, results, method, model_size, tracing=None):
+# A DepthMap's arrays, sent through shared memory (shared.Arrays) with the dense mesh's.
+MAP_ARRAYS = ("depth", "xyz", "normals", "inside", "covered")
+
+
+def run(mailbox, results, maps, method, model_size, tracing=None):
     """The process: the mailbox's newest (key, image, support, intrinsics, camera, zones,
-    sensor_from_camera, shares) -> results ("depth", key, DepthMap, dense mesh, ms), or
+    sensor_from_camera, shares) -> results ("depth", key, DepthMap, handle, ms): the map without
+    its arrays, which go with the dense mesh's through `maps` (shared.Arrays: the handle), or
     ("skipped", key, ms) for a frame the model could not map from the ToF it had (too little of
     it to prompt the model, or to scale a relative map); ("ready", device) once loaded,
     ("error", text) on failure (the process then ends, and the mesh worker reports it)."""
@@ -139,7 +144,14 @@ def run(mailbox, results, method, model_size, tracing=None):
             with trace.span("depth.dense", k):
                 direct = dense.mesh(mapped, camera, image)
             with trace.span("depth.send", k):
-                results.put(("depth", key, mapped, direct, inference_ms))
+                arrays = [getattr(mapped, name) for name in MAP_ARRAYS] + list(direct)
+                # Every segment held: the mesh worker still uses the maps before (a keyframe
+                # being fused), and frees one as soon as it is done.
+                while (handle := maps.send(arrays)) is None:
+                    time.sleep(0.002)
+                for name in MAP_ARRAYS:
+                    setattr(mapped, name, None)
+                results.put(("depth", key, mapped, handle, inference_ms))
     except Exception as exc:
         try:
             results.put(("error", f"{label} failed: {exc}"), timeout=1)

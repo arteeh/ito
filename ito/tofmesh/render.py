@@ -273,6 +273,8 @@ class MeshRenderer:
         # frame it is projecting live), and is then copied on the GPU from slot 0.
         for p in sorted(frame.projectors, key=lambda p: p.slot):
             self._projector(p)
+        if getattr(frame, "acknowledge", None) is not None:
+            frame.acknowledge()  # its arrays are copied out
         return True
 
     apply = upload

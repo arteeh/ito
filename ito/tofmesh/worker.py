@@ -18,12 +18,14 @@ import queue
 import threading
 import traceback
 from collections import deque
+from dataclasses import replace
 
 import numpy as np
 
 from ito import clock, diagnostics, trace
 
 from . import depth as depth_module
+from . import shared
 
 log = logging.getLogger(__name__)
 
@@ -44,7 +46,7 @@ def frame_size(width, height):
     return (len(range(step // 2, width, step)), len(range(step // 2, height, step))), step
 
 
-def _run(inputs, outputs, notes, options, integrated, depth, tracing=None):
+def _run(inputs, outputs, meshes, notes, options, integrated, depth, tracing=None):
     from .fusion import Fusion, MeshFrame
 
     try:
@@ -97,14 +99,13 @@ def _run(inputs, outputs, notes, options, integrated, depth, tracing=None):
             if outbox is not None:
                 if outbox.timing is not None:
                     outbox.timing["sent"] = clock.now()
-                try:
-                    with trace.span("worker.publish", trace.key(outbox.captured_at)) as span:
-                        outputs.put_nowait(outbox)
+                with trace.span("worker.publish", trace.key(outbox.captured_at)) as span:
+                    if _publish(outbox, outputs, meshes):
                         if outbox.triangles is not None:
                             span.fields["triangles"] = len(outbox.triangles)
-                    outbox = None
-                except queue.Full:
-                    trace.add("worker.publish_full", clock.now_ns(), clock.now_ns())
+                        outbox = None
+                    else:
+                        trace.add("worker.publish_full", clock.now_ns(), clock.now_ns())
             now = clock.now()
             if now >= next_note:
                 next_note = now + 1.0
@@ -124,6 +125,29 @@ def _run(inputs, outputs, notes, options, integrated, depth, tracing=None):
             pass
 
 
+def _publish(frame, outputs, meshes):
+    """A mesh frame to the pilot, its arrays through shared memory (meshes): False while the
+    pilot still holds every segment or the queue is full (the frame waits for the next try)."""
+    if frame.positions is None:
+        sent = frame
+    else:
+        arrays = (frame.positions, frame.normals, frame.colours, frame.triangles, frame.blocks)
+        handle = meshes.send(arrays)
+        if handle is None:
+            return False
+        sent = replace(
+            frame, positions=None, normals=None, colours=None, triangles=None, blocks=None,
+            shared=handle,
+        )  # fmt: skip
+    try:
+        outputs.put_nowait(sent)
+    except queue.Full:
+        if sent.shared is not None:
+            meshes.release(sent.shared)
+        return False
+    return True
+
+
 class DepthError(RuntimeError):
     pass
 
@@ -131,7 +155,7 @@ class DepthError(RuntimeError):
 def _depth(fusion, queues):
     """Give the depth model each new posed frame (it takes the newest when it is free, so it
     never waits for this loop) and take its answers. Its failure is the worker's."""
-    mailbox, results = queues
+    mailbox, results, maps = queues
     request = fusion.depth_request()
     if request is not None:
         with trace.span("depth.request", trace.key(request[0])):
@@ -149,7 +173,12 @@ def _depth(fusion, queues):
             trace.key(answer[1]) if len(answer) > 2 else None,
         )
         if answer[0] == "depth":
-            fusion.depth_map(*answer[1:])
+            _, key, mapped, handle, ms = answer
+            arrays = maps.receive(handle)
+            for name, array in zip(depth_module.MAP_ARRAYS, arrays, strict=False):
+                setattr(mapped, name, array)
+            direct = tuple(arrays[len(depth_module.MAP_ARRAYS) :])
+            fusion.depth_map(key, mapped, direct, ms, shared.Lease(maps, handle))
         elif answer[0] == "skipped":
             fusion.depth_skipped(*answer[1:])
         elif answer[0] == "error":
@@ -189,6 +218,8 @@ class TofMesh:
         self.capture_delay = float(capture_delay)
         self.inputs = context.Queue(maxsize=256)
         self.outputs = context.Queue(maxsize=3)
+        # The meshes' arrays (shared.Arrays): those received and not yet uploaded, and one more.
+        self.meshes = shared.Arrays(context, 4)
         self.notes = context.Queue(maxsize=16)
         self.integrated = context.Value("Q", 0, lock=False)
         # A camera whose frames carry their own capture time (capture_delay 0) needs no measured
@@ -217,6 +248,8 @@ class TofMesh:
                 queues = (
                     depth_module.Mailbox(context, width * height * 3 + 2**20),
                     context.Queue(maxsize=4),
+                    # The map the mesh shows, the one a keyframe fuses, and two on their way.
+                    shared.Arrays(context, 4),
                 )
                 self.depth = context.Process(
                     target=depth_module.run,
@@ -236,6 +269,7 @@ class TofMesh:
                 args=(
                     self.inputs,
                     self.outputs,
+                    self.meshes,
                     self.notes,
                     options,
                     self.integrated,
@@ -366,6 +400,13 @@ class TofMesh:
                 continue
             except (EOFError, OSError, ValueError):  # closed, or the worker gone (poll says)
                 return
+            if frame.shared is not None:
+                arrays = self.meshes.receive(frame.shared)
+                frame.positions, frame.normals, frame.colours, frame.triangles, frame.blocks = (
+                    arrays
+                )
+                # The renderer copies them out (upload), then their segment is the worker's again.
+                frame.acknowledge = lambda handle=frame.shared: self.meshes.release(handle)
             now = clock.now_ns()
             trace.add(
                 "mesh.receive", now, now, trace.key(frame.captured_at),
@@ -461,6 +502,7 @@ class TofMesh:
             q.close()
         if self.receiver is not None:
             self.receiver.join(0.5)
+        self.meshes.close()
 
     def __enter__(self):
         return self

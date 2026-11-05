@@ -99,6 +99,10 @@ class MeshFrame:
     timing: dict | None = None
     # Whether the renderer guesses depth where the mesh has none (off with a depth model).
     guess: bool = True
+    # On the way to the pilot: the mesh's arrays in shared memory (shared.Arrays.send's handle);
+    # the pilot's to call once the renderer has copied them (their segment is then the worker's).
+    shared: tuple | None = None
+    acknowledge: object = None
 
     @property
     def observations(self):
@@ -262,6 +266,7 @@ class Fusion:
         self.lock = threading.Lock()
         self.keyframing = None
         self.keyframe_error = None
+        self.depth_lease = None
         self.depth_remesh = False
         self.guess = depth is None
         self.guess_changed = False
@@ -576,16 +581,22 @@ class Fusion:
         self.depth_frames[exposed] = (camera, intrinsics, size, zones, sensor_from_camera, image)
         return exposed, image, support, intrinsics, camera, zones, sensor_from_camera, self.depth
 
-    def depth_map(self, key, mapped, direct, ms):
-        """A dense mesh prepared off the sensor thread; keep the view in the room volume."""
+    def depth_map(self, key, mapped, direct, ms, lease=None):
+        """A dense mesh prepared off the sensor thread; keep the view in the room volume.
+        `lease`: its arrays' shared memory (shared.Lease), let go of once nothing uses them."""
         frame = self.depth_frames.pop(key, None)
         self._passed(key)
         if frame is None or self.depth is None:
+            if lease is not None:
+                lease.drop()
             return
         camera = frame[0]
         self.direct = direct
         self.depth_time = key
         self.direct_map = mapped, camera
+        if self.depth_lease is not None:
+            self.depth_lease.drop()
+        self.depth_lease = lease
         self.mesh_changed = self.depth_remesh = True
         # The live mesh keeps *every* model pixel. Persist a spatially new view (or a refresh),
         # not repeated correlated model predictions at ToF sensor frequency.
@@ -598,15 +609,17 @@ class Fusion:
         busy = self.keyframing is not None and self.keyframing.is_alive()
         if not busy and (due or (moved and key - previous[0] >= 0.5)):
             self.depth_keyframe = key, camera.copy()
+            if lease is not None:
+                lease.hold()
             self.keyframing = threading.Thread(
-                target=self._keyframe, args=(mapped, camera, key), name="ito-depth-keyframe",
+                target=self._keyframe, args=(mapped, camera, key, lease), name="ito-depth-keyframe",
                 daemon=True,
             )  # fmt: skip
             self.keyframing.start()
         self.stats["depth_maps"] += 1
         self.stats["depth_ms"] = ms
 
-    def _keyframe(self, mapped, camera, key):
+    def _keyframe(self, mapped, camera, key, lease):
         started = time.perf_counter()
         try:
             with trace.span("fusion.depth_keyframe", trace.key(key)):
@@ -616,6 +629,9 @@ class Fusion:
                 )  # fmt: skip
         except Exception as exc:  # the worker's failure, at its next step
             self.keyframe_error = exc
+        finally:
+            if lease is not None:
+                lease.drop()
         self.stats["depth_fuse_ms"] = (time.perf_counter() - started) * 1000
 
     def depth_skipped(self, key, ms):
