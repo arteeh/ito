@@ -7,9 +7,9 @@ ToF and IMU batches (geometry, small) wait in a short backlog, and only a worker
 seconds loses some of them (counted in the statistics and the status line).
 
 With a depth model chosen (ito.recon), it runs in a third process (depth.py), started here and
-fed by the worker: one camera frame and the ToF reading it goes with at a time, the next once
-its depth map is in. A model that is missing or fails is the mesh's error: the pilot shows the
-flat camera feed with it, never another method in its place.
+fed by the worker: each posed camera frame with the ToF reading it goes with, of which the model
+takes the newest whenever it is free. A model that is missing or fails is the mesh's error: the
+pilot shows the flat camera feed with it, never another method in its place.
 """
 
 import logging
@@ -51,7 +51,6 @@ def _run(inputs, outputs, notes, options, integrated, depth, tracing=None):
         fusion = Fusion(**options)
         outbox = None
         next_note = 0.0
-        waiting = False  # a frame is with the depth model (depth: its two queues)
         maps = 0  # depth maps fused up to the last note
         while True:
             started = clock.now_ns()
@@ -70,8 +69,6 @@ def _run(inputs, outputs, notes, options, integrated, depth, tracing=None):
                     # EXIT_WAIT and terminate it (3 s with the app frozen).
                     outputs.cancel_join_thread()
                     notes.cancel_join_thread()
-                    if depth is not None:  # the depth model is terminated, never reads it
-                        depth[0].cancel_join_thread()
                     return
                 if kind == "motion":
                     fusion.motion(item[1])
@@ -89,7 +86,7 @@ def _run(inputs, outputs, notes, options, integrated, depth, tracing=None):
             trace.add("worker.inputs", started, clock.now_ns())
             if depth is not None:
                 with trace.span("worker.depth"):
-                    waiting = _depth(fusion, depth, waiting)
+                    _depth(fusion, depth)
             before = fusion.stats["tof_frames"]
             with trace.span("worker.step"):
                 news = fusion.step(clock.now())
@@ -130,16 +127,20 @@ class DepthError(RuntimeError):
     pass
 
 
-def _depth(fusion, queues, waiting):
-    """Take the depth model's answer if one is in and send it the next frame: whether a frame
-    is with it. Its failure is the worker's."""
-    requests, results = queues
-    started = clock.now_ns()
-    try:
-        answer = results.get_nowait()
-    except queue.Empty:
-        answer = None
-    if answer is not None:
+def _depth(fusion, queues):
+    """Give the depth model each new posed frame (it takes the newest when it is free, so it
+    never waits for this loop) and take its answers. Its failure is the worker's."""
+    mailbox, results = queues
+    request = fusion.depth_request()
+    if request is not None:
+        with trace.span("depth.request", trace.key(request[0])):
+            mailbox.put(request)
+    while True:
+        started = clock.now_ns()
+        try:
+            answer = results.get_nowait()
+        except queue.Empty:
+            return
         trace.add(
             "depth.receive",
             started,
@@ -148,22 +149,10 @@ def _depth(fusion, queues, waiting):
         )
         if answer[0] == "depth":
             fusion.depth_map(*answer[1:])
-            waiting = False
         elif answer[0] == "skipped":
             fusion.depth_skipped(*answer[1:])
-            waiting = False
         elif answer[0] == "error":
             raise DepthError(answer[1])
-    if not waiting:
-        request = fusion.depth_request()
-        if request is not None:
-            try:
-                with trace.span("depth.request", trace.key(request[0])):
-                    requests.put_nowait(request)
-                waiting = True
-            except queue.Full:
-                pass
-    return waiting
 
 
 def _merge(old, new, frame_type):
@@ -223,7 +212,11 @@ class TofMesh:
             if self.error:
                 log.error("%s", self.error)
             else:
-                queues = (context.Queue(maxsize=1), context.Queue(maxsize=4))
+                (width, height), _ = frame_size(intrinsics.width, intrinsics.height)
+                queues = (
+                    depth_module.Mailbox(context, width * height * 3 + 2**20),
+                    context.Queue(maxsize=4),
+                )
                 self.depth = context.Process(
                     target=depth_module.run,
                     args=(*queues, depth["method"], depth["size"], trace.config()),

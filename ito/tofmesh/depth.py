@@ -3,8 +3,8 @@
 The chosen method's model (ito.recon.<method>.model.Model) turns a camera frame, with what the
 ToF read when it was exposed, into a depth map. Here the map is scaled to the ToF where the
 model's depth is not metric, blended with the measured surfaces (anchor), and made a dense mesh
-(dense.py), all off the mesh worker. One outstanding frame, at the model's own rate, never a
-queue of stale maps.
+(dense.py), all off the mesh worker. The worker sends every posed frame; the model takes the
+newest whenever it is free, at its own rate, never a queue of stale maps.
 
 Only real zone centres validate scale; no ToF min/max bounds or invented prompt pixels here (a
 model whose input is a dense prompt, as Prompt Depth Anything's, makes its own from the zones).
@@ -12,6 +12,7 @@ model whose input is a dense prompt, as Prompt Depth Anything's, makes its own f
 
 import ctypes
 import importlib
+import pickle
 import queue
 import sys
 import time
@@ -33,12 +34,49 @@ def _lower_priority():
         os.nice(5)
 
 
-def run(requests, results, method, model_size, tracing=None):
-    """The process: requests (key, image, support, intrinsics, camera, zones, sensor_from_camera,
-    shares) -> results ("depth", key, DepthMap, dense mesh, ms), or ("skipped", key, ms) for a
-    frame the model could not map from the ToF it had (too little of it to prompt the model, or
-    to scale a relative map); ("ready", device) once loaded, ("error", text) on failure (the
-    process then ends, and the mesh worker reports it)."""
+class Mailbox:
+    """The newest frame for the depth model, each new one in place of the last, in shared
+    memory: the model takes it whenever it is free, so it neither works on a stale frame (a
+    queue keeps them all, in order) nor waits for the worker to send one. put() in the worker,
+    take() in the depth process."""
+
+    def __init__(self, context, size):
+        self.lock = context.Lock()
+        self.wake = context.BoundedSemaphore(1)
+        self.wake.acquire()
+        self.data = context.RawArray("B", size)
+        self.length = context.RawValue("Q", 0)
+        self.sequence = context.RawValue("Q", 0)
+        self.taken = 0
+
+    def put(self, item):
+        data = pickle.dumps(item, protocol=pickle.HIGHEST_PROTOCOL)
+        with self.lock:
+            memoryview(self.data).cast("B")[: len(data)] = data
+            self.length.value = len(data)
+            self.sequence.value += 1
+        try:
+            self.wake.release()
+        except ValueError:  # already woken, for the one before
+            pass
+
+    def take(self):
+        while True:
+            self.wake.acquire()
+            with self.lock:
+                if self.sequence.value == self.taken:
+                    continue  # woken for one it took already
+                self.taken = self.sequence.value
+                data = bytes(memoryview(self.data).cast("B")[: self.length.value])
+            return pickle.loads(data)
+
+
+def run(mailbox, results, method, model_size, tracing=None):
+    """The process: the mailbox's newest (key, image, support, intrinsics, camera, zones,
+    sensor_from_camera, shares) -> results ("depth", key, DepthMap, dense mesh, ms), or
+    ("skipped", key, ms) for a frame the model could not map from the ToF it had (too little of
+    it to prompt the model, or to scale a relative map); ("ready", device) once loaded,
+    ("error", text) on failure (the process then ends, and the mesh worker reports it)."""
     from ito.recon import METHODS
 
     label = METHODS[method].label
@@ -59,9 +97,7 @@ def run(requests, results, method, model_size, tracing=None):
         gpu = [torch.cuda.Event(enable_timing=True) for _ in range(2)]
         while True:
             with trace.span("depth.wait"):
-                item = requests.get()
-            if item is None:
-                return
+                item = mailbox.take()
             key, image, support, intrinsics, camera, zones, sensor, shares = item
             k = trace.key(key)
             started = time.perf_counter()

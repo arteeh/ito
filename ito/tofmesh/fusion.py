@@ -543,12 +543,13 @@ class Fusion:
         size = (image.shape[1], image.shape[0])
         support = depth_module.support(zones, world_from_sensor, camera, intrinsics, size)
         sensor_from_camera = np.linalg.inv(world_from_sensor) @ camera
-        self.depth_frames = {exposed: (camera, intrinsics, size, zones, sensor_from_camera, image)}
+        self.depth_frames[exposed] = (camera, intrinsics, size, zones, sensor_from_camera, image)
         return exposed, image, support, intrinsics, camera, zones, sensor_from_camera, self.depth
 
     def depth_map(self, key, mapped, direct, ms):
         """A dense mesh prepared off the sensor thread; keep the view in the room volume."""
         frame = self.depth_frames.pop(key, None)
+        self._passed(key)
         if frame is None or self.depth is None:
             return
         camera = frame[0]
@@ -578,8 +579,15 @@ class Fusion:
     def depth_skipped(self, key, ms):
         """The depth model could not map the frame sent as `key` from the ToF it had."""
         self.depth_frames.pop(key, None)
+        self._passed(key)
         self.stats["depth_skipped"] += 1
         self.stats["depth_ms"] = ms
+
+    def _passed(self, key):
+        """The depth model answers for the newest frame it has: those sent before `key` it
+        passed over."""
+        for older in [k for k in self.depth_frames if k < key]:
+            del self.depth_frames[older]
 
     def _measure_frame_delay(self, now):
         """The frames' delay against the orientation track the frames are posed with: the head
