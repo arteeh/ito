@@ -15,6 +15,7 @@ pilot shows the flat camera feed with it, never another method in its place.
 import logging
 import multiprocessing as mp
 import queue
+import threading
 import traceback
 from collections import deque
 
@@ -249,6 +250,15 @@ class TofMesh:
         self.dropped = 0
         self.timings = []  # this second's mesh stage times, for the diagnostic log
         self.timings_since = clock.now()
+        # Meshes are read (unpickled: ~10 ms for a depth model's half million triangles) on a
+        # thread of their own, not in the frame loop's poll().
+        self.received = deque()
+        self.receiver = None
+        if self.process is not None:
+            self.receiver = threading.Thread(
+                target=self._receive, name="ito-tofmesh-receive", daemon=True
+            )
+            self.receiver.start()
         _, step = frame_size(intrinsics.width, intrinsics.height)
         self.frame_intrinsics = (
             intrinsics.fx / step,
@@ -339,20 +349,29 @@ class TofMesh:
         if self.depth is not None and self.depth.exitcode not in (None, 0) and not self._closed:
             # A crash (its own errors come through the worker, as the mesh's error).
             raise RuntimeError(f"{self.model} stopped ({self.depth.exitcode})")
-        started = clock.now_ns()
-        try:
-            frame = self.outputs.get_nowait()
-        except queue.Empty:
+        if not self.received:
             return None
-        trace.add(
-            "mesh.receive", started, clock.now_ns(), trace.key(frame.captured_at),
-            triangles=0 if frame.triangles is None else len(frame.triangles),
-        )  # fmt: skip
+        frame = self.received.popleft()
         if frame.positions is not None and len(frame.triangles):
             self.has_mesh = True
         if frame.timing is not None and frame.captured_at is not None:
             self._timing(frame)
         return frame
+
+    def _receive(self):
+        while not self._closed:
+            try:
+                frame = self.outputs.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            except (EOFError, OSError, ValueError):  # closed, or the worker gone (poll says)
+                return
+            now = clock.now_ns()
+            trace.add(
+                "mesh.receive", now, now, trace.key(frame.captured_at),
+                triangles=0 if frame.triangles is None else len(frame.triangles),
+            )  # fmt: skip
+            self.received.append(frame)
 
     def _timing(self, frame):
         """Where the time went between a ToF frame and its mesh reaching the pilot (the windows
@@ -440,6 +459,8 @@ class TofMesh:
         for q in (self.inputs, self.outputs, self.notes):
             q.cancel_join_thread()
             q.close()
+        if self.receiver is not None:
+            self.receiver.join(0.5)
 
     def __enter__(self):
         return self
