@@ -924,6 +924,32 @@ class Frame:
             region = ffi.new("VkBufferCopy*", {"srcOffset": at, "dstOffset": offset, "size": size})
             lib.vkCmdCopyBuffer(self.cmd, source.buffer, buffer.buffer, 1, region)
 
+    def scatter(self, buffer, rows, offsets):
+        """Each row of `rows` (n, row bytes) into buffer at its byte offset (n), in one copy."""
+        rows = np.ascontiguousarray(rows)
+        if not len(rows):
+            return
+        source, at, _ = self.stage(rows)
+        size = rows.nbytes // len(rows)
+        regions = ffi.new(
+            "VkBufferCopy[]",
+            [
+                {"srcOffset": at + k * size, "dstOffset": int(offset), "size": size}
+                for k, offset in enumerate(offsets)
+            ],
+        )
+        lib.vkCmdCopyBuffer(self.cmd, source.buffer, buffer.buffer, len(rows), regions)
+
+    def fill(self, buffer, value=0):
+        """All of buffer set to the 32-bit `value`."""
+        lib.vkCmdFillBuffer(self.cmd, buffer.buffer, 0, vk.VK_WHOLE_SIZE, value)
+
+    def copy(self, source, target, size):
+        """The first `size` bytes of source into target."""
+        if size:
+            region = ffi.new("VkBufferCopy*", {"srcOffset": 0, "dstOffset": 0, "size": size})
+            lib.vkCmdCopyBuffer(self.cmd, source.buffer, target.buffer, 1, region)
+
     def upload_image(self, image, data, rect, layer=0):
         """`data` (rows of the rectangle's width) into image's (x, y, width, height) at
         `layer`."""
@@ -1280,11 +1306,11 @@ class Frame:
                 vk.VK_INDEX_TYPE_UINT16 if short else vk.VK_INDEX_TYPE_UINT32,
             )
 
-    def draw(self, count, *, indexed=False, first=0, vertex_offset=0):
+    def draw(self, count, *, indexed=False, first=0, vertex_offset=0, instances=1):
         if indexed:
-            lib.vkCmdDrawIndexed(self.cmd, count, 1, first, vertex_offset, 0)
+            lib.vkCmdDrawIndexed(self.cmd, count, instances, first, vertex_offset, 0)
         else:
-            lib.vkCmdDraw(self.cmd, count, 1, first, 0)
+            lib.vkCmdDraw(self.cmd, count, instances, first, 0)
 
     def dispatch(self, size, group=8):
         lib.vkCmdDispatch(self.cmd, -(-size[0] // group), -(-size[1] // group), 1)
@@ -1312,6 +1338,13 @@ BLEND = {
     # ImGui's: colour over, alpha accumulated (premultiplied over a cleared transparent target).
     "over": (
         vk.VK_BLEND_FACTOR_SRC_ALPHA,
+        vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+        vk.VK_BLEND_FACTOR_ONE,
+        vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+    ),
+    # Premultiplied colour over (MASt3R-SLAM's splats, back to front).
+    "premultiplied": (
+        vk.VK_BLEND_FACTOR_ONE,
         vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
         vk.VK_BLEND_FACTOR_ONE,
         vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,

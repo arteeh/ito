@@ -290,6 +290,8 @@ class DesktopWindow:
                     except OSError as exc:
                         log.error("Could not save capture: %s", exc)
             self.show(image)
+            if hasattr(source, "display_completed"):  # MASt3R-SLAM yields the GPU to late frames
+                source.display_completed(due, 1 / self.fps)
             self.camera.collect()
             statistics = source.statistics()
             statistics.update(

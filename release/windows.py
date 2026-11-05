@@ -93,6 +93,44 @@ def models(stage, cache):
                 shutil.copyfile(cached, target)
 
 
+def slam(stage, cache):
+    """MASt3R-SLAM's bundle (ito.recon.mast3r_slam.build) into cache\\mast3r_slam, built by the
+    release's own runtime (the Torch its CUDA kernels are compiled for) with the newest CUDA 12
+    toolkit installed (Torch's CUDA major), then linked into stage\\models\\mast3r_slam."""
+    developer_shell()
+    toolkits = sorted(
+        (tuple(map(int, key.removeprefix("CUDA_PATH_V").split("_"))), value)
+        for key, value in os.environ.items()
+        if re.fullmatch(r"CUDA_PATH_V12_\d+", key)
+    )
+    if not toolkits:
+        raise SystemExit("MASt3R-SLAM's kernels need a CUDA 12 toolkit (CUDA_PATH_V12_*)")
+    toolkit = toolkits[-1][1]
+    site = stage / "runtime/Lib/site-packages"
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("PYTHON", "VIRTUAL_ENV"))}
+    env.update(
+        CUDA_HOME=toolkit,
+        CUDA_PATH=toolkit,
+        PATH=os.pathsep.join(
+            [str(Path(toolkit, "bin")), str(site / "ninja/data/bin"), env["PATH"]]
+        ),
+    )
+    bundle = cache / "mast3r_slam"
+    run(
+        stage / "runtime/python.exe", "-I", "-m", "ito.recon.mast3r_slam.build",
+        "--output", bundle, "--work", cache / "mast3r_slam-build",
+        env=env, cwd=stage,
+    )  # fmt: skip
+    for path in bundle.rglob("*"):
+        if path.is_file() and "__pycache__" not in path.parts:
+            target = stage / "models/mast3r_slam" / path.relative_to(bundle)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.link(path, target)
+            except OSError:
+                shutil.copyfile(path, target)
+
+
 def developer_shell():
     """Take on a Visual Studio x64 developer shell's environment, for cl.exe."""
     if shutil.which("cl"):
@@ -134,6 +172,14 @@ def notices(site, runtime, output):
         + _read(runtime.parent / "models" / name / "README.md")
         for name, (repository, revision, licence, _) in recon.weights().items()
     ]
+    bundle = runtime.parent / "models/mast3r_slam"
+    sections.append(
+        "MASt3R-SLAM bundle (models\\mast3r_slam)\n\n"
+        + "\n\n".join(
+            _read(bundle / name)
+            for name in ("ATTRIBUTION.txt", "LICENSE", "NOTICE", "CHECKPOINTS_NOTICE")
+        )
+    )
     for vendor in sorted((site / "ito/_vendor").iterdir()):
         if (vendor / "NOTICE").is_file():
             sections.append(_read(vendor / "NOTICE") + "\n\n" + _read(vendor / "LICENSE"))
@@ -226,8 +272,10 @@ def check(stage):
         "for name, method in recon.METHODS.items():\n"
         "    for size, _ in method.sizes or [(None, None)]:\n"
         "        assert recon.missing(name, size) is None, recon.missing(name, size)\n"
-        "    if name != 'guessed':\n"
+        "    if name not in ('guessed', 'mast3r_slam'):\n"
         "        importlib.import_module(f'ito.recon.{name}.model')\n"
+        "from ito.recon.mast3r_slam.runtime import check_bundle\n"
+        "check_bundle()\n"
         "root = pathlib.Path(sys.argv[1])\n"
         "for module in (aiortc, xr, imgui_bundle, ito):\n"
         "    assert pathlib.Path(module.__file__).is_relative_to(root), module.__file__\n",
@@ -253,6 +301,7 @@ def main():
         launcher(stage, work)
         runtime(stage, work)
     models(stage, args.cache)
+    slam(stage, args.cache)
     count = notices(
         stage / "runtime/Lib/site-packages", stage / "runtime", stage / "THIRD_PARTY_NOTICES.txt"
     )

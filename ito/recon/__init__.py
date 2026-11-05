@@ -61,6 +61,12 @@ METHODS = {
         "MapAnything",
         "ToF mesh; a metric depth map from each camera frame and its lens, checked by the ToF.",
     ),
+    "mast3r_slam": Method(
+        "MASt3R-SLAM",
+        "Gaussian splats; its own camera poses and map from the camera alone (~11 GB VRAM).",
+        scene="splats",
+        poses=True,
+    ),
 }
 
 

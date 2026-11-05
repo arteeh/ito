@@ -4,11 +4,14 @@ from concurrent.futures import ThreadPoolExecutor
 from imgui_bundle import imgui
 
 from ito import diagnostics, recon
-from ito.desktop.settings import AppSettings, load, save
+from ito.desktop.settings import KEYFRAMES, PRESETS, AppSettings, load, save
 
 # Fewer / More on the settings screen
 MEMORY_STEPS = (2, 3, 5, 7, 10, 15, 30, 45, 60, 75, 90, 105, 120, 240)
 SHARE_STEPS = (0, 10, 25, 50, 75, 100)  # Less / More for a depth model's weights (%)
+RESOLUTIONS = (25, 50, 75, 100)  # MASt3R-SLAM's input resolution (%)
+# The settings screen knows no camera: map sizes are costed for a 16:9 one, as Microduck's.
+COSTED = (1280, 720)
 
 
 class SettingsScreen:
@@ -113,6 +116,75 @@ class SettingsScreen:
             self.share("Outside the ToF's view", "depth_outside", s.depth_outside)
             imgui.text_disabled("Inside: measured surfaces only. Unmeasured holes still fill.")
 
+    def slam(self, s):
+        """MASt3R-SLAM's own settings (restored from main)."""
+        from ito.recon.mast3r_slam.slam import map_bytes
+
+        self.theme.heading("MASt3R-SLAM")
+        imgui.text("Graphics card memory (VRAM)")
+        widths = self.layout.row(*(1,) * len(PRESETS))
+        for index, (label, values) in enumerate(PRESETS.items()):
+            if index:
+                imgui.same_line()
+            chosen = all(getattr(s, key) == value for key, value in values.items())
+            if self.choice(label, f"preset {label}", chosen, widths[index]):
+                self.change(**values)
+        imgui.text_disabled(
+            "Sets the three below for a card with this much VRAM: 8 GB Half and 75%; 6 GB "
+            "Half, 50% and 64 keyframes."
+        )
+        imgui.text("Precision")
+        widths = self.layout.row(1, 1)
+        for index, value in enumerate(("full", "half")):
+            if index:
+                imgui.same_line()
+            chosen = s.slam_precision == value
+            if self.choice(value.title(), f"precision {value}", chosen, widths[index]):
+                self.change(slam_precision=value)
+        imgui.text_disabled("Half: faster, less VRAM; may lose detail.")
+        self.steps(
+            "Input resolution", "slam_input_resolution", RESOLUTIONS, s.slam_input_resolution, "%"
+        )
+        imgui.text_disabled(
+            "Lower: faster, less VRAM, blurrier. Keeps the whole frame. Below 100% leaves "
+            "upstream MASt3R-SLAM's 512 pixels, which it is tuned for."
+        )
+        self.steps("Map size (keyframes)", "slam_keyframes", KEYFRAMES, s.slam_keyframes)
+        costs = ", ".join(
+            f"{count}: {map_bytes(count, *COSTED, s.slam_input_resolution) / 1e9:.1f} GB"
+            for count in KEYFRAMES
+        )
+        imgui.text_disabled(f"VRAM at {s.slam_input_resolution}% input (16:9 camera): {costs}.")
+        imgui.text_disabled(
+            "Taken at start, besides MASt3R's weights and retrieval (about 3.0 GB Full, 1.7 GB "
+            "Half). 512 is upstream's. A full map tracks and relocalises on but maps nothing new."
+        )
+        imgui.text(f"Max splats: {s.max_splats:,}")
+        left, right = self.layout.row(1, 1)
+        fewer = max(1, ((s.max_splats - 1) // 100_000) * 100_000)
+        more = min((1 << 31) - 1, (s.max_splats // 100_000 + 1) * 100_000)
+        if self.layout.button("Fewer", "splats fewer", left, disabled=s.max_splats == 1):
+            self.change(max_splats=fewer)
+        imgui.same_line()
+        if self.layout.button("More", "splats more", right, disabled=s.max_splats == more):
+            self.change(max_splats=more)
+        imgui.text_disabled("More: more scene detail, more VRAM and draw time.")
+
+    def steps(self, label, key, steps, value, unit=""):
+        """A setting stepped through `steps` with - and +."""
+        imgui.text(label)
+        index = steps.index(value)
+        minus, middle, plus = self.layout.row(1, 1.85, 1)
+        if self.layout.button("-", f"{key} minus", minus, disabled=index == 0):
+            self.change(**{key: steps[index - 1]})
+        imgui.same_line()
+        with self.theme.font("numeric"):
+            self.layout.button(f"{value}{unit}", f"{key} value", middle, disabled=True)
+        imgui.same_line()
+        last = len(steps) - 1
+        if self.layout.button("+", f"{key} plus", plus, disabled=index == last):
+            self.change(**{key: steps[index + 1]})
+
     def share(self, label, key, value):
         imgui.text(f"{label}: {value} %")
         less = [m for m in SHARE_STEPS if m < value]
@@ -129,6 +201,8 @@ class SettingsScreen:
         self.reconstruction(s)
         if recon.METHODS[s.reconstruction].scene == "mesh":
             self.mesh(s)
+        else:
+            self.slam(s)
         self.theme.heading("Diagnostics")
         debug = diagnostics.current()
         imgui.text("Diagnostic logging")

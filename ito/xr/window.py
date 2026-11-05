@@ -484,6 +484,8 @@ class XRWindow(DesktopWindow):
                 performance = self.performance.last
                 if rendered:
                     period = frame.predicted_display_period / 1e9
+                    if hasattr(source, "display_completed"):  # MASt3R-SLAM yields the GPU
+                        source.display_completed(now, period)
                     statistics = source.statistics()
                     statistics.update(
                         camera_hz=current.status.rates[1],

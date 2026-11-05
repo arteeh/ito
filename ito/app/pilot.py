@@ -133,6 +133,17 @@ class Pilot:
         finally:
             self.worker_lock.release()
 
+    def display_completed(self, began, period):
+        """A displayed frame's timing, for a reconstruction that shares the GPU by it."""
+        if not self.worker_lock.acquire(False):
+            return
+        try:
+            worker = self.worker
+            if worker is not None and not self.failure and hasattr(worker, "display_completed"):
+                worker.display_completed(began, period)
+        finally:
+            self.worker_lock.release()
+
     def poll(self):
         if not self.worker_lock.acquire(False):
             return None
