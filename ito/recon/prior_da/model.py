@@ -18,7 +18,7 @@ class Model:
 
     metric = True
 
-    def __init__(self, size):
+    def __init__(self, size, precision):
         frozen, conditioned, version = SIZES[size]
         folder = str(models() / FOLDER)
         self.net = PriorDepthAnything(
@@ -29,6 +29,16 @@ class Model:
             frozen_model_size=frozen,
             conditioned_model_size=conditioned,
         )
+        if precision == "half":
+            # Its two networks under bfloat16 autocast (float16 on cards without bfloat16), as
+            # MASt3R-SLAM's Half chooses; the alignment between them (least squares) in float32.
+            dtype = (
+                torch.bfloat16
+                if torch.cuda.is_bf16_supported(including_emulation=False)
+                else torch.float16
+            )
+            for network in (self.net.completion.depth_model, self.net.model):
+                network.forward = _autocast(network.forward, dtype)
 
     def predict(self, image, intrinsics, support, zones, sensor_from_camera):
         h, w = image.shape[:2]
@@ -42,3 +52,11 @@ class Model:
         rgb = torch.from_numpy(image).to("cuda").permute(2, 0, 1)[None]
         depth = self.net(images=rgb, sparse_depths=sparse, sparse_masks=sparse > 0)
         return depth[0, 0].float().cpu().numpy()
+
+
+def _autocast(forward, dtype):
+    def run(*args, **kwargs):
+        with torch.autocast("cuda", dtype=dtype):
+            return forward(*args, **kwargs).float()
+
+    return run

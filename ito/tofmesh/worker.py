@@ -238,7 +238,7 @@ class TofMesh:
         if depth is not None:
             from ito.recon import METHODS, missing
 
-            self.model = METHODS[depth["method"]].label
+            self.model = f"{METHODS[depth['method']].label} ({depth['precision'].title()})"
             # A model this build lacks is an error to show, not another method in its place.
             self.error = missing(depth["method"], depth["size"])
             if self.error:
@@ -253,7 +253,13 @@ class TofMesh:
                 )
                 self.depth = context.Process(
                     target=depth_module.run,
-                    args=(*queues, depth["method"], depth["size"], trace.config()),
+                    args=(
+                        *queues,
+                        depth["method"],
+                        depth["size"],
+                        depth["precision"],
+                        trace.config(),
+                    ),  # fmt: skip
                     name="ito-depth",
                     daemon=True,
                 )
@@ -307,6 +313,7 @@ class TofMesh:
         depth = dict(
             method=method,
             size=size,
+            precision=settings.depth_precision,
             inside=settings.depth_inside / 100,
             outside=settings.depth_outside / 100,
         )

@@ -5,7 +5,7 @@ checkpoint names. DA3Metric-Large's DPT head gives metric depth; the main series
 
 Upstream 3d835ec1 (Apache-2.0) is in ito._vendor.da3. We do not need its camera encoder and
 decoder, pose, GS or export pipeline, or its sky replacement. Keep the head in float32, as
-upstream does.
+upstream does; Half precision runs the backbone in float16, as upstream does, Full in float32.
 """
 
 import json
@@ -28,8 +28,9 @@ HEADS = {"DPT": DPT, "DualDPT": DualDPT}
 class Network(nn.Module):
     """A DA3 model's monocular depth: its DinoV2 backbone and depth head."""
 
-    def __init__(self, path):
+    def __init__(self, path, half):
         super().__init__()
+        self.half = half
         config = json.loads((path / "config.json").read_text(encoding="utf-8"))["config"]
 
         def args(part):
@@ -52,7 +53,7 @@ class Network(nn.Module):
 
     def forward(self, image):
         h, w = image.shape[-2:]
-        with torch.autocast("cuda", dtype=torch.float16):
+        with torch.autocast("cuda", dtype=torch.float16, enabled=self.half):
             feats, _ = self.backbone(image[:, None], export_feat_layers=[])
         feats = [(x.float(), y.float()) for x, y in feats]
         return self.head(feats, h, w, patch_start_idx=0).depth[:, 0]
@@ -61,9 +62,9 @@ class Network(nn.Module):
 class Model:
     """predict(): a camera frame's depth (h, w) along -Z: metres for Metric, else relative."""
 
-    def __init__(self, size):
+    def __init__(self, size, precision):
         self.metric = size == "metric"
-        self.net = Network(folder(SIZES[size])).to("cuda").eval()
+        self.net = Network(folder(SIZES[size]), precision == "half").to("cuda").eval()
         self.mean = torch.tensor(MEAN, device="cuda").view(1, 3, 1, 1)
         self.std = torch.tensor(STD, device="cuda").view(1, 3, 1, 1)
 

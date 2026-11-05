@@ -205,6 +205,21 @@ class Overlay:
         memory = "--" if vram is None else f"{vram[0] / 2**30:.1f} / {vram[1] / 2**30:.1f} GiB"
         with self.theme.font("numeric"):
             imgui.text(f"VRAM {memory}")
+        if values.get("slam_precision"):
+            scale = values.get("slam_display_scale")
+            imgui.text(
+                f"MASt3R: {values['slam_precision']}, "
+                f"{values.get('slam_keyframes', '--')} keyframes, "
+                + (f"{scale:.3f} m per map unit (ToF)" if scale else "unscaled")
+            )
+        if values.get("reconstruction_oom"):
+            imgui.text_colored(
+                self.theme.color("error"), "Out of GPU memory: reconstruction is degraded"
+            )
+        if values.get("network_nonfinite_points"):
+            imgui.text_colored(
+                self.theme.color("warning"), "fp16 overflow: invalid points discarded"
+            )
         if xr_mode:
             imgui.text("Aim + trigger to select | stick to drive")
             imgui.text("B e-stop | X stop | A resume | Y recenter")

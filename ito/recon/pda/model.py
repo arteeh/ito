@@ -23,9 +23,11 @@ class Model:
 
     metric = True
 
-    def __init__(self, size):
+    def __init__(self, size, precision):
+        # Half: the whole network in float16, as its Transformers port runs it; Full: float32.
+        self.dtype = torch.float16 if precision == "half" else torch.float32
         net = PromptDepthAnythingForDepthEstimation.from_pretrained(
-            models() / SIZES[size], local_files_only=True, dtype=torch.float16
+            models() / SIZES[size], local_files_only=True, dtype=self.dtype
         )
         self.net = net.to("cuda").eval()
         self.mean = torch.tensor(MEAN, device="cuda").view(1, 3, 1, 1)
@@ -40,8 +42,8 @@ class Model:
         resize = torch.nn.functional.interpolate
         x = torch.from_numpy(image).to("cuda").permute(2, 0, 1)[None].float() / 255
         x = resize(x, INPUT, mode="bilinear", antialias=True, align_corners=False)
-        x = ((x - self.mean) / self.std).half()
-        p = torch.from_numpy(depth).to("cuda")[None, None].half()
+        x = ((x - self.mean) / self.std).to(self.dtype)
+        p = torch.from_numpy(depth).to("cuda")[None, None].to(self.dtype)
         out = self.net(pixel_values=x, prompt_depth=p).predicted_depth
         out = resize(out[:, None].float(), (h, w), mode="bilinear", align_corners=False)
         return out[0, 0].cpu().numpy()

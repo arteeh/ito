@@ -36,6 +36,8 @@ class AppSettings(BaseModel):
     # inside and outside the ToF's view (tofmesh.depth.DepthMap).
     depth_inside: int = Field(default=25, ge=0, le=100)
     depth_outside: int = Field(default=100, ge=0, le=100)
+    # The depth model's precision (as MASt3R-SLAM's, below): Half runs its network in 16 bits.
+    depth_precision: Literal["full", "half"] = "half"
     # MASt3R-SLAM (ito.recon.mast3r_slam): its network's precision, the share of its 512-pixel
     # input it is given, its map's keyframe slots, and the splats drawn.
     slam_precision: Literal["full", "half"] = "full"

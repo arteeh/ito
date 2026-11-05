@@ -93,6 +93,16 @@ class SettingsScreen:
                     imgui.same_line()
                 if self.choice(label, f"{key} {value}", size == value, width):
                     self.change(**{key: value})
+        if s.reconstruction not in ("guessed", "mast3r_slam"):
+            imgui.text("Precision")
+            widths = self.layout.row(1, 1)
+            for index, value in enumerate(("full", "half")):
+                if index:
+                    imgui.same_line()
+                chosen = s.depth_precision == value
+                if self.choice(value.title(), f"depth precision {value}", chosen, widths[index]):
+                    self.change(depth_precision=value)
+            imgui.text_disabled("Half: faster, less VRAM; may lose detail.")
         error = recon.missing(s.reconstruction, size)
         if error:
             imgui.text_colored(self.theme.color("error"), error)

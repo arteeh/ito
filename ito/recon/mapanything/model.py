@@ -22,7 +22,9 @@ class Model:
 
     metric = True
 
-    def __init__(self, size):
+    def __init__(self, size, precision):
+        # Half: upstream's mixed precision (bfloat16 autocast, its default); Full: float32.
+        self.half = precision == "half"
         folder = models() / FOLDER
         config = json.loads((folder / "config.json").read_text(encoding="utf-8"))
         # As upstream's from_pretrained: the encoder's own pretrained weights are not fetched,
@@ -52,7 +54,9 @@ class Model:
         # Its mask of ambiguous pixels applies; its edge mask does not: the dense mesh cuts its
         # triangles at depth jumps itself (tofmesh.dense), as with every model, and the edge
         # mask also punched holes in flat floor (sim, 5 Nov).
-        (out,) = self.net.infer([view], memory_efficient_inference=False, mask_edges=False)
+        (out,) = self.net.infer(
+            [view], memory_efficient_inference=False, mask_edges=False, use_amp=self.half
+        )
         depth = out["depth_z"][..., 0][None].float()  # (1, 1, height, WIDTH), 0 where masked
         # To the frame's size: interpolated only between pixels that all have a depth.
         known = (depth > 0).float()

@@ -55,7 +55,9 @@ connection (it applies at the next one):
 The depth models run in a lower-priority process at their own rate and need an NVIDIA GPU with
 CUDA; their maps feed the ToF mesh (live as a dense mesh, kept as keyframes), the ToF's real zone
 centres check their scale and, inside its view, anchor them (**Inside** / **Outside**: how much
-a map counts there, as a share of a ToF reading). Every model ships in the release's `models`
+a map counts there, as a share of a ToF reading). **Precision** Half runs the model's network
+in 16 bits (faster, less VRAM), Full in 32; as MASt3R-SLAM's own, running out of VRAM at Half
+shows an error, never another precision in its place. Every model ships in the release's `models`
 folder (`ito/recon/*/__init__.py` names them, their revisions and licences; some are
 non-commercial); nothing is downloaded at runtime, and a missing model is an error, never another
 method in its place. None of this has been tested with a real robot or a real headset.

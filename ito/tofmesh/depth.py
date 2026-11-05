@@ -77,7 +77,7 @@ class Mailbox:
 MAP_ARRAYS = ("depth", "xyz", "normals", "inside", "covered")
 
 
-def run(mailbox, results, maps, method, model_size, tracing=None):
+def run(mailbox, results, maps, method, model_size, precision, tracing=None):
     """The process: the mailbox's newest (key, image, support, intrinsics, camera, zones,
     sensor_from_camera, shares) -> results ("depth", key, DepthMap, handle, ms): the map without
     its arrays, which go with the dense mesh's through `maps` (shared.Arrays: the handle), or
@@ -97,7 +97,7 @@ def run(mailbox, results, maps, method, model_size, tracing=None):
         if not torch.cuda.is_available():
             raise RuntimeError("it needs an NVIDIA GPU with CUDA")
         torch.set_num_threads(2)
-        model = importlib.import_module(f"ito.recon.{method}.model").Model(model_size)
+        model = importlib.import_module(f"ito.recon.{method}.model").Model(model_size, precision)
         stream = torch.cuda.Stream(priority=0)  # CUDA's least-urgent priority, not high priority
         scale = None
         results.put(("ready", torch.cuda.get_device_name()))
