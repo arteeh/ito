@@ -26,7 +26,12 @@ Connect Ito to `localhost:8081` with the pairing code it prints. Closing the vie
 tools/build.sh [REF]                              # Windows build, into ~\Projects\ito\builds
 python tools/shaders.py                           # GLSL in ito/shaders to SPIR-V (builds do it)
 uv run --extra sim tools/session.py BUILD NAME    # a scripted, recorded session against the sim
+python tools/trace.py TRACE [--chrome out.json]   # where a session's time went, stage by stage
 ```
+
+With **Diagnostic logging** on (Settings), every process writes a performance trace into
+`%APPDATA%\ito\trace` (the last app run's); `tools/trace.py` turns it into a table per stage, a
+camera frame's way from capture to screen, and a trace for ui.perfetto.dev.
 
 No automated tests and no docs besides this README: test by running Ito and watching it.
 
