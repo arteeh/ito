@@ -12,13 +12,17 @@ class AppSettings(BaseModel):
     diagnostic_logging: bool = False
     # ToF frames the mesh averages (tofmesh.volume): fewer follow the latest view.
     mesh_memory: int = Field(default=10, ge=2, le=240)
-    # Mono depth estimation where the ToF does not reach: the renderer's guess (tofmesh.render),
-    # or Depth Anything 3 Metric depth maps (tofmesh.pda; stored model name is legacy),
-    # counting these percentages of a ToF reading inside and outside the ToF's view.
-    mono_depth: Literal["guessed", "pda"] = "guessed"
-    pda_model: Literal["large", "small"] = "large"
-    pda_inside: int = Field(default=25, ge=0, le=100)
-    pda_outside: int = Field(default=100, ge=0, le=100)
+    # The 3D reconstruction method (ito.recon.METHODS), for the whole of a session, and the model
+    # size of those that offer several.
+    reconstruction: Literal["guessed", "pda", "da3", "prior_da", "mapanything", "mast3r_slam"] = (
+        "guessed"
+    )
+    pda_size: Literal["small", "large"] = "large"
+    da3_size: Literal["metric"] = "metric"
+    # A depth model's map in the ToF mesh: how much it counts, as a percentage of a ToF reading,
+    # inside and outside the ToF's view (tofmesh.depth.DepthMap).
+    depth_inside: int = Field(default=25, ge=0, le=100)
+    depth_outside: int = Field(default=100, ge=0, le=100)
 
 
 def settings_path():

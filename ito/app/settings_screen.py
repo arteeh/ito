@@ -3,12 +3,12 @@ from concurrent.futures import ThreadPoolExecutor
 
 from imgui_bundle import imgui
 
-from ito import diagnostics
+from ito import diagnostics, recon
 from ito.desktop.settings import AppSettings, load, save
 
 # Fewer / More on the settings screen
 MEMORY_STEPS = (2, 3, 5, 7, 10, 15, 30, 45, 60, 75, 90, 105, 120, 240)
-SHARE_STEPS = (0, 10, 25, 50, 75, 100)  # Less / More for Prompt Depth Anything's weights (%)
+SHARE_STEPS = (0, 10, 25, 50, 75, 100)  # Less / More for a depth model's weights (%)
 
 
 class SettingsScreen:
@@ -66,6 +66,53 @@ class SettingsScreen:
             imgui.pop_style_color()
         return pressed and not chosen
 
+    def reconstruction(self, s):
+        """The method (ito.recon.METHODS) and, where it has several, its model size."""
+        self.theme.heading("Reconstruction")
+        imgui.text_disabled("How the robot's surroundings are built, for a whole connection.")
+        widths = self.layout.row(1, 1)  # two to a row
+        for index, (value, method) in enumerate(recon.METHODS.items()):
+            if index % 2:
+                imgui.same_line()
+            chosen = s.reconstruction == value
+            if self.choice(method.label, f"method {value}", chosen, widths[index % 2]):
+                self.change(reconstruction=value)
+        method = recon.METHODS[s.reconstruction]
+        imgui.text_wrapped(method.summary)
+        size = None
+        if method.sizes:
+            key = f"{s.reconstruction}_size"
+            size = getattr(s, key)
+            imgui.text("Model size")
+            widths = self.layout.row(*([1] * len(method.sizes)))
+            for index, ((value, label), width) in enumerate(zip(method.sizes, widths, strict=True)):
+                if index:
+                    imgui.same_line()
+                if self.choice(label, f"{key} {value}", size == value, width):
+                    self.change(**{key: value})
+        error = recon.missing(s.reconstruction, size)
+        if error:
+            imgui.text_colored(self.theme.color("error"), error)
+            self.placed("model missing")
+
+    def mesh(self, s):
+        self.theme.heading("Mesh")
+        imgui.text(f"Mesh memory: {s.mesh_memory} ToF frames")
+        fewer = [m for m in MEMORY_STEPS if m < s.mesh_memory]
+        more = [m for m in MEMORY_STEPS if m > s.mesh_memory]
+        left, right = self.layout.row(1, 1)
+        if self.layout.button("Fewer", "memory fewer", left, disabled=not fewer):
+            self.change(mesh_memory=fewer[-1])
+        imgui.same_line()
+        if self.layout.button("More", "memory more", right, disabled=not more):
+            self.change(mesh_memory=more[0])
+        imgui.text_disabled("Fewer: the mesh follows the latest view. More: smoother, steadier.")
+        if s.reconstruction != "guessed":
+            imgui.text("The depth model's maps, counted as a share of a ToF reading")
+            self.share("Inside the ToF's view", "depth_inside", s.depth_inside)
+            self.share("Outside the ToF's view", "depth_outside", s.depth_outside)
+            imgui.text_disabled("Inside: measured surfaces only. Unmeasured holes still fill.")
+
     def share(self, label, key, value):
         imgui.text(f"{label}: {value} %")
         less = [m for m in SHARE_STEPS if m < value]
@@ -79,27 +126,9 @@ class SettingsScreen:
 
     def draw(self):
         s = self.settings
-        self.theme.heading("Mesh")
-        imgui.text(f"Mesh memory: {s.mesh_memory} ToF frames")
-        fewer = [m for m in MEMORY_STEPS if m < s.mesh_memory]
-        more = [m for m in MEMORY_STEPS if m > s.mesh_memory]
-        left, right = self.layout.row(1, 1)
-        if self.layout.button("Fewer", "memory fewer", left, disabled=not fewer):
-            self.change(mesh_memory=fewer[-1])
-        imgui.same_line()
-        if self.layout.button("More", "memory more", right, disabled=not more):
-            self.change(mesh_memory=more[0])
-        imgui.text_disabled("Fewer: the mesh follows the latest view. More: smoother, steadier.")
-        self.theme.heading("Mono depth estimation")
-        imgui.text_disabled("Depth where the ToF does not reach, from the camera image.")
-        for value, label in (("guessed", "Guessed depth"), ("pda", "Depth Anything 3 Metric")):
-            if self.choice(label, f"mono {value}", s.mono_depth == value):
-                self.change(mono_depth=value)
-        if s.mono_depth == "pda":
-            imgui.text_disabled("DA3Metric-Large (bundled). No runtime downloads.")
-            self.share("Inside the ToF's view", "pda_inside", s.pda_inside)
-            self.share("Outside the ToF's view", "pda_outside", s.pda_outside)
-            imgui.text_disabled("Inside: measured surfaces only. Unmeasured holes still fill.")
+        self.reconstruction(s)
+        if recon.METHODS[s.reconstruction].scene == "mesh":
+            self.mesh(s)
         self.theme.heading("Diagnostics")
         debug = diagnostics.current()
         imgui.text("Diagnostic logging")

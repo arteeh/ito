@@ -2,10 +2,11 @@
 
     uv run --python 3.12 python release/windows.py --dist DIST [--cache DIR]
 
-A relocatable CPython with the locked dependencies installed (the pda extra too), started by
-release/ito.c's ito.exe (runtime\\pythonw.exe -I -m ito.app), Depth Anything 3 Metric's models in
-models\\ (downloaded at pinned revisions, checked, kept in --cache), plus THIRD_PARTY_NOTICES.txt.
-No freezer: the release runs exactly what runs from source."""
+A relocatable CPython with the locked dependencies installed (the recon extra too), started by
+release/ito.c's ito.exe (runtime\\pythonw.exe -I -m ito.app), every reconstruction method's models
+in models\\ (ito.recon.weights(): downloaded at pinned revisions, checked, kept in --cache and
+linked from there), plus THIRD_PARTY_NOTICES.txt. No freezer: the release runs exactly what runs
+from source."""
 
 import argparse
 import email.parser
@@ -21,15 +22,8 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-# Depth Anything 3 Metric (ito/tofmesh/pda.py, Apache-2.0): folder -> (Hugging Face revision,
-# {file: sha256}). The folder is the model's name under huggingface.co/depth-anything.
-MODELS = {
-    "DA3METRIC-LARGE": ("4010e39f3634a45bc60553321fb49fb760bd594e", {
-        "README.md": "4fdd25492cf6401d1459483fd829f6abb399bda8218e1a3ef5ad4a66e9aa5a2a",
-        "config.json": "a336f3e76fe375aaae17a9aed9130c9f2aa061535d317ec57dcb2f1f02e1dd53",
-        "model.safetensors": "bbea5b0b3ee389849cffa7ddae89de064a90abd2b055fc5aa99aac68db324776",
-    }),
-}  # fmt: skip
+sys.path.insert(0, str(ROOT))
+from ito import recon  # noqa: E402  (the checkout's, as the wheel will hold it)
 
 
 def run(*command, **options):
@@ -50,7 +44,7 @@ def runtime(stage, work):
             shutil.rmtree(path) if path.is_dir() else path.unlink()
     lock = work / "pylock.toml"
     run(
-        "uv", "export", "--frozen", "--no-dev", "--no-emit-project", "--extra", "pda",
+        "uv", "export", "--frozen", "--no-dev", "--no-emit-project", "--extra", "recon",
         "--format", "pylock.toml", "--output-file", lock,
         cwd=ROOT,
     )  # fmt: skip
@@ -75,13 +69,14 @@ def _digest(path):
 
 
 def models(stage, cache):
-    """Depth Anything 3 Metric's models into stage\\models, from the cache or downloaded into it."""
-    for name, (revision, files) in MODELS.items():
+    """The methods' models into stage\\models, from the cache or downloaded into it. A model is
+    a hard link to its cached file where the two are on one volume (no second copy on disk)."""
+    for name, (repository, revision, _, files) in recon.weights().items():
         for file, sha256 in files.items():
             cached = cache / name / revision / file
             if not cached.is_file() or _digest(cached) != sha256:
                 cached.parent.mkdir(parents=True, exist_ok=True)
-                url = f"https://huggingface.co/depth-anything/{name}/resolve/{revision}/{file}"
+                url = f"https://huggingface.co/{repository}/resolve/{revision}/{file}"
                 print(f"Downloading {url}", flush=True)
                 partial = cached.with_suffix(".part")
                 with urllib.request.urlopen(url) as response, partial.open("wb") as out:
@@ -92,7 +87,10 @@ def models(stage, cache):
                 partial.replace(cached)
             target = stage / "models" / name / file
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(cached, target)
+            try:
+                os.link(cached, target)
+            except OSError:
+                shutil.copyfile(cached, target)
 
 
 def developer_shell():
@@ -131,13 +129,14 @@ LICENCE_FILE = re.compile(
 
 def notices(site, runtime, output):
     sections = [
-        f"Depth Anything 3 Metric model {name} (models\\{name}), Apache-2.0, "
-        f"https://huggingface.co/depth-anything/{name}\n\n"
+        f"Model {name} (models\\{name}), {licence}, "
+        f"https://huggingface.co/{repository}/tree/{revision}\n\n"
         + _read(runtime.parent / "models" / name / "README.md")
-        for name in MODELS
+        for name, (repository, revision, licence, _) in recon.weights().items()
     ]
-    vendor = site / "ito/_vendor/da3"
-    sections.append(_read(vendor / "NOTICE") + "\n\n" + _read(vendor / "LICENSE"))
+    for vendor in sorted((site / "ito/_vendor").iterdir()):
+        if (vendor / "NOTICE").is_file():
+            sections.append(_read(vendor / "NOTICE") + "\n\n" + _read(vendor / "LICENSE"))
     for info in sorted(site.glob("*.dist-info"), key=lambda p: p.name.lower()):
         meta = email.parser.Parser().parsestr(
             (info / "METADATA").read_text(encoding="utf-8", errors="replace"), headersonly=True
@@ -221,10 +220,14 @@ def check(stage):
     env = {k: v for k, v in os.environ.items() if not k.startswith(("PYTHON", "VIRTUAL_ENV"))}
     run(
         stage / "runtime/python.exe", "-I", "-c",
-        "import sys, pathlib, aiortc, xr, imgui_bundle, vulkan\n"
-        "import ito.app.__main__, ito.tofmesh.worker, ito.tofmesh.render, torch, ito.tofmesh.da3\n"
-        "from ito.tofmesh import pda\n"
-        "assert pda.missing('large') is None, pda.missing('large')\n"
+        "import sys, pathlib, aiortc, xr, imgui_bundle, vulkan, torch, importlib\n"
+        "import ito.app.__main__, ito.tofmesh.worker, ito.tofmesh.render\n"
+        "from ito import recon\n"
+        "for name, method in recon.METHODS.items():\n"
+        "    for size, _ in method.sizes or [(None, None)]:\n"
+        "        assert recon.missing(name, size) is None, recon.missing(name, size)\n"
+        "    if name != 'guessed':\n"
+        "        importlib.import_module(f'ito.recon.{name}.model')\n"
         "root = pathlib.Path(sys.argv[1])\n"
         "for module in (aiortc, xr, imgui_bundle, ito):\n"
         "    assert pathlib.Path(module.__file__).is_relative_to(root), module.__file__\n",

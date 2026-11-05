@@ -10,9 +10,10 @@
                             and the delay measured from the frames, latency.FrameDelay)
                                                         -> Volume.paint (voxel colours)
                                                         -> projector frames for the renderer
-  newest posed frame     -> with the newest ToF frame as its prompt, to Prompt Depth Anything
-  (when chosen)             (pda.py, its own process) -> its depth map -> Volume.integrate,
-                            weighted as the settings say; the renderer's guessed depth is off
+  newest posed frame     -> with the newest ToF frame, to the chosen depth model (ito.recon;
+  (with a depth model)      depth.py, its own process) -> its depth map, live as a dense mesh
+                            and -> Volume.integrate as keyframes, weighted as the settings
+                            say; the renderer's guessed depth is off
   dirty blocks           -> surface.extract            -> one mesh, published a few times a second
 
 Nothing here sees the simulator's ground truth: every pose comes from the driver's stream.
@@ -24,7 +25,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from . import dense, pda, surface
+from . import dense, surface
+from . import depth as depth_module
 from . import volume as volume_module
 from .geometry import PoseTrack, angle_between, quaternion, rotation, slerp
 from .latency import FrameDelay
@@ -58,8 +60,7 @@ KEY_REFRESH = 3.0
 # takes the newest one, projected with the poses of both moments, so only things that moved in
 # between land off their edge.
 GUIDE_MATCH = 0.2
-# A camera frame is sent to Prompt Depth Anything with the ToF frame nearest it as its prompt,
-# if one is this near.
+# A camera frame is sent to the depth model with the ToF frame nearest it, if one is this near.
 PROMPT_MATCH = 0.2
 
 
@@ -93,7 +94,7 @@ class MeshFrame:
     epoch: float = 0.0
     # Where the time went for the ToF frame of `captured_at` (diagnostics): see Fusion.step.
     timing: dict | None = None
-    # Whether the renderer guesses depth where the mesh has none (off with Prompt Depth Anything).
+    # Whether the renderer guesses depth where the mesh has none (off with a depth model).
     guess: bool = True
 
     @property
@@ -228,8 +229,8 @@ class Fusion:
         self.meshed_timing = None  # ... and once meshed, until published
         self.camera = None
         self.mesh_changed = False
-        # Prompt Depth Anything: its weights inside and outside the ToF's view (None: off), the
-        # newest fused ToF frame (its prompt), the frame last sent, and the frames it works on.
+        # The depth model: its weights inside and outside the ToF's view (None: off), the newest
+        # fused ToF frame (what it goes with), the frame last sent, and the frames it works on.
         self.depth = depth
         self.direct = None
         self.depth_time = None
@@ -246,7 +247,7 @@ class Fusion:
             tilt_ahead=0, painted=0, frames=0, frames_dropped=0, frame_delay_extra_ms=0.0,
             guided=0, unguided=0, guide_ms=0.0,
             vertices=0, triangles=0, blocks=0, evictions=0, fuse_ms=0.0, paint_ms=0.0,
-            mesh_ms=0.0, pda_maps=0, pda_ms=0.0, pda_fuse_ms=0.0, pda_error=None,
+            mesh_ms=0.0, depth_maps=0, depth_skipped=0, depth_ms=0.0, depth_fuse_ms=0.0,
         )  # fmt: skip
 
     def motion(self, samples):
@@ -518,8 +519,8 @@ class Fusion:
         return news
 
     def depth_request(self):
-        """The newest posed camera frame not yet sent to Prompt Depth Anything, with its prompt
-        from the ToF frame nearest it: (key, image, prompt), or None."""
+        """The newest posed camera frame not yet sent to the depth model, with the ToF frame
+        nearest it (its zone centres in the frame: support), as depth.run takes it, or None."""
         if self.depth is None or self.tof is None or not self.posed:
             return None
         exposed, image, camera, intrinsics = self.posed[-1]
@@ -528,12 +529,10 @@ class Fusion:
             return None
         self.depth_sent = exposed
         size = (image.shape[1], image.shape[0])
-        prompt = pda.prompt(zones, world_from_sensor, camera, intrinsics, size)
-        if prompt is None:
-            return None
+        support = depth_module.support(zones, world_from_sensor, camera, intrinsics, size)
         sensor_from_camera = np.linalg.inv(world_from_sensor) @ camera
         self.depth_frames = {exposed: (camera, intrinsics, size, zones, sensor_from_camera, image)}
-        return exposed, image, prompt, intrinsics, camera, zones, sensor_from_camera, self.depth
+        return exposed, image, support, intrinsics, camera, zones, sensor_from_camera, self.depth
 
     def depth_map(self, key, mapped, direct, ms):
         """A dense mesh prepared off the sensor thread; keep the view in the room volume."""
@@ -559,17 +558,15 @@ class Fusion:
                 mapped, camera, key, camera[:3, 3], scale=mapped.weights, carve=False
             )
             self.depth_keyframe = key, camera.copy()
-        self.stats["pda_maps"] += 1
-        self.stats["pda_ms"] = ms
-        self.stats["pda_fuse_ms"] = (time.perf_counter() - started) * 1000
+        self.stats["depth_maps"] += 1
+        self.stats["depth_ms"] = ms
+        self.stats["depth_fuse_ms"] = (time.perf_counter() - started) * 1000
 
-    def depth_failed(self, text):
-        """Prompt Depth Anything stopped: guessed depth again."""
-        self.depth = None
-        self.direct = self.direct_map = None
-        self.depth_frames = {}
-        self.guess = self.guess_changed = True
-        self.stats["pda_error"] = text
+    def depth_skipped(self, key, ms):
+        """The depth model could not map the frame sent as `key` from the ToF it had."""
+        self.depth_frames.pop(key, None)
+        self.stats["depth_skipped"] += 1
+        self.stats["depth_ms"] = ms
 
     def _measure_frame_delay(self, now):
         """The frames' delay against the orientation track the frames are posed with: the head

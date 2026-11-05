@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pygame
 
-from ito import clock, diagnostics
+from ito import clock, diagnostics, recon
 from ito.render import perspective, pose
 from ito.render.anchor import AnchorGlide
 from ito.render.camera import CameraFeed
@@ -17,7 +17,7 @@ from ito.render.performance import Performance
 from ito.render.pose import FloatArray
 from ito.render.video import VideoPanel
 from ito.render.vk import Device, Image, Presenter, Swapchain, native_window
-from ito.tofmesh.render import COLOUR, MeshRenderer
+from ito.tofmesh.render import COLOUR
 
 from .dispatch import DisplayDispatch
 from .input import DesktopInput, PilotInput
@@ -59,6 +59,7 @@ class DesktopWindow:
     ):
         self.device = self.swapchain = self.present = self.scene = None
         self.renderer = self.overlay = self.input = self.video_panel = self.camera = None
+        self.renderers = {}
         self.gpu = None
         if (
             min(size) < 64
@@ -98,7 +99,9 @@ class DesktopWindow:
         self.device = device
         self.swapchain = Swapchain(device)
         self.present = Presenter(device)
-        self.renderer = MeshRenderer(device)
+        # The scenes' renderers, by ito.recon.Method.scene, made as sessions first need them.
+        self.renderers = {"mesh": recon.renderer("mesh", device)}
+        self.renderer = self.renderers["mesh"]
         self.video_panel = VideoPanel(device, COLOUR)
         self.camera = CameraFeed(device)
         if self.overlay is None:
@@ -110,7 +113,7 @@ class DesktopWindow:
         for resource in (
             self.video_panel,
             self.camera,
-            self.renderer,
+            *self.renderers.values(),
             self.scene,
             self.present,
             self.swapchain,
@@ -118,6 +121,7 @@ class DesktopWindow:
             if resource is not None:
                 resource.close()
         self.video_panel = self.camera = self.renderer = self.scene = None
+        self.renderers = {}
         self.present = self.swapchain = None
 
     def reopen(self, device):
@@ -193,7 +197,15 @@ class DesktopWindow:
         self.input.heading = lambda: state().robot_heading
         dispatch.run(lambda: self._draw(source, state, on_input, dispatch), on_sample)
 
+    def use_scene(self, source):
+        """Draw the session's scene with its renderer (ito.recon.Method.scene)."""
+        kind = getattr(source, "scene", "mesh")
+        if kind not in self.renderers:
+            self.renderers[kind] = recon.renderer(kind, self.device)
+        self.renderer = self.renderers[kind]
+
     def _draw(self, source, state, on_input, dispatch):
+        self.use_scene(source)
         recorder = from_env()
         self.performance = Performance()
         try:

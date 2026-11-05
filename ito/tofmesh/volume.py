@@ -187,7 +187,7 @@ class Volume:
         targets behind a zone's nearest one: only the band around their surface is fused, since
         the ray before them is free in only part of the zone's footprint, and which part the
         sensor does not say. `scale` (sensor-frame points -> weights) weighs a source trusted
-        less than a ToF reading (a pda.DepthMap in place of the zones)."""
+        less than a ToF reading (a depth.DepthMap in place of the zones)."""
         if not zones.count:
             return 0
         samples = zones.samples(3)

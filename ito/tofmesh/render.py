@@ -24,9 +24,9 @@ those ranges, in the frame's own colours like any measured surface (user, 1 Nov:
 hatching), and broken where neighbouring guesses jump (an edge). Guesses are drawn into a layer
 of their own with ordinary depth (so nearer guesses hide farther ones from any eye position),
 and that layer is composited only into pixels where no mesh was drawn: a guess never covers a
-measured surface and gives way as soon as the ToF measures that spot. With Prompt Depth
-Anything chosen in the settings, its depth maps fill the mesh instead and nothing is guessed
-(MeshFrame.guess).
+measured surface and gives way as soon as the ToF measures that spot. With a depth
+model chosen in the settings (ito.recon), its depth maps fill the mesh instead and nothing is
+guessed (MeshFrame.guess).
 
 Texture memory: the kept views are few (PROJECTORS) and the oldest is replaced, so a slow 360
 degree turn outlived them and everything seen more than about half a turn ago fell back to the

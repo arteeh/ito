@@ -1,32 +1,24 @@
-"""Dense monocular metric depth in a separate below-normal-priority process.
+"""A depth model's maps for the ToF mesh, in a separate below-normal-priority process.
 
-DA3Metric-Large replaces PromptDA: a sparse, narrow ToF sensor is not a dense LiDAR
-prompt. Only real zone centres validate metric scale; no ToF min/max bounds or invented
-prompt pixels. One outstanding frame, at the model's own rate, never a queue of stale maps.
+The chosen method's model (ito.recon.<method>.model.Model) turns a camera frame, with what the
+ToF read when it was exposed, into a depth map. Here the map is scaled to the ToF where the
+model's depth is not metric, blended with the measured surfaces (anchor), and made a dense mesh
+(dense.py), all off the mesh worker. One outstanding frame, at the model's own rate, never a
+queue of stale maps.
+
+Only real zone centres validate scale; no ToF min/max bounds or invented prompt pixels here (a
+model whose input is a dense prompt, as Prompt Depth Anything's, makes its own from the zones).
 """
 
 import ctypes
+import importlib
 import queue
 import sys
 import time
-from pathlib import Path
 
 import numpy as np
 
-MODEL = "DA3METRIC-LARGE"
-INPUT = (364, 644)
-MEAN, STD = (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
 NEAREST = 0.05
-EDGE = 1.2
-
-
-def folder(model):
-    return Path(sys.prefix).parent / "models" / MODEL
-
-
-def missing(model):
-    path = folder(model) / "model.safetensors"
-    return None if path.is_file() else f"Depth Anything 3 model not found: {path}"
 
 
 def _lower_priority():
@@ -39,21 +31,25 @@ def _lower_priority():
         os.nice(5)
 
 
-def run(requests, results, model):
+def run(requests, results, method, model_size):
+    """The process: requests (key, image, support, intrinsics, camera, zones, sensor_from_camera,
+    shares) -> results ("depth", key, DepthMap, dense mesh, ms), or ("skipped", key, ms) for a
+    frame the model could not map from the ToF it had (too little of it to prompt the model, or
+    to scale a relative map); ("ready", device) once loaded, ("error", text) on failure (the
+    process then ends, and the mesh worker reports it)."""
+    from ito.recon import METHODS
+
+    label = METHODS[method].label
     try:
         _lower_priority()
         import torch
 
         from . import dense
-        from .da3 import MetricDepth
 
         if not torch.cuda.is_available():
-            raise RuntimeError("Depth Anything 3 needs an NVIDIA GPU with CUDA")
+            raise RuntimeError("it needs an NVIDIA GPU with CUDA")
         torch.set_num_threads(2)
-        net = MetricDepth(folder(model)).to("cuda").eval()
-        mean = torch.tensor(MEAN, device="cuda").view(1, 3, 1, 1)
-        std = torch.tensor(STD, device="cuda").view(1, 3, 1, 1)
-        resize = torch.nn.functional.interpolate
+        model = importlib.import_module(f"ito.recon.{method}.model").Model(model_size)
         stream = torch.cuda.Stream(priority=0)  # CUDA's least-urgent priority, not high priority
         scale = None
         results.put(("ready", torch.cuda.get_device_name()))
@@ -64,39 +60,41 @@ def run(requests, results, model):
             key, image, support, intrinsics, camera, zones, sensor, shares = item
             started = time.perf_counter()
             with torch.inference_mode(), torch.cuda.stream(stream):
-                h, w = image.shape[:2]
-                x = torch.from_numpy(image).to("cuda").permute(2, 0, 1)[None].float() / 255
-                x = resize(x, INPUT, mode="bilinear", antialias=True, align_corners=False)
-                output = net((x - mean) / std)
-                # DA3Metric's training focal is 300 pixels. Use the *resized* rectified K,
-                # not the original fisheye lens or the output depth map's focal length.
-                focal = (intrinsics[0] * INPUT[1] / w + intrinsics[1] * INPUT[0] / h) / 2
-                depth = resize(
-                    output[:, None].float(), (h, w), mode="bilinear", align_corners=False
-                )[0, 0] * (focal / 300.0)
-                depth = depth.cpu().numpy()
-            # A coherent robust scalar correction is legitimate; copying sparse ranges into
-            # unobserved pixels is not. Never clamp the rest of the room to the ToF's range.
-            candidate = metric_scale(depth, support)
-            if candidate is not None:
-                scale = candidate if scale is None else 0.9 * scale + 0.1 * candidate
-            depth *= 1.0 if scale is None else scale
+                depth = model.predict(image, intrinsics, support, zones, sensor)
+            if depth is None:
+                results.put(("skipped", key, (time.perf_counter() - started) * 1000))
+                continue
+            if model.metric:
+                # A coherent robust scalar correction is legitimate; copying sparse ranges into
+                # unobserved pixels is not. Never clamp the rest of the room to the ToF's range.
+                candidate = metric_scale(depth, support)
+                if candidate is not None:
+                    scale = candidate if scale is None else 0.9 * scale + 0.1 * candidate
+                depth *= 1.0 if scale is None else scale
+            else:
+                # Relative depth: every map has a scale of its own, which only the ToF can give.
+                own = metric_scale(depth, support, bounded=False)
+                if own is None:
+                    results.put(("skipped", key, (time.perf_counter() - started) * 1000))
+                    continue
+                depth *= own
             depth[~np.isfinite(depth) | (depth <= NEAREST)] = np.nan
             inference_ms = (time.perf_counter() - started) * 1000
-            size = (w, h)
+            size = depth.shape[::-1]
             depth = anchor(depth, zones, sensor, intrinsics, size, shares["inside"])
             mapped = DepthMap(depth, intrinsics, size, zones.fov, sensor[:3, :3], **shares)
             direct = dense.mesh(mapped, camera, image)
             results.put(("depth", key, mapped, direct, inference_ms))
     except Exception as exc:
         try:
-            results.put(("error", f"Depth Anything 3 failed: {exc}"), timeout=1)
+            results.put(("error", f"{label} failed: {exc}"), timeout=1)
         except queue.Full:
             pass
 
 
-def metric_scale(depth, support):
-    """Median scale only with >=8 agreeing real ToF centres, away from depth edges."""
+def metric_scale(depth, support, *, bounded=True):
+    """Median scale only with >=8 agreeing real ToF centres, away from depth edges; `bounded`
+    (a metric map's correction) only between 0.5 and 2."""
     if len(support) < 8:
         return None
     h, w = depth.shape
@@ -111,12 +109,12 @@ def metric_scale(depth, support):
         return None
     med = np.median(ratio)
     agreeing = ratio[np.abs(np.log(ratio / med)) < 0.15]
-    if len(agreeing) < max(8, len(ratio) * 0.6) or not 0.5 < med < 2.0:
+    if len(agreeing) < max(8, len(ratio) * 0.6) or (bounded and not 0.5 < med < 2.0):
         return None
     return float(np.median(agreeing))
 
 
-def prompt(zones, world_from_sensor, camera, intrinsics, size):
+def support(zones, world_from_sensor, camera, intrinsics, size):
     """Only the sensor's actual valid zone centres: projected camera (u, v, z metres)."""
     rays = zones.direction(*zones.centres())[zones.valid]
     points = rays * zones.ranges[zones.valid, None]

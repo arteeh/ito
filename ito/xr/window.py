@@ -278,6 +278,7 @@ class XRWindow(DesktopWindow):
         menu=None,
     ):
         self.performance = Performance()
+        self.use_scene(source)
         try:
             dispatch = XRDispatch(self, state)
             dispatch.run(lambda: self._run(source, state, on_input, dispatch, menu), on_sample)

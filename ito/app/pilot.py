@@ -8,7 +8,7 @@ import traceback
 from collections import deque
 from dataclasses import replace
 
-from ito import clock, diagnostics
+from ito import clock, diagnostics, recon
 from ito.desktop import DesktopState, PilotStatus
 from ito.desktop.settings import load as app_settings
 from ito.link import PairingError, connect, media
@@ -16,7 +16,7 @@ from ito.protocol import Command, FrameMetadata, Motion, Paired, PilotState, Pos
 from ito.rates import CounterRate, Rate
 from ito.render import pose
 from ito.render.pose import quaternion
-from ito.tofmesh.worker import CLOSE_WAIT, TofMesh
+from ito.tofmesh.worker import CLOSE_WAIT
 
 from . import settings
 from .frames import FrameJoin, camera_matrix
@@ -83,6 +83,8 @@ class Pilot:
         self.focus_hold = False
         self.worker = None
         self.worker_lock = threading.Lock()
+        self.scene = "mesh"  # what the windows draw this session (ito.recon.Method.scene)
+        self.own_eye = False  # the method tracks the camera and places the eye itself
         self.retiring = []
         self.failure = None
         self.reconstruction_status = ""
@@ -212,7 +214,7 @@ class Pilot:
         self.last_frame = clock.now()
         self.frame_cameras.append((captured, camera))
         self.state = replace(self.state, video=pair[0], video_time=captured)
-        if camera is not None:
+        if camera is not None and not self.own_eye:
             self._anchor(camera, captured)
 
     def camera_frame(self, image, captured):
@@ -284,7 +286,7 @@ class Pilot:
     def _retire(self, worker):
         closer = threading.Thread(target=worker.close, name="ito-reconstruction-close")
         closer.start()
-        retiring = [(c, w) for c, w in self.retiring if c.is_alive() or w.process.is_alive()]
+        retiring = [(c, w) for c, w in self.retiring if c.is_alive() or w.alive()]
         self.retiring = retiring + [(closer, worker)]
 
     def _anchor(self, camera, captured):
@@ -314,6 +316,16 @@ class Pilot:
             robot_heading=math.atan2(float(camera[0, 2]), float(camera[2, 2])),
         )
 
+    def _anchor_tracked(self, camera):
+        """The eye at the camera position the method tracked (MASt3R-SLAM: its map is drawn
+        in its own frame), the view's rotation still the pilot's head alone (_anchor)."""
+        self.camera_pose = camera
+        self.state = replace(
+            self.state,
+            robot_camera=pose(camera[:3, 3]),
+            robot_heading=math.atan2(float(camera[0, 2]), float(camera[2, 2])),
+        )
+
     async def _session(self, peer):
         self.description = description = peer.description
         if not description.cameras:
@@ -338,7 +350,9 @@ class Pilot:
             if action != "resume":
                 safety.append(action)
         self.commands.extend(safety)
-        self.reconstruction_status = "Starting the ToF mesh"
+        method = recon.METHODS[self.settings.reconstruction]
+        self.scene, self.own_eye = method.scene, method.poses
+        self.reconstruction_status = f"Starting {method.label}"
         self.motion_time = -1.0
         self.restart_at = None
         restart_delay = RESTART_FIRST
@@ -356,17 +370,10 @@ class Pilot:
             nonlocal worker_started
             worker_started = clock.now()
             with self.worker_lock:
-                s = self.settings
-                depth = None
-                if s.mono_depth == "pda":
-                    depth = dict(
-                        model=s.pda_model, inside=s.pda_inside / 100, outside=s.pda_outside / 100
-                    )
-                self.worker = TofMesh(
-                    camera.intrinsics,
-                    s.mesh_memory,
-                    capture_delay=camera.capture_delay,
-                    depth=depth,
+                # The method and its options hold for the session (the settings screen is not
+                # reachable during one).
+                self.worker = recon.start(
+                    self.settings, camera.intrinsics, capture_delay=camera.capture_delay
                 )
 
         reconstruct()
@@ -437,8 +444,14 @@ class Pilot:
                     message = self.worker.status()
                     if message:
                         self.reconstruction_status = message
-                    # The flat feed until the first triangles arrive.
-                    self.state = replace(self.state, flat_video=not self.worker.has_mesh)
+                    # The flat feed until the scene is there to see (the first triangles,
+                    # or MASt3R-SLAM tracking steadily); MASt3R-SLAM places the eye itself.
+                    shown, eye, note = self.worker.view(now)
+                    if eye is not None:
+                        self._anchor_tracked(eye)
+                    if note:
+                        self.reconstruction_status = note
+                    self.state = replace(self.state, flat_video=not shown)
                 if self.failure:
                     self.reconstruction_status = self.failure + "; showing flat camera feed"
                     if self.restart_at is not None:
@@ -455,7 +468,7 @@ class Pilot:
                     restart_delay = min(RESTART_LONGEST, restart_delay * 2)
                 if self.restart_at is not None and now >= self.restart_at:
                     self.restart_at = self.failure = None
-                    self.reconstruction_status = "Restarting the ToF mesh"
+                    self.reconstruction_status = f"Restarting {method.label}"
                     reconstruct()
                     self.state = replace(self.state, flat_video=True)
                 if now - self.last_frame > 5:
@@ -661,8 +674,8 @@ class Pilot:
         for closer, worker in self.retiring:
             with diagnostics.stage("reconstruction"):
                 closer.join(timeout=max(0, deadline - clock.now()))
-            if closer.is_alive() or worker.process.is_alive():
-                stuck.append(f"reconstruction process {worker.process.pid}")
+            if closer.is_alive() or worker.alive():
+                stuck.append(f"reconstruction ({type(worker).__name__})")
         if stuck:
             raise ShutdownStuck(" and ".join(stuck) + " did not shut down")
 
