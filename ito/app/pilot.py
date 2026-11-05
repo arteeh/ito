@@ -8,7 +8,7 @@ import traceback
 from collections import deque
 from dataclasses import replace
 
-from ito import clock, diagnostics, recon
+from ito import clock, diagnostics, recon, trace
 from ito.desktop import DesktopState, PilotStatus
 from ito.desktop.settings import load as app_settings
 from ito.link import PairingError, connect, media
@@ -223,6 +223,9 @@ class Pilot:
             return
         camera = FrameJoin.camera(pair)
         self.last_frame = clock.now()
+        joined = clock.now_ns()
+        age_ms = (self.last_frame - captured) * 1000
+        trace.add("camera.joined", joined, joined, trace.key(captured), age_ms=age_ms)
         self.frame_cameras.append((captured, camera))
         self.state = replace(self.state, video=pair[0], video_time=captured)
         if camera is not None and not self.own_eye:
@@ -241,7 +244,8 @@ class Pilot:
         if self.worker is None or self.failure:
             return
         self.camera_rate.tick()
-        self.worker.submit(image, camera, captured)
+        with trace.span("camera.submit", trace.key(captured)) as span:
+            span.fields["taken"] = self.worker.submit(image, camera, captured)
 
     def _motion(self, message, peer):
         fresh = []

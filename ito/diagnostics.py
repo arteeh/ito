@@ -11,7 +11,7 @@ from importlib.metadata import version
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from ito import clock
+from ito import clock, trace
 
 MAX_BYTES, BACKUPS = 2 * 1024 * 1024, 3
 
@@ -62,6 +62,7 @@ class Diagnostics:
             self.event("diagnostics", enabled=enabled)
             self.enabled = enabled
             self.last.clear()
+            trace.start(self.path.parent / "trace" if enabled else None, "pilot", fresh=True)
 
     def event(self, event, *, interval=0, **fields):
         if not self.enabled:
@@ -111,6 +112,7 @@ class Diagnostics:
 
     def close(self):
         self.event("diagnostics_closed")
+        trace.stop()
         with self.lock:
             self.enabled = False
             if self.thread:

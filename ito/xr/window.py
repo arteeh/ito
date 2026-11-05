@@ -10,7 +10,7 @@ import xr
 from imgui_bundle import imgui
 from xr.utils import GraphicsAPI, Matrix4x4f
 
-from ito import clock, diagnostics
+from ito import clock, diagnostics, trace
 from ito.app.menu_layout import MenuLayout
 from ito.desktop import DesktopWindow
 from ito.desktop.window import MESHES_PER_FRAME, DesktopState
@@ -318,17 +318,21 @@ class XRWindow(DesktopWindow):
                 if commands:
                     request = f"{commands[-1].replace('_', '-').upper()} requested"
                     log.info("Command: %s", commands[-1])
+                began = started = clock.now_ns()
                 gpu = self.device.begin()
                 self.device.collect()
                 current = self.glided(state(), now)
-                self.straighten(source, current)
+                with trace.span("frame.straighten", trace.key(current.video_time)):
+                    self.straighten(source, current)
                 applied = []
                 self.use_scene(source)
                 for _ in range(MESHES_PER_FRAME):
-                    update = source.poll()
+                    with trace.span("frame.poll"):
+                        update = source.poll()
                     if update is None:
                         break
-                    self.renderer.upload(update)
+                    with trace.span("frame.upload", trace.key(update.captured_at)):
+                        self.renderer.upload(update)
                     applied.append(update)
                     revision, captured_at = update.revision, update.captured_at
                 rendered = False
@@ -361,6 +365,8 @@ class XRWindow(DesktopWindow):
                             ).as_numpy()
                             for view in views
                         ]
+                        gpu.mark("upload")
+                        started = clock.now_ns()
                         # One scene for both eyes, prepared once, seen from between them.
                         self.prepare_view(current, middle, covering(views, middle), projections)
                         for index, (view, swapchain, projection) in enumerate(
@@ -386,6 +392,9 @@ class XRWindow(DesktopWindow):
                             xr.CompositionLayerProjection(space=space, views=projection_views)
                         )
                         rendered = True
+                        trace.add("frame.draw", started, clock.now_ns())
+                        gpu.mark("eyes")
+                    started = clock.now_ns()
                     pointer = dispatch.pointer
                     panel_events = []
                     for event in events:
@@ -478,9 +487,13 @@ class XRWindow(DesktopWindow):
                                 size=xr.Extent2Df(*self.panel_size),
                             )
                         )
-                self.show(window)
+                trace.add("frame.overlay", started, clock.now_ns())
+                gpu.mark("panel")
+                with trace.span("frame.submit"):
+                    self.show(window)
                 held.close()
-                self.camera.collect()
+                with trace.span("frame.camera_wait"):
+                    self.camera.collect()
                 performance = self.performance.last
                 if rendered:
                     period = frame.predicted_display_period / 1e9
@@ -507,6 +520,7 @@ class XRWindow(DesktopWindow):
                         gpu_busy=self.gpu.busy if self.gpu is not None else None,
                     )
                 frames += 1
+                trace.add("frame", began, clock.now_ns())
                 diagnostics.event(
                     "display_frame",
                     interval=1,

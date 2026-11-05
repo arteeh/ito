@@ -7,6 +7,8 @@ import av
 from aiortc import MediaStreamTrack, codecs, jitterbuffer, rtcrtpreceiver
 from aiortc.mediastreams import MediaStreamError
 
+from ito import trace
+
 log = logging.getLogger(__name__)
 
 RTP_TIME_BASE = fractions.Fraction(1, 90000)
@@ -109,7 +111,10 @@ class VideoDecoder:
         if not encoded_frame.data:
             return []
         try:
-            frames = self.codec.decode(_packet(encoded_frame))
+            with trace.span(
+                "camera.decode", pts=encoded_frame.timestamp, bytes=len(encoded_frame.data)
+            ):
+                frames = self.codec.decode(_packet(encoded_frame))
         except av.FFmpegError as exc:
             log.warning("H.264 decode (%s) failed, frame skipped: %s", self.kind, exc)
             return []

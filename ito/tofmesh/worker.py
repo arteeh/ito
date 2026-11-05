@@ -20,7 +20,7 @@ from collections import deque
 
 import numpy as np
 
-from ito import clock, diagnostics
+from ito import clock, diagnostics, trace
 
 from . import depth as depth_module
 
@@ -43,20 +43,24 @@ def frame_size(width, height):
     return (len(range(step // 2, width, step)), len(range(step // 2, height, step))), step
 
 
-def _run(inputs, outputs, notes, options, integrated, depth):
+def _run(inputs, outputs, notes, options, integrated, depth, tracing=None):
     from .fusion import Fusion, MeshFrame
 
     try:
+        trace.start(tracing, "tofmesh")
         fusion = Fusion(**options)
         outbox = None
         next_note = 0.0
         waiting = False  # a frame is with the depth model (depth: its two queues)
         maps = 0  # depth maps fused up to the last note
         while True:
+            started = clock.now_ns()
             try:
                 item = inputs.get(timeout=0.01)
             except queue.Empty:
                 item = None
+            trace.add("worker.wait", started, clock.now_ns())
+            started = clock.now_ns()
             while item is not None:
                 kind = item[0]
                 if kind == "stop":
@@ -77,14 +81,18 @@ def _run(inputs, outputs, notes, options, integrated, depth):
                     fusion.imu(item[1])
                 elif kind == "frame":
                     fusion.frame(*item[1:])
+                    trace.add("worker.frame", clock.now_ns(), clock.now_ns(), trace.key(item[2]))
                 try:
                     item = inputs.get_nowait()
                 except queue.Empty:
                     item = None
+            trace.add("worker.inputs", started, clock.now_ns())
             if depth is not None:
-                waiting = _depth(fusion, depth, waiting)
+                with trace.span("worker.depth"):
+                    waiting = _depth(fusion, depth, waiting)
             before = fusion.stats["tof_frames"]
-            news = fusion.step(clock.now())
+            with trace.span("worker.step"):
+                news = fusion.step(clock.now())
             integrated.value += fusion.stats["tof_frames"] - before
             if news is not None:
                 outbox = news if outbox is None else _merge(outbox, news, MeshFrame)
@@ -92,10 +100,13 @@ def _run(inputs, outputs, notes, options, integrated, depth):
                 if outbox.timing is not None:
                     outbox.timing["sent"] = clock.now()
                 try:
-                    outputs.put_nowait(outbox)
+                    with trace.span("worker.publish", trace.key(outbox.captured_at)) as span:
+                        outputs.put_nowait(outbox)
+                        if outbox.triangles is not None:
+                            span.fields["triangles"] = len(outbox.triangles)
                     outbox = None
                 except queue.Full:
-                    pass
+                    trace.add("worker.publish_full", clock.now_ns(), clock.now_ns())
             now = clock.now()
             if now >= next_note:
                 next_note = now + 1.0
@@ -123,11 +134,18 @@ def _depth(fusion, queues, waiting):
     """Take the depth model's answer if one is in and send it the next frame: whether a frame
     is with it. Its failure is the worker's."""
     requests, results = queues
+    started = clock.now_ns()
     try:
         answer = results.get_nowait()
     except queue.Empty:
         answer = None
     if answer is not None:
+        trace.add(
+            "depth.receive",
+            started,
+            clock.now_ns(),
+            trace.key(answer[1]) if len(answer) > 2 else None,
+        )
         if answer[0] == "depth":
             fusion.depth_map(*answer[1:])
             waiting = False
@@ -140,7 +158,8 @@ def _depth(fusion, queues, waiting):
         request = fusion.depth_request()
         if request is not None:
             try:
-                requests.put_nowait(request)
+                with trace.span("depth.request", trace.key(request[0])):
+                    requests.put_nowait(request)
                 waiting = True
             except queue.Full:
                 pass
@@ -207,7 +226,7 @@ class TofMesh:
                 queues = (context.Queue(maxsize=1), context.Queue(maxsize=4))
                 self.depth = context.Process(
                     target=depth_module.run,
-                    args=(*queues, depth["method"], depth["size"]),
+                    args=(*queues, depth["method"], depth["size"], trace.config()),
                     name="ito-depth",
                     daemon=True,
                 )
@@ -220,7 +239,15 @@ class TofMesh:
         if not self.error:
             self.process = context.Process(
                 target=_run,
-                args=(self.inputs, self.outputs, self.notes, options, self.integrated, queues),
+                args=(
+                    self.inputs,
+                    self.outputs,
+                    self.notes,
+                    options,
+                    self.integrated,
+                    queues,
+                    trace.config(),
+                ),
                 name="ito-tofmesh",
                 daemon=True,
             )
@@ -319,10 +346,15 @@ class TofMesh:
         if self.depth is not None and self.depth.exitcode not in (None, 0) and not self._closed:
             # A crash (its own errors come through the worker, as the mesh's error).
             raise RuntimeError(f"{self.model} stopped ({self.depth.exitcode})")
+        started = clock.now_ns()
         try:
             frame = self.outputs.get_nowait()
         except queue.Empty:
             return None
+        trace.add(
+            "mesh.receive", started, clock.now_ns(), trace.key(frame.captured_at),
+            triangles=0 if frame.triangles is None else len(frame.triangles),
+        )  # fmt: skip
         if frame.positions is not None and len(frame.triangles):
             self.has_mesh = True
         if frame.timing is not None and frame.captured_at is not None:

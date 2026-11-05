@@ -9,11 +9,12 @@ import multiprocessing as mp
 import os
 import queue
 import sys
+import threading
 import traceback
 
 import numpy as np
 
-from ito import clock, diagnostics
+from ito import clock, diagnostics, trace
 from ito.protocol import Intrinsics
 from ito.render.pose import validate_pose
 
@@ -43,6 +44,7 @@ TRACKING_GAP = 0.5
 def _run(recon):
     vram = backend = timeline = None
     try:
+        trace.start(recon.tracing, "slam")
         from .slam import SLAMBackend
 
         backend = SLAMBackend(
@@ -150,9 +152,17 @@ def _run(recon):
                 backend.source_sequence = sequence
                 backend.source_captured = captured
                 dropped = False
+                admission = recon.admission
+                waited = admission.waited.setdefault(threading.get_ident(), [0, 0])
+                waited[:] = 0, 0
+                span = trace.span(
+                    "slam.frame", trace.key(captured), age_ms=(began - captured) * 1000,
+                    skipped=max(0, sequence - previous_sequence - 1),
+                )  # fmt: skip
                 try:
-                    with recon.admission.integration():
+                    with span, admission.integration():
                         backend.integrate(*frame, now)
+                        span.fields.update(backoff_ms=waited[0] / 1e6, sync_ms=waited[1] / 1e6)
                 except RuntimeError as exc:
                     torch = sys.modules.get("torch")
                     if torch is None or not isinstance(exc, torch.cuda.OutOfMemoryError):
@@ -228,6 +238,7 @@ def _run(recon):
                 # Again after the splat map's work: the early write may have found the pilot
                 # holding the lock.
                 publish_pose()
+            published = clock.now_ns()
             for _ in range(recon.ring.slots):
                 dirty = np.flatnonzero(backend.dirty)
                 start = np.searchsorted(dirty, cursor)
@@ -264,6 +275,7 @@ def _run(recon):
                     cursor = (int(indices[-1]) + 1) % len(backend.keys)
                 backend.dirty[indices] = False
                 revision += 1
+            trace.add("slam.ring", published, clock.now_ns())
             recon.scene_slots.value = backend.count
             recon.retiring_slots.value = int(backend.retiring.sum())
             recon.dirty_slots.value = int(backend.dirty.sum())
@@ -272,7 +284,8 @@ def _run(recon):
                 float(pending_captures.min()) if len(pending_captures) else 0
             )
             if recon.sequence.value == sequence or not recon.admission.available():
-                recon.admission.wake.wait(0.005)
+                with trace.span("slam.idle"):
+                    recon.admission.wake.wait(0.005)
     except InterruptedError:
         if not recon.stopped.value:
             recon.errors.send("GPU admission stopped")
@@ -372,6 +385,7 @@ class Mast3rSlam:
         reader, self.errors = context.Pipe(duplex=False)
         notes, self.notes = context.Pipe(duplex=False)
         self.process = None
+        self.tracing = trace.config()
         process = context.Process(target=_run, args=(self,), name="ito-mast3r-slam")
         process.start()
         self.process = process

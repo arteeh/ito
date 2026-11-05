@@ -21,6 +21,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
+from ito import trace
 from ito.render.gpu import GPU, bus_id
 
 from .graphs import graph_model
@@ -488,7 +489,8 @@ class SLAMBackend(RGBDBackend):
             raise RuntimeError(f"MASt3R-SLAM's backend failed: {exc}") from exc
         before = self.appends  # not len(keyframes): the backend adds relocalisations
         try:
-            self.step(rgb, camera)
+            with trace.span("slam.track", keyframes=len(self.keyframes)):
+                self.step(rgb, camera)
         except self.torch.cuda.OutOfMemoryError as exc:
             # The worker drops a frame that ran out of memory and goes on: safe for tracking,
             # not once the frame went into the keyframes.
@@ -507,14 +509,16 @@ class SLAMBackend(RGBDBackend):
             self.pose_ready()
         began = time.perf_counter()
         try:
-            self.draw(now)
+            with trace.span("slam.draw"):
+                self.draw(now)
         except self.oom:
             # The frame is tracked; the keyframes it did not redraw stay stale or owed (show)
             # and are redrawn in the next frames. The status says so (publish).
             self.ooms, self.oom_at = self.ooms + 1, now
             self.torch.cuda.empty_cache()
         self.draw_seconds = time.perf_counter() - began
-        self.publish(self.posed, now)
+        with trace.span("slam.splats"):
+            self.publish(self.posed, now)
 
     def spilling(self, now, spilled):
         """The worker's VRAM check (memory.VRAM, Windows) found spilled bytes of Ito's GPU memory
@@ -646,9 +650,10 @@ class SLAMBackend(RGBDBackend):
                 if len(states.global_optimizer_tasks) > 0:
                     idx = states.global_optimizer_tasks[0]
             if idx != -1:
-                self.optimize(idx)
-                if stream is not None:
-                    stream.synchronize()
+                with trace.span("slam.backend.optimize", keyframe=idx):
+                    self.optimize(idx)
+                    if stream is not None:
+                        stream.synchronize()
                 with states.lock:
                     states.global_optimizer_tasks.pop(0)
                 return True
@@ -668,7 +673,8 @@ class SLAMBackend(RGBDBackend):
                 # Ito: a full map relocalises into its spare slot (see relocalization).
                 spare = len(self.keyframes) >= self.capacity
                 edges = self.graph.n_edges
-                success = self.relocalization(frame, keep=not spare)
+                with trace.span("slam.backend.relocalise"):
+                    success = self.relocalization(frame, keep=not spare)
                 if success:
                     self.relocalized += 1
                     if spare:

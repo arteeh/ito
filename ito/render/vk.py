@@ -15,11 +15,14 @@ import ctypes
 import logging
 import struct
 import sys
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
 import vulkan as vk
+
+from ito import trace
 
 log = logging.getLogger(__name__)
 ffi, lib = vk.ffi, vk.lib
@@ -40,6 +43,7 @@ MEMORY = vk.VK_ACCESS_2_MEMORY_READ_BIT | vk.VK_ACCESS_2_MEMORY_WRITE_BIT
 COLOUR, DEPTH = vk.VK_IMAGE_ASPECT_COLOR_BIT, vk.VK_IMAGE_ASPECT_DEPTH_BIT
 DEPTH_FORMAT = vk.VK_FORMAT_D32_SFLOAT
 INFINITE = 2**64 - 1
+MARKS = 8  # tracing: GPU timestamps a frame may write (Frame.mark)
 
 
 def surface_extensions():
@@ -804,6 +808,11 @@ class Frame:
             | vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
             | vk.VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
         )
+        self.label = "frame"
+        self.queries = None  # tracing: the timestamp pool, and the names of the marks written
+        self.marks = []
+        self.tracing = False
+        self.submitted = 0
         self.pending = False  # submitted, its fence not waited for yet
         self.done = []  # run once the frame's GPU work is complete (readbacks)
         self.reading = []  # readback buffers in use; free again then
@@ -821,6 +830,7 @@ class Frame:
                     self.device.device, 1, ffi.new("VkFence*", self.fence), 1, INFINITE
                 )
                 self.pending = False
+                self._timestamps()
                 for callback in done:
                     callback()
         finally:
@@ -845,10 +855,64 @@ class Frame:
             ),
             "vkBeginCommandBuffer",
         )
+        self.marks = []
+        self.tracing = trace.enabled()
+        if self.tracing:
+            if self.queries is None:
+                pool = ffi.new("VkQueryPool*")
+                info = {
+                    "sType": vk.VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+                    "queryType": vk.VK_QUERY_TYPE_TIMESTAMP,
+                    "queryCount": MARKS,
+                }
+                check(
+                    lib.vkCreateQueryPool(
+                        self.device.device, ffi.new("VkQueryPoolCreateInfo*", info), ffi.NULL, pool
+                    ),
+                    "vkCreateQueryPool",
+                )
+                self.queries = pool[0]
+            lib.vkCmdResetQueryPool(self.cmd, self.queries, 0, MARKS)
+            self.mark("start")
         # Whatever the frames before this one left (uploads, the camera's own submission).
         self.barrier()
 
+    def mark(self, name):
+        """Tracing: the GPU's time when the work recorded so far is done; the span from the
+        mark before is the trace's gpu.<label>.<name>."""
+        if not self.tracing or len(self.marks) >= MARKS:
+            return
+        stage = vk.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT
+        if not self.marks:
+            stage = vk.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT
+        lib.vkCmdWriteTimestamp2(self.cmd, stage, self.queries, len(self.marks))
+        self.marks.append(name)
+
+    def _timestamps(self):
+        if len(self.marks) < 2:
+            return
+        count = len(self.marks)
+        values = ffi.new("uint64_t[]", count)
+        result = lib.vkGetQueryPoolResults(
+            self.device.device, self.queries, 0, count, 8 * count, values, 8,
+            vk.VK_QUERY_RESULT_64_BIT,
+        )  # fmt: skip
+        if result != vk.VK_SUCCESS:
+            return
+        period = self.device.properties.limits.timestampPeriod
+        # On the CPU's timeline from the submission (the GPU's own clock is not the CPU's).
+        at = self.submitted
+        for i in range(1, count):
+            length = int((values[i] - values[i - 1]) * period)
+            trace.add(f"gpu.{self.label}.{self.marks[i]}", at, at + length, gpu=True)
+            at += length
+        total = int((values[count - 1] - values[0]) * period)
+        trace.add(f"gpu.{self.label}", self.submitted, self.submitted + total, gpu=True)
+
     def submit(self, wait, signal):
+        if self.marks:
+            self.mark("end")
+        self.submitted = time.perf_counter_ns()
         check(lib.vkEndCommandBuffer(self.cmd), "vkEndCommandBuffer")
         waits = ffi.new(
             "VkSemaphoreSubmitInfo[]",
@@ -903,6 +967,8 @@ class Frame:
         self.staging.close()
         for buffer in self.readbacks:
             buffer.close()
+        if self.queries is not None:
+            lib.vkDestroyQueryPool(self.device.device, self.queries, ffi.NULL)
         lib.vkDestroyFence(self.device.device, self.fence, ffi.NULL)
         lib.vkFreeCommandBuffers(
             self.device.device, self.device.pool, 1, ffi.new("VkCommandBuffer*", self.cmd)

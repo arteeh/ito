@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pygame
 
-from ito import clock, diagnostics, recon
+from ito import clock, diagnostics, recon, trace
 from ito.render import perspective, pose
 from ito.render.anchor import AnchorGlide
 from ito.render.camera import CameraFeed
@@ -239,6 +239,7 @@ class DesktopWindow:
         due = clock.now()
         while True:
             now = clock.now()
+            began = clock.now_ns()
             events, pilot = dispatch.frame()
             io = self.overlay.begin(events, pygame.display.get_window_size(), self.input.captured)
             dispatch.ui(io, (), events)
@@ -249,29 +250,38 @@ class DesktopWindow:
             if pilot.commands:
                 request = pilot.commands[-1].replace("_", "-").upper() + " requested"
                 log.info("Command: %s", pilot.commands[-1])
+            trace.add("frame.input", began, clock.now_ns())
             gpu = self.device.begin()
             self.device.collect()
             applied = []
             self.use_scene(source)
             for _ in range(MESHES_PER_FRAME):
-                frame = source.poll()
+                with trace.span("frame.poll"):
+                    frame = source.poll()
                 if frame is None:
                     break
-                self.renderer.upload(frame)
+                with trace.span("frame.upload", trace.key(frame.captured_at)):
+                    self.renderer.upload(frame)
                 applied.append(frame)
                 revision, captured_at = frame.revision, frame.captured_at
+            gpu.mark("upload")
             current = self.glided(state(), now)
-            self.straighten(source, current)
+            with trace.span("frame.straighten", trace.key(current.video_time)):
+                self.straighten(source, current)
             size = pygame.display.get_window_size()
             if min(size) > 0:
                 self.size = size
             projection = perspective(self.fov, self.size[0] / self.size[1])
-            self.prepare_view(current, pilot.head, projection)
-            scene = self._view_image(self.size)
-            self.draw_view(current, pilot.head, projection, scene)
-            image = self.swapchain.acquire(self.size)
+            with trace.span("frame.draw"):
+                self.prepare_view(current, pilot.head, projection)
+                scene = self._view_image(self.size)
+                self.draw_view(current, pilot.head, projection, scene)
+            gpu.mark("scene")
+            with trace.span("frame.acquire"):
+                image = self.swapchain.acquire(self.size)
             if image is not None:
                 self.present(gpu, scene, image, upright=True, srgb=self.swapchain.srgb)
+            started = clock.now_ns()
             visible_time = current.video_time if current.flat_video else captured_at
             age = None if visible_time is None else max(0, now - visible_time)
             self.overlay.draw(
@@ -285,6 +295,8 @@ class DesktopWindow:
             )
             dispatch.ui(io, self.overlay.commands)
             self.overlay.commands.clear()
+            trace.add("frame.overlay", started, clock.now_ns())
+            gpu.mark("overlay")
             if image is not None:
                 if recorder is not None:
                     self._record(recorder, current, gpu, image)
@@ -293,10 +305,13 @@ class DesktopWindow:
                         self._capture(gpu, image)
                     except OSError as exc:
                         log.error("Could not save capture: %s", exc)
-            self.show(image)
+            with trace.span("frame.submit"):
+                self.show(image)
             if hasattr(source, "display_completed"):  # MASt3R-SLAM yields the GPU to late frames
                 source.display_completed(due, 1 / self.fps)
-            self.camera.collect()
+            with trace.span("frame.camera_wait"):
+                self.camera.collect()
+            started = clock.now_ns()
             statistics = source.statistics()
             statistics.update(
                 camera_hz=current.status.rates[1],
@@ -316,6 +331,8 @@ class DesktopWindow:
                 gpu_busy=self.gpu.busy if self.gpu is not None else None,
             )
             frames += 1
+            trace.add("frame.statistics", started, clock.now_ns())
+            trace.add("frame", began, clock.now_ns())
             diagnostics.event(
                 "display_frame",
                 interval=1,
@@ -329,7 +346,8 @@ class DesktopWindow:
             due += 1 / self.fps
             remaining = due - clock.now()
             if remaining > 0:
-                time.sleep(remaining)
+                with trace.span("frame.sleep"):
+                    time.sleep(remaining)
             else:
                 skipped = int(-remaining * self.fps) + 1
                 self.performance.skipped_deadlines(skipped)

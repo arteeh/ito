@@ -10,7 +10,7 @@ from contextlib import ExitStack, contextmanager
 import vulkan as vk
 import xr
 
-from ito import clock
+from ito import clock, trace
 from ito.app import settings
 from ito.render.vk import API_VERSION, Image, address
 
@@ -427,9 +427,11 @@ class Session:
 
     @contextmanager
     def frame(self):
-        frame = xr.wait_frame(self.session)
+        with trace.span("xr.wait_frame"):
+            frame = xr.wait_frame(self.session)
         self.clock = (frame.predicted_display_time, clock.now_ns())
-        xr.begin_frame(self.session)
+        with trace.span("xr.begin_frame"):
+            xr.begin_frame(self.session)
         with self.space_lock:
             self.frame_space = space = self.space
         layers = []
@@ -437,6 +439,7 @@ class Session:
             yield frame, layers, space
         finally:
             try:
+                ended = clock.now_ns()
                 xr.end_frame(
                     self.session,
                     xr.FrameEndInfo(
@@ -445,6 +448,7 @@ class Session:
                         layers=[ct.byref(layer) for layer in layers],
                     ),
                 )
+                trace.add("xr.end_frame", ended, clock.now_ns())
             finally:
                 with self.space_lock:
                     self.frame_space = None

@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from ito import clock, trace
+
 from . import dense, surface
 from . import depth as depth_module
 from . import volume as volume_module
@@ -435,12 +437,17 @@ class Fusion:
                 continue
             self.stats["frames"] += 1
             self.camera = camera
+            posed = clock.now_ns()
+            trace.add(
+                "fusion.posed", posed, posed, trace.key(exposed), wait_ms=(now - exposed) * 1000
+            )
             self.posed.append((exposed, image, camera, intrinsics))
             self._project(image, camera, intrinsics, exposed)
             if exposed - self.last_paint >= PAINT_INTERVAL:
                 self.last_paint = exposed
                 started = time.perf_counter()
-                self.stats["painted"] = self.volume.paint(image, camera, intrinsics, exposed)
+                with trace.span("fusion.paint", trace.key(exposed)):
+                    self.stats["painted"] = self.volume.paint(image, camera, intrinsics, exposed)
                 self.stats["paint_ms"] = (time.perf_counter() - started) * 1000
 
         waiting = []
@@ -464,6 +471,9 @@ class Fusion:
                     farther, world_from_sensor, grid["time"], camera[:3, 3], carve=False
                 )
             ended = time.perf_counter()
+            trace.add(
+                "fusion.integrate", int(started * 1e9), int(ended * 1e9), trace.key(grid["time"])
+            )
             self.tof = (zones, world_from_sensor, grid["time"])
             self.stats["tof_frames"] += 1
             self.stats["tof_voxels"] = fused
@@ -498,15 +508,17 @@ class Fusion:
             self.last_mesh = now
             if colours:
                 self.last_recolour = now
-            self._remesh(colours)
+            with trace.span("fusion.remesh"):
+                self._remesh(colours)
         if self.mesh_changed or self.pending_projectors or self.guess_changed:
             self.revision += 1
             news = MeshFrame(self.revision, self.captured_at, camera=self.camera, epoch=self.epoch)
             news.guess, self.guess_changed = self.guess, False
             if self.mesh_changed:
-                news.positions, news.normals, news.colours, news.triangles, news.blocks = (
-                    self.combined()
-                )
+                with trace.span("fusion.combine"):
+                    news.positions, news.normals, news.colours, news.triangles, news.blocks = (
+                        self.combined()
+                    )
                 news.cleared, self.cleared = sorted(self.cleared), set()
                 news.timing, self.meshed_timing = self.meshed_timing, None
                 if self.direct is not None:
@@ -554,9 +566,10 @@ class Fusion:
         )
         due = previous is None or key - previous[0] >= 2.0
         if due or (moved and key - previous[0] >= 0.5):
-            self.volume.integrate(
-                mapped, camera, key, camera[:3, 3], scale=mapped.weights, carve=False
-            )
+            with trace.span("fusion.depth_keyframe", trace.key(key)):
+                self.volume.integrate(
+                    mapped, camera, key, camera[:3, 3], scale=mapped.weights, carve=False
+                )
             self.depth_keyframe = key, camera.copy()
         self.stats["depth_maps"] += 1
         self.stats["depth_ms"] = ms

@@ -18,6 +18,7 @@ import logging
 import numpy as np
 import vulkan as vk
 
+from ito import clock, trace
 from ito.link import media
 from ito.tofmesh.worker import frame_size
 
@@ -61,6 +62,8 @@ class CameraFeed:
             {0: "uniform", 1: "sampler", 2: "sampler", 3: "sampler", 4: "image"},
         )
         self.frames = [Frame(device) for _ in range(FRAMES)]
+        for frame in self.frames:
+            frame.label = "camera"
         self.count = 0
         self.pending = None
         self.planes = []  # the planes the frame being straightened is sampled from
@@ -85,13 +88,15 @@ class CameraFeed:
                 f"{intrinsics.width}x{intrinsics.height}"
             )
         name = frame.format.name
-        on_gpu = d3d12.decoded(frame) if self.shared is not False else None
+        with trace.span("camera.decoded"):
+            on_gpu = d3d12.decoded(frame) if self.shared is not False else None
         wait = ()
         if on_gpu is not None:
             try:
                 if self.shared is None:
                     self.shared = d3d12.SharedFrames(self.device, on_gpu[0])
-                wait = [(self.shared.semaphore, ALL, self.shared.copy(on_gpu))]
+                with trace.span("camera.d3d12_copy"):
+                    wait = [(self.shared.semaphore, ALL, self.shared.copy(on_gpu))]
             except (d3d12.Unavailable, OSError, VulkanError) as exc:
                 log.warning("Camera frames go through memory: %s", exc)
                 if self.shared:
@@ -104,7 +109,8 @@ class CameraFeed:
             frame, name = frame.reformat(format="nv12"), "nv12"
         commands = self.frames[self.count % FRAMES]
         self.count += 1
-        commands.begin()
+        with trace.span("camera.begin"):
+            commands.begin()
         if on_gpu is not None:
             name = "nv12"
             self.planes = self.shared.planes
@@ -113,7 +119,9 @@ class CameraFeed:
             self._upload(commands, frame, name)
         (width, height), step = frame_size(intrinsics.width, intrinsics.height)
         self._targets((intrinsics.width, intrinsics.height), (width, height))
-        block = self._uniforms(frame, name, intrinsics, lens)
+        with trace.span("camera.uniforms"):
+            block = self._uniforms(frame, name, intrinsics, lens)
+        started = clock.now_ns()
         commands.sampled(*self.planes)
         for target, stride in (
             (self.texture, (1.0, 0.0)),
@@ -128,13 +136,16 @@ class CameraFeed:
             commands.use(self.pipeline, resources)
             commands.dispatch(target.size)
 
+        trace.add("camera.passes", started, clock.now_ns())
+
         def read(pixels, size):
             image = np.ascontiguousarray(pixels.reshape(size[1], size[0], 4)[..., :3])
             deliver(image, stamp)
 
         commands.read(self.colour, read)
         commands.sampled(self.texture)
-        commands.submit(wait, ())
+        with trace.span("camera.submit_gpu"):
+            commands.submit(wait, ())
         self.pending, self.held = commands, frame
 
     def collect(self):

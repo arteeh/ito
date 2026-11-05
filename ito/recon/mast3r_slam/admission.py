@@ -58,6 +58,7 @@ class Admission:
         self.recovered_at = 0.0
         self.stream = self.torch_stream = None
         self.lock = None  # made in the worker (bind_stream): the SLAM backend thread shares this
+        self.waited = {}  # tracing, per thread: ns held back, and waiting on chunks
 
     def completed(self, began, period):
         now = clock.now()
@@ -83,7 +84,9 @@ class Admission:
                 return True
             # Sleep, not a semaphore timeout: on Windows a 1 ms semaphore wait
             # takes ~10 ms (timer tick), which turns a 2 ms render backoff into 10.
+            started = clock.now_ns()
             time.sleep(min(0.002, max(0.0005, self.pause_until.value - clock.now())))
+            self._waited(0, started)
         return False
 
     def bind_stream(self, xp):
@@ -128,7 +131,9 @@ class Admission:
             with self.lock or nullcontext():
                 oldest = self.pending[0][1] if self.pending else None
             if oldest is not None:
+                started = clock.now_ns()
                 oldest.synchronize()
+                self._waited(1, started)
             self.collect()
         if not self.acquire():
             raise InterruptedError("Reconstruction stopped")
@@ -143,6 +148,10 @@ class Admission:
         finally:
             end.record()
             self.pending.append((start, end, elapsed, kind))
+
+    def _waited(self, kind, started):
+        waited = self.waited.setdefault(threading.get_ident(), [0, 0])
+        waited[kind] += clock.now_ns() - started
 
     @contextmanager
     def integration(self):

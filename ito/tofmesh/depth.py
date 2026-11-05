@@ -18,6 +18,8 @@ import time
 
 import numpy as np
 
+from ito import trace
+
 NEAREST = 0.05
 
 
@@ -31,7 +33,7 @@ def _lower_priority():
         os.nice(5)
 
 
-def run(requests, results, method, model_size):
+def run(requests, results, method, model_size, tracing=None):
     """The process: requests (key, image, support, intrinsics, camera, zones, sensor_from_camera,
     shares) -> results ("depth", key, DepthMap, dense mesh, ms), or ("skipped", key, ms) for a
     frame the model could not map from the ToF it had (too little of it to prompt the model, or
@@ -41,6 +43,7 @@ def run(requests, results, method, model_size):
 
     label = METHODS[method].label
     try:
+        trace.start(tracing, "depth")
         _lower_priority()
         import torch
 
@@ -53,14 +56,26 @@ def run(requests, results, method, model_size):
         stream = torch.cuda.Stream(priority=0)  # CUDA's least-urgent priority, not high priority
         scale = None
         results.put(("ready", torch.cuda.get_device_name()))
+        gpu = [torch.cuda.Event(enable_timing=True) for _ in range(2)]
         while True:
-            item = requests.get()
+            with trace.span("depth.wait"):
+                item = requests.get()
             if item is None:
                 return
             key, image, support, intrinsics, camera, zones, sensor, shares = item
+            k = trace.key(key)
             started = time.perf_counter()
-            with torch.inference_mode(), torch.cuda.stream(stream):
-                depth = model.predict(image, intrinsics, support, zones, sensor)
+            with trace.span("depth.predict", k) as span:
+                with torch.inference_mode(), torch.cuda.stream(stream):
+                    gpu[0].record(stream)
+                    depth = model.predict(image, intrinsics, support, zones, sensor)
+                    gpu[1].record(stream)
+                if trace.enabled():
+                    gpu[1].synchronize()
+                    gpu_ms = gpu[0].elapsed_time(gpu[1])
+                    span.fields["gpu_ms"] = gpu_ms
+                    begun = span.start
+                    trace.add("gpu.depth.predict", begun, begun + int(gpu_ms * 1e6), k, gpu=True)
             if depth is None:
                 results.put(("skipped", key, (time.perf_counter() - started) * 1000))
                 continue
@@ -81,10 +96,14 @@ def run(requests, results, method, model_size):
             depth[~np.isfinite(depth) | (depth <= NEAREST)] = np.nan
             inference_ms = (time.perf_counter() - started) * 1000
             size = depth.shape[::-1]
-            depth = anchor(depth, zones, sensor, intrinsics, size, shares["inside"])
-            mapped = DepthMap(depth, intrinsics, size, zones.fov, sensor[:3, :3], **shares)
-            direct = dense.mesh(mapped, camera, image)
-            results.put(("depth", key, mapped, direct, inference_ms))
+            with trace.span("depth.anchor", k):
+                depth = anchor(depth, zones, sensor, intrinsics, size, shares["inside"])
+            with trace.span("depth.normals", k):
+                mapped = DepthMap(depth, intrinsics, size, zones.fov, sensor[:3, :3], **shares)
+            with trace.span("depth.dense", k):
+                direct = dense.mesh(mapped, camera, image)
+            with trace.span("depth.send", k):
+                results.put(("depth", key, mapped, direct, inference_ms))
     except Exception as exc:
         try:
             results.put(("error", f"{label} failed: {exc}"), timeout=1)
