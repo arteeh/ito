@@ -273,7 +273,7 @@ class Session:
         problems = {}
         while True:
             for candidate in candidates:
-                found = self._ask(candidate, problems)
+                found = self._asked(candidate, problems, waiting, names, started)
                 if found:
                     if candidate.manifest and not runtimes.PINNED:
                         settings.remember_xr_runtime(candidate.manifest)
@@ -301,6 +301,33 @@ class Session:
                     raise RuntimeError("Stopped waiting for a headset")
                 if clock.now() >= pause_until:
                     break
+
+    def _asked(self, candidate, problems, waiting, names, started):
+        """_ask on a thread of its own while waiting() keeps the window answering: a runtime
+        with no headset can take seconds to say so (Virtual Desktop's, ~6 s), and the pilot may
+        close the window or cancel meanwhile."""
+        if waiting is None:
+            return self._ask(candidate, problems)
+        answer = []
+
+        def ask():
+            try:
+                answer.append((self._ask(candidate, problems), None))
+            except BaseException as exc:
+                answer.append((None, exc))
+
+        asking = threading.Thread(target=ask, name="ito-xr-ask", daemon=True)
+        asking.start()
+        while asking.is_alive():
+            if not waiting(names, clock.now() - started):
+                asking.join()
+                if answer and answer[0][0]:
+                    xr.destroy_instance(answer[0][0][0])
+                raise RuntimeError("Stopped waiting for a headset")
+        found, error = answer[0]
+        if error is not None:
+            raise error
+        return found
 
     def _ask(self, candidate, problems):
         if candidate.manifest:

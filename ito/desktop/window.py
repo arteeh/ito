@@ -47,6 +47,10 @@ class DesktopState:
 NVIDIA = 0x10DE
 
 
+class WindowClosed(Exception):
+    """The pilot closed the window (its X, Alt+F4) while it waited for something: Ito quits."""
+
+
 class DesktopWindow:
     def __init__(
         self,

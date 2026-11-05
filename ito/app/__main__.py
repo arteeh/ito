@@ -9,6 +9,7 @@ import pygame
 from ito import diagnostics
 from ito.desktop import DesktopWindow
 from ito.desktop.settings import load, settings_path
+from ito.desktop.window import WindowClosed
 from ito.link.pairing import DIGITS, normalize
 
 from . import connect, settings
@@ -130,6 +131,8 @@ def main(argv=None):
                 continue
             if not window.overlay.leave:
                 return 0
+    except WindowClosed:
+        return 0
     except (OSError, ValueError, RuntimeError, pygame.error) as exc:
         log.error("%s", exc)
         failure = str(exc)

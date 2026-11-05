@@ -13,7 +13,7 @@ from xr.utils import GraphicsAPI, Matrix4x4f
 from ito import clock, diagnostics, trace
 from ito.app.menu_layout import MenuLayout
 from ito.desktop import DesktopWindow
-from ito.desktop.window import MESHES_PER_FRAME, DesktopState
+from ito.desktop.window import MESHES_PER_FRAME, DesktopState, WindowClosed
 from ito.render import pose
 from ito.render.performance import Performance
 from ito.render.pose import quaternion
@@ -146,10 +146,9 @@ class XRWindow(DesktopWindow):
         pacing = pygame.time.Clock()
         while time.monotonic() < until or cancelled:
             events = pygame.event.get()
-            if any(
-                e.type == pygame.QUIT or (e.type == pygame.KEYDOWN and e.key == pygame.K_ESCAPE)
-                for e in events
-            ):
+            if any(e.type == pygame.QUIT for e in events):
+                raise WindowClosed
+            if any(e.type == pygame.KEYDOWN and e.key == pygame.K_ESCAPE for e in events):
                 cancelled = True
                 theme.leave()
             if self._waiting_frame(events):
