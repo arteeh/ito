@@ -468,6 +468,17 @@ def main():
     )
     adapt(slam / "mast3r_slam/global_opt.py", FACTOR_GRAPH)
     adapt(slam / "mast3r_slam/tracker.py", TRACKER)
+    # Torch 2.6 and later load checkpoints weights-only by default; the retrieval checkpoint (its
+    # sha256 checked as it is downloaded) also holds its training arguments, as upstream loads it.
+    adapt(
+        slam / "thirdparty/mast3r/mast3r/retrieval/processor.py",
+        (
+            (
+                "ckpt = torch.load(modelname, 'cpu')",
+                "ckpt = torch.load(modelname, 'cpu', weights_only=False)",
+            ),
+        ),
+    )
     # Windows' `long` is 32 bits; the kernels index with it. Torch 2.11's C++ API: its dispatch
     # macros take a tensor's scalar type (no longer its deprecated type()), and the norm the
     # Gauss-Newton solves stop on is ATen's (torch::linalg is no longer in torch/extension.h).
@@ -530,7 +541,8 @@ def main():
         f"slam/: MASt3R-SLAM revision {SLAM_REV}. Ito source adaptations: FactorGraph keeps "
         "its edges and solve inputs in buffers allocated once (global_opt.py), the frame "
         "tracker re-raises CUDA out-of-memory errors (tracker.py), fixed-width CUDA indices, Torch "
-        "2.11's dispatch and norm calls in the CUDA kernels, "
+        "2.11's dispatch and norm calls in the CUDA kernels, the retrieval checkpoint loaded "
+        "with its arguments (retrieval/processor.py, weights_only=False), "
         "distinct lietorch CPU kernel symbols, current-stream CUDA launches. Ito feeds it frames "
         "of upstream's 512-pixel long side, or, at an Input resolution below 100 %, 448, 368 or "
         "256 (not upstream's).\n",
