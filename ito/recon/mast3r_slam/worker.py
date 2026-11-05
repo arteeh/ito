@@ -381,7 +381,7 @@ class Mast3rSlam:
         self.notes = notes
         self.closed = False
         self.tracked_frames = 0
-        self.tracking = self.shown = False
+        self.tracks = self.shown = False  # view(): SLAM tracked the last frame; splats shown
         self.last_tracking = self.steady_since = 0.0
 
     def report_precision(self, active):
@@ -478,13 +478,13 @@ class Mast3rSlam:
         tracked = self.pose()
         camera = None
         if tracked:
-            camera, count, self.tracking, _ = tracked
+            camera, count, self.tracks, _ = tracked
             if count != self.tracked_frames:
                 if now - self.last_tracking > TRACKING_GAP:
                     self.steady_since = now
                 self.last_tracking = now
             self.tracked_frames = count
-        live = self.tracking and now - self.last_tracking < TRACKING_LOST
+        live = self.tracks and now - self.last_tracking < TRACKING_LOST
         steady = (
             live
             and now - self.last_tracking < TRACKING_GAP
@@ -495,12 +495,12 @@ class Mast3rSlam:
             diagnostics.event(
                 "slam_view",
                 shown=shown,
-                tracking=self.tracking,
+                tracking=self.tracks,
                 tracking_age_ms=(now - self.last_tracking) * 1000,
             )
         self.shown = shown
         note = None
-        if self.tracking and not live:
+        if self.tracks and not live:
             note = "SLAM tracking paused; showing flat camera feed"
         return shown, camera if live and tracked else None, note
 
