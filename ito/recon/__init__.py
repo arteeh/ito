@@ -44,7 +44,22 @@ METHODS = {
     "da3": Method(
         "Depth Anything 3",
         "ToF mesh; a depth map from each camera frame, scaled by the ToF's ranges.",
-        (("metric", "Metric"),),
+        (
+            ("small", "Small"),
+            ("base", "Base"),
+            ("large", "Large"),
+            ("giant", "Giant"),
+            ("metric", "Metric"),
+        ),
+    ),
+    "prior_da": Method(
+        "Prior Depth Anything",
+        "ToF mesh; the ToF's ranges completed into a depth map by each camera frame.",
+        (("small", "Small"), ("base", "Base"), ("large", "Large")),
+    ),
+    "mapanything": Method(
+        "MapAnything",
+        "ToF mesh; a metric depth map from each camera frame and its lens, checked by the ToF.",
     ),
 }
 

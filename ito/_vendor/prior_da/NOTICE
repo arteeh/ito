@@ -1,0 +1,11 @@
+Inference-only subset of SpatialVision/Prior-Depth-Anything at 8c029cbca669443fe0bbf8dcefb5f91ad531084d.
+https://github.com/SpatialVision/Prior-Depth-Anything
+Apache-2.0 (LICENSE). Its depth_anything_v2 folder is Depth Anything V2's code (Apache-2.0).
+Imports renamed into ito._vendor.prior_da. Ito's changes:
+- No CLI, plugin, sparse sampler, visualisation or Hugging Face downloads: the model's checkpoints
+  are read from the folders given (Ito bundles them); utils.py keeps Arguments and the
+  disparity helpers.
+- depth_completion.py finds the K nearest sparse points with torch.cdist and topk instead of
+  torch_cluster.knn (the same neighbours; no compiled extension).
+- depth_anything_v2/dpt.py applies its two input transforms in turn instead of through
+  torchvision's Compose; unused cv2 and pdb imports removed (dpt.py, util/transform.py).

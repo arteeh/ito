@@ -18,7 +18,8 @@ class AppSettings(BaseModel):
         "guessed"
     )
     pda_size: Literal["small", "large"] = "large"
-    da3_size: Literal["metric"] = "metric"
+    da3_size: Literal["small", "base", "large", "giant", "metric"] = "metric"
+    prior_da_size: Literal["small", "base", "large"] = "base"
     # A depth model's map in the ToF mesh: how much it counts, as a percentage of a ToF reading,
     # inside and outside the ToF's view (tofmesh.depth.DepthMap).
     depth_inside: int = Field(default=25, ge=0, le=100)
