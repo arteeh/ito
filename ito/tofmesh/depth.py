@@ -21,6 +21,8 @@ import numpy as np
 
 from ito import trace
 
+from .zones import GUIDE_SCALE
+
 NEAREST = 0.05
 
 
@@ -200,23 +202,87 @@ def anchor(depth, zones, sensor_from_camera, intrinsics, size, share):
 
     Solve ray/sphere intersection using the actual translated ToF mount. No ToF reading
     means no correction. This never stretches the ToF image over the camera's field of view.
+
+    On the GPU (NumPy took ~20 ms): `depth` (h, w) in, a CUDA tensor out, for DepthMap.
     """
+    import torch
+
     h, w = depth.shape
     fx, fy, cx, cy = intrinsics
-    u, v = np.meshgrid(np.arange(w, dtype=np.float32), np.arange(h, dtype=np.float32))
-    rays = np.stack([(u - cx) / fx, -(v - cy) / fy, -np.ones_like(u)], -1)
-    a = rays.reshape(-1, 3) @ sensor_from_camera[:3, :3].astype(np.float32).T
-    b = sensor_from_camera[:3, 3].astype(np.float32)
-    points = a * depth.reshape(-1, 1) + b
-    measured, _, _, _ = zones.lookup(points)
-    aa = np.sum(a * a, axis=1)
-    ab = a @ b
-    disc = ab * ab - aa * (b @ b - measured * measured)
-    z = (-ab + np.sqrt(np.maximum(disc, 0))) / aa
-    ok = np.isfinite(measured) & (disc > 0) & (z > NEAREST)
-    out = depth.copy().ravel()
-    out[ok] = (z[ok] + share * out[ok]) / (1 + share)
+    d = torch.from_numpy(np.ascontiguousarray(depth, np.float32)).cuda()
+    v, u = torch.meshgrid(
+        torch.arange(h, dtype=torch.float32, device=d.device),
+        torch.arange(w, dtype=torch.float32, device=d.device),
+        indexing="ij",
+    )
+    rays = torch.stack([(u - cx) / fx, -(v - cy) / fy, -torch.ones_like(u)], -1)
+    rotation = torch.as_tensor(sensor_from_camera[:3, :3], dtype=torch.float32, device=d.device)
+    a = rays.reshape(-1, 3) @ rotation.T
+    b = torch.as_tensor(sensor_from_camera[:3, 3], dtype=torch.float32, device=d.device)
+    measured = _measured(zones, a * d.reshape(-1, 1) + b)
+    aa, ab = (a * a).sum(1), a @ b
+    disc = (ab * ab).double() - aa.double() * (float(b @ b) - measured * measured)
+    z = (-ab.double() + torch.sqrt(torch.clamp_min(disc, 0))) / aa.double()
+    ok = torch.isfinite(measured) & (disc > 0) & (z > NEAREST)
+    out = d.reshape(-1).clone()
+    out[ok] = ((z[ok] + (share * out[ok]).double()) / (1 + share)).float()
     return out.reshape(h, w)
+
+
+def _measured(zones, points):
+    """zones.Zones.lookup's range (its first result) for points (N, 3) in the sensor frame, a
+    float32 CUDA tensor: the same arithmetic, in Torch, float64 where NumPy's is."""
+    import torch
+
+    device = points.device
+    tensor = lambda a: torch.as_tensor(np.asarray(a), device=device)  # noqa: E731
+    x, y, z = points.unbind(1)
+    distance = torch.sqrt(x * x + y * y + z * z)
+    across = torch.atan2(x, -z)
+    up = torch.asin(torch.clamp(y / torch.clamp_min(distance, 1e-9), -1, 1))
+    rows, cols = zones.rows, zones.cols
+    u = (across + zones.fov[0] / 2) / zones.step[0] - 0.5
+    v = (zones.fov[1] / 2 - up) / zones.step[1] - 0.5
+    inside = (z < 0) & (u >= -0.5) & (u <= cols - 0.5) & (v >= -0.5) & (v <= rows - 0.5)
+    rn = torch.clamp(torch.round(v).long(), 0, rows - 1)
+    cn = torch.clamp(torch.round(u).long(), 0, cols - 1)
+    nearest = tensor(np.where(zones.valid, zones.ranges, np.nan).reshape(-1))[rn * cols + cn]
+    nan = torch.full_like(nearest, torch.nan)
+    if rows < 2 or cols < 2:
+        return torch.where(inside, nearest, nan)
+    c0 = torch.clamp(torch.floor(u).long(), 0, cols - 2)
+    r0 = torch.clamp(torch.floor(v).long(), 0, rows - 2)
+    cell = r0 * (cols - 1) + c0
+    t = {k: tensor(table)[cell] for k, table in zones._cells().items() if k != "corners"}
+    u, v = u.double(), v.double()
+    fu = torch.clamp(
+        u - c0, torch.where(t["left"], -0.5, 0.0).double(), torch.where(t["right"], 1.5, 1.0)
+    )
+    fv = torch.clamp(
+        v - r0, torch.where(t["top"], -0.5, 0.0).double(), torch.where(t["bottom"], 1.5, 1.0)
+    )
+    gu, gv = 1 - fu, 1 - fv
+    w0 = gu * gv * t["ok0"]
+    w1 = fu * gv * t["ok1"]
+    w2 = gu * fv * t["ok2"]
+    w3 = fu * fv * t["ok3"]
+    weight = w0 + w1 + w2 + w3
+    denominator = t["inverse0"] * w0 + t["inverse1"] * w1 + t["inverse2"] * w2 + t["inverse3"] * w3
+    bilinear = torch.where(denominator > 0, weight / denominator, nan)
+    smooth = t["smooth"] & (weight >= 0.25) & torch.isfinite(bilinear)
+    value = torch.where(smooth, bilinear, nearest)
+    if zones.label is not None:
+        g = GUIDE_SCALE
+        fi = torch.clamp(((v.float() + 0.5) * g).long(), 0, rows * g - 1)
+        fj = torch.clamp(((u.float() + 0.5) * g).long(), 0, cols * g - 1)
+        zone = tensor(zones.label)[fi, fj].long()
+        chosen = zone >= 0
+        zr, zc = torch.clamp(zone, 0) // cols, torch.clamp(zone, 0) % cols
+        i0 = tensor(zones.inverse)[zr, zc]
+        i = i0 + tensor(zones.slope_u)[zr, zc] * (u - zc) + tensor(zones.slope_v)[zr, zc] * (v - zr)
+        i = torch.where((i > 0.5 * i0) & (i < 2 * i0), i, i0)
+        value = torch.where(chosen, 1.0 / i, value)
+    return torch.where(inside, value, nan)
 
 
 class DepthMap:
@@ -237,8 +303,7 @@ class DepthMap:
         fx, fy, cx, cy = intrinsics
         sx, sy = w / size[0], h / size[1]
         self.k = (fx * sx, fy * sy, (cx + 0.5) * sx - 0.5, (cy + 0.5) * sy - 0.5)
-        d = torch.from_numpy(np.ascontiguousarray(depth, np.float32)).cuda()
-        d = torch.where(d > NEAREST, d, torch.nan)
+        d = torch.where(depth > NEAREST, depth, torch.nan)
         v, u = torch.meshgrid(
             torch.arange(h, dtype=torch.float32, device=d.device),
             torch.arange(w, dtype=torch.float32, device=d.device),
