@@ -117,6 +117,7 @@ def run(mailbox, results, maps, method, model_size, precision, tracing=None):
                     gpu[1].synchronize()
                     gpu_ms = gpu[0].elapsed_time(gpu[1])
                     span.fields["gpu_ms"] = gpu_ms
+                    span.fields["metric"] = int(model.metric)
                     begun = span.start
                     trace.add("gpu.depth.predict", begun, begun + int(gpu_ms * 1e6), k, gpu=True)
             if depth is None:

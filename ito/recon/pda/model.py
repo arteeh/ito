@@ -18,8 +18,10 @@ NEAREST = 0.05  # metres: nothing nearer is believed in the prompt
 
 
 class Model:
-    """predict(): a camera frame's depth (h, w) in metres along -Z, or None where the ToF sees
-    too little of the frame to prompt it."""
+    """predict(): a camera frame's depth (h, w) in metres along -Z. Where the ToF gives no prompt
+    (too little of the frame, or one distance only: a wall or shelf right in front), the model
+    runs without one; that map is not metric (`metric` False for it), and the depth process
+    scales it by the ToF's real readings, or skips it when they cannot scale it."""
 
     metric = True
 
@@ -37,13 +39,12 @@ class Model:
         h, w = image.shape[:2]
         camera_from_sensor = np.linalg.inv(sensor_from_camera)
         depth = prompt(zones, camera_from_sensor, intrinsics, (w, h))
-        if depth is None:
-            return None
+        self.metric = depth is not None
         resize = torch.nn.functional.interpolate
         x = torch.from_numpy(image).to("cuda").permute(2, 0, 1)[None].float() / 255
         x = resize(x, INPUT, mode="bilinear", antialias=True, align_corners=False)
         x = ((x - self.mean) / self.std).to(self.dtype)
-        p = torch.from_numpy(depth).to("cuda")[None, None].to(self.dtype)
+        p = None if depth is None else torch.from_numpy(depth).to("cuda")[None, None].to(self.dtype)
         out = self.net(pixel_values=x, prompt_depth=p).predicted_depth
         out = resize(out[:, None].float(), (h, w), mode="bilinear", align_corners=False)
         return out[0, 0].cpu().numpy()
