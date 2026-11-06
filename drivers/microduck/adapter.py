@@ -134,6 +134,7 @@ class MicroduckAdapter(Adapter):
         self._tof_fov = None
         self._imu_pending = deque(maxlen=64)
         self._ranges_pending = deque(maxlen=8)
+        self._mounts = {}  # the sensors' frames in the latest robot.state
         self._imu_rate = Rate()
         self._tof_rate = Rate()
         # The policy's trained forward/backward range is +-0.4 m/s and it stands still below
@@ -429,6 +430,10 @@ class MicroduckAdapter(Adapter):
             self._head_gyro.append((source, tuple(data["gyro"])))
             self._imu_pending.append((source, data))
             self._imu_rate.tick()
+            # Each reading goes on as it arrives: robotd reads the chip in bursts (~4 readings
+            # 67 ms apart, head_imu.rs WAKE_HZ), and holding them for the next robot.state added
+            # up to its 20 ms.
+            self._publish_sensors(self._mounts, ranges=False)
             return
         if method == "tof.frame":
             source, _ = self._source_clock(data.get("t_ns"), clock.now())
@@ -437,7 +442,8 @@ class MicroduckAdapter(Adapter):
             return
         if method != "robot.state":
             return
-        self._publish_sensors(data.get("frames") or {})
+        self._mounts = data.get("frames") or {}
+        self._publish_sensors(self._mounts)
         values = {"policy": data["policy"]}
         for name, angle in zip(self.joint_names, data["joints"], strict=True):
             if name in HEAD_LIMITS or name == "mouth":
@@ -502,16 +508,17 @@ class MicroduckAdapter(Adapter):
         self._telemetry.update(values)
         self._state_at = clock.now()
 
-    def _publish_sensors(self, mounts):
+    def _publish_sensors(self, mounts, ranges=True):
+        """The pending head IMU readings and, with `ranges`, ToF frames."""
         camera = mounts.get("camera")
-        if not camera or not (self._imu_pending or self._ranges_pending):
+        if not camera or not (self._imu_pending or (ranges and self._ranges_pending)):
             return
         imu, grids = (), ()
         if self._imu_pending and mounts.get("head_imu"):
             imu = (
                 sensors.imu(self._imu_chip, list(self._imu_pending), mounts["head_imu"], camera),
             )
-        if self._ranges_pending and mounts.get("tof"):
+        if ranges and self._ranges_pending and mounts.get("tof"):
             grids = tuple(
                 sensors.ranges(self._tof_chip, when, frame, mounts["tof"], camera, self._tof_fov)
                 for when, frame in self._ranges_pending
@@ -520,7 +527,8 @@ class MicroduckAdapter(Adapter):
             return
         if self.publish_sensors(Sensors(camera="head", imu=imu, ranges=grids)):
             self._imu_pending.clear()
-            self._ranges_pending.clear()
+            if ranges:
+                self._ranges_pending.clear()
         self._telemetry.update(head_imu_hz=self._imu_rate.hz(), tof_hz=self._tof_rate.hz())
 
     def _moved(self, data, source, stamp, pose, camera):
