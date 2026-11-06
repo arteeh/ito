@@ -74,9 +74,6 @@ DRAW_FACING = 0.25
 # A texel takes a new view's colour when that view's weight is at least this share of the best
 # weight a view of it ever had.
 BAKE_KEEP = 0.85
-# The live frame is baked into the atlas at most this often (camera time): each bake draws the
-# whole mesh into the atlas, and consecutive frames of a 30 Hz camera add little to it.
-BAKE_INTERVAL = 1 / 15
 
 # Guessed depth: one vertex per GUESS_GRID pixels of the shadow-map resolution, ranges capped at
 # GUESS_FAR (beyond the ToF's 4 m nothing is known), a break where neighbouring guesses differ
@@ -200,7 +197,6 @@ class MeshRenderer:
         )  # fmt: skip
         self.atlas = None  # the texture atlas, layers added as the volume's slots fill
         self.bake_due = False  # a new live frame to bake
-        self.baked = None  # capture time of the live frame last due to bake
         self.images = Image(device, self.image_size, COLOUR, sampled=True, layers=slots, array=True)
         w, h = SHADOW_SIZE
         self.shadows = Image(device, (w * slots, h), RANGE, sampled=True, attachment=True)
@@ -288,7 +284,6 @@ class MeshRenderer:
         self.epoch = None
         self.count = 0
         self.projectors = [None] * self.slots
-        self.baked = None
         self.bake_due = False
         self.shadow_dirty.clear()
         self.shadow_stale.clear()
@@ -384,8 +379,8 @@ class MeshRenderer:
                 frame.upload(buffer, np.ascontiguousarray(data, kind))
         self.count = t
 
-    def live(self, image, world_from_camera, intrinsics, captured):
-        """The camera frame captured at `captured` as the live projector: `image` (the camera
+    def live(self, image, world_from_camera, intrinsics):
+        """A camera frame as the live projector, baked into the atlas: `image` (the camera
         feed's colour frame, COLOUR, worker.frame_size) copied into slot 0 on the GPU, seen from
         world_from_camera with intrinsics (fx, fy, cx, cy)."""
         frame = self.device.frame
@@ -393,9 +388,7 @@ class MeshRenderer:
             self._resize(image.size)
         frame.copy_image(image, self.images)
         self._place(0, world_from_camera, intrinsics)
-        if self.baked is None or not 0 <= captured - self.baked < BAKE_INTERVAL:
-            self.baked = captured
-            self.bake_due = True
+        self.bake_due = True
 
     def _resize(self, size):
         """Projector images of this size (the camera's colour frame's): the views kept at the

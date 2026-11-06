@@ -374,7 +374,7 @@ class DesktopWindow:
         if self.live is not None:
             posed = source.live_camera(self.live)
             if posed is not None:
-                self.renderer.live(self.camera.colour, *posed, self.live)
+                self.renderer.live(self.camera.colour, *posed)
                 self.live = None
 
     def glided(self, current, now):
