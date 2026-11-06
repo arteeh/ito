@@ -20,14 +20,13 @@ import numpy as np
 THUMB_WIDTH = 160
 # The worker takes the newest frame whenever it is free (worker.TofMesh.submit): from a 30 Hz
 # camera ~25 a second (live sim, 6 Nov), so a window holds ~25 pairs a second. An estimate uses
-# the last WINDOW seconds and needs PAIRS of them moving: about a quarter of the window. (Set
-# when the worker took at most 15 frames a second, ~11 pairs: more than half, a head turning
-# most of the window.)
+# the last WINDOW seconds and needs PAIRS of them moving: more than half, a head turning most of
+# the window.
 WINDOW = 3.0  # seconds of frame pairs an estimate uses
 EVERY = 0.5  # seconds between estimates
 MOVED = 1.0  # thumbnail pixels a pair must be predicted to move to count
 CLIP = 5.0  # thumbnail pixels: a worse match counts no more than this
-PAIRS = 20  # moving pairs an estimate needs
+PAIRS = 40  # moving pairs an estimate needs
 # A steady turn says nothing about the delay (every delay predicts the same image shift): the
 # costs come out nearly flat. The estimate moves only to a delay that matches clearly better
 # than the current one, by this fraction of the median cost.
