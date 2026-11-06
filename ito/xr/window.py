@@ -13,7 +13,7 @@ from xr.utils import GraphicsAPI, Matrix4x4f
 from ito import clock, diagnostics, trace
 from ito.app.menu_layout import MenuLayout
 from ito.desktop import DesktopWindow
-from ito.desktop.window import MESHES_PER_FRAME, DesktopState, WindowClosed
+from ito.desktop.window import MESHES_PER_FRAME, DesktopState, WindowClosed, save_capture
 from ito.render import pose
 from ito.render.performance import Performance
 from ito.render.pose import quaternion
@@ -215,12 +215,7 @@ class XRWindow(DesktopWindow):
 
         def save(pixels, size):
             texels = pixels.reshape(size[1], size[0], 4)
-            rgb = np.ascontiguousarray(texels[..., 2::-1] if bgr else texels[..., :3])
-            try:
-                pygame.image.save(pygame.image.frombytes(rgb.tobytes(), size, "RGB"), path)
-                log.info("Capture: %s", path)
-            except (OSError, pygame.error) as exc:
-                log.error("Could not save capture: %s", exc)
+            save_capture(texels[..., 2::-1] if bgr else texels[..., :3], path)
 
         frame.read(target, save)
         return str(path)

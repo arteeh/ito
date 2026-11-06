@@ -1,11 +1,13 @@
 import logging
 import math
 import os
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+import PIL.Image
 import pygame
 
 from ito import clock, diagnostics, recon, trace
@@ -26,6 +28,21 @@ from .record import Recorder, from_env
 
 log = logging.getLogger(__name__)
 MESHES_PER_FRAME = 2
+
+
+def save_capture(rgb, path):
+    """Write a capture, an (h, w, 3) uint8 array, as a PNG on a thread of its own: encoded on the
+    display thread it held the view still for 0.1-0.2 s on the desktop and 0.4-0.5 s in a headset
+    (three images)."""
+
+    def write():
+        try:
+            PIL.Image.fromarray(rgb).save(path)
+            log.info("Capture: %s", path)
+        except OSError as exc:
+            log.error("Could not save capture: %s", exc)
+
+    threading.Thread(target=write, name="ito-capture").start()
 
 
 @dataclass(frozen=True)
@@ -174,15 +191,7 @@ class DesktopWindow:
             if not path.exists():
                 break
 
-        def save(pixels, size):
-            try:
-                rgb = self._rgb(pixels, size).tobytes()
-                pygame.image.save(pygame.image.frombytes(rgb, size, "RGB"), path)
-                log.info("Capture: %s", path)
-            except (OSError, pygame.error) as exc:
-                log.error("Could not save capture: %s", exc)
-
-        frame.read(image, save)
+        frame.read(image, lambda pixels, size: save_capture(self._rgb(pixels, size), path))
         return path
 
     def _rgb(self, pixels, size):
