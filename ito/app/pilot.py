@@ -99,6 +99,7 @@ class Pilot:
         self.last_frame = 0.0
         self.camera_rate = Rate()
         self.frame_cameras = deque(maxlen=16)  # (capture time, camera pose) of shown frames
+        self.frames = deque(maxlen=8)  # (frame, capture time) not yet taken by the window
         self.motion_time = -1.0
         self.backend_rate = CounterRate()
 
@@ -227,9 +228,17 @@ class Pilot:
         age_ms = (self.last_frame - captured) * 1000
         trace.add("camera.joined", joined, joined, trace.key(captured), age_ms=age_ms)
         self.frame_cameras.append((captured, camera))
+        self.frames.append((pair[0], captured))
         self.state = replace(self.state, video=pair[0], video_time=captured)
         if camera is not None and not self.own_eye:
             self._anchor(camera, captured)
+
+    def decoded(self):
+        """The camera frames decoded since the last call, oldest first: (frame, capture time)."""
+        frames = []
+        while self.frames:
+            frames.append(self.frames.popleft())
+        return frames
 
     def camera_frame(self, image, captured):
         """From the window, which straightens each decoded frame on the GPU: the frame captured
@@ -388,6 +397,7 @@ class Pilot:
         self.restart_at = None
         restart_delay = RESTART_FIRST
         worker_started = 0.0
+        self.frames.clear()
         self.state = replace(
             self.state,
             flat_video=True,

@@ -3,6 +3,7 @@ import math
 import os
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -13,12 +14,13 @@ import pygame
 from ito import clock, diagnostics, recon, trace
 from ito.render import perspective, pose
 from ito.render.anchor import AnchorGlide
-from ito.render.camera import CameraFeed
+from ito.render.camera import COLOURS, CameraFeed
 from ito.render.gpu import GPU
 from ito.render.performance import Performance
 from ito.render.pose import FloatArray
 from ito.render.video import VideoPanel
 from ito.render.vk import Device, Image, Presenter, Swapchain, native_window
+from ito.tofmesh.fusion import POSE_WAIT
 from ito.tofmesh.render import COLOUR
 
 from .dispatch import DisplayDispatch
@@ -125,7 +127,9 @@ class DesktopWindow:
         self.renderer = self.renderers["mesh"]
         self.video_panel = VideoPanel(device, COLOUR)
         self.camera = CameraFeed(device)
-        self.live = None  # capture time of the newest frame, until its pose is known
+        # Frames straightened and not yet live, until their pose is known: (capture time,
+        # colour frame, its number)
+        self.waiting = deque()
         if self.overlay is None:
             self.overlay = Overlay(device)
 
@@ -234,6 +238,7 @@ class DesktopWindow:
             if recorder is not None:
                 recorder.close()
             self.renderer.clear()  # the next session or a menu shows none of this one's mesh
+            self.waiting.clear()
 
     def _record(self, recorder: Recorder, current, frame, image):
         """The screen grab is copied out in the frame and collected when the frame is done (a
@@ -372,19 +377,27 @@ class DesktopWindow:
             pacing.tick(0)
 
     def straighten(self, source, current):
-        """The newest camera frame to RGB on the GPU, on to the ToF mesh's colour (once the GPU
-        has it: camera.collect()) and into the mesh's live projector as soon as the pose it was
-        captured at is known (usually at once; a newer frame takes the place of one waiting)."""
-        if current.video is not None and self.camera.update(
-            current.video, current.video_time, current.video_intrinsics, current.video_lens,
-            source.camera_frame,
-        ):  # fmt: skip
-            self.live = current.video_time
-        if self.live is not None:
-            posed = source.live_camera(self.live)
-            if posed is not None:
-                self.renderer.live(self.camera.colour, *posed)
-                self.live = None
+        """Every camera frame decoded since the last displayed frame, in order, to RGB on the GPU,
+        on to the ToF mesh's colour (once the GPU has it: camera.collect()) and into the mesh's
+        live projector (and atlas) as soon as the pose it was captured at is known, usually at
+        once. Taking only the newest lost a late frame whenever the next came within a frame."""
+        if current.video is None:
+            return
+        for video, captured in source.decoded():
+            if self.camera.update(
+                video, captured, current.video_intrinsics, current.video_lens,
+                source.camera_frame,
+            ):  # fmt: skip
+                self.waiting.append((captured, self.camera.colour, self.camera.straightened))
+        while self.waiting:
+            captured, image, number = self.waiting[0]
+            if self.camera.straightened - number < COLOURS:  # its colour frame still there
+                posed = source.live_camera(captured)
+                if posed is None and clock.now() - captured <= POSE_WAIT:
+                    return
+                if posed is not None:
+                    self.renderer.live(image, *posed)
+            self.waiting.popleft()
 
     def glided(self, current, now):
         return replace(current, robot_camera=self.glide(current.robot_camera, now))

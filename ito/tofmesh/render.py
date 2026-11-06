@@ -328,6 +328,14 @@ class MeshRenderer:
             y, x = divmod(within, side)
             frame.upload_image(self.atlas, zeros, (x * TILE, y * TILE, TILE, TILE), layer)
 
+    def _bake_due(self, frame):
+        """The live frame into the atlas, if it is due and there is a mesh to bake it onto."""
+        if (
+            self.bake_due and self.atlas is not None and self.count and self.buffers is not None
+            and self.projectors[0] is not None
+        ):  # fmt: skip
+            self._bake(frame)
+
     def _bake(self, frame):
         """The live frame into the atlas, wherever it sees the mesh better than the atlas's view."""
         self.bake_due = False
@@ -382,8 +390,12 @@ class MeshRenderer:
     def live(self, image, world_from_camera, intrinsics):
         """A camera frame as the live projector, baked into the atlas: `image` (the camera
         feed's colour frame, COLOUR, worker.frame_size) copied into slot 0 on the GPU, seen from
-        world_from_camera with intrinsics (fx, fy, cx, cy)."""
+        world_from_camera with intrinsics (fx, fy, cx, cy). A live frame not baked yet (two in
+        one displayed frame) is baked first."""
         frame = self.device.frame
+        if self.bake_due:
+            self._shadows(frame)
+            self._bake_due(frame)
         if image.size != self.image_size:
             self._resize(image.size)
         frame.copy_image(image, self.images)
@@ -587,11 +599,7 @@ class MeshRenderer:
             raise ValueError("Projection must be a finite 4x4 matrix")
         frame = self.device.frame
         self._shadows(frame)
-        if (
-            self.bake_due and self.atlas is not None and self.count and self.buffers is not None
-            and self.projectors[0] is not None
-        ):  # fmt: skip
-            self._bake(frame)
+        self._bake_due(frame)
         guess = self.guess and self.projectors[0] is not None
         if guess:
             self._guess_pyramid(frame)

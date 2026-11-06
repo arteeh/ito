@@ -50,6 +50,9 @@ def ycc_to_rgb(colorspace, full):
 
 
 RGBA = vk.VK_FORMAT_R8G8B8A8_UNORM
+# Colour frames kept: each straightened frame's stays until this many newer ones (its pose can
+# trail it, the window holds it until then).
+COLOURS = 8
 PLANES = {1: vk.VK_FORMAT_R8_UNORM, 2: vk.VK_FORMAT_R8G8_UNORM}
 
 
@@ -70,15 +73,18 @@ class CameraFeed:
         self.uploaded = []  # the planes frames from memory are uploaded into, laid out so:
         self.layout = None
         self.texture = None  # the latest frame, straightened, full size
-        self.colour = None  # the same, strided to the ToF mesh's colour size
+        self.colours = []  # the same, strided to the ToF mesh's colour size: the last COLOURS
+        self.colour = None  # ... of which the latest frame's
+        self.straightened = 0  # frames straightened
         self.sizes = None
         self.stamp = None
         self.shared = None  # d3d12.SharedFrames; False where it is unavailable
         self.held = None  # the frame being straightened, its decoder texture in use until done
 
     def update(self, frame, stamp, intrinsics, lens, deliver):
-        """Straighten `frame` (an av.VideoFrame) if it is new (True); deliver(image, stamp) gets
-        it as the ToF mesh's colour frame, (h, w, 3) uint8 at worker.frame_size, at collect()."""
+        """Straighten `frame` (an av.VideoFrame) if it is new (True): into texture, and into a
+        colour frame of its own (colour, the straightened-th); deliver(image, stamp) gets that
+        as the ToF mesh's colour frame, (h, w, 3) uint8 at worker.frame_size, at collect()."""
         if frame is None or intrinsics is None or stamp == self.stamp:
             return False
         self.stamp = stamp
@@ -122,6 +128,8 @@ class CameraFeed:
             self._upload(commands, frame, name)
         (width, height), step = frame_size(intrinsics.width, intrinsics.height)
         self._targets((intrinsics.width, intrinsics.height), (width, height))
+        self.colour = self.colours[self.straightened % COLOURS]
+        self.straightened += 1
         with trace.span("camera.uniforms"):
             block = self._uniforms(frame, name, intrinsics, lens)
         started = clock.now_ns()
@@ -188,9 +196,9 @@ class CameraFeed:
     def _targets(self, full, colour):
         if self.sizes == (full, colour):
             return
-        self.device.defer(*(i for i in (self.texture, self.colour) if i is not None))
+        self.device.defer(*(i for i in (self.texture, *self.colours) if i is not None))
         self.texture = Image(self.device, full, RGBA, sampled=True, storage=True)
-        self.colour = Image(self.device, colour, RGBA, storage=True)
+        self.colours = [Image(self.device, colour, RGBA, storage=True) for _ in range(COLOURS)]
         self.sizes = (full, colour)
 
     def _uniforms(self, frame, name, intrinsics, lens):
@@ -223,7 +231,7 @@ class CameraFeed:
             commands.close()
         if self.shared:
             self.shared.close()
-        for image in (*self.uploaded, self.texture, self.colour):
+        for image in (*self.uploaded, self.texture, *self.colours):
             if image is not None:
                 image.close()
         self.pipeline.close()

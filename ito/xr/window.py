@@ -281,6 +281,7 @@ class XRWindow(DesktopWindow):
             # The menu and the next session show none of this one's mesh (the menu's own run
             # has none).
             self.renderer.clear()
+            self.waiting.clear()
 
     def _run(self, source, state, on_input, dispatch, menu=None):
         revision = captured_at = None
