@@ -18,10 +18,11 @@ from collections import deque
 import numpy as np
 
 THUMB_WIDTH = 160
-# The worker admits at most 15 frames a second (worker.FRAME_RATE), from a 30 Hz camera ~11
-# (live sim, 1 Nov: 97 ms apart), so a window holds ~11 pairs a second. An estimate uses the last
-# WINDOW seconds and needs PAIRS of them moving: more than half, a head turning most of the window.
-# (30 pairs in 2 s needed every frame of a full 15 per second: the estimate never ran live.)
+# The worker takes the newest frame whenever it is free (worker.TofMesh.submit): from a 30 Hz
+# camera ~25 a second (live sim, 6 Nov), so a window holds ~25 pairs a second. An estimate uses
+# the last WINDOW seconds and needs PAIRS of them moving: about a quarter of the window. (Set
+# when the worker took at most 15 frames a second, ~11 pairs: more than half, a head turning
+# most of the window.)
 WINDOW = 3.0  # seconds of frame pairs an estimate uses
 EVERY = 0.5  # seconds between estimates
 MOVED = 1.0  # thumbnail pixels a pair must be predicted to move to count

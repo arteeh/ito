@@ -1,10 +1,11 @@
 """The ToF mesh in its own process, with the calls the pilot makes on it.
 
 The pilot thread only downsamples camera frames and queues messages; fusion (NumPy, CPU) runs in
-the worker so it never holds the render loop or the link. Queues are bounded and nothing here
-ever blocks the link loop: a busy worker drops camera frames (colour only, harmless); motion,
-ToF and IMU batches (geometry, small) wait in a short backlog, and only a worker stalled for
-seconds loses some of them (counted in the statistics and the status line).
+the worker so it never holds the render loop or the link. Nothing here ever blocks the link
+loop: camera frames go through a one-frame mailbox, of which the worker takes the newest whenever
+it is free (a newer frame replaces one not yet taken: colour only, harmless); motion, ToF and IMU
+batches (geometry, small) wait in a short backlog, and only a worker stalled for seconds loses
+some of them (counted in the statistics and the status line).
 
 With a depth model chosen (ito.recon), it runs in a third process (depth.py), started here and
 fed by the worker: each posed camera frame with the ToF reading it goes with, of which the model
@@ -30,7 +31,6 @@ from .fusion import POSE_WAIT, CameraTrack
 
 log = logging.getLogger(__name__)
 
-FRAME_RATE = 15.0  # camera frames forwarded per second
 FRAME_WIDTH = 640  # their width in the worker (colour and projectors)
 # Stopping the worker: STOP_WAIT to queue the stop, EXIT_WAIT to leave its loop and exit, then
 # KILL_WAIT after a terminate. CLOSE_WAIT is all of it: what close() may take.
@@ -47,7 +47,7 @@ def frame_size(width, height):
     return (len(range(step // 2, width, step)), len(range(step // 2, height, step))), step
 
 
-def _run(inputs, outputs, meshes, notes, options, integrated, depth, tracing=None):
+def _run(inputs, frames, outputs, meshes, notes, options, integrated, depth, tracing=None):
     from .fusion import Fusion, MeshFrame
 
     try:
@@ -81,8 +81,11 @@ def _run(inputs, outputs, meshes, notes, options, integrated, depth, tracing=Non
                 elif kind == "imu":
                     fusion.imu(item[1])
                 elif kind == "frame":
-                    fusion.frame(*item[1:])
-                    trace.add("worker.frame", clock.now_ns(), clock.now_ns(), trace.key(item[2]))
+                    frame = frames.take(wait=False)  # the newest; None if taken already
+                    if frame is not None:
+                        fusion.frame(*frame)
+                        now = clock.now_ns()
+                        trace.add("worker.frame", now, now, trace.key(frame[1]))
                 try:
                     item = inputs.get_nowait()
                 except queue.Empty:
@@ -218,6 +221,8 @@ class TofMesh:
         self.intrinsics = intrinsics
         self.capture_delay = float(capture_delay)
         self.inputs = context.Queue(maxsize=256)
+        (width, height), _ = frame_size(intrinsics.width, intrinsics.height)
+        self.frames = depth_module.Mailbox(context, width * height * 3 + 2**16)
         self.outputs = context.Queue(maxsize=3)
         # The meshes' arrays (shared.Arrays): those received and not yet uploaded, and one more.
         self.meshes = shared.Arrays(context, 4)
@@ -231,7 +236,6 @@ class TofMesh:
         self.model = self.depth = queues = None
         self.process = None
         self.started = clock.now()
-        self.last_frame = -1e9
         self.stats = {}
         self.error = None
         self.has_mesh = False
@@ -245,7 +249,6 @@ class TofMesh:
             if self.error:
                 log.error("%s", self.error)
             else:
-                (width, height), _ = frame_size(intrinsics.width, intrinsics.height)
                 queues = (
                     depth_module.Mailbox(context, width * height * 3 + 2**20),
                     context.Queue(maxsize=4),
@@ -275,6 +278,7 @@ class TofMesh:
                 target=_run,
                 args=(
                     self.inputs,
+                    self.frames,
                     self.outputs,
                     self.meshes,
                     self.notes,
@@ -349,13 +353,14 @@ class TofMesh:
     def submit(self, image, camera, captured_at):
         """A camera frame at the described pinhole, strided as frame_size says, (h, w, 3) uint8;
         `camera` is the driver's pose for it (used only when the motion stream does not
-        cover the frame)."""
-        if captured_at - self.last_frame < 1 / FRAME_RATE:
+        cover the frame). It replaces the frame in the mailbox; the worker, woken by the queue,
+        takes whichever is newest when it gets to it."""
+        if self._closed:
             return False
-        self.last_frame = captured_at
-        intrinsics = self.frame_intrinsics
         fallback = None if camera is None else np.asarray(camera, np.float64)
-        return self._put(("frame", image, captured_at - self.capture_delay, intrinsics, fallback))
+        exposed = captured_at - self.capture_delay
+        self.frames.put((image, exposed, self.frame_intrinsics, fallback))
+        return self._put(("frame",))
 
     def live(self, captured_at, fallback=None):
         """The live projector for the camera frame captured at `captured_at`: (world_from_camera,

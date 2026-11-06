@@ -37,10 +37,10 @@ def _lower_priority():
 
 
 class Mailbox:
-    """The newest frame for the depth model, each new one in place of the last, in shared
-    memory: the model takes it whenever it is free, so it neither works on a stale frame (a
-    queue keeps them all, in order) nor waits for the worker to send one. put() in the worker,
-    take() in the depth process."""
+    """The newest frame for a process (the mesh worker's camera frames, the depth model's posed
+    ones), each new one in place of the last, in shared memory: it takes it whenever it is free,
+    so it neither works on a stale frame (a queue keeps them all, in order) nor waits for one to
+    be sent. put() in the sender, take() in the process."""
 
     def __init__(self, context, size):
         self.lock = context.Lock()
@@ -62,9 +62,11 @@ class Mailbox:
         except ValueError:  # already woken, for the one before
             pass
 
-    def take(self):
+    def take(self, wait=True):
+        """The newest item not taken yet; without `wait`, None if there is none."""
         while True:
-            self.wake.acquire()
+            if not self.wake.acquire(wait):
+                return None
             with self.lock:
                 if self.sequence.value == self.taken:
                     continue  # woken for one it took already
