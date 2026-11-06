@@ -6,7 +6,7 @@ pass (straighten.comp) turns each into RGB at the camera's described pinhole: th
 view's texture, and the ToF mesh's colour frame, strided as the worker takes it
 (worker.frame_size). Each frame is straightened in a submission of its own, ahead of the frame
 being drawn, so its colour frame is read back as soon as the GPU has it (collect()) without
-waiting for the rest of the frame.
+waiting for the rest of the frame, nor holding the frame loop while the GPU is busy.
 
 A frame the D3D12 decoder left on the GPU is copied there into textures Vulkan shares
 (d3d12.SharedFrames). Where that cannot be set up, the decoder is told to download its frames
@@ -82,6 +82,9 @@ class CameraFeed:
         if frame is None or intrinsics is None or stamp == self.stamp:
             return False
         self.stamp = stamp
+        # One frame at a time: the decoder's texture and the shared planes are the last one's
+        # until the GPU is done with them.
+        self.collect(wait=True)
         if (frame.width, frame.height) != (intrinsics.width, intrinsics.height):
             raise RuntimeError(
                 f"the robot's camera sends {frame.width}x{frame.height} frames but describes "
@@ -149,9 +152,12 @@ class CameraFeed:
         self.pending, self.held = commands, frame
         return True
 
-    def collect(self):
-        """Wait for the frame update() submitted, and hand its colour frame on."""
-        if self.pending is not None:
+    def collect(self, wait=False):
+        """Hand on the colour frame of the frame update() submitted once the GPU has it; with
+        `wait`, wait for it. Without, a GPU busy with other work (a depth model, a headset's
+        compositor) leaves it to the next call instead of holding the frame loop (up to 20 ms
+        in VR, a missed frame)."""
+        if self.pending is not None and (wait or self.pending.finished()):
             pending, self.pending = self.pending, None
             pending.wait()
             self.held = None
@@ -212,7 +218,7 @@ class CameraFeed:
         )
 
     def close(self):
-        self.collect()
+        self.collect(wait=True)
         for commands in self.frames:
             commands.close()
         if self.shared:

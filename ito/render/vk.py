@@ -836,6 +836,10 @@ class Frame:
         finally:
             self.readbacks += reading
 
+    def finished(self):
+        """Whether the GPU has finished the frame's work (or it was not submitted)."""
+        return not self.pending or lib.vkGetFenceStatus(self.device.device, self.fence) == 0
+
     def begin(self):
         self.wait()
         lib.vkResetFences(self.device.device, 1, ffi.new("VkFence*", self.fence))
