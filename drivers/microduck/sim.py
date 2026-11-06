@@ -20,10 +20,13 @@ from drivers.microduck.scene import furnish
 ROOT = Path(__file__).resolve().parents[2]
 RL = ROOT / "third_party/microduck_rl/src"
 SCENES = RL / "mjlab_microduck/robot/microduck"
+# Upstream's twin (microduck scripts/duck-sim, 6eb8525): velstand was trained on a robot with
+# backlash in its joints and does not take a step on the one without it, scene.xml's.
+SCENE, ROBOT = "scene_backlash.xml", "robot_groundcontact_backlash.xml"
 
 
 def scene():
-    """Upstream's scene and robot, furnished, with the robot's visual and contact geoms in
+    """Upstream's backlash scene and robot, furnished, with the robot's visual and contact geoms in
     groups 2 and 3 (the head camera draws the visual ones).
 
     The eye ring around the lens goes in group 4, which only the viewer draws: the head camera
@@ -34,16 +37,16 @@ def scene():
     shutil.rmtree(state, ignore_errors=True)
     state.mkdir()
     for asset in SCENES.iterdir():
-        if asset.name not in {"scene.xml", "robot_groundcontact.xml"}:
+        if asset.name not in {SCENE, ROBOT}:
             (state / asset.name).symlink_to(asset, target_is_directory=asset.is_dir())
-    robot = ET.parse(SCENES / "robot_groundcontact.xml")
+    robot = ET.parse(SCENES / ROBOT)
     for geom in robot.findall(".//worldbody//geom"):
         geom.set("group", "2" if geom.get("class") == "visual" else "3")
         if geom.get("mesh") == "noenoeil" and geom.get("class") == "visual":
             geom.set("group", "4")
-    robot.write(state / "robot_groundcontact.xml")
-    furnish(SCENES / "scene.xml").write(state / "scene.xml")
-    return state / "scene.xml"
+    robot.write(state / ROBOT)
+    furnish(SCENES / SCENE).write(state / SCENE)
+    return state / SCENE
 
 
 def environment(viewer):
