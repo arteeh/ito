@@ -13,7 +13,7 @@ from ito.desktop import DesktopState, PilotStatus
 from ito.desktop.settings import load as app_settings
 from ito.link import PairingError, connect, media
 from ito.protocol import Command, FrameMetadata, Motion, Paired, PilotState, Pose, Sensors, Status
-from ito.rates import CounterRate, Rate
+from ito.rates import CounterRate, StampRate
 from ito.render import pose
 from ito.render.pose import quaternion
 from ito.tofmesh.worker import CLOSE_WAIT
@@ -97,7 +97,9 @@ class Pilot:
         self.eye_positions = deque()  # (time, camera position) for EYE_AVERAGE
         self.settings_revision = 0
         self.last_frame = 0.0
-        self.camera_rate = Rate()
+        # Frames received, by capture time: counted as the window passed them on, a steady 30 Hz
+        # camera read 29-31, and two frames decoded close together looked like jitter.
+        self.camera_rate = StampRate()
         self.frame_cameras = deque(maxlen=16)  # (capture time, camera pose) of shown frames
         self.frames = deque(maxlen=8)  # (frame, capture time) not yet taken by the window
         self.motion_time = -1.0
@@ -223,6 +225,7 @@ class Pilot:
             )
             return
         camera = FrameJoin.camera(pair)
+        self.camera_rate.tick(captured)
         self.last_frame = clock.now()
         joined = clock.now_ns()
         age_ms = (self.last_frame - captured) * 1000
@@ -268,7 +271,6 @@ class Pilot:
         camera = next((c for t, c in reversed(self.frame_cameras) if t == captured), None)
         if self.worker is None or self.failure:
             return
-        self.camera_rate.tick()
         with trace.span("camera.submit", trace.key(captured)) as span:
             span.fields["taken"] = self.worker.submit(image, camera, captured)
 

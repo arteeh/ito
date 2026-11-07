@@ -84,6 +84,7 @@ class DesktopWindow:
         self.renderer = self.overlay = self.input = self.video_panel = self.camera = None
         self.renderers = {}
         self.gpu = None
+        self.recorder = None  # ITO_RECORD, while a session draws
         if (
             min(size) < 64
             or fps < 1
@@ -227,7 +228,7 @@ class DesktopWindow:
             self.renderer = self.renderers[kind]
 
     def _draw(self, source, state, on_input, dispatch):
-        recorder = from_env()
+        recorder = self.recorder = from_env()
         self.performance = Performance()
         try:
             self._draw_loop(source, state, on_input, dispatch, recorder)
@@ -235,6 +236,7 @@ class DesktopWindow:
             self.device.idle()
             for frame in self.device.frames:
                 frame.wait()  # the last screen grabs reach the recorder
+            self.recorder = None
             if recorder is not None:
                 recorder.close()
             self.renderer.clear()  # the next session or a menu shows none of this one's mesh
@@ -242,8 +244,8 @@ class DesktopWindow:
 
     def _record(self, recorder: Recorder, current, frame, image):
         """The screen grab is copied out in the frame and collected when the frame is done (a
-        frame or two later): the frame loop never waits for it."""
-        recorder.camera(current.video, current.video_time)
+        frame or two later): the frame loop never waits for it. Camera frames are recorded as
+        they are decoded (straighten)."""
         now = clock.now()
         if recorder.due(now):
             recorder.taken(now)
@@ -384,6 +386,8 @@ class DesktopWindow:
         if current.video is None:
             return
         for video, captured in source.decoded():
+            if self.recorder is not None:  # each, as the newest at a displayed frame missed some
+                self.recorder.camera(video, captured)
             if self.camera.update(
                 video, captured, current.video_intrinsics, current.video_lens,
                 source.camera_frame,

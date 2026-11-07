@@ -1,6 +1,8 @@
 """ITO_RECORD=<dir> records the window as the pilot sees it (screen/) and each robot camera
-frame Ito receives, as it came (camera/): JPEGs plus frames.jsonl ("t" in Ito clock seconds), which
-tools/session.py turns into videos. ITO_RECORD_FPS caps the screen rate (default 30)."""
+frame Ito receives, as it came (camera/): JPEGs plus frames.jsonl ("t": when Ito had the frame,
+in Ito clock seconds; camera frames also "captured": when the robot captured it, on the same
+clock), which tools/session.py turns into videos. ITO_RECORD_FPS caps the screen rate (default
+30)."""
 
 import json
 import logging
@@ -33,14 +35,17 @@ class _Stream:
         self.index = (folder / "frames.jsonl").open("w", encoding="utf-8")
         self.count = 0
 
-    def write(self, rgb: np.ndarray, t: float) -> None:
+    def write(self, rgb: np.ndarray, t: float, captured: float | None = None) -> None:
         image = Image.fromarray(np.ascontiguousarray(rgb[..., :3]))
         if image.width > WIDTH:
             image = image.resize((WIDTH, round(image.height * WIDTH / image.width)), Image.BILINEAR)
         image = image.crop((0, 0, image.width & ~1, image.height & ~1))
         name = f"{self.count:06d}.jpg"
         image.save(self.folder / name, quality=90)
-        self.index.write(json.dumps({"file": name, "t": t}) + "\n")
+        row = {"file": name, "t": t}
+        if captured is not None:
+            row["captured"] = captured
+        self.index.write(json.dumps(row) + "\n")
         self.count += 1
 
     def close(self) -> None:
@@ -68,10 +73,10 @@ class Recorder:
 
     def _writer(self) -> None:
         while (item := self.queue.get()) is not None:
-            name, image, t = item
+            name, image, t, *captured = item
             try:
                 rgb = image if isinstance(image, np.ndarray) else image.to_ndarray(format="rgb24")
-                self.streams[name].write(rgb, t)
+                self.streams[name].write(rgb, t, *captured)
             except Exception:
                 log.exception("Recording %s frame failed", name)
 
@@ -86,12 +91,13 @@ class Recorder:
         """rgb: (height, width, 3), rows top first."""
         self._put(("screen", rgb, now))
 
-    def camera(self, video, video_time) -> None:
-        """A camera frame as it arrived (an av.VideoFrame, through the robot's lens)."""
-        if video is None or video_time == self.last_video:
+    def camera(self, video, captured) -> None:
+        """A camera frame as it arrived (an av.VideoFrame, through the robot's lens), captured
+        at `captured` (Ito's clock)."""
+        if video is None or captured == self.last_video:
             return
-        self.last_video = video_time
-        self._put(("camera", video, clock.now()))
+        self.last_video = captured
+        self._put(("camera", video, clock.now(), captured))
 
     def close(self) -> None:
         self.queue.put(None)

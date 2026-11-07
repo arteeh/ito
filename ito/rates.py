@@ -19,6 +19,30 @@ class Rate:
         return sum(1 for t in times if now - t <= self.window) / self.window
 
 
+class StampRate:
+    """Events a second by their own times (a camera frame's capture time), not the times they
+    were counted: frames passed on unevenly (the window takes them once a displayed frame, a busy
+    thread late) count at the rate they were taken, and only frames never received are missing.
+    Over the last `window` seconds of stamps; 0 once the newest is a window old."""
+
+    def __init__(self, window=1.0, cap=256):
+        self.window = window
+        self.times = deque(maxlen=cap)
+
+    def tick(self, stamp):
+        self.times.append(stamp)
+
+    def hz(self, now=None):
+        now = clock.now() if now is None else now
+        times = tuple(self.times)
+        if not times or now - times[-1] > self.window:
+            return 0.0
+        recent = [t for t in times if times[-1] - t < self.window]
+        if len(recent) < 2 or recent[-1] <= recent[0]:
+            return 0.0
+        return (len(recent) - 1) / (recent[-1] - recent[0])
+
+
 class CounterRate:
     def __init__(self, window=1.0):
         self.window = window
