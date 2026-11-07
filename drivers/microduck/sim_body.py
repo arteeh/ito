@@ -1,6 +1,8 @@
 import atexit
 import collections
+import ctypes
 import os
+import queue
 import socket
 import struct
 import sys
@@ -72,8 +74,9 @@ class Fisheye:
         self.atlas = np.empty((self.size[1], self.size[0], 3), np.uint8)
         self.build_seconds = time.perf_counter() - started
 
-    def views_drawn(self, renderer):
-        """Draw every view into the framebuffer from the scene's camera."""
+    def views_drawn(self, renderer, between=None):
+        """Draw every view into the framebuffer from the scene's camera; `between`, called after
+        each view."""
         scene, context = renderer.scene, renderer._mjr_context
         cameras = scene.camera
         kept = [
@@ -96,6 +99,8 @@ class Fisheye:
                     camera.frustum_top = -near * top
                     camera.frustum_bottom = -near * (top + h / focal)
                 mujoco.mjr_render(rect, scene, context)
+                if between is not None:
+                    between()
         finally:
             for camera, (f, _, center, bottom, top) in zip(cameras, kept, strict=True):
                 camera.forward[:] = f
@@ -108,7 +113,107 @@ class Fisheye:
     def rgb(self, renderer):
         self.views_drawn(renderer)
         mujoco.mjr_readPixels(self.atlas, None, self.rect, renderer._mjr_context)
-        return self.cv.remap(self.atlas, *self.maps, self.cv.INTER_LINEAR)
+        return self.remap(self.atlas)
+
+    def remap(self, atlas):
+        """The fisheye frame from the views' pixels (rows as OpenGL reads them)."""
+        return self.cv.remap(atlas, *self.maps, self.cv.INTER_LINEAR)
+
+
+class Readback:
+    """The views' pixels off the GPU without waiting for it. mjr_readPixels copies the
+    framebuffer into memory at once, so the camera's thread first sat out the GPU's queue:
+    9 ms of a frame with the GPU to itself, 12-13 ms with Ito's depth model or MASt3R-SLAM on
+    the same GPU, where with the draw (17 ms then) a frame took more than its 33 ms and the next
+    exposure was dropped (29.4-29.8 frames a second). Here each frame's pixels are copied on the
+    GPU into a pixel buffer of its own (SLOTS of them), behind a fence; the thread collects
+    them, in order, once the GPU is past the fence, and draws the next frame meanwhile."""
+
+    SLOTS = 3
+
+    def __init__(self, rect, context):
+        from OpenGL import GL
+        from OpenGL.raw.GL.VERSION import GL_1_0, GL_1_5
+
+        self.gl, self.rect, self.context = GL, rect, context
+        # Raw: with a pixel buffer bound, the pointer is an offset into it (or the destination).
+        self.read_pixels, self.buffer_data = GL_1_0.glReadPixels, GL_1_5.glGetBufferSubData
+        self.shape = (rect.height, rect.width, 3)
+        self.size = rect.width * rect.height * 3
+        self.free = collections.deque(int(b) for b in np.atleast_1d(GL.glGenBuffers(self.SLOTS)))
+        for buffer in self.free:
+            GL.glBindBuffer(GL.GL_PIXEL_PACK_BUFFER, buffer)
+            GL.glBufferData(GL.GL_PIXEL_PACK_BUFFER, self.size, None, GL.GL_STREAM_READ)
+        GL.glBindBuffer(GL.GL_PIXEL_PACK_BUFFER, 0)
+        self.pending = collections.deque()  # (buffer, fence, item), oldest first
+        self.changed = threading.Condition()  # pending or free, from the thread that collects
+
+    def full(self):
+        with self.changed:
+            return not self.free
+
+    def wait(self, ready, timeout):
+        with self.changed:
+            return self.changed.wait_for(ready, timeout)
+
+    def start(self, item):
+        """Copy the views just drawn, as mjr_readPixels reads the offscreen framebuffer: resolved
+        from its multisampled buffer first, RGB rows bottom first."""
+        GL, context, r = self.gl, self.context, self.rect
+        box = (r.left, r.bottom, r.left + r.width, r.bottom + r.height)
+        if context.offFBO_r:
+            GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, context.offFBO)
+            GL.glBindFramebuffer(GL.GL_DRAW_FRAMEBUFFER, context.offFBO_r)
+            GL.glBlitFramebuffer(*box, *box, GL.GL_COLOR_BUFFER_BIT, GL.GL_NEAREST)
+            GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, context.offFBO_r)
+        else:
+            GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, context.offFBO)
+        with self.changed:
+            buffer = self.free.popleft()
+        GL.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1)
+        GL.glBindBuffer(GL.GL_PIXEL_PACK_BUFFER, buffer)
+        self.read_pixels(
+            r.left, r.bottom, r.width, r.height, GL.GL_RGB, GL.GL_UNSIGNED_BYTE, ctypes.c_void_p(0)
+        )
+        GL.glBindBuffer(GL.GL_PIXEL_PACK_BUFFER, 0)
+        mujoco.mjr_restoreBuffer(context)
+        fence = GL.glFenceSync(GL.GL_SYNC_GPU_COMMANDS_COMPLETE, 0)
+        GL.glFlush()
+        with self.changed:
+            self.pending.append((buffer, fence, item))
+            self.changed.notify_all()
+
+    def collect(self, wait):
+        """The frames the GPU has copied, oldest first, as (pixels, item, seconds taking the
+        pixels); waiting up to `wait` seconds for the oldest. On one thread only: the drawing
+        thread's or one whose context shares its objects."""
+        GL, out = self.gl, []
+        while True:
+            with self.changed:
+                if not self.pending:
+                    break
+                buffer, fence, item = self.pending[0]
+            status = GL.glClientWaitSync(fence, 0, int(wait * 1e9))
+            if status == GL.GL_WAIT_FAILED:
+                raise RuntimeError("head camera: waiting on the GPU's copy failed")
+            if status == GL.GL_TIMEOUT_EXPIRED:
+                break
+            with self.changed:
+                self.pending.popleft()
+            GL.glDeleteSync(fence)
+            began = time.perf_counter()
+            pixels = np.empty(self.shape, np.uint8)
+            GL.glBindBuffer(GL.GL_PIXEL_PACK_BUFFER, buffer)
+            self.buffer_data(
+                GL.GL_PIXEL_PACK_BUFFER, 0, self.size, pixels.ctypes.data_as(ctypes.c_void_p)
+            )
+            GL.glBindBuffer(GL.GL_PIXEL_PACK_BUFFER, 0)
+            with self.changed:
+                self.free.append(buffer)
+                self.changed.notify_all()
+            out.append((pixels, item, time.perf_counter() - began))
+            wait = 0
+        return out
 
 
 class HeadCamera(Camera):
@@ -188,6 +293,7 @@ class ThreadedHeadCamera(HeadCamera):
         self.thread = None
         self.stopping = threading.Event()
         self.shots = collections.deque()
+        self.out = queue.Queue()
         self.due = None
         # Before GLFW goes: rendering on after the viewer closed and GLFW terminated
         # segfaulted the body in make_context_current (GLFW 3.4, Ubuntu 26.04).
@@ -252,45 +358,141 @@ class ThreadedHeadCamera(HeadCamera):
         if self.model.ntendon:
             mujoco.mj_tendon(self.model, kept)
 
+    POLL = 0.002  # seconds the thread waits on the GPU's copy before it looks for a new shot
+
     def frames(self):
         """Each shot drawn as soon as physics takes it, the newest if drawing fell behind, as a
         camera's frame leaves once it is exposed. Drawn on a 30 Hz schedule of its own instead,
         a shot waited up to a frame for its turn, at a phase that moved only when a frame came
-        late. `late`: frames begun more than a frame after their exposure."""
+        late. The pixels come back from the GPU behind the draw (Readback) and are remapped and
+        packed on a thread of their own (converting), so this thread only draws: it is free for
+        the next shot while the GPU, shared with the pilot's depth model, finishes this one.
+        `late`: frames begun more than a frame after their exposure."""
         period = 1.0 / max(1, FPS)
         kept = mujoco.MjData(self.model)
-        costs, late, dropped, window = [], 0, 0, time.perf_counter()
-        while not self.stopping.is_set():
-            with self.fresh:
-                self.fresh.wait_for(lambda: self.shots or self.stopping.is_set(), timeout=0.5)
-                if self.stopping.is_set() or not self.shots:
-                    continue
-                dropped += len(self.shots) - 1
-                state = self.shots[-1]
-                self.shots.clear()
-            # The exposure on CLOCK_MONOTONIC, the clock robotd and tofd stamp with: the physics
-            # time of the state drawn.
-            exposed = self.world.epoch_ns + round(state[0] * 1e9)
-            late += time.monotonic_ns() - exposed > period * 1e9
-            start = time.perf_counter()
-            self.pose(kept, state)
-            self.scene(kept)
-            self.publish(self.draw(), exposed)
+        readback = Readback(self.fisheye.rect, self.renderer._mjr_context)
+        converter = threading.Thread(target=self.converting, name="head-camera-out", daemon=True)
+        converter.start()
+        self.costs, self.copies, self.late, self.dropped = [], [], 0, 0
+        window = self.copier()
+        copier = None
+        if window is not None:
+            copier = threading.Thread(
+                target=self.copying, args=(readback, window), name="head-camera-copy", daemon=True
+            )
+            copier.start()
+        print(
+            "== head camera: pixels taken on "
+            + ("a thread of their own" if copier else "the drawing thread, between views"),
+            flush=True,
+        )
+        try:
+            while not self.stopping.is_set():
+                with self.fresh:
+                    if copier is not None or not readback.pending:
+                        self.fresh.wait_for(
+                            lambda: self.shots or self.stopping.is_set(), timeout=0.5
+                        )
+                    state = self.shots[-1] if self.shots else None
+                    self.dropped += max(0, len(self.shots) - 1)
+                    self.shots.clear()
+                if self.stopping.is_set():
+                    break
+                if state is not None:
+                    start = time.perf_counter()
+                    while readback.full():
+                        if copier is not None:
+                            readback.wait(lambda: readback.free, 1.0)
+                        else:
+                            self.converted(readback.collect(1.0))
+                    # The exposure on CLOCK_MONOTONIC, the clock robotd and tofd stamp with: the
+                    # physics time of the state drawn.
+                    exposed = self.world.epoch_ns + round(state[0] * 1e9)
+                    self.late += time.monotonic_ns() - exposed > period * 1e9
+                    self.pose(kept, state)
+                    self.scene(kept)
+                    # Without a copier, a frame still on the GPU goes on as soon as it is copied,
+                    # not a whole draw later: a shot can come while the last is being copied
+                    # (physics runs in batches), and a draw takes 20 ms or more.
+                    self.fisheye.views_drawn(
+                        self.renderer,
+                        None if copier else lambda: self.converted(readback.collect(0)),
+                    )
+                    readback.start(exposed)
+                    self.costs.append(time.perf_counter() - start)
+                if copier is None:
+                    self.converted(readback.collect(0 if state is not None else self.POLL))
+        finally:
+            self.stopping.set()
+            if copier is not None:
+                copier.join(timeout=2)
+                import glfw
+
+                glfw.destroy_window(window)
+            self.out.put(None)
+            converter.join(timeout=2)
+
+    def copier(self):
+        """With GLFW, a hidden window whose context shares the renderer's objects (its pixel
+        buffers and fences), for a thread that takes each frame's pixels the moment the GPU has
+        them: the drawing thread, as a rule busy drawing the next frame, took them between its
+        views, up to a view late. None with another GL (EGL, headless)."""
+        context = getattr(self.renderer._gl_context, "_context", None)
+        if os.environ.get("MUJOCO_GL") != "glfw" or context is None:
+            return None
+        import glfw
+
+        glfw.window_hint(glfw.VISIBLE, 0)
+        window = glfw.create_window(16, 16, "head camera copies", None, context)
+        glfw.default_window_hints()
+        return window or None
+
+    def copying(self, readback, window):
+        import glfw
+
+        glfw.make_context_current(window)
+        try:
+            while not self.stopping.is_set():
+                if readback.wait(lambda: readback.pending or self.stopping.is_set(), 0.5):
+                    self.converted(readback.collect(1.0))
+        finally:
+            glfw.make_context_current(None)
+
+    def converted(self, collected):
+        for pixels, exposed, copy in collected:
+            self.copies.append(copy)
+            self.out.put((pixels, exposed))
+
+    def converting(self):
+        """Each frame the GPU has copied, in order: remapped to the fisheye, packed and
+        published. Reported every 10 s: `render`, the drawing thread's time for a frame (pose,
+        scene, views); `copy`, its time to take a frame's pixels once the GPU has them; `out`,
+        exposure to published, the frame's age as it leaves for mediad."""
+
+        def ms(values):
+            v = sorted(values) or [0.0]
+            return f"p50 {v[len(v) // 2]:.1f} ms p95 {v[int(len(v) * 0.95)]:.1f} ms"
+
+        outs, window = [], time.perf_counter()
+        while (job := self.out.get()) is not None:
+            pixels, exposed = job
+            self.publish(self.fisheye.remap(pixels), exposed)
             with self.lock:
                 self.seq += 1
                 self.fresh.notify_all()
+            outs.append((time.monotonic_ns() - exposed) / 1e6)
             done = time.perf_counter()
-            costs.append(done - start)
             if done - window >= 10:
-                costs.sort()
+                costs, copies = self.costs, self.copies
+                late, dropped = self.late, self.dropped
+                self.costs, self.copies, self.late, self.dropped = [], [], 0, 0
                 print(
-                    f"== head camera: {len(costs) / (done - window):.1f} fps (target {FPS}), "
-                    f"render p50 {costs[len(costs) // 2] * 1e3:.1f} ms "
-                    f"p95 {costs[int(len(costs) * 0.95)] * 1e3:.1f} ms, late {late}, "
-                    f"dropped {dropped}",
+                    f"== head camera: {len(outs) / (done - window):.1f} fps (target {FPS}), "
+                    f"render {ms(c * 1e3 for c in costs)}, copy {ms(c * 1e3 for c in copies)}, "
+                    f"out {ms(outs)}, late {late}, dropped {dropped}",
                     flush=True,
                 )
-                costs, late, dropped, window = [], 0, 0, done
+                outs, window = [], done
 
     def next_frame(self, seen, timeout=1.0):
         with self.fresh:
